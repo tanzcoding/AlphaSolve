@@ -1,2 +1,2 @@
 # AlphaSolve
-An AI System Designed to help accerlate Mathmatical Research 
+An AI System Designed to help accelerate Mathematical Research
