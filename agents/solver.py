@@ -5,7 +5,7 @@ import agents.shared_context
 
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
-from llms.volcano_ds import get_result
+from llms.kimi import KimiClient
 
 CONTEXT_PREFIX = '''
 ## Context and History Explorations
@@ -14,7 +14,6 @@ Here is a list of context that we have collected for this problem or our history
 
 {context_content}
 '''
-
 
 CONJECTURE_BEGIN = '\\begin{conjecture}'
 CONJECTURE_END = '\\end{conjecture}'
@@ -30,20 +29,22 @@ FINAL_END = '\\end{final_proof}'
 
 class Solver:
 
-    def __init__(self, problem, model, prompt_file_path, shared_context):
+    def __init__(self, llm, problem, model, prompt_file_path, shared_context):
 
         self.problem = problem
         self.model = model ## 代表模型的配置, 是一个string
         self.shared_context = shared_context 
         self.prompt_file_path = prompt_file_path
         self.prompt = load_prompt_from_file(self.prompt_file_path)
+        self.llm = llm
 
     def solve(self, hint = None): ## 主方法, 可以扩展这个方法, 当前按照 AIM 的逻辑写的, 即每次生成 next-lemma, 但是对不对不管, 由后续的流程处理
 
         prompt = self.__build_solver_prompt(hint)
 
         b = time.time()
-        resp = get_result('', prompt)
+        
+        resp = self.llm.get_result('', prompt)
 
         answer, cot = resp[0], resp[1] 
 
@@ -55,7 +56,6 @@ class Solver:
         print(answer)
 
         conj = self.__build_conjecture(answer, cot)
-
 
         return conj
 
@@ -113,4 +113,6 @@ class Solver:
        
 
 def create_solver_agent(problem, model, prompt_file_path, shared_context):
-    return Solver(problem, model, prompt_file_path, shared_context)    
+    
+    kimi = KimiClient()
+    return Solver(kimi, problem, model, prompt_file_path, shared_context)    

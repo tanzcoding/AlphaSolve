@@ -1,8 +1,9 @@
 import time
 import json
 import agents.conjecture_graph
-from llms.volcano_ds import get_result
+
 from agents.utils import build_conjuecture_helper
+from llms.kimi import KimiClient
 
 CONTEXT_PREFIX = '''
 ## Context and History Explorations
@@ -28,18 +29,19 @@ PROOF_END = '\\end{proof}'
 
 class Refiner:
 
-    def __init__(self, conjecture, model, prompt_file_path, shared_context): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, llm, conjecture, model, prompt_file_path, shared_context): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         self.conjecture = conjecture
         self.model = model
         self.prompt_file_path = prompt_file_path
         self.prompt = self.__load_refiner_prompt()
- 
+        self.llm = llm 
+
     def refine(self): 
         prompt = self.__build_refiner_prompt()
 
         b = time.time()
 
-        resp = get_result('', prompt)
+        resp = self.llm.get_result('', prompt)
 
         answer, cot = resp[0], resp[1]
 
@@ -93,4 +95,6 @@ class Refiner:
 
 
 def create_refiner_agent(conjecture, model, prompt_file_path, shared_context):
-    return Refiner(conjecture, model, prompt_file_path, shared_context) 
+ 
+    kimi = KimiClient()
+    return Refiner(kimi, conjecture, model, prompt_file_path, shared_context) 

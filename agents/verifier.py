@@ -1,7 +1,8 @@
 import time
 import json
 import agents.conjecture_graph
-from llms.volcano_ds import get_result
+
+from llms.kimi import KimiClient
 
 CONTEXT_PREFIX = '''
 ## Context and History Explorations
@@ -22,7 +23,8 @@ VERIFY_RESULT_INVALID='boxed{invalid}'
 
 class Verifier:
 
-    def __init__(self, problem, model, prompt_file_path, current_conj, reasoning_path, shared_context, init_context = None):
+    def __init__(self, llm, problem, model, prompt_file_path, current_conj, reasoning_path, shared_context, init_context = None):
+
         self.problem = problem
         self.model = model
         self.prompt_file_path = prompt_file_path
@@ -31,14 +33,15 @@ class Verifier:
         self.current_conj = current_conj
         self.reasoning_path = reasoning_path
         self.shared_context = shared_context
- 
-    def verify(self): 
-        prompt = self.__build_verifier_prompt(self.init_context, self.current_conj, self.reasoning_path)
+        self.llm = llm 
 
+    def verify(self): 
+
+        prompt = self.__build_verifier_prompt(self.init_context, self.current_conj, self.reasoning_path)
 
         b = time.time()
  
-        resp = get_result('', prompt)
+        resp = self.llm.get_result('', prompt)
 
         answer, cot = resp[0], resp[1]
 
@@ -48,11 +51,6 @@ class Verifier:
             return True, answer, cot
         else:
             return False, answer, cot
-
-
-    def __extract_from_model(self, model_output):
-        ## 从模型的返回中把信息提取出来, 返回是一个 tuple(conjucture, proof, final_proof, dependencies)
-        return None
 
     def __build_verifier_prompt(self, context, conj, reasoning_path):
         ## 把所有东西拼到 prompt 里
@@ -83,10 +81,11 @@ class Verifier:
 
         prompt_template = f.read()
 
-        ## print('load prompt template ', self.prompt_file_path, ' with content ', prompt_template)
 
         return prompt_template
 
 
 def create_verifier_agent(problem, model, prompt_file_path, conj, reasoning_path, shared_context):
-    return Verifier(problem, model, prompt_file_path, conj, reasoning_path, shared_context) 
+
+    kimi = KimiClient()
+    return Verifier(kimi, problem, model, prompt_file_path, conj, reasoning_path, shared_context) 

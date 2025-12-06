@@ -8,6 +8,7 @@ from agents.verifier import create_verifier_agent
 from agents.refiner import create_refiner_agent
 
 class AlphaSolve:
+
     ## 首先, AIM 其实没什么东西可以复用的,整体上目前大部分Math Aget 都可以总结成, solve(explorer)-verify(reviewer)-refine 的模式
     ## 但是具体做看实验了, 因此 AlphaSolve 的主类仅封装: (1) solve(explorer)-verify(reviewer)-refine 的模式 (2) solve & verify & refine 的历史 trace
 
@@ -24,6 +25,7 @@ class AlphaSolve:
 
 
     def do_verify(target_conj, reasoning_path):
+
         ## test time compute, 我们先直接撸3次, 任何一次错我们都认为错, 随机选择一个判错的 review 和 cot —— 这里和AIM不一样
         verifier_res = None
 

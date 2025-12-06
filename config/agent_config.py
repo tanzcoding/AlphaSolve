@@ -19,7 +19,14 @@ class AlphaSolveConfig:
 
 
 class LLMConfig:
+
     VOLCANO_DS_ARK_API_KEY=''
     VOLCANO_DS_ENDPOINT=''
     VOLCANO_DS_URL = 'https://ark.cn-beijing.volces.com/api/v3'
     VOLCANO_DS_TIMEOUT = 3600
+
+    
+    KIMI_API_KEY = ''
+    KIMI_URL = 'https://api.moonshot.cn/v1'
+    KIMI_TIMEOUT = 3600
+    KIMI_MODEL = 'kimi-k2-thinking'
