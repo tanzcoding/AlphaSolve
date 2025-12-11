@@ -2,20 +2,52 @@
 
 class AlphaSolveConfig:
 
-    REFINE_MODEL='gemini-3-pro'
+    SOLVER = 'solver'
+
+    REFINE_MODEL='deepseek-reasoner'
     REFINE_PROMPT_PATH='prompts/refiner.md'
 
-    SOLVER_MODEL='gemini-3-pro'
+    SOLVER_MODEL='deepseek-reasoner'
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
-    VERIFIER_MODEL = 'gemini-3-pro'
+    VERIFIER_MODEL = 'deepseek-reasoner'
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    VERIFY_TEST_TIME_ROUND = 3
-    VERIFY_AND_REFINE_ROUND = 3
+    SUMMARIZER_MODEL = 'gemini-3-pro'  
+    SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
 
-    TOTAL_SOLVER_ROUND = 3
+    HINT = 'hint'
 
+    VERIFIER_SCALING_FACTOR = 1
+    VERIFY_AND_REFINE_ROUND = 'verifier_refiner_round'
+    TOTAL_SOLVER_ROUND = 'solver_round'
+
+
+    SHARED_CONTEXT = 'shared_context'
+    CURRENT_CONJECTURE = 'corrent_conjecture'
+
+    ## 各种状态, 用来管理整个 agent system 的状态迁移
+    CONJECTURE_GENERATED  = 'conjecture_generated'
+
+    ## used by verifier
+    CONJECTURE_UNVERIFIED = 'conjecture_unverified'
+    CONJECTURE_VERIFIED  = 'conjecture_verified'
+    DONE = 'done'
+
+    ## used by refiner
+    REFINE_SUCCESS = 'refined_success'
+    CONJECTURE_WRONG = 'conjecture_wrong'
+
+    ## used by all
+    EXIT_ON_EXAUSTED = 'exit_on_exausted'    
+    EXIT_ON_ERROR = 'exit_on_error'
+    EXIT_ON_SUCCESS = 'exit_on_success'    
+
+
+    ## 内部状态
+    NORMAL = 'normal'
+    VERIFIER_EXAUSTED = 'verifier_exausted'
+    SOLVER_EXAUSTED = 'solver_exausted'
 
 
 class LLMConfig:
@@ -30,3 +62,11 @@ class LLMConfig:
     KIMI_URL = 'https://api.moonshot.cn/v1'
     KIMI_TIMEOUT = 3600
     KIMI_MODEL = 'kimi-k2-thinking'
+
+
+    V32_API_KEY = ''
+    V32_URL = 'https://api.deepseek.com'
+    V32_TIMEOUT = 3600
+    V32_MODEL = 'deepseek-reasoner'
+
+

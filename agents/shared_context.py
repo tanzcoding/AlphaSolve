@@ -27,7 +27,6 @@ class SharedContext:
     ### 第一种是 conjecture graph, 完整的 conjecture 集合
     ### 第二种是 submited_conjecture, 正确的集合
 
-
     def __init__(self):
         self.conjecture_graph = agents.conjecture_graph.ConjectureGraph() ## 管理所有的依赖关系
         self.submited_conjectures = [ ] ## 被标记为正确的 conjecture, 可以作为后续依赖
@@ -39,9 +38,6 @@ class SharedContext:
     def add_new_conjecture(self, conj, proof, dependencies, cot, generated_by): ## generated_by 可以是 solver/可以是 refiner
         conjecture = self.conjecture_graph.add_to_conjecture_graph(conj, proof, dependencies, cot, generated_by)
         
-        history = ConjectureHisory(conjecture, None, 'solver')
-        self.conjecture_history.append(hisotory)
-
         return conjecture
 
 
@@ -72,7 +68,7 @@ class SharedContext:
 
     def build_context_for_conjecture(self, conjecture, solved_only = True):
 
-        reasoning_path = self.fetch_reasoning_path(conj, solved_only)
+        reasoning_path = self.fetch_reasoning_path(conjecture, solved_only)
 
         if not reasoning_path or len(reasoning_path) == 0:
             return None
