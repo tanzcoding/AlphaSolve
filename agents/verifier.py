@@ -119,7 +119,7 @@ class Verifier(Node):
 
         answer, cot = resp[0], resp[1]
 
-        print('using:', time.time() - b, len(answer), len(cot))
+        print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
         if VERIFY_RESULT_VALID in answer:
             return True, answer, cot

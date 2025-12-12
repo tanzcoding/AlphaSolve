@@ -78,7 +78,7 @@ class Refiner(Node):
 
         answer, cot = resp[0], resp[1]
 
-        print('[refiner] using:', time.time() - b, len(answer), len(cot))
+        print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
         conj2, proof = self.__extract_from_model(answer)
 
