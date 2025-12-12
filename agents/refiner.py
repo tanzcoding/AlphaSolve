@@ -32,6 +32,7 @@ class Refiner(Node):
  
         conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
+        print('[refiner] in refiner ..., building context done ...')
  
         return conj, shared_context.build_context_for_conjecture(conj), shared_context
 

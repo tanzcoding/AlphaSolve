@@ -1,4 +1,4 @@
-
+import os
 
 class AlphaSolveConfig:
 
@@ -52,19 +52,19 @@ class AlphaSolveConfig:
 
 class LLMConfig:
 
-    VOLCANO_DS_ARK_API_KEY=''
+    VOLCANO_DS_ARK_API_KEY=os.getenv("ARK_API_KEY")
     VOLCANO_DS_ENDPOINT=''
     VOLCANO_DS_URL = 'https://ark.cn-beijing.volces.com/api/v3'
     VOLCANO_DS_TIMEOUT = 3600
 
     
-    KIMI_API_KEY = ''
+    KIMI_API_KEY = os.getenv("MOONSHOT_API_KEY")
     KIMI_URL = 'https://api.moonshot.cn/v1'
     KIMI_TIMEOUT = 3600
     KIMI_MODEL = 'kimi-k2-thinking'
 
 
-    V32_API_KEY = ''
+    V32_API_KEY = os.getenv("DEEPSEEK_API_KEY")
     V32_URL = 'https://api.deepseek.com'
     V32_TIMEOUT = 3600
     V32_MODEL = 'deepseek-reasoner'
