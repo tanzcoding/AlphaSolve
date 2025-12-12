@@ -11,6 +11,6 @@ if __name__== "__main__" :
     alpha = AlphaSolve(problem)
     solution, context = alpha.do_research()
 
-    print('[exit] aplah solve agent ...')
+    print('[exit] alpha solve agent ...')
 
 
