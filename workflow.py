@@ -1,5 +1,6 @@
 import os, time, threading, random
 
+from agents.utils import load_prompt_from_file
 from config.agent_config import AlphaSolveConfig
 from agents.shared_context import SharedContext
 from openai import OpenAI
@@ -16,8 +17,8 @@ class AlphaSolve:
     ## 首先, AIM 其实没什么东西可以复用的,整体上目前大部分Math Aget 都可以总结成, solve(explorer)-verify(reviewer)-refine 的模式
     ## 但是具体做看实验了, 因此 AlphaSolve 的主类仅封装: (1) solve(explorer)-verify(reviewer)-refine 的模式 (2) solve & verify & refine 的历史 trace
 
-    def __init__(self, problem):
-        self.problem = problem
+    def __init__(self):
+        self.problem = load_prompt_from_file(AlphaSolveConfig.PROBLEM_PATH)
         self.shared_context = SharedContext()
         self.shared = { }
 
@@ -71,7 +72,7 @@ class AlphaSolve:
 
         ## 走到这里就说明
         try:
-            result = shared[AlphaSolveConfig.RESULT_SUMMARY]
+            result = self.shared[AlphaSolveConfig.RESULT_SUMMARY]
             return result
         except KeyError:
             print('error execute on alpha solve, no summary')

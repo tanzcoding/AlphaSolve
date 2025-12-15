@@ -97,6 +97,8 @@ REFINER_CONFIG = DEEPSEEK_CONFIG
 SUMMARIZER_CONFIG = DEEPSEEK_CONFIG
 
 class AlphaSolveConfig:
+    PROBLEM_PATH = 'problem.md'
+    STANDARD_SOLUTION_PATH = 'standard_solution.md'
 
     SOLVER = 'solver'
     VERIFIER = 'verifier'
@@ -119,7 +121,6 @@ class AlphaSolveConfig:
     VERIFIER_SCALING_FACTOR = 1
     VERIFY_AND_REFINE_ROUND = 'verifier_refiner_round'
     TOTAL_SOLVER_ROUND = 'solver_round'
-
 
     SHARED_CONTEXT = 'shared_context'
     CURRENT_CONJECTURE = 'corrent_conjecture'

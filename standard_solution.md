@@ -1,0 +1,1 @@
+$\alpha\in\{\frac{1}{2n}: n\in\mathbb{N},n\ge1\}\cup\{-\frac{2n+1}{2n}: n\in\mathbb{N},n\ge1\}.$
