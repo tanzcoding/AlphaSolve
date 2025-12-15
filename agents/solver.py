@@ -6,7 +6,7 @@ from agents.shared_context import CONTEXT_PREFIX
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
 from llms.utils import LLMClient
-from config.agent_config import AlphaSolveConfig, SOLVER_CONFIG
+from config.agent_config import AlphaSolveConfig
 
 from pocketflow import Node
 
@@ -68,7 +68,7 @@ class Solver(Node):
         shared_context = prep_res[2]
         answer, cot = self.llm.get_result(messages)
 
-        print('using:', time.time() - b, len(answer), len(cot))
+        print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
         conj = self.__build_conjecture(shared_context, answer, cot)
 
@@ -79,13 +79,16 @@ class Solver(Node):
         
         ## 处理异常情况
         if not exec_res or len(exec_res) == 0:
+            print('[solver] illegal exec_res in solver post')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         if not exec_res[1]:
+            print('[solver] no conjecture generated ...')
             return AlphaSolveConfig.EXIT_ON_ERROR
         
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
+            print('[solver] solver exhausted during post ...')
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
         
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
@@ -99,7 +102,8 @@ class Solver(Node):
 
         shared[AlphaSolveConfig.CURRENT_CONJECTURE] = conj
 
-        return AlphaSolveConfig.NORMAL
+        print('[solver] solver generated new conjecture ...')
+        return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
     def __build_solver_prompt(self, prompt_template, problem, shared_context, hint = None): 
@@ -136,16 +140,18 @@ class Solver(Node):
         if not final_proof:
             if not conj or not proof:
                 return None
-        else: 
+        else:
+            # 如果给出最终证明，则将 conjecture 设置为原始问题陈述
+            conj = self.problem
             proof = final_proof
             is_theorem = True
 
-        conjecture = shared_context.add_new_conjecture(conj, proof, data, cot, AlphaSolveConfig.SOLVER)
+        conjecture = shared_context.add_new_conjecture(conj, proof, data, is_theorem, cot)
       
         return conjecture
        
 
 def create_solver_agent(problem, prompt_file_path):
     
-    llm = LLMClient(SOLVER_CONFIG)
+    llm = LLMClient(AlphaSolveConfig.SOLVER_CONFIG)
     return Solver(llm, problem, prompt_file_path)

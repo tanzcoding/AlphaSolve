@@ -4,7 +4,7 @@ import agents.conjecture_graph
 
 from agents.utils import build_conjuecture_helper
 
-from config.agent_config import AlphaSolveConfig, SUMMARIZER_CONFIG
+from config.agent_config import AlphaSolveConfig
 
 from llms.utils import LLMClient
 
@@ -23,17 +23,17 @@ class Summarizer(Node):
         super(Summarizer, self).__init__()
 
     def prep(self,shared): 
-        pass
+        return None
 
     def exec(self,prep_res): 
-        pass
+        return None
 
     def post(self, shared, prep_res, exec_res): 
-        pass
- 
+        shared[AlphaSolveConfig.RESULT_SUMMARY] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].proof
+        print('[summarizer] summarization done ...')
 
 
 def create_summarizer_agent(problem, prompt_file_path):
  
-    llm = LLMClient(SUMMARIZER_CONFIG)
+    llm = LLMClient(AlphaSolveConfig.SUMMARIZER_CONFIG)
     return Summarizer(problem, llm, prompt_file_path) 

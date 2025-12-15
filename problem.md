@@ -1,1 +1,1 @@
-Find all $\alpha\in\mathbb{R}$ such that the equation $-\alpha U(y)+\left[(1+\alpha)y+U(y)\right] \partial_y U(y) = 0$ has a solution in $\{U\\in C^\infty (\mathbb{R}):U(0)=0\}$ other than $U(y) = -y$ and $U(y)=0$.
+82394*123=?

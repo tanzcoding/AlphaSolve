@@ -5,7 +5,7 @@ import agents.conjecture_graph
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
 
-from config.agent_config import AlphaSolveConfig, REFINER_CONFIG
+from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
 
 from pocketflow import Node
@@ -52,18 +52,23 @@ class Refiner(Node):
     def post(self, shared, prep_res, exec_res): 
 
         if not prep_res:
+            print('[refiner] illegal prep_res in refiner post')
             return AlphaSolveConfig.EXIT_ON_ERROR
         if not exec_res: ## 应该是出错了, 重新 refine 一次吧, 没啥意义, 容错用的
+            print('[refiner] illegal exec_res in refiner post')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         is_conjecture_valid, next_conjecture = exec_res[0], exec_res[1]
         
         if is_conjecture_valid:
             if next_conjecture:
+                print('[refiner] refine success, new conjecture generated ...')
                 return AlphaSolveConfig.REFINE_SUCCESS
             else:
+                print('[refiner] refine failed, no new conjecture generated ...')
                 return  AlphaSolveConfig.EXIT_ON_ERROR
-        else: ## 代表此时 refiner 觉得
+        else: ## 代表此时 refiner 觉得猜想不对，要返回solver    
+            print('[refiner] conjecture wrong, need to go back to solver ...')
             return AlphaSolveConfig.CONJECTURE_WRONG
  
 
@@ -117,5 +122,5 @@ class Refiner(Node):
 
 def create_refiner_agent(prompt_file_path):
  
-    llm = LLMClient(REFINER_CONFIG)
+    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG)
     return Refiner(llm, prompt_file_path) 

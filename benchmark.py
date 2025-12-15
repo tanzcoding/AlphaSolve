@@ -5,7 +5,7 @@ import argparse
 from datetime import datetime
 
 from workflow import AlphaSolve
-from config.agent_config import AlphaSolveConfig, VERIFIER_CONFIG
+from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
 
 
@@ -48,7 +48,7 @@ Now decide and output exactly one final token on the last line.
 
 def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     """Use an LLM to judge if pred matches gold. Returns (is_correct, raw_reply)."""
-    client = LLMClient(VERIFIER_CONFIG)
+    client = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG)
     prompt = build_eval_prompt(problem, gold, pred)
     messages = [{"role": "user", "content": prompt}]
     answer, _cot = client.get_result(messages, print_to_console=False)

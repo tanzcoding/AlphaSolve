@@ -33,7 +33,7 @@ MOONSHOT_CONFIG = {
 VOLCANO_CONFIG = {
     'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
     'api_key': lambda: os.getenv('ARK_API_KEY'),
-    'model': 'deepseek-v3-2-251201',
+    'model': 'doubao-seed-1-6-lite-251015',
     'timeout': 3600,
     'temperature': 1.0,
     # 火山引擎：通过 extra_body.enable_thinking 开启深度思考
@@ -90,12 +90,6 @@ CUSTOM_LLM_CONFIG = {
     }
 }
 
-## 在这里设置 AlphaSolve 使用的 LLM 配置
-SOLVER_CONFIG = DEEPSEEK_CONFIG
-VERIFIER_CONFIG = DEEPSEEK_CONFIG
-REFINER_CONFIG = DEEPSEEK_CONFIG
-SUMMARIZER_CONFIG = DEEPSEEK_CONFIG
-
 class AlphaSolveConfig:
     PROBLEM_PATH = 'problem.md'
     STANDARD_SOLUTION_PATH = 'standard_solution.md'
@@ -104,16 +98,17 @@ class AlphaSolveConfig:
     VERIFIER = 'verifier'
     REFINER = 'refiner'
 
-    REFINER_CONFIG = DEEPSEEK_CONFIG
+    ## 在这里设置 AlphaSolve 使用的 LLM 配置
+    REFINER_CONFIG = VOLCANO_CONFIG
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
-    SOLVER_CONFIG = DEEPSEEK_CONFIG
+    SOLVER_CONFIG = VOLCANO_CONFIG
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
-    VERIFIER_CONFIG = DEEPSEEK_CONFIG
+    VERIFIER_CONFIG = VOLCANO_CONFIG
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    SUMMARIZER_MODEL = 'gemini-3-pro'  
+    SUMMARIZER_CONFIG = VOLCANO_CONFIG
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
 
     HINT = 'hint'
@@ -124,6 +119,8 @@ class AlphaSolveConfig:
 
     SHARED_CONTEXT = 'shared_context'
     CURRENT_CONJECTURE = 'corrent_conjecture'
+
+    RESULT_SUMMARY = 'result_summary'
 
     ## 各种状态, 用来管理整个 agent system 的状态迁移
     CONJECTURE_GENERATED  = 'conjecture_generated'

@@ -35,8 +35,8 @@ class SharedContext:
         conjs = self.conjecture_graph.search_reasoning_path(conj, solved_only)
         return conjs
     
-    def add_new_conjecture(self, conj, proof, dependencies, cot, generated_by): ## generated_by 可以是 solver/可以是 refiner
-        conjecture = self.conjecture_graph.add_to_conjecture_graph(conj, proof, dependencies, cot, generated_by)
+    def add_new_conjecture(self, conj, proof, dependencies, is_theorem, cot): ## generated_by 可以是 solver/可以是 refiner
+        conjecture = self.conjecture_graph.add_to_conjecture_graph(conj, proof, dependencies, is_theorem, cot)
         
         return conjecture
 

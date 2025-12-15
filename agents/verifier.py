@@ -3,7 +3,7 @@ import agents.conjecture_graph
 
 from agents.utils import load_prompt_from_file
 
-from config.agent_config import AlphaSolveConfig, VERIFIER_CONFIG
+from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
 
 from pocketflow import Node
@@ -92,6 +92,7 @@ class Verifier(Node):
         code, valid_conj, answer, cot, current_conj, shared_context = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4], exec_res[5]
  
         if code != AlphaSolveConfig.NORMAL:
+            print('[verifier] verifier encounter error ...')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         
@@ -99,12 +100,15 @@ class Verifier(Node):
 
         if valid_conj:  ## 此时说明验证通过了, 生成了正确的conj
             shared_context.submit(current_conj)
-            if self.____judge_is_problem_solved(current_conf): ## 说明问题已经解决了
+            if current_conj.is_theorem: ## 说明问题已经解决了
+                print('[verifier] theorem proved successfully ...')
                 return AlphaSolveConfig.DONE
             else: ## 说明引理正确但是还没有解决问题, 此时返回 solver
+                print('[verifier] conjecture verified successfully ...')
                 return AlphaSolveConfig.CONJECTURE_VERIFIED
         else:
-            current_conj.reveiw = answer
+            current_conj.review = answer
+            print('[verifier] conjecture unverified, need refine ...')
             return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
     def __verify(self, current_conj, reasoning_path):
@@ -124,11 +128,6 @@ class Verifier(Node):
         else:
             return False, answer, cot
 
-
-    def __judge_is_problem_solved(self, problem, conj):
-        return conj.is_theorem
-
-
     def __build_verifier_prompt(self, conj, reasoning_path):
         ## 把所有东西拼到 prompt 里
 
@@ -143,5 +142,5 @@ class Verifier(Node):
 
 def create_verifier_agent(problem, prompt_file_path):
 
-    llm = LLMClient(VERIFIER_CONFIG)
+    llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG)
     return Verifier(llm, problem, prompt_file_path) 
