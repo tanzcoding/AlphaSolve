@@ -31,15 +31,15 @@ class AlphaSolve:
 
     def __create_research_flow(self):  ## 主类入口
 
-        print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_MODEL, ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH)
-        solver = create_solver_agent(self.problem,  AlphaSolveConfig.SOLVER_MODEL, AlphaSolveConfig.SOLVER_PROMPT_PATH)
+        print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH)
+        solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH)
 
-        print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_MODEL, ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH)
-        verifier = create_verifier_agent(self.problem, AlphaSolveConfig.VERIFIER_MODEL, AlphaSolveConfig.VERIFIER_PROMPT_PATH)
+        print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH)
+        verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH)
        
-        refiner = create_refiner_agent(AlphaSolveConfig.REFINE_MODEL, AlphaSolveConfig.REFINE_PROMPT_PATH)
+        refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH)
      
-        summarizer = create_summarizer_agent(self.problem, AlphaSolveConfig.SUMMARIZER_MODEL, AlphaSolveConfig.SUMMARIZER_PROMPT_PATH)
+        summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH)
 
         ## 成功生成 lemma, 下一站去 verifier
         solver - AlphaSolveConfig.CONJECTURE_GENERATED >> verifier 
@@ -54,7 +54,7 @@ class AlphaSolve:
         ## 完成 theorem, 给 summarizer 总结, 退出 
         verifier - AlphaSolveConfig.DONE >> summarizer 
         ## verifier-refine 打满, 给 solver
-        solver - AlphaSolveConfig.EXIT_ON_EXAUSTED >> solver 
+        verifier - AlphaSolveConfig.EXIT_ON_EXAUSTED >> solver 
         ## 改了, 回到 verifier
         refiner - AlphaSolveConfig.REFINE_SUCCESS >> verifier
         ## conj 是错的, 直接到 solver 

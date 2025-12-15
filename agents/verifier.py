@@ -2,10 +2,9 @@ import time, json, random
 import agents.conjecture_graph
 
 from agents.utils import load_prompt_from_file
-from llms.kimi import KimiClient
-from llms.deepseek import DeepSeekClient
 
-from config.agent_config import AlphaSolveConfig
+from config.agent_config import AlphaSolveConfig, VERIFIER_CONFIG
+from llms.utils import LLMClient
 
 from pocketflow import Node
 
@@ -15,10 +14,9 @@ VERIFY_RESULT_INVALID='boxed{invalid}'
 
 class Verifier(Node):
 
-    def __init__(self, llm, problem, model, prompt_file_path):
+    def __init__(self, llm, problem, prompt_file_path):
         super(Verifier, self).__init__()
         self.problem = problem
-        self.model = model
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.llm = llm 
@@ -114,10 +112,10 @@ class Verifier(Node):
         prompt = self.__build_verifier_prompt(current_conj, reasoning_path)
 
         b = time.time()
-
-        resp = self.llm.get_result('', prompt)
-
-        answer, cot = resp[0], resp[1]
+        messages_to_send = [
+            {"role": "user", "content": prompt}
+        ]
+        answer, cot = self.llm.get_result(messages_to_send)
 
         print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
@@ -143,7 +141,7 @@ class Verifier(Node):
 
 
 
-def create_verifier_agent(problem, model, prompt_file_path):
+def create_verifier_agent(problem, prompt_file_path):
 
-    ds = DeepSeekClient()
-    return Verifier(ds, problem, model, prompt_file_path) 
+    llm = LLMClient(VERIFIER_CONFIG)
+    return Verifier(llm, problem, prompt_file_path) 

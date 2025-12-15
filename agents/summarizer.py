@@ -3,9 +3,10 @@ import json
 import agents.conjecture_graph
 
 from agents.utils import build_conjuecture_helper
-from llms.kimi import KimiClient
-from llms.deepseek import DeepSeekClient
-from config.agent_config import AlphaSolveConfig
+
+from config.agent_config import AlphaSolveConfig, SUMMARIZER_CONFIG
+
+from llms.utils import LLMClient
 
 from pocketflow import Node
 
@@ -18,7 +19,7 @@ PROOF_END = '\\end{proof}'
 
 class Summarizer(Node):
 
-    def __init__(self, problem, llm, model, prompt_file_path): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, problem, llm, prompt_file_path): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Summarizer, self).__init__()
 
     def prep(self,shared): 
@@ -32,7 +33,7 @@ class Summarizer(Node):
  
 
 
-def create_summarizer_agent(problem, model, prompt_file_path):
+def create_summarizer_agent(problem, prompt_file_path):
  
-    ds = DeepSeekClient()
-    return Summarizer(problem, ds,  model, prompt_file_path) 
+    llm = LLMClient(SUMMARIZER_CONFIG)
+    return Summarizer(problem, llm, prompt_file_path) 

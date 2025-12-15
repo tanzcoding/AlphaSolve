@@ -4,9 +4,9 @@ import agents.conjecture_graph
 
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
-from llms.kimi import KimiClient
-from llms.deepseek import DeepSeekClient
-from config.agent_config import AlphaSolveConfig
+
+from config.agent_config import AlphaSolveConfig, REFINER_CONFIG
+from llms.utils import LLMClient
 
 from pocketflow import Node
 
@@ -19,9 +19,8 @@ PROOF_END = '\\end{proof}'
 
 class Refiner(Node):
 
-    def __init__(self, llm, model, prompt_file_path): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, llm, prompt_file_path): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Refiner, self).__init__()
-        self.model = model
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.llm = llm 
@@ -73,8 +72,10 @@ class Refiner(Node):
         prompt = self.__build_refiner_prompt(conj, reasoning_path)
 
         b = time.time()
-
-        resp = self.llm.get_result('', prompt)
+        messages_to_send = [
+            {"role": "user", "content": prompt}
+        ]   
+        resp = self.llm.get_result(messages_to_send)
 
         answer, cot = resp[0], resp[1]
 
@@ -114,7 +115,7 @@ class Refiner(Node):
 
 
 
-def create_refiner_agent(model, prompt_file_path):
+def create_refiner_agent(prompt_file_path):
  
-    ds = DeepSeekClient()
-    return Refiner(ds, model, prompt_file_path) 
+    llm = LLMClient(REFINER_CONFIG)
+    return Refiner(llm, prompt_file_path) 
