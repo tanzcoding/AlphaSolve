@@ -24,14 +24,18 @@ python main.py
 AlphaSolve supports multiple LLM providers. You can configure which provider to use by modifying the [`config/agent_config.py`](config/agent_config.py) file:
 
 ```python
-# Available configurations: DEEPSEEK_CONFIG, MOONSHOT_CONFIG, VOLCANO_CONFIG, 
-# DASHSCOPE_CONFIG, OPENROUTER_CONFIG, CUSTOM_LLM_CONFIG
-
-SOLVER_CONFIG = DEEPSEEK_CONFIG
-VERIFIER_CONFIG = DEEPSEEK_CONFIG
-REFINER_CONFIG = DEEPSEEK_CONFIG
-SUMMARIZER_CONFIG = DEEPSEEK_CONFIG
+class AlphaSolveConfig:
+    # Available configurations: DEEPSEEK_CONFIG, MOONSHOT_CONFIG, VOLCANO_CONFIG,
+    # DASHSCOPE_CONFIG, OPENROUTER_CONFIG, CUSTOM_LLM_CONFIG
+    
+    # Configure LLM providers for each agent
+    REFINER_CONFIG = VOLCANO_CONFIG
+    SOLVER_CONFIG = VOLCANO_CONFIG
+    VERIFIER_CONFIG = VOLCANO_CONFIG
+    SUMMARIZER_CONFIG = VOLCANO_CONFIG
 ```
+
+Each agent (Solver, Verifier, Refiner, Summarizer) can be configured with a different LLM provider based on your needs.
 
 ## Benchmark
 
