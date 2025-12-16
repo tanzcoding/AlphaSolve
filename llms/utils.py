@@ -222,18 +222,13 @@ class LLMClient:
                     code = args.get('code', '')
                     if print_to_console:
                         print(f"[Tool Call] run_python\nCode:\n{code}")
-                    stdout, error, result = run_python(code)
+                    stdout, error = run_python(code)
                     if print_to_console:
                         if stdout:
                             print(f"[stdout]\n{stdout}")
                         if error:
                             print(f"[error]\n{error}")
-                        if result is not None:
-                            try:
-                                print(f"[result]\n{json.dumps(result, ensure_ascii=False)}")
-                            except Exception:
-                                print(f"[result]\n{result}")
-                    tool_content = json.dumps({'stdout': stdout, 'error': error, 'result': result}, ensure_ascii=False)
+                    tool_content = json.dumps({'stdout': stdout, 'error': error}, ensure_ascii=False)
 
                     # 将本次工具调用的关键信息也纳入 reasoning_content
                     _log_parts = [f"\n[Tool Call] {name}", f"Code:\n{code}"]
@@ -241,11 +236,6 @@ class LLMClient:
                         _log_parts.append(f"[stdout]\n{stdout}")
                     if error:
                         _log_parts.append(f"[error]\n{error}")
-                    if result is not None:
-                        try:
-                            _log_parts.append(f"[result]\n{json.dumps(result, ensure_ascii=False)}")
-                        except Exception:
-                            _log_parts.append(f"[result]\n{result}")
                     reasoning_content += ("\n".join(_log_parts) + "\n")
                 else:
                     tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
