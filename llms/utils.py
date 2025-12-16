@@ -112,8 +112,9 @@ class LLMClient:
         基于思维链的多轮工具调用对话，返回 (reasoning_content, answer_content)
 
         - 将给定的工具列表传入模型，由模型在思维链中主动选择并调用
-        - 内置 run_python(code) 工具执行器，便于为 LLM 提供 Python 执行环境
+        - 内置 run_python(code) 工具执行器，提供类似Jupyter Notebook的交互环境
         - 支持多轮（多次）工具调用，直到模型给出最终答案（无 tool_calls）
+        - 每次调用此函数会创建新的Python执行环境；同一次调用中的多轮工具调用共享环境（变量、导入等会保持）
 
         Args:
             messages: 对话历史
@@ -130,6 +131,9 @@ class LLMClient:
         # 结果累积
         reasoning_content = ""
         answer_content = ""
+        
+        # 为本次会话创建持久化的Python执行环境（类似Jupyter Notebook）
+        python_env = {}
 
         if print_to_console:
             print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n")
@@ -222,7 +226,8 @@ class LLMClient:
                     code = args.get('code', '')
                     if print_to_console:
                         print(f"[Tool Call] run_python\nCode:\n{code}")
-                    stdout, error = run_python(code)
+                    # 使用持久化环境执行代码
+                    stdout, error = run_python(code, python_env)
                     if print_to_console:
                         if stdout:
                             print(f"[stdout]\n{stdout}")
