@@ -52,7 +52,7 @@ class SharedContext:
 
         lemmas = ''       
 
-        for i  in range(self.submited_conjectures):
+        for i  in range(len(self.submited_conjectures)):
  
             conj = self.submited_conjectures[i]
 
