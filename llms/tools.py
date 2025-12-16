@@ -2,6 +2,8 @@ import io
 import sys
 import traceback
 import ast
+from wolframclient.evaluation import WolframLanguageSession
+from wolframclient.language import wlexpr
 
 
 def run_python(code: str, env: dict = None):
@@ -64,28 +66,76 @@ def run_python(code: str, env: dict = None):
     
     return buf.getvalue(), err
 
+
+def run_wolfram(code: str, session=None):
+    """
+    Wolfram 语言执行器
+    
+    执行给定的 Wolfram 语言代码字符串，捕获输出与错误信息。
+    支持持久化 session（保持会话状态）。
+    
+    Args:
+        code: 要执行的 Wolfram 语言代码
+        session: WolframLanguageSession 实例（用于保持会话状态）。如果为 None，则创建新会话。
+    
+    Returns:
+        (output: str, error: str | None)
+    """
+    output = ""
+    err = None
+    
+    try:
+        # 如果没有提供 session，session 应该由调用者管理
+        # 这里假设 session 一定会被传入（由 get_result_with_tools 管理）
+        if session is None:
+            raise ValueError("Wolfram session must be provided by the caller")
+        
+        # 执行 Wolfram 代码
+        result = session.evaluate(wlexpr(code))
+        
+        # 将结果转换为字符串
+        output = str(result)
+        
+    except Exception as e:
+        err = traceback.format_exc().strip()
+    
+    return output, err
+
+
 # ===== 定义工具函数规范 =====
 # 定义一个工具列表，告诉AI模型它可以使用的工具
-# 这里只定义了一个工具：run_python函数
-TOOLS = [
-    {
-        'type': 'function',  # 工具类型为函数
-        'function': {
-            'name': 'run_python',  # 工具名称，与上面定义的函数名对应
-            'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. Warning: Don't use matplotlib to plot ANYTHING!",
-            # 工具描述，告诉模型这个工具的功能和使用方法
-            # 强调类似Jupyter Notebook的交互式环境，变量和导入持久化，最后表达式自动输出
-            
-            'parameters': {
-                'type': 'object',  # 参数类型为对象
-                'properties': {
-                    'code': {
-                        'type': 'string',  # code参数的类型为字符串
-                        'description': 'Python code to execute. Variables and imports from previous executions are available.'  # 参数描述
-                    }
-                },
-                'required': ['code']  # 必需的参数列表
-            }
+PYTHON_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'run_python',
+        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. Warning: Don't use matplotlib to plot ANYTHING!",
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'code': {
+                    'type': 'string',
+                    'description': 'Python code to execute. Variables and imports from previous executions are available.'
+                }
+            },
+            'required': ['code']
         }
     }
-]
+}
+WOLFRAM_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'run_wolfram',
+        'description': "Execute Wolfram Language code for advanced symbolic mathematics, calculus, differential equations, and algebraic computations. Key features: 1) Session persists across multiple code executions in the SAME conversation - defined variables and functions remain available. 2) Automatically returns the evaluation result - no need for explicit Print[]. 3) Ideal for: symbolic integration (Integrate), solving differential equations (DSolve, NDSolve), algebraic manipulation (Simplify, Factor, Expand), solving equations (Solve, Reduce), limits (Limit), series expansions (Series), and other advanced math operations. 4) Use Wolfram Language syntax: functions are capitalized (Sin, Cos, Log), use square brackets for function calls (Sin[x]), and use == for equations. Examples: 'Integrate[x^2 Sin[x], x]', 'DSolve[y''[x] + y[x] == 0, y[x], x]', 'Solve[x^2 - 5x + 6 == 0, x]'. Highly recommended for symbolic tasks.",
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'code': {
+                    'type': 'string',
+                    'description': 'Wolfram Language code to execute. Use Wolfram syntax (e.g., Sin[x], Integrate[expr, x]). Previous definitions remain available.'
+                }
+            },
+            'required': ['code']
+        }
+    }
+}
+TOOLS = [WOLFRAM_TOOL]
