@@ -33,9 +33,9 @@ TOOLS = [
         'type': 'function',  # 工具类型为函数
         'function': {
             'name': 'run_python',  # 工具名称，与上面定义的函数名对应
-            'description': "Execute Python codes; please manually print the computation result to stdout; import the needed libraries every time you use this function. Recommended libraries for complex math problems include sympy, numpy, scipy, math, itertools, functools, etc.",
+            'description': "Execute Python code in a standalone environment. IMPORTANT: This is NOT a Jupyter notebook - you MUST use print() function to output results to console, otherwise there will be NO visible output. IMPORTANT: You MUST import all required libraries in every code execution - there is NO persistent session state. For mathematical computations, particularly symbolic math, RECOMMEND using sympy. Also supports numpy, scipy, math, itertools, functools, and other standard libraries.",
             # 工具描述，告诉模型这个工具的功能和使用方法
-            # 需要自行导入所需的库，并手动打印计算结果到stdout
+            # 强调需要手动打印输出、每次重新导入库、推荐使用sympy进行符号计算
             
             'parameters': {
                 'type': 'object',  # 参数类型为对象
