@@ -6,7 +6,7 @@ from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
-from llms.utils import LLMClient
+from llms.utils import *
 
 from pocketflow import Node
 
@@ -80,7 +80,7 @@ class Refiner(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]   
-        resp = self.llm.get_result(messages_to_send)
+        resp = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console=True)
 
         answer, cot = resp[0], resp[1]
 

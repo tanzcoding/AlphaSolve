@@ -5,7 +5,7 @@ from agents.shared_context import CONTEXT_PREFIX
 
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
-from llms.utils import LLMClient
+from llms.utils import *
 from config.agent_config import AlphaSolveConfig
 
 from pocketflow import Node
@@ -66,7 +66,7 @@ class Solver(Node):
         b = time.time()
         messages = prep_res[1]
         shared_context = prep_res[2]
-        answer, cot = self.llm.get_result(messages)
+        answer, cot = self.llm.get_result_with_tools(messages, TOOLS, print_to_console=True)
 
         print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 

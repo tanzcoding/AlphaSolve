@@ -77,7 +77,7 @@ OPENROUTER_CONFIG = {
 }
 
 # 自定义兼容 OpenAI API 格式的 LLM 服务，例如从淘宝黑市购买的服务
-CUSTOM_LLM_CONFIG = {
+CUSTOM_LLM_CONFIG_1 = {
     'base_url': 'https://api.gpts.vin/v1',
     'api_key': lambda: os.getenv('YUBOAR_API_KEY'),
     'model': 'gpt-5',
@@ -99,21 +99,21 @@ class AlphaSolveConfig:
     REFINER = 'refiner'
 
     ## 在这里设置 AlphaSolve 使用的 LLM 配置
-    REFINER_CONFIG = VOLCANO_CONFIG
+    REFINER_CONFIG = DEEPSEEK_CONFIG
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
-    SOLVER_CONFIG = VOLCANO_CONFIG
+    SOLVER_CONFIG = DEEPSEEK_CONFIG
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
-    VERIFIER_CONFIG = VOLCANO_CONFIG
+    VERIFIER_CONFIG = DEEPSEEK_CONFIG
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    SUMMARIZER_CONFIG = VOLCANO_CONFIG
+    SUMMARIZER_CONFIG = DEEPSEEK_CONFIG
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
 
     HINT = 'hint'
 
-    VERIFIER_SCALING_FACTOR = 1
+    VERIFIER_SCALING_FACTOR = 3
     VERIFY_AND_REFINE_ROUND = 'verifier_refiner_round'
     TOTAL_SOLVER_ROUND = 'solver_round'
 
