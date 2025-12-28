@@ -31,13 +31,16 @@ class Refiner(Node):
  
         conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
+       
+        print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
+
         print('[refiner] in refiner ..., building context done ...')
  
-        return conj, shared_context.build_context_for_conjecture(conj), shared_context
+        return conj, shared_context.build_context_for_conjecture(conj), shared_context, print_to_console
 
     def exec(self, prep_res): 
    
-        if not prep_res or len(prep_res) < 3:
+        if not prep_res or len(prep_res) < 4:
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         conj, reasoning_path, shared_context  = prep_res[0], prep_res[1], prep_res[2]
@@ -45,7 +48,7 @@ class Refiner(Node):
         if not conj.conjecture or not conj.proof:
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        valid, rationale = self.__refine(conj, reasoning_path)
+        valid, rationale = self.__refine(conj, reasoning_path, print_to_console)
 
         return valid, rationale, conj, shared_context
 
@@ -72,7 +75,7 @@ class Refiner(Node):
             return AlphaSolveConfig.CONJECTURE_WRONG
  
 
-    def __refine(self, conj, reasoning_path): 
+    def __refine(self, conj, reasoning_path, print_to_console): 
 
         prompt = self.__build_refiner_prompt(conj, reasoning_path)
 
@@ -80,7 +83,7 @@ class Refiner(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]   
-        resp = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console=True)
+        resp = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console = print_to_console)
 
         answer, cot = resp[0], resp[1]
 

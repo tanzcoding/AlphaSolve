@@ -117,6 +117,8 @@ class AlphaSolveConfig:
     VERIFY_AND_REFINE_ROUND = 'verifier_refiner_round'
     TOTAL_SOLVER_ROUND = 'solver_round'
 
+    PRINT_TO_CONSOLE = 'print_to_console'
+
     SHARED_CONTEXT = 'shared_context'
     CURRENT_CONJECTURE = 'corrent_conjecture'
 

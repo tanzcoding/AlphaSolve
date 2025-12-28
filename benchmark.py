@@ -2,16 +2,22 @@ import os
 import time
 import json
 import argparse
+import asyncio
+import threading
+
 from datetime import datetime
 
 from workflow import AlphaSolve
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
 
+from concurrent.futures import ThreadPoolExecutor
+
 
 EVAL_TAG_CORRECT = "[[VERDICT:CORRECT]]"
 EVAL_TAG_INCORRECT = "[[VERDICT:INCORRECT]]"
 
+CONSOLE_LOCK = threading.Lock()
 
 def _read_text(path: str) -> str:
     with open(path, "r", encoding="utf-8") as f:
@@ -45,7 +51,6 @@ Candidate Answer (AlphaSolve):
 Now decide and output exactly one final token on the last line.
 """.strip()
 
-
 def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     """Use an LLM to judge if pred matches gold. Returns (is_correct, raw_reply)."""
     client = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG)
@@ -56,18 +61,35 @@ def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     is_correct = EVAL_TAG_CORRECT in text and EVAL_TAG_INCORRECT not in text
     return is_correct, text
 
+def call_alpha_solve(print_to_console):
+    alpha = AlphaSolve(print_to_console)
+    solution_text = alpha.do_research()
+    return solution_text
+
 
 def run_once(problem_text: str, gold_text: str):
     t0 = time.time()
     solution_text = None
     error = None
 
+    print('in coroutine, begin')
+
+    print_to_console = False    
+
     try:
-        alpha = AlphaSolve()
+        print_to_console = CONSOLE_LOCK.acquire(blocking=False)
         # do_research may return None if summarizer is not implemented
-        solution_text = alpha.do_research()
+
+        print(f"print_to_console result is {print_to_console} ...")        
+
+        solution_text = call_alpha_solve(print_to_console)
     except Exception as e:
         error = f"AlphaSolve error: {e}"
+    finally:
+        if print_to_console:
+            CONSOLE_LOCK.release()
+
+    print('in coroutine, end, evaluate')
 
     # Fallbacks: treat None/empty as incorrect
     if not solution_text:
@@ -83,6 +105,9 @@ def run_once(problem_text: str, gold_text: str):
     # Evaluate with LLM
     ok, raw = evaluate_with_llm(problem_text, gold_text, solution_text)
     elapsed = time.time() - t0
+
+    print('in coroutine, end')
+
     return {
         "elapsed_sec": elapsed,
         "alpha_answer": solution_text,
@@ -93,6 +118,7 @@ def run_once(problem_text: str, gold_text: str):
 
 
 def main():
+
     parser = argparse.ArgumentParser(description="Run AlphaSolve benchmark.")
     parser.add_argument("-n", "--runs", type=int, default=10, help="Number of runs (default: 10)")
     parser.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds between runs (default: 0)")
@@ -109,14 +135,44 @@ def main():
     correct_count = 0
 
     print(f"[benchmark] starting {args.runs} runs ...")
+
+    max_worker_num = os.cpu_count() - 2
+    futures = [ ]
+
+    print(f"[benchmark] starting {max_worker_num} workers for parallel ...")
+
+    executor = ThreadPoolExecutor(max_workers = max_worker_num)
+
+
     for i in range(1, args.runs + 1):
         print(f"[benchmark] run {i}/{args.runs}")
-        res = run_once(problem_text, gold_text)
-        results.append(res)
-        if res.get("correct"):
-            correct_count += 1
+
+        future = executor.submit(run_once, problem_text, gold_text)
+        futures.append(future)
+
         if args.sleep > 0:
             time.sleep(args.sleep)
+
+
+    finished = 0
+    for total_wait_round in range(30):
+        if finished >= len(futures):
+            print(f"all finished...break")
+        print(f"wait for round {total_wait_round} ...") 
+        for future in futures:
+            try:
+                data = future.result(timeout = 120)
+                finished += 1         
+                
+                print(f"finished {finished}")
+
+                if data.get("correct"):
+                    correct_count += 1
+            except Exception as exc:
+                print(f"exception {exc}")
+            except TimeoutError:
+                pass
+
 
     accuracy = correct_count / max(1, args.runs)
     summary = {

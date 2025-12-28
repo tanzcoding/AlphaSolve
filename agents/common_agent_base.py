@@ -1,11 +1,12 @@
 import time
 import json
 import agents.conjecture_graph
-from agents.shared_context import CONTEXT_PREFIX
+import agents.shared_context
 
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
-from llms.utils import *
+from llms.kimi import KimiClient
+from llms.deepseek import DeepSeekClient
 from config.agent_config import AlphaSolveConfig
 
 from pocketflow import Node
@@ -24,39 +25,37 @@ FINAL_END = '\\end{final_proof}'
 
 class Solver(Node):
     
-    def __init__(self, llm, problem, prompt_file_path):
+    def __init__(self, llm, problem, model, prompt_file_path):
         super(Solver, self).__init__()
         self.problem = problem
+        self.model = model
         self.prompt_file_path = prompt_file_path
         self.llm = llm
         self.prompt_template = load_prompt_from_file(prompt_file_path)
 
     def prep(self, shared): ## 按照 pocket-flow 的定义, 这一步是从 shard(一个dict) 里面拿出所有依赖
-        ## 处理异常情况
-        iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
-        if iteration == 0:   ## solver 的迭代耗尽了
-            print('[solver] solver quota exausted ...')
-            return AlphaSolveConfig.SOLVER_EXAUSTED, None, None
-        
+
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
         hint = shared[AlphaSolveConfig.HINT]
 
-        print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
-
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
-        prompt = self.__build_solver_prompt(self.prompt_template, self.problem, shared_context, hint)
-        messages_to_send = [
-            {"role": "user", "content": prompt}
-        ]
-        return AlphaSolveConfig.NORMAL, messages_to_send, shared_context, print_to_console  
-        
+
+        if iteration == 0:   ## solver 的迭代耗尽了
+            print('[solver] solver quota exausted ...')
+            return AlphaSolveConfig.SOLVER_EXAUSTED, shared_context, hint
+        else:
+
+            ## 这里需要 flush 一下 verifier 的quota
+            print('[solver] flush verify and refine round to: ', )
+            shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = 
+            return AlphaSolveConfig.NORMAL, shared_context, hint    
  
     def exec(self, prep_res): ## 执行主要的逻辑
-        ## 处理异常情况
+  
         if not prep_res:
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
-        if len(prep_res) < 4:
+        if len(prep_res) < 3:
             print('illegal prep_res with length: ', len(prep_res))
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
@@ -65,39 +64,26 @@ class Solver(Node):
         if code == AlphaSolveConfig.SOLVER_EXAUSTED:
             return AlphaSolveConfig.EXIT_ON_EXAUSTED, None
 
-        b = time.time()
-        messages = prep_res[1]
-        shared_context = prep_res[2]
-        print_to_console = prep_res[3]
-        answer, cot = self.llm.get_result_with_tools(messages, TOOLS, print_to_console = print_to_console)
+        shared_context = prep_res[1]
+        hint = prep_res[2] 
 
-        print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
-
-        conj = self.__build_conjecture(shared_context, answer, cot)
+        conj = self.__solve(shared_context, hint)
 
         return AlphaSolveConfig.CONJECTURE_GENERATED, conj
 
 
     def post(self, shared, prep_res, exec_res):  ## 更新一下iteration 变量
-        
-        ## 处理异常情况
-        if not exec_res or len(exec_res) == 0:
-            print('[solver] illegal exec_res in solver post')
-            return AlphaSolveConfig.EXIT_ON_ERROR
-
-        if not exec_res[1]:
-            print('[solver] no conjecture generated ...')
-            return AlphaSolveConfig.EXIT_ON_ERROR
-        
-        #处理solver步数耗尽
-        if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
-            print('[solver] solver exhausted during post ...')
-            return AlphaSolveConfig.EXIT_ON_EXAUSTED
-        
+  
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
         iteration -= 1
 
         shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND] = iteration
+
+        if not exec_res or len(exec_res) == 0:
+            return AlphaSolveConfig.EXIT_ON_ERROR
+
+        if not exec_res[1]:
+            return AlphaSolveConfig.EXIT_ON_ERROR
 
         conj = exec_res[1]
 
@@ -105,8 +91,24 @@ class Solver(Node):
 
         shared[AlphaSolveConfig.CURRENT_CONJECTURE] = conj
 
-        print('[solver] solver generated new conjecture ...')
-        return AlphaSolveConfig.CONJECTURE_GENERATED
+        return exec_res[0]
+
+
+    def __solve(self, shared_context, hint):
+        
+        prompt = self.__build_solver_prompt(self.prompt_template, self.problem, shared_context, hint)
+
+        b = time.time()
+
+        resp = self.llm.get_result('', prompt)
+
+        answer, cot = resp[0], resp[1]
+
+        print('using:', time.time() - b, len(answer), len(cot))
+
+        conj = self.__build_conjecture(shared_context, answer, cot)
+
+        return conj
 
 
     def __build_solver_prompt(self, prompt_template, problem, shared_context, hint = None): 
@@ -143,18 +145,17 @@ class Solver(Node):
         if not final_proof:
             if not conj or not proof:
                 return None
-        else:
-            # 如果给出最终证明，则将 conjecture 设置为原始问题陈述
-            conj = self.problem
+        else: 
             proof = final_proof
             is_theorem = True
 
-        conjecture = shared_context.add_new_conjecture(conj, proof, data, is_theorem, cot)
+        conjecture = shared_context.add_new_conjecture(conj, proof, data, cot, AlphaSolveConfig.SOLVER)
       
         return conjecture
        
 
-def create_solver_agent(problem, prompt_file_path):
+def create_solver_agent(problem, model, prompt_file_path):
     
-    llm = LLMClient(AlphaSolveConfig.SOLVER_CONFIG)
-    return Solver(llm, problem, prompt_file_path)
+    ## kimi = KimiClient()
+    ds = DeepSeekClient()
+    return Solver(ds, problem, model, prompt_file_path)    

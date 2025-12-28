@@ -290,8 +290,7 @@ class LLMClient:
                             error = "Wolfram session not available"
                             output = ""
                         else:
-                            output, error = run_wolfram(code, wolfram_session)
-                        
+                            output, error  = run_wolfram(code, wolfram_session)
                         if print_to_console:
                             if output:
                                 print(f"[output]\n{output}")

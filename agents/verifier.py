@@ -34,15 +34,17 @@ class Verifier(Node):
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
 
         reasoning_path = shared_context.build_context_for_conjecture(current_conj)        
+        print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
+
 
         print('[verifier] in verifier ..., building context done ...')
         
-        return AlphaSolveConfig.NORMAL, current_conj, reasoning_path, shared_context
+        return AlphaSolveConfig.NORMAL, current_conj, reasoning_path, shared_context, print_to_console
 
 
     def exec(self, prep_res):
 
-        if not prep_res or len(prep_res) == 0 or len(prep_res) < 4:
+        if not prep_res or len(prep_res) == 0 or len(prep_res) < 5:
             return AlphaSolveConfig.EXIT_ON_ERROR, None, None, None
 
         code = prep_res[0]
@@ -58,8 +60,10 @@ class Verifier(Node):
 
         result = [ ]
 
+        print_to_console = prep_res[4]
+
         for i in range(AlphaSolveConfig.VERIFIER_SCALING_FACTOR):
-            is_valid, review, cot = self.__verify(current_conj, reasoning_path)
+            is_valid, review, cot = self.__verify(current_conj, reasoning_path, print_to_console)
             print('[verifier] verifier test for iteration ', i, ' and result is: ', is_valid)
 
             if not is_valid: ## 发现错误就直接退出了, 其实也可以不退出, 看看多次能否发现不同的错误
@@ -111,7 +115,7 @@ class Verifier(Node):
             print('[verifier] conjecture unverified, need refine ...')
             return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
-    def __verify(self, current_conj, reasoning_path):
+    def __verify(self, current_conj, reasoning_path, print_to_console):
 
         prompt = self.__build_verifier_prompt(current_conj, reasoning_path)
 
@@ -119,7 +123,7 @@ class Verifier(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
-        answer, cot = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console=True)
+        answer, cot = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console = print_to_console)
 
         print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
