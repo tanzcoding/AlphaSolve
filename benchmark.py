@@ -2,8 +2,8 @@ import os
 import time
 import json
 import argparse
-import asyncio
 import threading
+import multiprocessing as mp
 
 from datetime import datetime
 
@@ -11,7 +11,7 @@ from workflow import AlphaSolve
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
 
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 EVAL_TAG_CORRECT = "[[VERDICT:CORRECT]]"
@@ -61,35 +61,54 @@ def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     is_correct = EVAL_TAG_CORRECT in text and EVAL_TAG_INCORRECT not in text
     return is_correct, text
 
-def call_alpha_solve(print_to_console):
+def call_alpha_solve(print_to_console: bool):
     alpha = AlphaSolve(print_to_console)
     solution_text = alpha.do_research()
     return solution_text
 
 
-def run_once(problem_text: str, gold_text: str):
+def run_once(problem_text: str, gold_text: str, console_lock):
+    """
+    运行一次 AlphaSolve 流程
+    
+    注意：print_to_console 控制是否打印到控制台，但为了避免阻塞其他线程，
+    我们不会在整个执行过程中持有控制台锁。而是在需要打印时临时获取。
+    这样可以避免一个线程在执行耗时的工具调用时阻止其他线程的执行。
+    """
     t0 = time.time()
     solution_text = None
     error = None
 
-    print('in coroutine, begin')
+    # 尝试获取打印权限（非阻塞）
+    # NOTE: benchmark 改为多进程后，必须使用跨进程共享的 lock（由 main() 创建并传入）。
+    # 这里兼容 multiprocessing.Lock / Manager().Lock 两种接口。
+    try:
+        has_print_permission = console_lock.acquire(False)
+    except TypeError:
+        has_print_permission = console_lock.acquire(blocking=False)
 
-    print_to_console = False    
+    if has_print_permission:
+        print('[benchmark-worker] begin')
 
     try:
-        print_to_console = CONSOLE_LOCK.acquire(blocking=False)
-        # do_research may return None if summarizer is not implemented
+        if has_print_permission:
+            print(f"[benchmark-worker] print_to_console={has_print_permission} ...")
 
-        print(f"print_to_console result is {print_to_console} ...")        
-
-        solution_text = call_alpha_solve(print_to_console)
+        # 执行 AlphaSolve，传入打印权限
+        # 注意：由于工具调用可能耗时很长，我们在 AlphaSolve 内部不会一直持有锁
+        solution_text = call_alpha_solve(has_print_permission)
     except Exception as e:
         error = f"AlphaSolve error: {e}"
     finally:
-        if print_to_console:
-            CONSOLE_LOCK.release()
+        # 释放打印权限
+        if has_print_permission:
+            try:
+                console_lock.release()
+            except Exception:
+                pass
 
-    print('in coroutine, end, evaluate')
+    if has_print_permission:
+        print('[benchmark-worker] end, evaluate')
 
     # Fallbacks: treat None/empty as incorrect
     if not solution_text:
@@ -106,7 +125,8 @@ def run_once(problem_text: str, gold_text: str):
     ok, raw = evaluate_with_llm(problem_text, gold_text, solution_text)
     elapsed = time.time() - t0
 
-    print('in coroutine, end')
+    if has_print_permission:
+        print('[benchmark-worker] end')
 
     return {
         "elapsed_sec": elapsed,
@@ -136,42 +156,54 @@ def main():
 
     print(f"[benchmark] starting {args.runs} runs ...")
 
-    max_worker_num = os.cpu_count() - 2
+    # 多进程并行：避免多线程共享同一进程带来的 GIL/CPU 抢占与 stdout 交错。
+    max_worker_num = max(1, (os.cpu_count() or 1) - 2)
     futures = [ ]
 
     print(f"[benchmark] starting {max_worker_num} workers for parallel ...")
 
-    executor = ThreadPoolExecutor(max_workers = max_worker_num)
+    # 跨进程共享的 console lock：确保同一时刻只有一个 AlphaSolve 能打印。
+    # 使用 Manager().Lock()，可在 Windows spawn 模式下安全传递给子进程。
+    manager = mp.Manager()
+    console_lock = manager.Lock()
+
+    executor = ProcessPoolExecutor(max_workers=max_worker_num, mp_context=mp.get_context("spawn"))
 
 
     for i in range(1, args.runs + 1):
         print(f"[benchmark] run {i}/{args.runs}")
 
-        future = executor.submit(run_once, problem_text, gold_text)
+        future = executor.submit(run_once, problem_text, gold_text, console_lock)
         futures.append(future)
 
         if args.sleep > 0:
             time.sleep(args.sleep)
 
-
     finished = 0
-    for total_wait_round in range(30):
-        if finished >= len(futures):
-            print(f"all finished...break")
-        print(f"wait for round {total_wait_round} ...") 
-        for future in futures:
-            try:
-                data = future.result(timeout = 120)
-                finished += 1         
-                
-                print(f"finished {finished}")
+    for fut in as_completed(futures):
+        try:
+            data = fut.result()
+            results.append(data)
+            finished += 1
+            print(f"[benchmark] finished {finished}/{len(futures)}")
+            if data.get("correct"):
+                correct_count += 1
+        except Exception as exc:
+            finished += 1
+            results.append({
+                "elapsed_sec": None,
+                "alpha_answer": "",
+                "eval_decision": "EXCEPTION",
+                "correct": False,
+                "evaluator_raw": str(exc),
+            })
+            print(f"[benchmark] exception from worker: {exc}")
 
-                if data.get("correct"):
-                    correct_count += 1
-            except Exception as exc:
-                print(f"exception {exc}")
-            except TimeoutError:
-                pass
+    executor.shutdown(wait=True)
+    try:
+        manager.shutdown()
+    except Exception:
+        pass
 
 
     accuracy = correct_count / max(1, args.runs)
