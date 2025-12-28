@@ -24,18 +24,20 @@ FINAL_END = '\\end{final_proof}'
 
 class Solver(Node):
     
-    def __init__(self, llm, problem, prompt_file_path):
+    def __init__(self, llm, problem, prompt_file_path, print_to_console):
         super(Solver, self).__init__()
         self.problem = problem
         self.prompt_file_path = prompt_file_path
         self.llm = llm
         self.prompt_template = load_prompt_from_file(prompt_file_path)
+        self.print_to_console = print_to_console
 
     def prep(self, shared): ## 按照 pocket-flow 的定义, 这一步是从 shard(一个dict) 里面拿出所有依赖
         ## 处理异常情况
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
         if iteration == 0:   ## solver 的迭代耗尽了
-            print('[solver] solver quota exausted ...')
+            if self.print_to_console:
+                print('[solver] solver quota exausted ...')
             return AlphaSolveConfig.SOLVER_EXAUSTED, None, None
         
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
@@ -57,7 +59,8 @@ class Solver(Node):
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         if len(prep_res) < 4:
-            print('illegal prep_res with length: ', len(prep_res))
+            if self.print_to_console:
+                print('illegal prep_res with length: ', len(prep_res))
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         code = prep_res[0]
@@ -71,7 +74,8 @@ class Solver(Node):
         print_to_console = prep_res[3]
         answer, cot = self.llm.get_result_with_tools(messages, TOOLS, print_to_console = print_to_console)
 
-        print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
+        if self.print_to_console:
+            print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
         conj = self.__build_conjecture(shared_context, answer, cot)
 
@@ -82,16 +86,19 @@ class Solver(Node):
         
         ## 处理异常情况
         if not exec_res or len(exec_res) == 0:
-            print('[solver] illegal exec_res in solver post')
+            if self.print_to_console:
+                print('[solver] illegal exec_res in solver post')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         if not exec_res[1]:
-            print('[solver] no conjecture generated ...')
+            if self.print_to_console:
+                print('[solver] no conjecture generated ...')
             return AlphaSolveConfig.EXIT_ON_ERROR
         
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
-            print('[solver] solver exhausted during post ...')
+            if self.print_to_console:
+                print('[solver] solver exhausted during post ...')
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
         
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
@@ -101,11 +108,13 @@ class Solver(Node):
 
         conj = exec_res[1]
 
-        print('[solver] putting conjecture into context: ', conj.conjecture)
+        if self.print_to_console:
+            print('[solver] putting conjecture into context: ', conj.conjecture)
 
         shared[AlphaSolveConfig.CURRENT_CONJECTURE] = conj
 
-        print('[solver] solver generated new conjecture ...')
+        if self.print_to_console:
+            print('[solver] solver generated new conjecture ...')
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
@@ -118,7 +127,8 @@ class Solver(Node):
         if context:
             tmp = tmp + '\n' + CONTEXT_PREFIX.replace('{context_content}', context)    
 
-        print('final solver prompt is: \n', tmp)
+        if self.print_to_console:
+            print('final solver prompt is: \n', tmp)
     
         return tmp
 
@@ -154,7 +164,7 @@ class Solver(Node):
         return conjecture
        
 
-def create_solver_agent(problem, prompt_file_path):
+def create_solver_agent(problem, prompt_file_path, print_to_console):
     
     llm = LLMClient(AlphaSolveConfig.SOLVER_CONFIG)
-    return Solver(llm, problem, prompt_file_path)
+    return Solver(llm, problem, prompt_file_path, print_to_console)

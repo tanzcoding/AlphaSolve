@@ -19,8 +19,9 @@ PROOF_END = '\\end{proof}'
 
 class Summarizer(Node):
 
-    def __init__(self, problem, llm, prompt_file_path): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, problem, llm, prompt_file_path, print_to_console): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Summarizer, self).__init__()
+        self.print_to_console = print_to_console
 
     def prep(self,shared): 
         return None
@@ -30,10 +31,11 @@ class Summarizer(Node):
 
     def post(self, shared, prep_res, exec_res): 
         shared[AlphaSolveConfig.RESULT_SUMMARY] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].proof
-        print('[summarizer] summarization done ...')
+        if self.print_to_console:
+            print('[summarizer] summarization done ...')
 
 
-def create_summarizer_agent(problem, prompt_file_path):
+def create_summarizer_agent(problem, prompt_file_path, print_to_console):
  
     llm = LLMClient(AlphaSolveConfig.SUMMARIZER_CONFIG)
-    return Summarizer(problem, llm, prompt_file_path) 
+    return Summarizer(problem, llm, prompt_file_path, print_to_console) 

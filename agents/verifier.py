@@ -14,16 +14,18 @@ VERIFY_RESULT_INVALID='boxed{invalid}'
 
 class Verifier(Node):
 
-    def __init__(self, llm, problem, prompt_file_path):
+    def __init__(self, llm, problem, prompt_file_path, print_to_console):
         super(Verifier, self).__init__()
         self.problem = problem
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.llm = llm 
+        self.print_to_console = print_to_console
 
     def prep(self, shared): 
 
-        print('[verifier]in verifier ..., begin to build context ...')
+        if self.print_to_console:
+            print('[verifier]in verifier ..., begin to build context ...')
 
         iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
         
@@ -36,8 +38,8 @@ class Verifier(Node):
         reasoning_path = shared_context.build_context_for_conjecture(current_conj)        
         print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
 
-
-        print('[verifier] in verifier ..., building context done ...')
+        if self.print_to_console:
+            print('[verifier] in verifier ..., building context done ...')
         
         return AlphaSolveConfig.NORMAL, current_conj, reasoning_path, shared_context, print_to_console
 
@@ -64,7 +66,8 @@ class Verifier(Node):
 
         for i in range(AlphaSolveConfig.VERIFIER_SCALING_FACTOR):
             is_valid, review, cot = self.__verify(current_conj, reasoning_path, print_to_console)
-            print('[verifier] verifier test for iteration ', i, ' and result is: ', is_valid)
+            if self.print_to_console:
+                print('[verifier] verifier test for iteration ', i, ' and result is: ', is_valid)
 
             if not is_valid: ## 发现错误就直接退出了, 其实也可以不退出, 看看多次能否发现不同的错误
                 result.append((is_valid, review, cot))
@@ -90,13 +93,15 @@ class Verifier(Node):
         ## post 做两件事情: (1) 返回决策(退出: 如果生成了 theorem, 改进: 走到refiner, 正确: 走到 solver ); (2) 把结果 submit 到 shared_context 里头
 
         if not exec_res or len(exec_res) < 6: ## 退出
-            print('[verifier] illegal input in verifier exec')
+            if self.print_to_console:
+                print('[verifier] illegal input in verifier exec')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         code, valid_conj, answer, cot, current_conj, shared_context = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4], exec_res[5]
  
         if code != AlphaSolveConfig.NORMAL:
-            print('[verifier] verifier encounter error ...')
+            if self.print_to_console:
+                print('[verifier] verifier encounter error ...')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         
@@ -105,14 +110,17 @@ class Verifier(Node):
         if valid_conj:  ## 此时说明验证通过了, 生成了正确的conj
             shared_context.submit(current_conj)
             if current_conj.is_theorem: ## 说明问题已经解决了
-                print('[verifier] theorem proved successfully ...')
+                if self.print_to_console:
+                    print('[verifier] theorem proved successfully ...')
                 return AlphaSolveConfig.DONE
             else: ## 说明引理正确但是还没有解决问题, 此时返回 solver
-                print('[verifier] conjecture verified successfully ...')
+                if self.print_to_console:
+                    print('[verifier] conjecture verified successfully ...')
                 return AlphaSolveConfig.CONJECTURE_VERIFIED
         else:
             current_conj.review = answer
-            print('[verifier] conjecture unverified, need refine ...')
+            if self.print_to_console:
+                print('[verifier] conjecture unverified, need refine ...')
             return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
     def __verify(self, current_conj, reasoning_path, print_to_console):
@@ -124,8 +132,9 @@ class Verifier(Node):
             {"role": "user", "content": prompt}
         ]
         answer, cot = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console = print_to_console)
-
-        print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
+        
+        if self.print_to_console:
+            print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
         if VERIFY_RESULT_VALID in answer:
             return True, answer, cot
@@ -144,7 +153,7 @@ class Verifier(Node):
 
 
 
-def create_verifier_agent(problem, prompt_file_path):
+def create_verifier_agent(problem, prompt_file_path, print_to_console):
 
     llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG)
-    return Verifier(llm, problem, prompt_file_path) 
+    return Verifier(llm, problem, prompt_file_path, print_to_console) 

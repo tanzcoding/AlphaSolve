@@ -3,9 +3,33 @@ import sys
 import traceback
 import ast
 import time
+import builtins
+import types
+import importlib
 from typing import Optional, Tuple
 from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
+
+
+# NOTE:
+# We intentionally block importing matplotlib (and pylab) inside `run_python()`.
+# This is both to prevent plotting side-effects and to avoid heavy GUI/backends.
+BANNED_IMPORT_ROOTS = {"matplotlib", "pylab"}
+
+
+def _is_banned_module_name(module_name: str) -> bool:
+    """Return True if module_name is a banned import root or submodule."""
+    if not module_name:
+        return False
+    root = module_name.split(".", 1)[0]
+    return root in BANNED_IMPORT_ROOTS
+
+
+def _purge_banned_modules_from_sys_modules() -> None:
+    """Best-effort removal of banned modules already imported in this process."""
+    for name in list(sys.modules.keys()):
+        if _is_banned_module_name(name):
+            sys.modules.pop(name, None)
 
 
 def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple[str, Optional[str]]:
@@ -37,9 +61,59 @@ def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple
     if env is None:
         env = {}
     
-    # 确保环境中有内置函数
-    if '__builtins__' not in env:
-        env['__builtins__'] = __builtins__
+    # --- 禁止导入 matplotlib/pylab（从根本上拦截 import / importlib.import_module） ---
+    # 1) 清理进程级已加载的禁用模块，避免“之前已导入”被复用
+    _purge_banned_modules_from_sys_modules()
+
+    # 2) 清理 env 中已缓存的禁用模块对象（最佳努力）
+    for k in list(env.keys()):
+        v = env.get(k)
+        if isinstance(v, types.ModuleType) and _is_banned_module_name(getattr(v, "__name__", "")):
+            env.pop(k, None)
+
+    # 3) 静态检查：显式 import matplotlib / from matplotlib ... 直接拒绝
+    try:
+        parsed_for_check = ast.parse(code, mode="exec")
+        for node in ast.walk(parsed_for_check):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if _is_banned_module_name(alias.name):
+                        return "", "ImportError: matplotlib/pylab is disabled in this runtime"
+            elif isinstance(node, ast.ImportFrom):
+                if _is_banned_module_name(node.module or ""):
+                    return "", "ImportError: matplotlib/pylab is disabled in this runtime"
+    except SyntaxError:
+        # 解析失败则跳过静态检查；运行期仍会被 import hook 拦截
+        pass
+
+    # 4) 运行期拦截：临时覆盖 builtins.__import__，并临时 monkey-patch importlib.import_module
+    original_import = builtins.__import__
+
+    def _blocked_import(name, globals=None, locals=None, fromlist=(), level=0):
+        # name 可能是 'matplotlib' 或 'matplotlib.pyplot' 等
+        if _is_banned_module_name(str(name)):
+            raise ImportError("matplotlib/pylab is disabled in this runtime")
+        return original_import(name, globals, locals, fromlist, level)
+
+    # 确保环境中有内置函数，并注入我们的 __import__
+    env_builtins = env.get("__builtins__")
+    if isinstance(env_builtins, types.ModuleType):
+        env_builtins = env_builtins.__dict__
+    if env_builtins is None:
+        env_builtins = builtins.__dict__
+    # IMPORTANT: copy to avoid mutating global builtins dict
+    env_builtins = dict(env_builtins)
+    env_builtins["__import__"] = _blocked_import
+    env["__builtins__"] = env_builtins
+
+    original_importlib_import_module = getattr(importlib, "import_module", None)
+
+    def _blocked_import_module(name, package=None):
+        if _is_banned_module_name(str(name)):
+            raise ImportError("matplotlib/pylab is disabled in this runtime")
+        if original_importlib_import_module is None:
+            raise ImportError("importlib.import_module is unavailable")
+        return original_importlib_import_module(name, package=package)
 
     # 记录快照（浅拷贝）：用于在 timeout 时撤销本次执行对 env 的“键级别”修改
     env_snapshot = dict(env)
@@ -59,6 +133,13 @@ def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple
     try:
         sys.stdout = buf
         sys.settrace(_trace)
+
+        # 临时 patch builtins.__import__（避免通过 `import builtins; builtins.__import__(...)` 绕过）
+        builtins.__import__ = _blocked_import
+
+        # 临时 patch importlib.import_module（注意 finally 中恢复）
+        if original_importlib_import_module is not None:
+            importlib.import_module = _blocked_import_module
         
         # 解析代码，检测最后一个语句是否为表达式
         try:
@@ -100,6 +181,13 @@ def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple
         sys.stdout = old_out
         # 恢复原 trace（避免影响外部逻辑）
         sys.settrace(old_trace)
+
+        # 恢复 builtins.__import__（避免影响外部逻辑）
+        builtins.__import__ = original_import
+
+        # 恢复 importlib.import_module（避免影响外部逻辑）
+        if original_importlib_import_module is not None:
+            importlib.import_module = original_importlib_import_module
      
     return buf.getvalue(), err
 
@@ -145,7 +233,7 @@ PYTHON_TOOL = {
     'type': 'function',
     'function': {
         'name': 'run_python',
-        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. IMPORTANT: Execution has a hard time limit (~5 minutes). If time limit is exceeded, the tool returns error=\"timeout\" and the environment changes from that execution are rolled back. Warning: Don't use matplotlib to plot ANYTHING!",
+        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. IMPORTANT: Execution has a hard time limit (~5 minutes). If time limit is exceeded, the tool returns error=\"timeout\" and the environment changes from that execution are rolled back. SECURITY: Importing matplotlib/pylab is blocked in this runtime.",
         'parameters': {
             'type': 'object',
             'properties': {

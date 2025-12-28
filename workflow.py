@@ -34,15 +34,17 @@ class AlphaSolve:
 
     def __create_research_flow(self):  ## 主类入口
 
-        print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH)
-        solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH)
+        if self.print_to_console:
+            print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH)
+        solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH, print_to_console=self.print_to_console)
 
-        print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH)
-        verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH)
+        if self.print_to_console:
+            print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH)
+        verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, print_to_console=self.print_to_console)
        
-        refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH)
+        refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH, print_to_console=self.print_to_console)
      
-        summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH)
+        summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, print_to_console=self.print_to_console)
 
         ## 成功生成 lemma, 下一站去 verifier
         solver - AlphaSolveConfig.CONJECTURE_GENERATED >> verifier 
@@ -77,7 +79,8 @@ class AlphaSolve:
             result = self.shared[AlphaSolveConfig.RESULT_SUMMARY]
             return result
         except KeyError:
-            print('error execute on alpha solve, no summary')
+            if self.print_to_console:
+                print('error execute on alpha solve, no summary')
             return None
 
 

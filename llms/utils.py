@@ -90,20 +90,14 @@ class LLMClient:
                     print(delta.content, end="", flush=True)
                     answer_content += delta.content    
         else:
-            print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n")
+            # 当 print_to_console=False 时，只收集内容，不打印
             for chunk in completion:
                 delta = chunk.choices[0].delta
                 if hasattr(delta, "reasoning_content") and delta.reasoning_content is not None:
-                    if not is_answering:
-                        print(delta.reasoning_content, end="", flush=True)
                     reasoning_content += delta.reasoning_content
                 
                 # 收到content，开始进行回复
                 if hasattr(delta, "content") and delta.content:
-                    if not is_answering:
-                        print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n")
-                        is_answering = True
-                    print(delta.content, end="", flush=True)
                     answer_content += delta.content
 
         return answer_content, reasoning_content

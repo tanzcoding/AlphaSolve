@@ -113,7 +113,7 @@ class AlphaSolveConfig:
 
     HINT = 'hint'
 
-    VERIFIER_SCALING_FACTOR = 3
+    VERIFIER_SCALING_FACTOR = 1
     VERIFY_AND_REFINE_ROUND = 'verifier_refiner_round'
     TOTAL_SOLVER_ROUND = 'solver_round'
 

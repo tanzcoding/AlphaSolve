@@ -19,22 +19,25 @@ PROOF_END = '\\end{proof}'
 
 class Refiner(Node):
 
-    def __init__(self, llm, prompt_file_path): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, llm, prompt_file_path, print_to_console): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Refiner, self).__init__()
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.llm = llm 
+        self.print_to_console = print_to_console
 
     def prep(self,shared): 
 
-        print('[refiner] building refiner context...')
+        if self.print_to_console:
+            print('[refiner] building refiner context...')
  
         conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
        
         print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
 
-        print('[refiner] in refiner ..., building context done ...')
+        if self.print_to_console:
+            print('[refiner] in refiner ..., building context done ...')
  
         return conj, shared_context.build_context_for_conjecture(conj), shared_context, print_to_console
 
@@ -48,30 +51,35 @@ class Refiner(Node):
         if not conj.conjecture or not conj.proof:
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        valid, rationale = self.__refine(conj, reasoning_path, print_to_console)
+        valid, rationale = self.__refine(conj, reasoning_path, self.print_to_console)
 
         return valid, rationale, conj, shared_context
 
     def post(self, shared, prep_res, exec_res): 
 
         if not prep_res:
-            print('[refiner] illegal prep_res in refiner post')
+            if self.print_to_console:
+                print('[refiner] illegal prep_res in refiner post')
             return AlphaSolveConfig.EXIT_ON_ERROR
         if not exec_res: ## 应该是出错了, 重新 refine 一次吧, 没啥意义, 容错用的
-            print('[refiner] illegal exec_res in refiner post')
+            if self.print_to_console:
+                print('[refiner] illegal exec_res in refiner post')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         is_conjecture_valid, next_conjecture = exec_res[0], exec_res[1]
         
         if is_conjecture_valid:
             if next_conjecture:
-                print('[refiner] refine success, new conjecture generated ...')
+                if self.print_to_console:
+                    print('[refiner] refine success, new conjecture generated ...')
                 return AlphaSolveConfig.REFINE_SUCCESS
             else:
-                print('[refiner] refine failed, no new conjecture generated ...')
+                if self.print_to_console:
+                    print('[refiner] refine failed, no new conjecture generated ...')
                 return  AlphaSolveConfig.EXIT_ON_ERROR
         else: ## 代表此时 refiner 觉得猜想不对，要返回solver    
-            print('[refiner] conjecture wrong, need to go back to solver ...')
+            if self.print_to_console:
+                print('[refiner] conjecture wrong, need to go back to solver ...')
             return AlphaSolveConfig.CONJECTURE_WRONG
  
 
@@ -87,7 +95,8 @@ class Refiner(Node):
 
         answer, cot = resp[0], resp[1]
 
-        print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
+        if self.print_to_console:
+            print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
 
         conj2, proof = self.__extract_from_model(answer)
 
@@ -123,7 +132,7 @@ class Refiner(Node):
 
 
 
-def create_refiner_agent(prompt_file_path):
+def create_refiner_agent(prompt_file_path, print_to_console):
  
     llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG)
-    return Refiner(llm, prompt_file_path) 
+    return Refiner(llm, prompt_file_path, print_to_console) 
