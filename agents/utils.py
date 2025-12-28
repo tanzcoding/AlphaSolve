@@ -14,7 +14,7 @@ def build_conjuecture_helper(resp_from_llm, begin_str, end_str):
 
 def load_prompt_from_file(prompt_file_path):
 
-    f = open(prompt_file_path, 'r')
+    f = open(prompt_file_path, 'r', encoding='utf-8')
     prompt_template = f.read()
 
     return prompt_template

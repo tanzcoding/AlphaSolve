@@ -264,7 +264,8 @@ class LLMClient:
                         if print_to_console:
                             print(f"[Tool Call] run_python\nCode:\n{code}")
                         # 使用持久化环境执行代码
-                        stdout, error = run_python(code, python_env)
+                        # 默认 5 分钟超时；若超时则 run_python 会返回 error=="timeout" 并回滚本次执行对 env 的键级别修改
+                        stdout, error = run_python(code, python_env, timeout_seconds=300)
                         if print_to_console:
                             if stdout:
                                 print(f"[stdout]\n{stdout}")

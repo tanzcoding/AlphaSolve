@@ -2,11 +2,13 @@ import io
 import sys
 import traceback
 import ast
+import time
+from typing import Optional, Tuple
 from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
 
 
-def run_python(code: str, env: dict = None):
+def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple[str, Optional[str]]:
     """
     类似Jupyter Notebook的 Python 执行器（演示用，无安全沙箱）
 
@@ -16,6 +18,9 @@ def run_python(code: str, env: dict = None):
     Args:
         code: 要执行的Python代码
         env: 执行环境字典（用于保持会话状态）。如果为None，则创建新环境。
+        timeout_seconds: 超时时间（秒）。超过该时间仍未返回则中止执行并返回 error="timeout"。
+            注意：超时时会回滚 env 的键级别变更（新增/覆盖的变量会撤销）；
+            但对已存在对象的原地修改（例如 list.append / dict.update）无法完全回滚。
 
     Returns:
         (stdout: str, error: str | None)
@@ -23,6 +28,10 @@ def run_python(code: str, env: dict = None):
     buf = io.StringIO()
     old_out = sys.stdout
     err = None
+
+    # --- env 变更保护：用于超时/异常时回滚（键级别） ---
+    env_snapshot = None
+    env_keys_snapshot = None
     
     # 如果没有提供环境，创建新的
     if env is None:
@@ -31,9 +40,25 @@ def run_python(code: str, env: dict = None):
     # 确保环境中有内置函数
     if '__builtins__' not in env:
         env['__builtins__'] = __builtins__
+
+    # 记录快照（浅拷贝）：用于在 timeout 时撤销本次执行对 env 的“键级别”修改
+    env_snapshot = dict(env)
+    env_keys_snapshot = set(env_snapshot.keys())
+
+    # --- 软中断超时：使用 sys.settrace 在 Python 字节码级别检查时间 ---
+    start_t = time.monotonic()
+    old_trace = sys.gettrace()
+
+    def _trace(frame, event, arg):
+        # 只要还在执行 Python 代码，就会不断触发 trace 回调；到时抛出 TimeoutError 终止执行。
+        if timeout_seconds is not None and timeout_seconds > 0:
+            if (time.monotonic() - start_t) > timeout_seconds:
+                raise TimeoutError("timeout")
+        return _trace
     
     try:
         sys.stdout = buf
+        sys.settrace(_trace)
         
         # 解析代码，检测最后一个语句是否为表达式
         try:
@@ -58,12 +83,24 @@ def run_python(code: str, env: dict = None):
         except SyntaxError:
             # 如果解析失败，直接执行（可能是不完整的代码）
             exec(code, env, env)
-            
-    except Exception as e:
+             
+    except TimeoutError:
+        # 超时：回滚 env（键级别），并向上返回一个简洁的 "timeout"
+        err = "timeout"
+        # 回滚：删除新增键，恢复被覆盖的键
+        for k in list(env.keys()):
+            if env_keys_snapshot is not None and k not in env_keys_snapshot:
+                env.pop(k, None)
+        if env_snapshot is not None:
+            for k, v in env_snapshot.items():
+                env[k] = v
+    except Exception:
         err = traceback.format_exc().strip()
     finally:
         sys.stdout = old_out
-    
+        # 恢复原 trace（避免影响外部逻辑）
+        sys.settrace(old_trace)
+     
     return buf.getvalue(), err
 
 
@@ -108,7 +145,7 @@ PYTHON_TOOL = {
     'type': 'function',
     'function': {
         'name': 'run_python',
-        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. Warning: Don't use matplotlib to plot ANYTHING!",
+        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. IMPORTANT: Execution has a hard time limit (~5 minutes). If time limit is exceeded, the tool returns error=\"timeout\" and the environment changes from that execution are rolled back. Warning: Don't use matplotlib to plot ANYTHING!",
         'parameters': {
             'type': 'object',
             'properties': {
@@ -138,4 +175,4 @@ WOLFRAM_TOOL = {
         }
     }
 }
-TOOLS = [WOLFRAM_TOOL]
+TOOLS = [PYTHON_TOOL]
