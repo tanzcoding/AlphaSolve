@@ -52,7 +52,7 @@ class Refiner(Node):
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
             return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None, None, None
 
-        conj, reasoning_path, shared_context  = prep_res[0], prep_res[1], prep_res[2]
+        conj, reasoning_path, shared_context  = prep_res[1], prep_res[2], prep_res[3]
          
         if not conj.conjecture or not conj.proof:
             return AlphaSolveConfig.EXIT_ON_ERROR
