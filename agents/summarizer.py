@@ -30,7 +30,13 @@ class Summarizer(Node):
         return None
 
     def post(self, shared, prep_res, exec_res): 
-        shared[AlphaSolveConfig.RESULT_SUMMARY] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].proof
+        result_map = {}
+
+        result_map['conjucture'] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].conjucture
+        result_map['proof'] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].proof
+ 
+        shared[AlphaSolveConfig.RESULT_SUMMARY] = json.dumps(result_map)
+
         if self.print_to_console:
             print('[summarizer] summarization done ...')
 
