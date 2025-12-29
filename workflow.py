@@ -24,8 +24,8 @@ class AlphaSolve:
         self.shared = { }
 
         ## 把各种配置放到 shard context 里头
-        self.shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND] = 5
-        self.shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = 3
+        self.shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND] =  AlphaSolveConfig.SOLVER_ROUND_NUM 
+        self.shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM
         self.shared[AlphaSolveConfig.SHARED_CONTEXT] = self.shared_context
         self.shared[AlphaSolveConfig.CURRENT_CONJECTURE] = None
         self.shared[AlphaSolveConfig.HINT] = None
@@ -58,8 +58,9 @@ class AlphaSolve:
         verifier - AlphaSolveConfig.CONJECTURE_VERIFIED >> solver
         ## 完成 theorem, 给 summarizer 总结, 退出 
         verifier - AlphaSolveConfig.DONE >> summarizer 
+
         ## verifier-refine 打满, 给 solver
-        verifier - AlphaSolveConfig.EXIT_ON_EXAUSTED >> solver 
+        refiner - AlphaSolveConfig.EXIT_ON_EXAUSTED >> solver 
         ## 改了, 回到 verifier
         refiner - AlphaSolveConfig.REFINE_SUCCESS >> verifier
         ## conj 是错的, 直接到 solver 
@@ -77,6 +78,9 @@ class AlphaSolve:
         ## 走到这里就说明
         try:
             result = self.shared[AlphaSolveConfig.RESULT_SUMMARY]
+
+            print('alpha solve result is: ', result)
+
             return result
         except KeyError:
             if self.print_to_console:

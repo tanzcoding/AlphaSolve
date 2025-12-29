@@ -40,6 +40,10 @@ class SharedContext:
         
         return conjecture
 
+    def add_to_conjecture_graph_by_parent(self, parent, conj, proof, cot):
+        conjecture = self.conjecture_graph.add_to_conjecture_graph_by_parent(parent, conj, proof, cot)
+
+        return conjecture
 
     def submit(self, conjecture):
         self.submited_conjectures.append(conjecture)

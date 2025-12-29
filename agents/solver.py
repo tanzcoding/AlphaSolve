@@ -38,7 +38,7 @@ class Solver(Node):
         if iteration == 0:   ## solver 的迭代耗尽了
             if self.print_to_console:
                 print('[solver] solver quota exausted ...')
-            return AlphaSolveConfig.SOLVER_EXAUSTED, None, None
+            return AlphaSolveConfig.SOLVER_EXAUSTED, None, None, self.print_to_console
         
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
         hint = shared[AlphaSolveConfig.HINT]
@@ -50,7 +50,7 @@ class Solver(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
-        return AlphaSolveConfig.NORMAL, messages_to_send, shared_context, print_to_console  
+        return AlphaSolveConfig.NORMAL, messages_to_send, shared_context, self.print_to_console  
         
  
     def exec(self, prep_res): ## 执行主要的逻辑
@@ -90,21 +90,27 @@ class Solver(Node):
                 print('[solver] illegal exec_res in solver post')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        if not exec_res[1]:
-            if self.print_to_console:
-                print('[solver] no conjecture generated ...')
-            return AlphaSolveConfig.EXIT_ON_ERROR
-        
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
             if self.print_to_console:
                 print('[solver] solver exhausted during post ...')
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
+
+
+        # 不知道为什么没有生成引理, 直接重新开始
+        if not exec_res[1]:
+            if self.print_to_console:
+                print('[solver] no conjecture generated ...')
+            return AlphaSolveConfig.EXIT_ON_ERROR
+        
         
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
         iteration -= 1
 
         shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND] = iteration
+
+        ## 重新打满 verifier-refiner round
+        shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM
 
         conj = exec_res[1]
 
@@ -141,7 +147,7 @@ class Solver(Node):
         dependencies = build_conjuecture_helper(resp_from_llm, DEPENDENCY_BEGIN, DEPENDENCY_END)
         data = [ ] 
 
-        if not dependencies:
+        if dependencies:
             data = json.loads(dependencies) ## 注意这货是个 json [ ... ] 
  
         is_theorem = False

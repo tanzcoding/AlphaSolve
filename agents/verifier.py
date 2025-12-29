@@ -27,11 +27,6 @@ class Verifier(Node):
         if self.print_to_console:
             print('[verifier]in verifier ..., begin to build context ...')
 
-        iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
-        
-        if iteration == 0:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None, None
-
         current_conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE] 
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
 

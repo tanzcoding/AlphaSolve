@@ -30,30 +30,36 @@ class Refiner(Node):
 
         if self.print_to_console:
             print('[refiner] building refiner context...')
+
+        iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
+
+        if iteration == 0:
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None, None, None
  
         conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
-       
-        print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
 
         if self.print_to_console:
             print('[refiner] in refiner ..., building context done ...')
  
-        return conj, shared_context.build_context_for_conjecture(conj), shared_context, print_to_console
+        return AlphaSolveConfig.NORMAL, conj, shared_context.build_context_for_conjecture(conj), shared_context, self.print_to_console
 
     def exec(self, prep_res): 
    
-        if not prep_res or len(prep_res) < 4:
+        if not prep_res or len(prep_res) < 5:
             return AlphaSolveConfig.EXIT_ON_ERROR
+
+        if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None, None, None
 
         conj, reasoning_path, shared_context  = prep_res[0], prep_res[1], prep_res[2]
          
         if not conj.conjecture or not conj.proof:
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        valid, rationale = self.__refine(conj, reasoning_path, self.print_to_console)
+        valid, new_conj = self.__refine(conj, reasoning_path, self.print_to_console, shared_context)
 
-        return valid, rationale, conj, shared_context
+        return AlphaSolveConfig.NORMAL, valid, new_conj, conj, shared_context
 
     def post(self, shared, prep_res, exec_res): 
 
@@ -66,24 +72,36 @@ class Refiner(Node):
                 print('[refiner] illegal exec_res in refiner post')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        is_conjecture_valid, next_conjecture = exec_res[0], exec_res[1]
+        if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
+            return AlphaSolveConfig.EXIT_ON_EXAUSTED
+
+        is_conjecture_valid, next_conjecture = exec_res[1], exec_res[2]
         
+        ## 更新 iteration 参数
+        iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
+        iteration -= 1
+        shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = iteration
+
         if is_conjecture_valid:
             if next_conjecture:
                 if self.print_to_console:
                     print('[refiner] refine success, new conjecture generated ...')
+                ## 后续都基于这条 conj 工作
+                shared[AlphaSolveConfig.CURRENT_CONJECTURE] = next_conjecture
+
                 return AlphaSolveConfig.REFINE_SUCCESS
             else:
                 if self.print_to_console:
                     print('[refiner] refine failed, no new conjecture generated ...')
                 return  AlphaSolveConfig.EXIT_ON_ERROR
+
         else: ## 代表此时 refiner 觉得猜想不对，要返回solver    
             if self.print_to_console:
                 print('[refiner] conjecture wrong, need to go back to solver ...')
             return AlphaSolveConfig.CONJECTURE_WRONG
  
 
-    def __refine(self, conj, reasoning_path, print_to_console): 
+    def __refine(self, conj, reasoning_path, print_to_console, shared_context): 
 
         prompt = self.__build_refiner_prompt(conj, reasoning_path)
 
@@ -91,7 +109,7 @@ class Refiner(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]   
-        resp = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console = print_to_console)
+        resp = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console)
 
         answer, cot = resp[0], resp[1]
 
@@ -100,10 +118,10 @@ class Refiner(Node):
 
         conj2, proof = self.__extract_from_model(answer)
 
-        valid =  INVALID_TAG in answer 
+        valid =  INVALID_TAG not in answer 
 
         if conj and proof:
-            return valid, conj.create_sub(conj2, proof)            
+            return valid, shared_context.add_to_conjecture_graph_by_parent(conj, conj2, proof, cot)           
         else:
             return valid, None
 
@@ -129,7 +147,6 @@ class Refiner(Node):
             tmp = tmp + '\n' + reasoning_path
 
         return tmp
-
 
 
 def create_refiner_agent(prompt_file_path, print_to_console):

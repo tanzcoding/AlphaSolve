@@ -5,7 +5,7 @@ class ConjectureGraph:
         self.conjecture_graph = [ ]
 
 
-    def add_to_conjecture_graph(self, conjecture, proof, dependencies, is_theorem = False, cot = None):
+    def add_to_conjecture_graph(self, conjecture, proof, dependencies, is_theorem = False, cot = None, parent = None):
 
         index = len(self.conjecture_graph)        
 
@@ -15,13 +15,26 @@ class ConjectureGraph:
             conj = self.__find_index(self.conjecture_graph, index) 
             if conj:
                 true_dependencies.append(conj)
-
+ 
         conj = Conjecture(index, conjecture, proof, true_dependencies, is_theorem, cot)
         self.conjecture_graph.append(conj)
 
         return conj
 
 
+    def add_to_conjecture_graph_by_parent(self, parent, conjecture, proof, cot = None):
+        index = len(self.conjecture_graph)
+        sub = parent.create_sub(conjecture, proof)
+
+        sub.index = index
+        sub.cot = cot
+
+        self.conjecture_graph.append(sub)
+
+
+        return sub
+  
+    
     def search_reasoning_path(self, target_conj, solved_only = True): ## 注意其实 lemma 形成的是一个图结构, 我们强制弄成树结构(和AIM逻辑对齐)
       
         if not self.conjecture_graph: 
@@ -85,6 +98,9 @@ class Conjecture:
 
 
     def create_sub(self, conjecture, proof):
+        if not conjecture:
+            conjecture = self.conjecture
+
         sub = Conjecture(self.index, conjecture, proof, self.dependencies, self.is_theorem, self.is_theorem)
         self.next_conjecture = sub
 

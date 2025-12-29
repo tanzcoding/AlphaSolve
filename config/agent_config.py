@@ -147,4 +147,6 @@ class AlphaSolveConfig:
     VERIFIER_EXAUSTED = 'verifier_exausted'
     SOLVER_EXAUSTED = 'solver_exausted'
 
-
+    ## 
+    SOLVER_ROUND_NUM = 3
+    VERIFY_AND_REFINE_ROUND_NUM = 3
