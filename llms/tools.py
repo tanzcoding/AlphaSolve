@@ -6,6 +6,8 @@ import time
 import builtins
 import types
 import importlib
+import re
+import json
 from typing import Optional, Tuple
 from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
@@ -266,9 +268,10 @@ Approach:
 4. Provide a clear, concise final answer
 
 Be thorough but efficient. Focus on delivering the correct result."""
+        experience = """[Experience 1] When sympy struggles, try Wolfram Language for symbolic tasks. Dsolve function in Sympy can be limited; Wolfram's DSolve is more robust."""
         
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": system_prompt+"\n\n"+experience},
             {"role": "user", "content": task_description}
         ]
         
@@ -282,6 +285,101 @@ Be thorough but efficient. Focus on delivering the correct result."""
         err = traceback.format_exc().strip()
     
     return result, err
+
+
+# ===== Solver 格式提醒工具（面向 LLM function-calling） =====
+# 来自 prompts/solver.md 的关键约束：
+# - 输出必须以 \begin{conjecture} 或 \begin{final_proof} 起手（允许前置空白），不能有任何其他前置内容
+# - 仅允许两种整体结构（并建议无额外尾随内容）：
+#   A) conjecture + proof + dependency
+#   B) final_proof + dependency
+# - dependency 环境内必须是 JSON array（例如 [] 或 [0,3,4]）
+
+_SOLVER_CONJ_FULL_RE = re.compile(
+    r"^\s*\\begin\{conjecture\}.*?\\end\{conjecture\}\s*"
+    r"\\begin\{proof\}.*?\\end\{proof\}\s*"
+    r"\\begin\{dependency\}.*?\\end\{dependency\}\s*$",
+    re.DOTALL,
+)
+_SOLVER_FINAL_FULL_RE = re.compile(
+    r"^\s*\\begin\{final_proof\}.*?\\end\{final_proof\}\s*"
+    r"\\begin\{dependency\}.*?\\end\{dependency\}\s*$",
+    re.DOTALL,
+)
+_SOLVER_DEP_RE = re.compile(r"\\begin\{dependency\}(.*?)\\end\{dependency\}", re.DOTALL)
+
+
+def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str]]:
+    """给 solver 输出提供格式提醒与校验。
+
+    - 若 candidate_response 为空：返回格式提醒（mode="reminder"）。
+    - 若 candidate_response 非空：严格校验整体结构与 dependency JSON（mode="check"）。
+
+    Returns:
+        (result_json_str, error_str|None)
+    """
+    try:
+        expected_format = (
+            "Your response must start with \\begin{conjecture} or \\begin{final_proof} (no preface). "
+            "Allowed structures (and no extra text outside these environments):\n"
+            "1) \\begin{conjecture}...\\end{conjecture}\n"
+            "   \\begin{proof}...\\end{proof}\n"
+            "   \\begin{dependency}[...]\\end{dependency}\n"
+            "2) \\begin{final_proof}...\\end{final_proof}\n"
+            "   \\begin{dependency}[...]\\end{dependency}\n"
+            "Inside dependency must be a JSON array like [] or [0, 3, 4]."
+        )
+
+        text = candidate_response or ""
+        if not text.strip():
+            payload = {
+                "ok": True,
+                "mode": "reminder",
+                "expected_format": expected_format,
+            }
+            return json.dumps(payload, ensure_ascii=False), None
+
+        issues = []
+        stripped = text.lstrip()
+        if not (stripped.startswith("\\begin{conjecture}") or stripped.startswith("\\begin{final_proof}")):
+            issues.append(
+                "Response must start with \\begin{conjecture} or \\begin{final_proof} (no preface content)."
+            )
+
+        matches_final = bool(_SOLVER_FINAL_FULL_RE.match(text))
+        matches_conj = bool(_SOLVER_CONJ_FULL_RE.match(text))
+        if not (matches_final or matches_conj):
+            issues.append(
+                "Overall structure invalid. It must be exactly either (conjecture+proof+dependency) or (final_proof+dependency), "
+                "with no extra content outside these environments."
+            )
+
+        dep_ids = None
+        dep_match = _SOLVER_DEP_RE.search(text)
+        if dep_match is None:
+            issues.append("Missing \\begin{dependency}...\\end{dependency} block.")
+        else:
+            dep_raw = (dep_match.group(1) or "").strip()
+            try:
+                dep_ids = json.loads(dep_raw) if dep_raw else []
+                if not isinstance(dep_ids, list):
+                    issues.append("Dependency content must be a JSON array, e.g. [] or [0, 3, 4].")
+                    dep_ids = None
+            except Exception:
+                issues.append(
+                    "Dependency content is not valid JSON. It must be a JSON array like [] or [0, 3, 4]."
+                )
+
+        payload = {
+            "ok": len(issues) == 0,
+            "mode": "check",
+            "issues": issues,
+            "dependency": dep_ids,
+            "expected_format": expected_format,
+        }
+        return json.dumps(payload, ensure_ascii=False), None
+    except Exception:
+        return "", traceback.format_exc().strip()
 
 
 # ===== 定义工具函数规范 =====
@@ -366,4 +464,35 @@ RESEARCH_SUBAGENT_TOOL = {
         }
     }
 }
+
+
+SOLVER_FORMAT_GUARD_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'solver_format_guard',
+        'description': (
+            "Format reminder + strict validator for solver outputs per prompts/solver.md. "
+            "Call with no arguments to get a reminder; call with candidate_response to validate it."
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'candidate_response': {
+                    'type': 'string',
+                    'description': (
+                        "(Optional) Draft response to validate. Must start with \\begin{conjecture} or \\begin{final_proof} "
+                        "and contain only the allowed environments."
+                    )
+                }
+            },
+            'required': []
+        }
+    }
+}
+
+
+# Backward-compatible default tools for agents that only need the subagent.
 TOOLS = [RESEARCH_SUBAGENT_TOOL]
+
+# Tools intended for the solver agent.
+SOLVER_TOOLS = [RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL]

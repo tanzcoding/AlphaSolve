@@ -489,6 +489,32 @@ class LLMClient:
                     if error:
                         _log_parts.append(f"[error]\n{error}")
                     reasoning_content += ("\n".join(_log_parts) + "\n")
+
+                # 处理 solver_format_guard
+                elif name == 'solver_format_guard':
+                    candidate_response = args.get('candidate_response', '')
+                    if print_to_console:
+                        print(f"[Tool Call] solver_format_guard\nCandidate response length: {len(candidate_response)}")
+
+                    from .tools import solver_format_guard
+                    result, error = solver_format_guard(candidate_response)
+
+                    if print_to_console:
+                        if result:
+                            print(f"[result]\n{result}")
+                        if error:
+                            print(f"[error]\n{error}")
+
+                    tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
+
+                    _log_parts = [f"\n[Tool Call] {name}"]
+                    if candidate_response:
+                        _log_parts.append(f"Candidate response length: {len(candidate_response)}")
+                    if result:
+                        _log_parts.append(f"[result]\n{result}")
+                    if error:
+                        _log_parts.append(f"[error]\n{error}")
+                    reasoning_content += ("\n".join(_log_parts) + "\n")
                 
                 else:
                     tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
