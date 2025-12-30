@@ -268,7 +268,19 @@ Approach:
 4. Provide a clear, concise final answer
 
 Be thorough but efficient. Focus on delivering the correct result."""
-        experience = """[Experience 1] When sympy struggles, try Wolfram Language for symbolic tasks. Dsolve function in Sympy can be limited; Wolfram's DSolve is more robust."""
+        experience = """[Experience 1] For symbolic math, try BOTH SymPy (run_python) and Wolfram Language (run_wolfram) if the first attempt is inconclusive. Many tasks have complementary strengths: SymPy is great for quick algebraic manipulation and programmable workflows; Wolfram is often more robust for hard symbolic transforms.
+
+[Experience 2] For indefinite integrals (symbolic antiderivatives), Wolfram Language (Integrate) is often more reliable than SymPy for difficult expressions. If SymPy returns an unevaluated Integral / cannot find a closed form, switch to Wolfram; also consider reporting conditions/assumptions (e.g., parameter ranges) that make a closed form possible.
+
+[Experience 3] When simplifying expressions, always state assumptions. In SymPy, use symbols(..., positive=True/real=True) and simplify/together/factor/cancel; in Wolfram, prefer FullSimplify[..., Assumptions -> ...]. Many “different-looking” results are equivalent only under assumptions.
+
+[Experience 4] For solving equations/inequalities with parameters, prefer Wolfram's Reduce for full condition sets. SymPy's solve can miss branches; use solveset or reduce_inequalities when appropriate, and verify solutions by substitution.
+
+[Experience 5] For differential equations: try SymPy dsolve for simple ODEs; for harder ODE/PDE or when you need piecewise/parameter conditions, use Wolfram DSolve/NDSolve. Always verify by differentiating and substituting back.
+
+[Experience 6] For numeric verification, increase precision to avoid false negatives (e.g., SymPy evalf(n=50), mpmath.mp.dps=50; Wolfram WorkingPrecision -> 50). Check multiple random points and edge cases (singularities, boundaries, large magnitude).
+
+[Experience 7] Watch for branch cuts (Log, Power, Sqrt, inverse trig). If results disagree, test on representative domains and explicitly choose principal branches; present domain restrictions in the final explanation."""
         
         messages = [
             {"role": "system", "content": system_prompt+"\n\n"+experience},
