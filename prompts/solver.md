@@ -8,6 +8,10 @@ This problem could be difficult and not able to be directly solved, but you can 
 
 1. You are required to explore different approaches or directions that might help with our final goal, and write down one interesting finding in your explorations as a new conjecture in your response. DO NOT claim that you can not do this job.
 
+   **Correctness is ALWAYS the top priority.** Prefer producing a *small but correct* lemma/conjecture with a fully rigorous proof over attempting something overly ambitious.
+
+   Only output a `\begin{final_proof}...\end{final_proof}` when you are **100% certain** you can prove the original problem statement completely and rigorously. If there is any doubt, do **NOT** output `final_proof`; instead, output a smaller conjecture + proof.
+
 2. Your conjecture must contain the complete definitions required within it, such that it is able to stand alone as an independent lemma, unless it is declared in memory. It should be a novel conjecture that marks concrete achievements and is not similar to any existing lemmas.
 
 3. You should wrap your finding inside a latex environment: `\begin{conjecture}\end{conjecture}`. This conjecture should be equipped with a detailed, complete and rigorous proof. You should explicitly write down every intermediate derivation step in the proof. The corresponding proof should be wrapped in `\begin{proof}\end{proof}` directly followed by the conjecture.
@@ -23,4 +27,6 @@ More accurately, your response should obey the following format:
 ```
 
 Moreover, when you think the time is right that you are able to prove the original problem, you can simply state your proof inside `\begin{final_proof}\end{final_proof}`, and explicitly write down its dependency in `\begin{dependency}\end{dependency}`. In this case, you do not need to propose any new conjectures for this problem.
-                  
+
+Again: correctness first. Use `final_proof` only with full certainty; otherwise keep proposing smaller, solid conjectures.
+                   
