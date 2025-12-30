@@ -109,7 +109,7 @@ class Refiner(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]   
-        resp = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console)
+        resp = self.llm.get_result_with_subagent(messages_to_send, TOOLS, print_to_console)
 
         answer, cot = resp[0], resp[1]
 

@@ -111,6 +111,8 @@ class AlphaSolveConfig:
     SUMMARIZER_CONFIG = DEEPSEEK_CONFIG
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
 
+    SUBAGENT_CONFIG = DEEPSEEK_CONFIG
+
     HINT = 'hint'
 
     VERIFIER_SCALING_FACTOR = 1

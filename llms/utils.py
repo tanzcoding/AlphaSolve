@@ -333,6 +333,184 @@ class LLMClient:
 
         return answer_content, reasoning_content
 
+    def get_result_with_subagent(self, messages: List[Dict], tools: List[Dict], print_to_console: bool = False) -> Tuple[str, str]:
+        """
+        基于思维链的多轮工具调用对话（支持子代理），返回 (answer_content, reasoning_content)
+
+        - 将给定的工具列表传入模型，由模型在思维链中主动选择并调用
+        - 内置 run_subagent(task_description) 工具执行器，提供独立的数学研究子代理
+        - 支持多轮（多次）工具调用，直到模型给出最终答案（无 tool_calls）
+        - 每次调用此函数会创建新的执行环境
+
+        Args:
+            messages: 对话历史
+            tools: OpenAI tools 规范的工具列表（其中若包含 name=="math_research_subagent" 则会由本地执行器处理）
+            print_to_console: 是否在控制台打印思维链、工具调用与最终回答
+
+        Returns:
+            Tuple[str, str]: (answer_content, reasoning_content)
+        """
+
+        model_params = self._get_model_params()
+        extra_body = model_params.pop("extra_body", None)
+
+        # 结果累积
+        reasoning_content = ""
+        answer_content = ""
+        
+        if print_to_console:
+            print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n")
+            if 'gpt' in self.model or 'gemini' in self.model or 'claude' in self.model or 'o4' in self.model or 'grok' in self.model or 'o3' in self.model or 'o1' in self.model:
+                print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n")
+
+        # 多轮对话直至没有工具调用（流式处理）
+        max_iterations = 20
+        for _ in range(max_iterations):
+            # 本轮累计缓冲 - 使用列表收集，最后 join
+            rc_parts = []
+            ct_parts = []
+            tool_calls_acc = []  # 以增量方式拼接 tool_calls
+            is_answering = False
+
+            stream = self.client.chat.completions.create(
+                messages=messages,
+                tools=tools,
+                tool_choice='auto',
+                stream=True,
+                **model_params,
+                **({"extra_body": extra_body} if extra_body else {})
+            )
+
+            # 定义 tool_calls 处理函数（复用代码）
+            def process_tool_calls(tc_delta):
+                for i, tc in enumerate(tc_delta):
+                    while len(tool_calls_acc) <= i:
+                        tool_calls_acc.append({'id': None, 'type': 'function', 'function': {'name': '', 'arguments': ''}})
+                    if getattr(tc, 'id', None):
+                        tool_calls_acc[i]['id'] = tc.id
+                    fn = getattr(tc, 'function', None)
+                    if fn:
+                        if getattr(fn, 'name', None):
+                            tool_calls_acc[i]['function']['name'] = fn.name
+                        if getattr(fn, 'arguments', None):
+                            tool_calls_acc[i]['function']['arguments'] += fn.arguments
+
+            # 根据 print_to_console 选择不同的处理逻辑（避免在循环中判断）
+            if print_to_console:
+                for chunk in stream:
+                    delta = chunk.choices[0].delta
+
+                    rc_part = getattr(delta, 'reasoning_content', None)
+                    if rc_part:
+                        if not is_answering:
+                            print(rc_part, end="", flush=True)
+                        rc_parts.append(rc_part)
+
+                    ct_part = getattr(delta, 'content', None)
+                    if ct_part:
+                        if not is_answering:
+                            print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n")
+                            is_answering = True
+                        print(ct_part, end="", flush=True)
+                        ct_parts.append(ct_part)
+
+                    tc_delta = getattr(delta, 'tool_calls', None)
+                    if tc_delta:
+                        process_tool_calls(tc_delta)
+            else:
+                # 不打印时的简化逻辑 - 循环中无任何打印操作
+                for chunk in stream:
+                    delta = chunk.choices[0].delta
+
+                    rc_part = getattr(delta, 'reasoning_content', None)
+                    if rc_part:
+                        rc_parts.append(rc_part)
+
+                    ct_part = getattr(delta, 'content', None)
+                    if ct_part:
+                        ct_parts.append(ct_part)
+
+                    tc_delta = getattr(delta, 'tool_calls', None)
+                    if tc_delta:
+                        process_tool_calls(tc_delta)
+
+            # 使用 join 合并字符串，高效得多
+            rc_buf = ''.join(rc_parts)
+            content_buf = ''.join(ct_parts)
+
+            # 累积到总体
+            if rc_buf:
+                reasoning_content += rc_buf
+            if content_buf:
+                answer_content += content_buf
+
+            # 形成 assistant 历史消息（包含 reasoning_content 与 tool_calls）
+            assistant_entry = {
+                'role': 'assistant',
+                'content': content_buf or '',
+                'reasoning_content': rc_buf or '',
+            }
+            if tool_calls_acc:
+                assistant_entry['tool_calls'] = tool_calls_acc
+            messages.append(assistant_entry)
+
+            # 若没有工具调用则对话结束
+            if not tool_calls_acc:
+                break
+
+            # 处理工具调用
+            if print_to_console:
+                print("\n" + "-" * 10 + "[思维链中工具调用]" + "-" * 10)
+            for tc in tool_calls_acc:
+                name = tc['function']['name']
+                args = json.loads(tc['function']['arguments'] or '{}')
+
+                # 处理 math_research_subagent
+                if name == 'math_research_subagent':
+                    task_description = args.get('task_description', '')
+                    if print_to_console:
+                        print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}")
+                    
+                    # 调用 run_subagent
+                    from .tools import run_subagent
+                    result, error = run_subagent(task_description, print_to_console)
+                    
+                    if print_to_console:
+                        if result:
+                            print(f"[result]\n{result}")
+                        if error:
+                            print(f"[error]\n{error}")
+                    tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
+
+                    # 将本次工具调用的关键信息也纳入 reasoning_content
+                    _log_parts = [f"\n[Tool Call] {name}", f"Task:\n{task_description}"]
+                    if result:
+                        _log_parts.append(f"[result]\n{result}")
+                    if error:
+                        _log_parts.append(f"[error]\n{error}")
+                    reasoning_content += ("\n".join(_log_parts) + "\n")
+                
+                else:
+                    tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
+                    if print_to_console:
+                        print(f"[Tool Call] {name} (not implemented)")
+                    # 也写入 reasoning_content 以便完整复盘
+                    reasoning_content += f"[Tool Call] {name} (not implemented)\n"
+
+                # 追加 tool 结果到消息列表
+                messages.append({
+                    'role': 'tool',
+                    'tool_call_id': tc.get('id'),
+                    'name': name,
+                    'content': tool_content,
+                })
+
+            # 提示继续思考
+            if print_to_console:
+                print("\n" + "-" * 10 + "[继续思考]" + "-" * 10)
+
+        return answer_content, reasoning_content
+
 
 # get_result函数的使用示例
 if __name__ == "__main__":

@@ -126,7 +126,7 @@ class Verifier(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
-        answer, cot = self.llm.get_result_with_tools(messages_to_send, TOOLS, print_to_console = print_to_console)
+        answer, cot = self.llm.get_result_with_subagent(messages_to_send, TOOLS, print_to_console = print_to_console)
         
         if self.print_to_console:
             print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')

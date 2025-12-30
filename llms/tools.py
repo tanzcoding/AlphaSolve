@@ -227,6 +227,63 @@ def run_wolfram(code: str, session=None):
     return output, err
 
 
+def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Optional[str]]:
+    """
+    数学研究子代理执行器
+    
+    独立执行小到中等规模的数学研究任务，使用 ReAct 风格工作流。
+    可自主调用 Python 和 Wolfram Language 工具进行符号计算、数值分析等。
+    
+    Args:
+        task_description: 清晰简洁的数学研究任务描述
+    
+    Returns:
+        (result: str, error: str | None)
+    """
+    result = ""
+    err = None
+    
+    try:
+        # 动态导入以避免循环依赖
+        from .utils import LLMClient
+        from config.agent_config import AlphaSolveConfig
+        
+        # 使用 SUBAGENT_CONFIG 作为子代理配置
+        config = AlphaSolveConfig.SUBAGENT_CONFIG
+        client = LLMClient(config)
+        
+        # 构建子代理的系统提示
+        system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently using a ReAct-style workflow.
+
+You have access to:
+- run_python: Execute Python code with sympy, numpy, scipy, and other scientific libraries
+- run_wolfram: Execute Wolfram Language for symbolic mathematics and advanced computations
+
+Approach:
+1. Understand the problem clearly
+2. Break it down into logical steps
+3. Use computational tools when needed
+4. Provide a clear, concise final answer
+
+Be thorough but efficient. Focus on delivering the correct result."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": task_description}
+        ]
+        
+        # 子代理可以使用 Python 和 Wolfram 工具
+        subagent_tools = [PYTHON_TOOL, WOLFRAM_TOOL]
+        
+        # 调用 get_result_with_tools 执行子代理任务（不打印到控制台）
+        result, reasoning = client.get_result_with_tools(messages, subagent_tools, print_to_console=print_to_console)
+        
+    except Exception:
+        err = traceback.format_exc().strip()
+    
+    return result, err
+
+
 # ===== 定义工具函数规范 =====
 # 定义一个工具列表，告诉AI模型它可以使用的工具
 PYTHON_TOOL = {
@@ -263,4 +320,50 @@ WOLFRAM_TOOL = {
         }
     }
 }
-TOOLS = [PYTHON_TOOL]
+RESEARCH_SUBAGENT_DESCRIPTION = """A specialized autonomous sub-agent for detailed mathematical computations and verifications. This tool is your computational workhorse — DELEGATE *small, concrete sub-tasks* to it instead of doing them yourself.
+
+**CRITICAL (scope): Do NOT hand the entire original problem to the sub-agent.**
+You MUST first decompose the work and delegate only a *well-scoped* piece (one computation / one check / one derivation). Keep each delegation focused, bounded, and verifiable.
+
+**CRITICAL (delegation style): Delegate small tasks early and often.**
+The goal is to offload computational heavy lifting while you keep control of the overall strategy and the final integrated solution.
+
+The sub-agent autonomously:
+- Performs multi-step symbolic derivations, algebraic manipulations, and equation solving using Python (SymPy/NumPy/SciPy) and Wolfram Language
+- Executes numerical computations, optimizations, simulations, and high-precision calculations
+- Verifies conjectures, checks edge cases, validates intermediate results, and explores counterexamples
+- Conducts asymptotic analysis, solves differential equations, and derives intermediate formulas
+- Returns detailed, verified results with working and justification
+
+**What to delegate (small, concrete requests):**
+- “Simplify this expression under these assumptions; return a canonical form.”
+- “Compute/verify this integral/limit/series expansion; show steps.”
+- “Solve this equation/ODE for these parameters; list solution branches.”
+- “Numerically test this claim on these ranges; report counterexamples if any.”
+- “Check edge cases (e.g., x→0, x→∞, parameter boundaries) for this lemma.”
+
+**What NOT to delegate:**
+- “Solve the whole problem.”
+- “Figure out the entire approach/proof.”
+- Dumping the full prompt without narrowing it to a specific computation or verification goal.
+
+**Your role:** Do the high-level decomposition, choose *which* sub-questions to compute/verify, and integrate the results into the final reasoning. Use the sub-agent for concrete computations and checks, not as a replacement for end-to-end problem solving.
+"""
+RESEARCH_SUBAGENT_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'math_research_subagent',
+        'description': RESEARCH_SUBAGENT_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'task_description': {
+                    'type': 'string',
+                    'description': 'A clear and concise description of the mathematical research task to be solved by the sub-agent.'
+                }
+            },
+            'required': ['task_description']
+        }
+    }
+}
+TOOLS = [RESEARCH_SUBAGENT_TOOL]

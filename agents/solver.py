@@ -72,7 +72,7 @@ class Solver(Node):
         messages = prep_res[1]
         shared_context = prep_res[2]
         print_to_console = prep_res[3]
-        answer, cot = self.llm.get_result_with_tools(messages, TOOLS, print_to_console = print_to_console)
+        answer, cot = self.llm.get_result_with_subagent(messages, TOOLS, print_to_console = print_to_console)
 
         if self.print_to_console:
             print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
