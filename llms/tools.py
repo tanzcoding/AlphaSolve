@@ -255,7 +255,7 @@ def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Op
         client = LLMClient(config)
         
         # 构建子代理的系统提示
-        system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently using a ReAct-style workflow.
+        system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently.
 
 You have access to:
 - run_python: Execute Python code with sympy, numpy, scipy, and other scientific libraries
@@ -268,7 +268,8 @@ Approach:
 4. Provide a clear, concise final answer
 
 Be thorough but efficient. Focus on delivering the correct result."""
-        experience = """[Experience 1] For symbolic math, try BOTH SymPy (run_python) and Wolfram Language (run_wolfram) if the first attempt is inconclusive. Many tasks have complementary strengths: SymPy is great for quick algebraic manipulation and programmable workflows; Wolfram is often more robust for hard symbolic transforms.
+        experience = """<experiences>
+[Experience 1] For symbolic math, try BOTH SymPy (run_python) and Wolfram Language (run_wolfram) if the first attempt is inconclusive. Many tasks have complementary strengths: SymPy is great for quick algebraic manipulation and programmable workflows; Wolfram is often more robust for hard symbolic transforms.
 
 [Experience 2] For indefinite integrals (symbolic antiderivatives), Wolfram Language (Integrate) is often more reliable than SymPy for difficult expressions. If SymPy returns an unevaluated Integral / cannot find a closed form, switch to Wolfram; also consider reporting conditions/assumptions (e.g., parameter ranges) that make a closed form possible.
 
@@ -280,7 +281,8 @@ Be thorough but efficient. Focus on delivering the correct result."""
 
 [Experience 6] For numeric verification, increase precision to avoid false negatives (e.g., SymPy evalf(n=50), mpmath.mp.dps=50; Wolfram WorkingPrecision -> 50). Check multiple random points and edge cases (singularities, boundaries, large magnitude).
 
-[Experience 7] Watch for branch cuts (Log, Power, Sqrt, inverse trig). If results disagree, test on representative domains and explicitly choose principal branches; present domain restrictions in the final explanation."""
+[Experience 7] Watch for branch cuts (Log, Power, Sqrt, inverse trig). If results disagree, test on representative domains and explicitly choose principal branches; present domain restrictions in the final explanation.
+</experiences>"""
         
         messages = [
             {"role": "system", "content": system_prompt+"\n\n"+experience},
@@ -434,6 +436,20 @@ RESEARCH_SUBAGENT_DESCRIPTION = """A specialized autonomous sub-agent for detail
 
 **CRITICAL (scope): Do NOT hand the entire original problem to the sub-agent.**
 You MUST first decompose the work and delegate only a *well-scoped* piece (one computation / one check / one derivation). Keep each delegation focused, bounded, and verifiable.
+
+**CRITICAL (division of labor): YOU do high-level reasoning; the sub-agent does the math.**
+- You (the main agent) should focus on: proposing approaches, choosing lemmas, deciding what to compute, and interpreting/organizing results.
+- The sub-agent should focus on: actually computing/simplifying/solving/verifying with Python/Wolfram.
+- Avoid doing step-by-step algebra/calculus manually in the main response. If you find yourself about to “work it out”, STOP and delegate that concrete computation.
+
+Examples of good main-agent text:
+- “I will try transforming the ODE into standard form and ask the sub-agent to solve it.”
+- “I’ll ask the sub-agent to compute this integral and then I’ll analyze the parameter conditions.”
+- “Let’s test the conjectured identity numerically at random points and then attempt symbolic simplification.”
+Examples of bad main-agent behavior:
+- Expanding and simplifying long expressions by hand.
+- Performing multi-line derivative/integral manipulations manually.
+- Claiming an equality without tool-backed verification.
 
 **CRITICAL (delegation style): Delegate small tasks early and often.**
 The goal is to offload computational heavy lifting while you keep control of the overall strategy and the final integrated solution.
