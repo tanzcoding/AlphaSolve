@@ -43,6 +43,7 @@ CATEGORY_LABELS = {
     "answer": "Answer / Summary",
     "metric": "Metric",
     "subagent": "Subagent",
+    "subagent_enter": "Entering Subagent",
     "log": "Log Entry",
 }
 
@@ -169,6 +170,9 @@ def detect_subagent(text: str) -> bool:
 def classify_category(tag: Optional[str], text: str, has_subagent: bool) -> str:
     lowered = text.lower()
     tag_lower = tag.lower() if tag else ""
+    # Check if entering subagent (specific pattern: [subagent] entering subagent...)
+    if tag == "subagent" and "entering subagent" in lowered:
+        return "subagent_enter"
     if has_subagent or "tool call" in lowered:
         return "subagent"
     if "tool call" in lowered or "[tool call]" in lowered or "工具" in lowered:
@@ -660,6 +664,7 @@ summary::-webkit-details-marker {
 .level-error { background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); }
 .level-metric { background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4); }
 .category-badge { border-color: rgba(56, 189, 248, 0.35); color: var(--text); }
+.category-subagent_enter { background: rgba(168, 85, 247, 0.2); border-color: rgba(168, 85, 247, 0.4); }
 .summary-line {
     display: flex;
     flex-wrap: wrap;

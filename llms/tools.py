@@ -248,6 +248,8 @@ def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Op
     result = ""
     err = None
     
+    log_print('[subagent] entering subagent...', print_to_console=print_to_console)
+    
     try:
         # 动态导入以避免循环依赖
         from .utils import LLMClient
