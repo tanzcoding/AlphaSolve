@@ -271,17 +271,15 @@ def build_sections(header_lines: List[str], records: List[LogRecord]) -> Section
             )
         )
 
-    system = root.add_child(Section(title="System", kind="system"))
+    # We render a strict time-ordered *timeline* of sections.
+    # Each contiguous run of a big agent becomes its own section (Solver #1, Verifier #1, Solver #2, ...).
+    system = root.add_child(Section(title="System #1", kind="system"))
 
-    # Create big-agent sections lazily, keep order of first appearance.
-    agent_sections: Dict[str, Section] = {}
-
-    def get_agent_section(name: str) -> Section:
-        if name not in agent_sections:
-            agent_sections[name] = root.add_child(Section(title=name.capitalize(), kind="agent"))
-        return agent_sections[name]
+    agent_counts: Dict[str, int] = {k: 0 for k in BIG_AGENTS}
+    system_count = 1
 
     current_agent: Section = system
+    current_agent_key: str = "system"
     stack: List[Section] = [current_agent]
     pending_subagent_tool: Optional[Section] = None
 
@@ -306,6 +304,14 @@ def build_sections(header_lines: List[str], records: List[LogRecord]) -> Section
     def in_subagent() -> bool:
         return any(s.kind == "subagent" for s in stack)
 
+    def start_agent_segment(agent_key: str) -> Section:
+        nonlocal system_count
+        if agent_key == "system":
+            system_count += 1
+            return root.add_child(Section(title=f"System #{system_count}", kind="system"))
+        agent_counts[agent_key] = agent_counts.get(agent_key, 0) + 1
+        return root.add_child(Section(title=f"{agent_key.capitalize()} #{agent_counts[agent_key]}", kind="agent"))
+
     for rec in records:
         msg0 = rec.first_line()
         tag = _detect_module_tag(_strip_emoji_prefix(msg0) if msg0 else "")
@@ -313,8 +319,9 @@ def build_sections(header_lines: List[str], records: List[LogRecord]) -> Section
 
         # Switch big-agent context unless we're currently inside a subagent.
         agent_hint = infer_agent_from_message(tag_l, rec.msg)
-        if agent_hint in BIG_AGENTS and not in_subagent():
-            current_agent = get_agent_section(agent_hint)
+        if agent_hint in BIG_AGENTS and not in_subagent() and current_agent_key != agent_hint:
+            current_agent = start_agent_segment(agent_hint)
+            current_agent_key = agent_hint
             stack = [current_agent]
             pending_subagent_tool = None
 
