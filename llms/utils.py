@@ -4,6 +4,7 @@ from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
 #from config.agent_config import DEEPSEEK_CONFIG, MOONSHOT_CONFIG, VOLCANO_CONFIG, OPENROUTER_CONFIG, CUSTOM_LLM_CONFIG
 from .tools import *
+from utils.logger import log_print
 
 class LLMClient:
     def __init__(self, config: Dict):
@@ -72,23 +73,23 @@ class LLMClient:
         is_answering = False  # 是否进入回复阶段
 
         if print_to_console:
-            print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n")
+            log_print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n", print_to_console=print_to_console)
             if 'gpt' in self.model or 'gemini' in self.model or 'claude' in self.model or 'o4' in self.model or 'grok' in self.model or 'o3' in self.model or 'o1' in self.model:
-                print("此模型不返回思维链内容，仅打印最终回答\n")
+                log_print("此模型不返回思维链内容，仅打印最终回答\n", print_to_console=print_to_console)
             for chunk in completion:
                 delta = chunk.choices[0].delta
                 if hasattr(delta, "reasoning_content") and delta.reasoning_content is not None:
                     if not is_answering:
-                        print(delta.reasoning_content, end="", flush=True)
+                        log_print(delta.reasoning_content, end="", print_to_console=print_to_console)
                     reasoning_content += delta.reasoning_content
                 
                 # 收到content，开始进行回复
                 if hasattr(delta, "content") and delta.content:
                     if not is_answering:
-                        print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n")
+                        log_print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n", print_to_console=print_to_console)
                         is_answering = True
-                    print(delta.content, end="", flush=True)
-                    answer_content += delta.content    
+                    log_print(delta.content, end="", print_to_console=print_to_console)
+                    answer_content += delta.content
         else:
             # 当 print_to_console=False 时，只收集内容，不打印
             for chunk in completion:
@@ -132,22 +133,22 @@ class LLMClient:
         wolfram_session = None
         
         if print_to_console:
-            print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n")
+            log_print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n", print_to_console=print_to_console)
             if 'gpt' in self.model or 'gemini' in self.model or 'claude' in self.model or 'o4' in self.model or 'grok' in self.model or 'o3' in self.model or 'o1' in self.model:
-                print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n")
+                log_print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n", print_to_console=print_to_console)
         
         # 检查是否需要 Wolfram session
         needs_wolfram = any(tool.get('function', {}).get('name') == 'run_wolfram' for tool in tools)
         if needs_wolfram:
             if print_to_console:
-                print("[正在启动 Wolfram Language Session...]\n")
+                log_print("[正在启动 Wolfram Language Session...]\n", print_to_console=print_to_console)
             try:
                 wolfram_session = WolframLanguageSession()
                 if print_to_console:
-                    print("[Wolfram Language Session 已启动]\n")
+                    log_print("[Wolfram Language Session 已启动]\n", print_to_console=print_to_console)
             except Exception as e:
                 if print_to_console:
-                    print(f"[警告] Wolfram session 启动失败: {e}\n")
+                    log_print(f"[警告] Wolfram session 启动失败: {e}\n", print_to_console=print_to_console)
 
         # 多轮对话直至没有工具调用（流式处理）
         max_iterations = 20
@@ -190,15 +191,15 @@ class LLMClient:
                         rc_part = getattr(delta, 'reasoning_content', None)
                         if rc_part:
                             if not is_answering:
-                                print(rc_part, end="", flush=True)
+                                log_print(rc_part, end="", print_to_console=print_to_console)
                             rc_parts.append(rc_part)
 
                         ct_part = getattr(delta, 'content', None)
                         if ct_part:
                             if not is_answering:
-                                print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n")
+                                log_print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n", print_to_console=print_to_console)
                                 is_answering = True
-                            print(ct_part, end="", flush=True)
+                            log_print(ct_part, end="", print_to_console=print_to_console)
                             ct_parts.append(ct_part)
 
                         tc_delta = getattr(delta, 'tool_calls', None)
@@ -247,7 +248,7 @@ class LLMClient:
 
                 # 处理工具调用
                 if print_to_console:
-                    print("\n" + "-" * 10 + "[思维链中工具调用]" + "-" * 10)
+                    log_print("\n" + "-" * 10 + "[思维链中工具调用]" + "-" * 10, print_to_console=print_to_console)
                 for tc in tool_calls_acc:
                     name = tc['function']['name']
                     args = json.loads(tc['function']['arguments'] or '{}')
@@ -256,15 +257,15 @@ class LLMClient:
                     if name == 'run_python':
                         code = args.get('code', '')
                         if print_to_console:
-                            print(f"[Tool Call] run_python\nCode:\n{code}")
+                            log_print(f"[Tool Call] run_python\nCode:\n{code}", print_to_console=print_to_console)
                         # 使用持久化环境执行代码
                         # 默认 5 分钟超时；若超时则 run_python 会返回 error=="timeout" 并回滚本次执行对 env 的键级别修改
                         stdout, error = run_python(code, python_env, timeout_seconds=300)
                         if print_to_console:
                             if stdout:
-                                print(f"[stdout]\n{stdout}")
+                                log_print(f"[stdout]\n{stdout}", print_to_console=print_to_console)
                             if error:
-                                print(f"[error]\n{error}")
+                                log_print(f"[error]\n{error}", print_to_console=print_to_console)
                         tool_content = json.dumps({'stdout': stdout, 'error': error}, ensure_ascii=False)
 
                         # 将本次工具调用的关键信息也纳入 reasoning_content
@@ -279,7 +280,7 @@ class LLMClient:
                     elif name == 'run_wolfram':
                         code = args.get('code', '')
                         if print_to_console:
-                            print(f"[Tool Call] run_wolfram\nCode:\n{code}")
+                            log_print(f"[Tool Call] run_wolfram\nCode:\n{code}", print_to_console=print_to_console)
                         
                         if wolfram_session is None:
                             error = "Wolfram session not available"
@@ -288,9 +289,9 @@ class LLMClient:
                             output, error  = run_wolfram(code, wolfram_session)
                         if print_to_console:
                             if output:
-                                print(f"[output]\n{output}")
+                                log_print(f"[output]\n{output}", print_to_console=print_to_console)
                             if error:
-                                print(f"[error]\n{error}")
+                                log_print(f"[error]\n{error}", print_to_console=print_to_console)
                         tool_content = json.dumps({'output': output, 'error': error}, ensure_ascii=False)
 
                         # 将本次工具调用的关键信息也纳入 reasoning_content
@@ -304,7 +305,7 @@ class LLMClient:
                     else:
                         tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
                         if print_to_console:
-                            print(f"[Tool Call] {name} (not implemented)")
+                            log_print(f"[Tool Call] {name} (not implemented)", print_to_console=print_to_console)
                         # 也写入 reasoning_content 以便完整复盘
                         reasoning_content += f"[Tool Call] {name} (not implemented)\n"
 
@@ -318,7 +319,7 @@ class LLMClient:
 
                 # 提示继续思考
                 if print_to_console:
-                    print("\n" + "-" * 10 + "[继续思考]" + "-" * 10)
+                    log_print("\n" + "-" * 10 + "[继续思考]" + "-" * 10, print_to_console=print_to_console)
         
         finally:
             # 清理 Wolfram session
@@ -326,10 +327,10 @@ class LLMClient:
                 try:
                     wolfram_session.terminate()
                     if print_to_console:
-                        print("\n[Wolfram Language Session Terminated]")
+                        log_print("\n[Wolfram Language Session Terminated]", print_to_console=print_to_console)
                 except Exception as e:
                     if print_to_console:
-                        print(f"\n[Warning] Error terminating Wolfram session: {e}")
+                        log_print(f"\n[Warning] Error terminating Wolfram session: {e}", print_to_console=print_to_console)
 
         return answer_content, reasoning_content
 
@@ -359,9 +360,9 @@ class LLMClient:
         answer_content = ""
         
         if print_to_console:
-            print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n")
+            log_print("\n" + "=" * 20 + "思维链内容" + "=" * 20 + "\n", print_to_console=print_to_console)
             if 'gpt' in self.model or 'gemini' in self.model or 'claude' in self.model or 'o4' in self.model or 'grok' in self.model or 'o3' in self.model or 'o1' in self.model:
-                print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n")
+                log_print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n", print_to_console=print_to_console)
 
         # 多轮对话直至没有工具调用（流式处理）
         max_iterations = 20
@@ -403,15 +404,15 @@ class LLMClient:
                     rc_part = getattr(delta, 'reasoning_content', None)
                     if rc_part:
                         if not is_answering:
-                            print(rc_part, end="", flush=True)
+                            log_print(rc_part, end="", print_to_console=print_to_console)
                         rc_parts.append(rc_part)
 
                     ct_part = getattr(delta, 'content', None)
                     if ct_part:
                         if not is_answering:
-                            print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n")
+                            log_print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n", print_to_console=print_to_console)
                             is_answering = True
-                        print(ct_part, end="", flush=True)
+                        log_print(ct_part, end="", print_to_console=print_to_console)
                         ct_parts.append(ct_part)
 
                     tc_delta = getattr(delta, 'tool_calls', None)
@@ -460,7 +461,7 @@ class LLMClient:
 
             # 处理工具调用
             if print_to_console:
-                print("\n" + "-" * 10 + "[思维链中工具调用]" + "-" * 10)
+                log_print("\n" + "-" * 10 + "[思维链中工具调用]" + "-" * 10, print_to_console=print_to_console)
             for tc in tool_calls_acc:
                 name = tc['function']['name']
                 args = json.loads(tc['function']['arguments'] or '{}')
@@ -469,7 +470,7 @@ class LLMClient:
                 if name == 'math_research_subagent':
                     task_description = args.get('task_description', '')
                     if print_to_console:
-                        print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}")
+                        log_print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}", print_to_console=print_to_console)
                     
                     # 调用 run_subagent
                     from .tools import run_subagent
@@ -477,9 +478,9 @@ class LLMClient:
                     
                     if print_to_console:
                         if result:
-                            print(f"[result]\n{result}")
+                            log_print(f"[result]\n{result}", print_to_console=print_to_console)
                         if error:
-                            print(f"[error]\n{error}")
+                            log_print(f"[error]\n{error}", print_to_console=print_to_console)
                     tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
 
                     # 将本次工具调用的关键信息也纳入 reasoning_content
@@ -494,16 +495,16 @@ class LLMClient:
                 elif name == 'solver_format_guard':
                     candidate_response = args.get('candidate_response', '')
                     if print_to_console:
-                        print(f"[Tool Call] solver_format_guard\nCandidate response length: {len(candidate_response)}")
+                        log_print(f"[Tool Call] solver_format_guard\nCandidate response length: {len(candidate_response)}", print_to_console=print_to_console)
 
                     from .tools import solver_format_guard
                     result, error = solver_format_guard(candidate_response)
 
                     if print_to_console:
                         if result:
-                            print(f"[result]\n{result}")
+                            log_print(f"[result]\n{result}", print_to_console=print_to_console)
                         if error:
-                            print(f"[error]\n{error}")
+                            log_print(f"[error]\n{error}", print_to_console=print_to_console)
 
                     tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
 
@@ -519,7 +520,7 @@ class LLMClient:
                 else:
                     tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
                     if print_to_console:
-                        print(f"[Tool Call] {name} (not implemented)")
+                        log_print(f"[Tool Call] {name} (not implemented)", print_to_console=print_to_console)
                     # 也写入 reasoning_content 以便完整复盘
                     reasoning_content += f"[Tool Call] {name} (not implemented)\n"
 
@@ -533,7 +534,7 @@ class LLMClient:
 
             # 提示继续思考
             if print_to_console:
-                print("\n" + "-" * 10 + "[继续思考]" + "-" * 10)
+                log_print("\n" + "-" * 10 + "[继续思考]" + "-" * 10, print_to_console=print_to_console)
 
         return answer_content, reasoning_content
 
@@ -548,9 +549,9 @@ if __name__ == "__main__":
         'timeout': 3600,
         'temperature': 1.0,
         }
-    print("测试:")
+    log_print("测试:", print_to_console=True)
     llm = LLMClient(CONFIG)
     messages = [{"role": "user", "content": "1341*23412-1389=?"}]
     response = llm.get_result_with_tools(messages, TOOLS, print_to_console=True)
-    print(response[1])
+    log_print(response[1], print_to_console=True)
     

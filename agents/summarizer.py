@@ -7,6 +7,7 @@ from agents.utils import build_conjuecture_helper
 from config.agent_config import AlphaSolveConfig
 
 from llms.utils import LLMClient
+from utils.logger import log_print
 
 from pocketflow import Node
 
@@ -37,8 +38,7 @@ class Summarizer(Node):
  
         shared[AlphaSolveConfig.RESULT_SUMMARY] = json.dumps(result_map)
 
-        if self.print_to_console:
-            print('[summarizer] summarization done ...')
+        log_print('[summarizer] summarization done ...', print_to_console=self.print_to_console)
 
 
 def create_summarizer_agent(problem, prompt_file_path, print_to_console):

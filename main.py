@@ -1,16 +1,17 @@
-
 from workflow import AlphaSolve
+from utils.logger import log_print
 
 
 if __name__== "__main__" :
 
-    print('[start] alpha solve agent ...')
+    log_print('[start] alpha solve agent ...')
 
     alpha = AlphaSolve(print_to_console=True)
     solution = alpha.do_research()
 
-    print(solution)
+    log_print(solution)
 
-    print('[exit] alpha solve agent ...')
+    log_print('[exit] alpha solve agent ...')
+
 
 

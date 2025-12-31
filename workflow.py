@@ -4,6 +4,7 @@ from agents.utils import load_prompt_from_file
 from config.agent_config import AlphaSolveConfig
 from agents.shared_context import SharedContext
 from openai import OpenAI
+from utils.logger import log_print
 
 from agents.solver import create_solver_agent
 from agents.verifier import create_verifier_agent
@@ -34,12 +35,10 @@ class AlphaSolve:
 
     def __create_research_flow(self):  ## 主类入口
 
-        if self.print_to_console:
-            print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH)
+        log_print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH, print_to_console=self.print_to_console)
         solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH, print_to_console=self.print_to_console)
 
-        if self.print_to_console:
-            print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH)
+        log_print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH, print_to_console=self.print_to_console)
         verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, print_to_console=self.print_to_console)
        
         refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH, print_to_console=self.print_to_console)
@@ -79,12 +78,11 @@ class AlphaSolve:
         try:
             result = self.shared[AlphaSolveConfig.RESULT_SUMMARY]
 
-            print('alpha solve result is: ', result)
+            log_print('alpha solve result is: ', result, print_to_console=True)
 
             return result
         except KeyError:
-            if self.print_to_console:
-                print('error execute on alpha solve, no summary')
+            log_print('error execute on alpha solve, no summary', print_to_console=self.print_to_console)
             return None
 
 

@@ -3,3 +3,4 @@ __pycache__/
 benchmark_results*
 problem*
 pocketflow/
+logs/

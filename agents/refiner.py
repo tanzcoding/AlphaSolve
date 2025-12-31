@@ -7,6 +7,7 @@ from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
 from llms.utils import *
+from utils.logger import log_print
 
 from pocketflow import Node
 
@@ -28,8 +29,7 @@ class Refiner(Node):
 
     def prep(self,shared): 
 
-        if self.print_to_console:
-            print('[refiner] building refiner context...')
+        log_print('[refiner] building refiner context...', print_to_console=self.print_to_console)
 
         iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
 
@@ -39,8 +39,7 @@ class Refiner(Node):
         conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
 
-        if self.print_to_console:
-            print('[refiner] in refiner ..., building context done ...')
+        log_print('[refiner] in refiner ..., building context done ...', print_to_console=self.print_to_console)
  
         return AlphaSolveConfig.NORMAL, conj, shared_context.build_context_for_conjecture(conj), shared_context, self.print_to_console
 
@@ -64,12 +63,10 @@ class Refiner(Node):
     def post(self, shared, prep_res, exec_res): 
 
         if not prep_res:
-            if self.print_to_console:
-                print('[refiner] illegal prep_res in refiner post')
+            log_print('[refiner] illegal prep_res in refiner post', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR
         if not exec_res: ## 应该是出错了, 重新 refine 一次吧, 没啥意义, 容错用的
-            if self.print_to_console:
-                print('[refiner] illegal exec_res in refiner post')
+            log_print('[refiner] illegal exec_res in refiner post', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
@@ -84,20 +81,17 @@ class Refiner(Node):
 
         if is_conjecture_valid:
             if next_conjecture:
-                if self.print_to_console:
-                    print('[refiner] refine success, new conjecture generated ...')
+                log_print('[refiner] refine success, new conjecture generated ...', print_to_console=self.print_to_console)
                 ## 后续都基于这条 conj 工作
                 shared[AlphaSolveConfig.CURRENT_CONJECTURE] = next_conjecture
 
                 return AlphaSolveConfig.REFINE_SUCCESS
             else:
-                if self.print_to_console:
-                    print('[refiner] refine failed, no new conjecture generated ...')
+                log_print('[refiner] refine failed, no new conjecture generated ...', print_to_console=self.print_to_console)
                 return  AlphaSolveConfig.EXIT_ON_ERROR
 
-        else: ## 代表此时 refiner 觉得猜想不对，要返回solver    
-            if self.print_to_console:
-                print('[refiner] conjecture wrong, need to go back to solver ...')
+        else: ## 代表此时 refiner 觉得猜想不对，要返回solver
+            log_print('[refiner] conjecture wrong, need to go back to solver ...', print_to_console=self.print_to_console)
             return AlphaSolveConfig.CONJECTURE_WRONG
  
 
@@ -113,8 +107,7 @@ class Refiner(Node):
 
         answer, cot = resp[0], resp[1]
 
-        if self.print_to_console:
-            print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
+        log_print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
 
         conj2, proof = self.__extract_from_model(answer)
 

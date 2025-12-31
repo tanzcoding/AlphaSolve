@@ -7,6 +7,7 @@ from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
 from llms.utils import *
 from config.agent_config import AlphaSolveConfig
+from utils.logger import log_print
 
 from pocketflow import Node
 
@@ -36,8 +37,7 @@ class Solver(Node):
         ## 处理异常情况
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
         if iteration == 0:   ## solver 的迭代耗尽了
-            if self.print_to_console:
-                print('[solver] solver quota exausted ...')
+            log_print('[solver] solver quota exausted ...', print_to_console=self.print_to_console)
             return AlphaSolveConfig.SOLVER_EXAUSTED, None, None, self.print_to_console
         
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
@@ -59,8 +59,7 @@ class Solver(Node):
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         if len(prep_res) < 4:
-            if self.print_to_console:
-                print('illegal prep_res with length: ', len(prep_res))
+            log_print('illegal prep_res with length: ', len(prep_res), print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         code = prep_res[0]
@@ -75,8 +74,7 @@ class Solver(Node):
         # Solver 允许使用子代理 + 格式提醒/校验工具（参见 llms/tools.py）
         answer, cot = self.llm.get_result_with_subagent(messages, SOLVER_TOOLS, print_to_console = print_to_console)
 
-        if self.print_to_console:
-            print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
+        log_print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
 
         conj = self.__build_conjecture(shared_context, answer, cot)
 
@@ -87,21 +85,18 @@ class Solver(Node):
         
         ## 处理异常情况
         if not exec_res or len(exec_res) == 0:
-            if self.print_to_console:
-                print('[solver] illegal exec_res in solver post')
+            log_print('[solver] illegal exec_res in solver post', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
-            if self.print_to_console:
-                print('[solver] solver exhausted during post ...')
+            log_print('[solver] solver exhausted during post ...', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
 
         # 不知道为什么没有生成引理, 直接重新开始
         if not exec_res[1]:
-            if self.print_to_console:
-                print('[solver] no conjecture generated ...')
+            log_print('[solver] no conjecture generated ...', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR
         
         
@@ -115,13 +110,11 @@ class Solver(Node):
 
         conj = exec_res[1]
 
-        if self.print_to_console:
-            print('[solver] putting conjecture into context: ', conj.conjecture)
+        log_print('[solver] putting conjecture into context: ', conj.conjecture, print_to_console=self.print_to_console)
 
         shared[AlphaSolveConfig.CURRENT_CONJECTURE] = conj
 
-        if self.print_to_console:
-            print('[solver] solver generated new conjecture ...')
+        log_print('[solver] solver generated new conjecture ...', print_to_console=self.print_to_console)
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
@@ -134,8 +127,7 @@ class Solver(Node):
         if context:
             tmp = tmp + '\n' + CONTEXT_PREFIX.replace('{context_content}', context)    
 
-        if self.print_to_console:
-            print('final solver prompt is: \n', tmp)
+        log_print('final solver prompt is: \n', tmp, print_to_console=self.print_to_console)
     
         return tmp
 

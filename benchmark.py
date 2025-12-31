@@ -10,6 +10,7 @@ from datetime import datetime
 from workflow import AlphaSolve
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
+from utils.logger import log_print
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -88,11 +89,11 @@ def run_once(problem_text: str, gold_text: str, console_lock):
         has_print_permission = console_lock.acquire(blocking=False)
 
     if has_print_permission:
-        print('[benchmark-worker] begin')
+        log_print('[benchmark-worker] begin', print_to_console=has_print_permission)
 
     try:
         if has_print_permission:
-            print(f"[benchmark-worker] print_to_console={has_print_permission} ...")
+            log_print(f"[benchmark-worker] print_to_console={has_print_permission} ...", print_to_console=has_print_permission)
 
         # 执行 AlphaSolve，传入打印权限
         # 注意：由于工具调用可能耗时很长，我们在 AlphaSolve 内部不会一直持有锁
@@ -108,7 +109,7 @@ def run_once(problem_text: str, gold_text: str, console_lock):
                 pass
 
     if has_print_permission:
-        print('[benchmark-worker] end, evaluate')
+        log_print('[benchmark-worker] end, evaluate', print_to_console=has_print_permission)
 
     # Fallbacks: treat None/empty as incorrect
     if not solution_text:
@@ -126,7 +127,7 @@ def run_once(problem_text: str, gold_text: str, console_lock):
     elapsed = time.time() - t0
 
     if has_print_permission:
-        print('[benchmark-worker] end')
+        log_print('[benchmark-worker] end', print_to_console=has_print_permission)
 
     return {
         "elapsed_sec": elapsed,
@@ -154,13 +155,13 @@ def main():
     results = []
     correct_count = 0
 
-    print(f"[benchmark] starting {args.runs} runs ...")
+    log_print(f"[benchmark] starting {args.runs} runs ...", print_to_console=True)
 
     # 多进程并行：避免多线程共享同一进程带来的 GIL/CPU 抢占与 stdout 交错。
     max_worker_num = max(1, (os.cpu_count() or 1) - 2)
     futures = [ ]
 
-    print(f"[benchmark] starting {max_worker_num} workers for parallel ...")
+    log_print(f"[benchmark] starting {max_worker_num} workers for parallel ...", print_to_console=True)
 
     # 跨进程共享的 console lock：确保同一时刻只有一个 AlphaSolve 能打印。
     # 使用 Manager().Lock()，可在 Windows spawn 模式下安全传递给子进程。
@@ -171,7 +172,7 @@ def main():
 
 
     for i in range(1, args.runs + 1):
-        print(f"[benchmark] run {i}/{args.runs}")
+        log_print(f"[benchmark] run {i}/{args.runs}", print_to_console=True)
 
         future = executor.submit(run_once, problem_text, gold_text, console_lock)
         futures.append(future)
@@ -185,7 +186,7 @@ def main():
             data = fut.result()
             results.append(data)
             finished += 1
-            print(f"[benchmark] finished {finished}/{len(futures)}")
+            log_print(f"[benchmark] finished {finished}/{len(futures)}", print_to_console=True)
             if data.get("correct"):
                 correct_count += 1
         except Exception as exc:
@@ -197,7 +198,7 @@ def main():
                 "correct": False,
                 "evaluator_raw": str(exc),
             })
-            print(f"[benchmark] exception from worker: {exc}")
+            log_print(f"[benchmark] exception from worker: {exc}", print_to_console=True)
 
     executor.shutdown(wait=True)
     try:
@@ -214,15 +215,15 @@ def main():
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
-    print("[benchmark] summary:")
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    log_print("[benchmark] summary:", print_to_console=True)
+    log_print(json.dumps(summary, ensure_ascii=False, indent=2), print_to_console=True)
 
     out_path = args.out or f"benchmark_results_{int(time.time())}.json"
     payload = {"summary": summary, "results": results}
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
-    print(f"[benchmark] detailed results saved to: {out_path}")
+    log_print(f"[benchmark] detailed results saved to: {out_path}", print_to_console=True)
 
 
 if __name__ == "__main__":

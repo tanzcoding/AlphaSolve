@@ -8,6 +8,7 @@ from agents.utils import load_prompt_from_file
 from llms.kimi import KimiClient
 from llms.deepseek import DeepSeekClient
 from config.agent_config import AlphaSolveConfig
+from utils.logger import log_print
 
 from pocketflow import Node
 
@@ -41,14 +42,14 @@ class Solver(Node):
         iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
 
         if iteration == 0:   ## solver 的迭代耗尽了
-            print('[solver] solver quota exausted ...')
+            log_print('[solver] solver quota exausted ...', print_to_console=True)
             return AlphaSolveConfig.SOLVER_EXAUSTED, shared_context, hint
         else:
 
             ## 这里需要 flush 一下 verifier 的quota
-            print('[solver] flush verify and refine round to: ', )
-            shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = 
-            return AlphaSolveConfig.NORMAL, shared_context, hint    
+            log_print('[solver] flush verify and refine round to: ', print_to_console=True)
+            shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] =
+            return AlphaSolveConfig.NORMAL, shared_context, hint
  
     def exec(self, prep_res): ## 执行主要的逻辑
   
@@ -56,7 +57,7 @@ class Solver(Node):
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         if len(prep_res) < 3:
-            print('illegal prep_res with length: ', len(prep_res))
+            log_print('illegal prep_res with length: ', len(prep_res), print_to_console=True)
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         code = prep_res[0]
@@ -87,7 +88,7 @@ class Solver(Node):
 
         conj = exec_res[1]
 
-        print('[solver] putting conjecture into context: ', conj.conjecture)
+        log_print('[solver] putting conjecture into context: ', conj.conjecture, print_to_console=True)
 
         shared[AlphaSolveConfig.CURRENT_CONJECTURE] = conj
 
@@ -104,7 +105,7 @@ class Solver(Node):
 
         answer, cot = resp[0], resp[1]
 
-        print('using:', time.time() - b, len(answer), len(cot))
+        log_print('using:', time.time() - b, len(answer), len(cot), print_to_console=True)
 
         conj = self.__build_conjecture(shared_context, answer, cot)
 
@@ -120,7 +121,7 @@ class Solver(Node):
         if context:
             tmp = tmp + '\n' + CONTEXT_PREFIX.replace('{context_content}', context)    
 
-        print('final solver prompt is: \n', tmp)
+        log_print('final solver prompt is: \n', tmp, print_to_console=True)
     
         return tmp
 

@@ -5,6 +5,7 @@ from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
 from llms.utils import *
+from utils.logger import log_print
 
 from pocketflow import Node
 
@@ -24,17 +25,15 @@ class Verifier(Node):
 
     def prep(self, shared): 
 
-        if self.print_to_console:
-            print('[verifier]in verifier ..., begin to build context ...')
+        log_print('[verifier]in verifier ..., begin to build context ...', print_to_console=self.print_to_console)
 
-        current_conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE] 
+        current_conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
         shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
 
-        reasoning_path = shared_context.build_context_for_conjecture(current_conj)        
+        reasoning_path = shared_context.build_context_for_conjecture(current_conj)
         print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
 
-        if self.print_to_console:
-            print('[verifier] in verifier ..., building context done ...')
+        log_print('[verifier] in verifier ..., building context done ...', print_to_console=self.print_to_console)
         
         return AlphaSolveConfig.NORMAL, current_conj, reasoning_path, shared_context, print_to_console
 
@@ -61,8 +60,7 @@ class Verifier(Node):
 
         for i in range(AlphaSolveConfig.VERIFIER_SCALING_FACTOR):
             is_valid, review, cot = self.__verify(current_conj, reasoning_path, print_to_console)
-            if self.print_to_console:
-                print('[verifier] verifier test for iteration ', i, ' and result is: ', is_valid)
+            log_print('[verifier] verifier test for iteration ', i, ' and result is: ', is_valid, print_to_console=self.print_to_console)
 
             if not is_valid: ## 发现错误就直接退出了, 其实也可以不退出, 看看多次能否发现不同的错误
                 result.append((is_valid, review, cot))
@@ -88,15 +86,13 @@ class Verifier(Node):
         ## post 做两件事情: (1) 返回决策(退出: 如果生成了 theorem, 改进: 走到refiner, 正确: 走到 solver ); (2) 把结果 submit 到 shared_context 里头
 
         if not exec_res or len(exec_res) < 6: ## 退出
-            if self.print_to_console:
-                print('[verifier] illegal input in verifier exec')
+            log_print('[verifier] illegal input in verifier exec', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         code, valid_conj, answer, cot, current_conj, shared_context = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4], exec_res[5]
  
         if code != AlphaSolveConfig.NORMAL:
-            if self.print_to_console:
-                print('[verifier] verifier encounter error ...')
+            log_print('[verifier] verifier encounter error ...', print_to_console=self.print_to_console)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         
@@ -105,17 +101,14 @@ class Verifier(Node):
         if valid_conj:  ## 此时说明验证通过了, 生成了正确的conj
             shared_context.submit(current_conj)
             if current_conj.is_theorem: ## 说明问题已经解决了
-                if self.print_to_console:
-                    print('[verifier] theorem proved successfully ...')
+                log_print('[verifier] theorem proved successfully ...', print_to_console=self.print_to_console)
                 return AlphaSolveConfig.DONE
             else: ## 说明引理正确但是还没有解决问题, 此时返回 solver
-                if self.print_to_console:
-                    print('[verifier] conjecture verified successfully ...')
+                log_print('[verifier] conjecture verified successfully ...', print_to_console=self.print_to_console)
                 return AlphaSolveConfig.CONJECTURE_VERIFIED
         else:
             current_conj.review = answer
-            if self.print_to_console:
-                print('[verifier] conjecture unverified, need refine ...')
+            log_print('[verifier] conjecture unverified, need refine ...', print_to_console=self.print_to_console)
             return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
     def __verify(self, current_conj, reasoning_path, print_to_console):
@@ -128,8 +121,7 @@ class Verifier(Node):
         ]
         answer, cot = self.llm.get_result_with_subagent(messages_to_send, TOOLS, print_to_console = print_to_console)
         
-        if self.print_to_console:
-            print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}')
+        log_print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
 
         if VERIFY_RESULT_VALID in answer:
             return True, answer, cot

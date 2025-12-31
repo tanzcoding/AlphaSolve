@@ -11,6 +11,7 @@ import json
 from typing import Optional, Tuple
 from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
+from utils.logger import log_print
 
 
 # NOTE:
@@ -159,6 +160,8 @@ def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple
                 # 评估并输出最后的表达式
                 result = eval(compile(ast.Expression(body=last_expr.value), '<string>', 'eval'), env, env)
                 if result is not None:
+                    # Use built-in print here since it's executed in the user's code context
+                    # This should go to the captured stdout buffer
                     print(repr(result))
             else:
                 # 没有表达式在最后，正常执行
