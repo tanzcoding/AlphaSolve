@@ -1,6 +1,7 @@
 import os
+from llms.tools import RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL, PYTHON_TOOL, WOLFRAM_TOOL
 
-# 统一的运行时 CONFIG（始终开启“思考/推理”能力，不考虑关闭）
+# 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
 # 说明：
 # - 不同供应商开启思考模式的方式已写入 params 字段中，无需在运行时做条件判断。
 # - 只需在此处切换 base_url / api_key / model，并按供应商要求设置 params。
@@ -16,6 +17,19 @@ DEEPSEEK_CONFIG = {
     'timeout': 3600,
     'temperature': 1.0,
     'params': {}
+}
+
+PARASAIL_CONFIG = {
+    'base_url': 'https://api.parasail.io/v1',
+    'api_key': lambda: os.getenv('PARASAIL_API_KEY'),
+    # DeepSeek：通过特定模型名启用思考模式
+    'model': 'deepseek-ai/DeepSeek-V3.2',
+    'timeout': 3600,
+    'params': {
+        'extra_body': {
+            'enable_thinking': True
+        }
+    }
 }
 
 # Moonshot 官方
@@ -99,19 +113,40 @@ class AlphaSolveConfig:
     REFINER = 'refiner'
 
     ## 在这里设置 AlphaSolve 使用的 LLM 配置
-    REFINER_CONFIG = DEEPSEEK_CONFIG
-    REFINER_PROMPT_PATH='prompts/refiner.md'
-
-    SOLVER_CONFIG = DEEPSEEK_CONFIG
+    
+    # Solver 可以使用 subagent 和 format_guard
+    SOLVER_CONFIG = {
+        **DEEPSEEK_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL]
+    }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
-    VERIFIER_CONFIG = DEEPSEEK_CONFIG
+    # Verifier 可以使用 subagent
+    VERIFIER_CONFIG = {
+        **DEEPSEEK_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL]
+    }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    SUMMARIZER_CONFIG = DEEPSEEK_CONFIG
+    # Refiner 可以使用 subagent
+    REFINER_CONFIG = {
+        **DEEPSEEK_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL]
+    }
+    REFINER_PROMPT_PATH='prompts/refiner.md'
+
+    # Summarizer 不使用工具
+    SUMMARIZER_CONFIG = {
+        **DEEPSEEK_CONFIG,
+        'tools': None
+    }
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
 
-    SUBAGENT_CONFIG = DEEPSEEK_CONFIG
+    # Subagent 可以使用 Python 和 Wolfram
+    SUBAGENT_CONFIG = {
+        **DEEPSEEK_CONFIG,
+        'tools': [PYTHON_TOOL, WOLFRAM_TOOL]
+    }
 
     HINT = 'hint'
 

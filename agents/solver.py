@@ -5,7 +5,7 @@ from agents.shared_context import CONTEXT_PREFIX
 
 from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
-from llms.utils import *
+from llms.utils import LLMClient
 from config.agent_config import AlphaSolveConfig
 from utils.logger import log_print
 
@@ -71,8 +71,8 @@ class Solver(Node):
         messages = prep_res[1]
         shared_context = prep_res[2]
         print_to_console = prep_res[3]
-        # Solver 允许使用子代理 + 格式提醒/校验工具（参见 llms/tools.py）
-        answer, cot = self.llm.get_result_with_subagent(messages, SOLVER_TOOLS, print_to_console = print_to_console)
+        # Solver 可使用工具（已在配置中设置）
+        answer, cot = self.llm.get_result(messages, print_to_console=print_to_console)
 
         log_print(f'[solver] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
 
@@ -165,5 +165,5 @@ class Solver(Node):
 
 def create_solver_agent(problem, prompt_file_path, print_to_console):
     
-    llm = LLMClient(AlphaSolveConfig.SOLVER_CONFIG)
+    llm = LLMClient(AlphaSolveConfig.SOLVER_CONFIG, print_to_console=print_to_console)
     return Solver(llm, problem, prompt_file_path, print_to_console)

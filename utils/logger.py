@@ -7,6 +7,16 @@ import threading
 # Thread-local storage for logger instances
 _thread_local = threading.local()
 
+# ANSI颜色代码（用于文件中的视觉标识，不是真正的颜色）
+LEVEL_SYMBOLS = {
+    'DEBUG': '🔍',
+    'INFO': '📝',
+    'WARNING': '⚠️',
+    'ERROR': '❌',
+    'CRITICAL': '🔥',
+    'SUCCESS': '✅',
+    'METRIC': '📊',
+}
 
 def get_logger(name: str = "AlphaSolve", print_to_console: bool = True):
     """
@@ -43,9 +53,9 @@ def get_logger(name: str = "AlphaSolve", print_to_console: bool = True):
     if logger.handlers:
         logger.handlers.clear()
     
-    # Create formatters
+    # Create formatters with enhanced visual style
     file_formatter = logging.Formatter(
-        '[%(asctime)s.%(msecs)03d] [%(levelname)s] [%(name)s] %(message)s',
+        '%(asctime)s.%(msecs)03d │ %(levelname)-8s │ %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     console_formatter = logging.Formatter('%(message)s')
@@ -67,7 +77,27 @@ def get_logger(name: str = "AlphaSolve", print_to_console: bool = True):
     _thread_local.logger = logger
     _thread_local.log_filename = log_filename
     
+    # Write header to log file
+    _write_log_header(logger, timestamp)
+    
     return logger
+
+
+def _write_log_header(logger, timestamp):
+    """写入日志文件头部信息"""
+    header = f"""
+{'='*100}
+{'AlphaSolve 日志系统':^100}
+{'='*100}
+启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]}
+日志文件: {timestamp}.log
+{'='*100}
+"""
+    # 直接写入文件，不通过标准格式化
+    for handler in logger.handlers:
+        if isinstance(handler, logging.FileHandler):
+            handler.stream.write(header + '\n')
+            handler.flush()
 
 
 def get_log_filename():
@@ -77,7 +107,33 @@ def get_log_filename():
     return None
 
 
-def log_print(*args, sep=' ', end='\n', print_to_console: bool = True, level: str = 'INFO'):
+def _format_message(message: str, level: str, module: str = None) -> str:
+    """
+    格式化日志消息
+    
+    Args:
+        message: 原始消息
+        level: 日志级别
+        module: 模块名称（可选）
+    
+    Returns:
+        格式化后的消息
+    """
+    symbol = LEVEL_SYMBOLS.get(level.upper(), '📝')
+    
+    # 如果消息包含模块标识（如[solver]），则美化它
+    if module:
+        formatted_msg = f"{symbol} [{module}] {message}"
+    elif message.strip().startswith('[') and ']' in message:
+        # 自动检测模块标识
+        formatted_msg = f"{symbol} {message}"
+    else:
+        formatted_msg = f"{symbol} {message}"
+    
+    return formatted_msg
+
+
+def log_print(*args, sep=' ', end='\n', print_to_console: bool = True, level: str = 'INFO', module: str = None):
     """
     类似print的日志记录函数，同时记录到日志文件和控制台
     
@@ -86,29 +142,38 @@ def log_print(*args, sep=' ', end='\n', print_to_console: bool = True, level: st
         sep: 分隔符
         end: 结束符
         print_to_console: 是否输出到控制台
-        level: 日志级别 ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL')
+        level: 日志级别 ('DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL', 'SUCCESS', 'METRIC')
+        module: 模块名称，用于标识日志来源
+    
+    注意：当end=""时（流式输出），只打印到控制台不记录到日志，避免日志文件混乱
     """
-    logger = get_logger(print_to_console=print_to_console)
+    logger = get_logger(print_to_console=False)  # logger不输出到控制台
     
     # Join all arguments with separator
     message = sep.join(str(arg) for arg in args)
     
-    # Add end character if it's not a newline (newline is default in logging)
-    if end != '\n':
-        message += end
+    # 打印到控制台（如果需要）
+    if print_to_console:
+        print(message, end=end, flush=True)
     
-    # Log based on level
-    level = level.upper()
-    if level == 'DEBUG':
-        logger.debug(message)
-    elif level == 'WARNING':
-        logger.warning(message)
-    elif level == 'ERROR':
-        logger.error(message)
-    elif level == 'CRITICAL':
-        logger.critical(message)
-    else:  # INFO or default
-        logger.info(message)
+    # 记录到日志文件（只有end=='\n'时才记录，避免流式输出的碎片）
+    if end == '\n' and message.strip():
+        level = level.upper()
+        formatted_msg = _format_message(message, level, module)
+        
+        # 特殊级别映射到标准级别
+        if level in ('SUCCESS', 'METRIC'):
+            logger.info(formatted_msg)
+        elif level == 'DEBUG':
+            logger.debug(formatted_msg)
+        elif level == 'WARNING':
+            logger.warning(formatted_msg)
+        elif level == 'ERROR':
+            logger.error(formatted_msg)
+        elif level == 'CRITICAL':
+            logger.critical(formatted_msg)
+        else:  # INFO or default
+            logger.info(formatted_msg)
 
 
 def reset_logger():
@@ -120,6 +185,94 @@ def reset_logger():
             _thread_local.logger.removeHandler(handler)
         _thread_local.logger = None
         _thread_local.log_filename = None
+
+
+def log_separator(style: str = 'line', width: int = 100, print_to_console: bool = True):
+    """
+    输出分隔线
+    
+    Args:
+        style: 分隔线样式 ('line', 'double', 'dash', 'dot', 'section')
+        width: 分隔线宽度
+        print_to_console: 是否输出到控制台
+    """
+    styles = {
+        'line': '─' * width,
+        'double': '═' * width,
+        'dash': '┈' * width,
+        'dot': '·' * width,
+        'section': '━' * width,
+    }
+    separator = styles.get(style, '─' * width)
+    log_print(separator, print_to_console=print_to_console, level='INFO')
+
+
+def log_section(title: str, width: int = 100, print_to_console: bool = True):
+    """
+    输出带标题的分节
+    
+    Args:
+        title: 分节标题
+        width: 宽度
+        print_to_console: 是否输出到控制台
+    """
+    log_separator('section', width, print_to_console)
+    centered_title = f"  {title}  "
+    padding = (width - len(centered_title)) // 2
+    formatted_title = '│' + ' ' * padding + centered_title + ' ' * (width - padding - len(centered_title) - 1) + '│'
+    log_print(formatted_title, print_to_console=print_to_console, level='INFO')
+    log_separator('section', width, print_to_console)
+
+
+def log_box(message: str, width: int = 100, print_to_console: bool = True, level: str = 'INFO'):
+    """
+    输出带边框的消息
+    
+    Args:
+        message: 消息内容
+        width: 边框宽度
+        print_to_console: 是否输出到控制台
+        level: 日志级别
+    """
+    lines = message.split('\n')
+    log_print('┌' + '─' * (width - 2) + '┐', print_to_console=print_to_console, level=level)
+    for line in lines:
+        padded_line = line + ' ' * (width - len(line) - 4)
+        log_print(f'│ {padded_line} │', print_to_console=print_to_console, level=level)
+    log_print('└' + '─' * (width - 2) + '┘', print_to_console=print_to_console, level=level)
+
+
+def log_metric(metric_name: str, value, unit: str = '', print_to_console: bool = True):
+    """
+    记录指标信息（如耗时、长度等）
+    
+    Args:
+        metric_name: 指标名称
+        value: 指标值
+        unit: 单位
+        print_to_console: 是否输出到控制台
+    """
+    formatted_value = f"{value}{unit}" if unit else str(value)
+    message = f"{metric_name}: {formatted_value}"
+    log_print(message, print_to_console=print_to_console, level='METRIC')
+
+
+def log_dict(data: dict, title: str = None, print_to_console: bool = True, level: str = 'INFO'):
+    """
+    美化输出字典数据
+    
+    Args:
+        data: 字典数据
+        title: 标题（可选）
+        print_to_console: 是否输出到控制台
+        level: 日志级别
+    """
+    if title:
+        log_print(f"┌─ {title}", print_to_console=print_to_console, level=level)
+    for key, value in data.items():
+        log_print(f"│ {key}: {value}", print_to_console=print_to_console, level=level)
+    if title:
+        log_print("└─", print_to_console=print_to_console, level=level)
 
 
 # Convenience functions matching different log levels
@@ -146,3 +299,13 @@ def error(*args, **kwargs):
 def critical(*args, **kwargs):
     """记录CRITICAL级别日志"""
     log_print(*args, **kwargs, level='CRITICAL')
+
+
+def success(*args, **kwargs):
+    """记录SUCCESS级别日志（成功操作）"""
+    log_print(*args, **kwargs, level='SUCCESS')
+
+
+def metric(*args, **kwargs):
+    """记录METRIC级别日志（指标数据）"""
+    log_print(*args, **kwargs, level='METRIC')

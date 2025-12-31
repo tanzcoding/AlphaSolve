@@ -4,7 +4,7 @@ import agents.conjecture_graph
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
-from llms.utils import *
+from llms.utils import LLMClient
 from utils.logger import log_print
 
 from pocketflow import Node
@@ -119,7 +119,7 @@ class Verifier(Node):
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
-        answer, cot = self.llm.get_result_with_subagent(messages_to_send, TOOLS, print_to_console = print_to_console)
+        answer, cot = self.llm.get_result(messages_to_send, print_to_console=print_to_console)
         
         log_print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
 
@@ -142,5 +142,5 @@ class Verifier(Node):
 
 def create_verifier_agent(problem, prompt_file_path, print_to_console):
 
-    llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG)
-    return Verifier(llm, problem, prompt_file_path, print_to_console) 
+    llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG, print_to_console=print_to_console)
+    return Verifier(llm, problem, prompt_file_path, print_to_console)

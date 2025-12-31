@@ -6,7 +6,7 @@ from agents.utils import build_conjuecture_helper
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
-from llms.utils import *
+from llms.utils import LLMClient
 from utils.logger import log_print
 
 from pocketflow import Node
@@ -102,10 +102,8 @@ class Refiner(Node):
         b = time.time()
         messages_to_send = [
             {"role": "user", "content": prompt}
-        ]   
-        resp = self.llm.get_result_with_subagent(messages_to_send, TOOLS, print_to_console)
-
-        answer, cot = resp[0], resp[1]
+        ]
+        answer, cot = self.llm.get_result(messages_to_send, print_to_console=print_to_console)
 
         log_print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
 
@@ -144,5 +142,5 @@ class Refiner(Node):
 
 def create_refiner_agent(prompt_file_path, print_to_console):
  
-    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG)
-    return Refiner(llm, prompt_file_path, print_to_console) 
+    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG, print_to_console=print_to_console)
+    return Refiner(llm, prompt_file_path, print_to_console)

@@ -255,7 +255,7 @@ def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Op
         
         # 使用 SUBAGENT_CONFIG 作为子代理配置
         config = AlphaSolveConfig.SUBAGENT_CONFIG
-        client = LLMClient(config)
+        client = LLMClient(config, print_to_console=print_to_console)
         
         # 构建子代理的系统提示
         system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently.
@@ -276,7 +276,7 @@ Be thorough but efficient. Focus on delivering the correct result."""
 
 [Experience 2] For indefinite integrals (symbolic antiderivatives), Wolfram Language (Integrate) is often more reliable than SymPy for difficult expressions. If SymPy returns an unevaluated Integral / cannot find a closed form, switch to Wolfram; also consider reporting conditions/assumptions (e.g., parameter ranges) that make a closed form possible.
 
-[Experience 3] When simplifying expressions, always state assumptions. In SymPy, use symbols(..., positive=True/real=True) and simplify/together/factor/cancel; in Wolfram, prefer FullSimplify[..., Assumptions -> ...]. Many “different-looking” results are equivalent only under assumptions.
+[Experience 3] When simplifying expressions, always state assumptions. In SymPy, use symbols(..., positive=True/real=True) and simplify/together/factor/cancel; in Wolfram, prefer FullSimplify[..., Assumptions -> ...]. Many "different-looking" results are equivalent only under assumptions.
 
 [Experience 4] For solving equations/inequalities with parameters, prefer Wolfram's Reduce for full condition sets. SymPy's solve can miss branches; use solveset or reduce_inequalities when appropriate, and verify solutions by substitution.
 
@@ -292,11 +292,8 @@ Be thorough but efficient. Focus on delivering the correct result."""
             {"role": "user", "content": task_description}
         ]
         
-        # 子代理可以使用 Python 和 Wolfram 工具
-        subagent_tools = [PYTHON_TOOL, WOLFRAM_TOOL]
-        
-        # 调用 get_result_with_tools 执行子代理任务（不打印到控制台）
-        result, reasoning = client.get_result_with_tools(messages, subagent_tools, print_to_console=print_to_console)
+        # 调用 get_result 执行子代理任务（工具已在配置中设置）
+        result, reasoning = client.get_result(messages)
         
     except Exception:
         err = traceback.format_exc().strip()

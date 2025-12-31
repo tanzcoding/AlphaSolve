@@ -54,10 +54,10 @@ Now decide and output exactly one final token on the last line.
 
 def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     """Use an LLM to judge if pred matches gold. Returns (is_correct, raw_reply)."""
-    client = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG)
+    client = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG, print_to_console=False)
     prompt = build_eval_prompt(problem, gold, pred)
     messages = [{"role": "user", "content": prompt}]
-    answer, _cot = client.get_result(messages, print_to_console=False)
+    answer, _cot = client.get_result(messages)
     text = (answer or "").strip()
     is_correct = EVAL_TAG_CORRECT in text and EVAL_TAG_INCORRECT not in text
     return is_correct, text
