@@ -45,8 +45,15 @@ class Solver(Node):
 
         print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
 
-        iteration = shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND]
-        prompt = self.__build_solver_prompt(self.prompt_template, self.problem, shared_context, hint)
+        # iteration 表示当前还剩多少次 solver 可以生成新的引理/猜想
+        remaining_lemma_quota = iteration
+        prompt = self.__build_solver_prompt(
+            self.prompt_template,
+            self.problem,
+            shared_context,
+            remaining_lemma_quota=remaining_lemma_quota,
+            hint=hint,
+        )
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
@@ -118,11 +125,14 @@ class Solver(Node):
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
-    def __build_solver_prompt(self, prompt_template, problem, shared_context, hint = None): 
+    def __build_solver_prompt(self, prompt_template, problem, shared_context, remaining_lemma_quota, hint = None): 
          
         context = shared_context.build_context_by_lemma() 
 
         tmp = prompt_template.replace('{problem_content}', problem)
+
+        # 将 prompt 中的剩余引理预算占位符替换成当前剩余次数
+        tmp = tmp.replace('{remaining_lemma_quota}', str(remaining_lemma_quota))
 
         if context:
             tmp = tmp + '\n' + CONTEXT_PREFIX.replace('{context_content}', context)    
