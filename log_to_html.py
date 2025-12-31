@@ -1,765 +1,663 @@
-#!/usr/bin/env python3
-"""Convert AlphaSolve log files into collapsible, well-structured HTML."""
+"""Convert AlphaSolve .log files into a human-friendly, collapsible HTML report.
+
+Usage (from repo root):
+  python log_to_html.py logs/20251231_160002_350.log
+
+Output:
+  log_as_html/<same_name>.html
+
+This parser is tailored to the project's logging conventions:
+- File logger format: "YYYY-mm-dd HH:MM:SS.mmm │ LEVEL │ <message>"
+- Multi-line messages are stored as a single log record whose continuation lines
+  have NO timestamp prefix.
+- LLM streaming buffers are logged as blocks:
+    [本轮思维链]\n...
+    [本轮回答]\n...
+    [思维链中工具调用]\n[Tool Call] ...\n...
+
+The HTML groups by big agents (solver/verifier/refiner/summarizer) and nests
+subagent runs when detected.
+"""
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
+import datetime as _dt
 import html
 import os
 import re
-from dataclasses import dataclass, field
-from datetime import datetime
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 
-ENTRY_PATTERN = re.compile(
-    r"^\s*(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})\s*│\s*([A-Z]+)\s*│\s*(.*)$"
+BIG_AGENTS = ("solver", "verifier", "refiner", "summarizer")
+
+
+_TS_LINE_RE = re.compile(
+    r"^(?P<ts>\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})\s+│\s+"
+    r"(?P<level>[A-Z]+)\s+│\s+(?P<msg>.*)$"
 )
 
-MAJOR_AGENTS = {"solver", "verifier", "refiner", "summarizer"}
+# Matches leading "📝 [solver] ..." etc.
+_MODULE_TAG_RE = re.compile(r"\[(?P<tag>[A-Za-z_]+)\]")
 
-SUBCALL_START_PATTERN = re.compile(r"^\[Tool Call\]\s*(.+)$", re.IGNORECASE)
-RESULT_MARKER = "[result]"
-
-CONTEXT_TAG_KEYWORDS = [
-    "思维链",
-    "tool",
-    "工具",
-    "回答",
-    "result",
-    "dependency",
-    "analysis",
-    "总结",
-    "chain",
-    "call",
-    "code",
-    "本轮",
-]
-
-CATEGORY_LABELS = {
-    "cot": "Chain-of-Thought",
-    "tool": "Tool Call",
-    "answer": "Answer / Summary",
-    "metric": "Metric",
-    "subagent": "Subagent",
-    "subagent_enter": "Entering Subagent",
-    "log": "Log Entry",
-}
-
-AGENT_DISPLAY_NAMES = {
-    "solver": "Solver Agent",
-    "verifier": "Verifier Agent",
-    "refiner": "Refiner Agent",
-    "summarizer": "Summarizer Agent",
-    "alphasolve": "AlphaSolve",
-    "start": "Startup",
-}
+_THOUGHT_MARKERS = ("[本轮思维链]", "[思维链内容]")
+_ANSWER_MARKERS = ("[本轮回答]", "[最终回答]")
+_TOOL_MARKER = "[思维链中工具调用]"
 
 
-@dataclass
-class SubCall:
-    """Represents a nested tool/sub-agent invocation."""
-
-    name: str
-    task_lines: List[str] = field(default_factory=list)
-    result_lines: List[str] = field(default_factory=list)
-
-    def section_text(self, lines: List[str]) -> str:
-        text = "\n".join(lines).strip()
-        return text
-
-
-@dataclass
-class LogEntry:
-    """Structured representation of a single log entry."""
-
-    timestamp: Optional[str]
+@dataclasses.dataclass
+class LogRecord:
+    ts: Optional[str]  # keep original string; may be None for file header lines
     level: Optional[str]
-    message: str
-    details: List[str]
-    tag: Optional[str] = None
-    agent: str = "global"
-    category: str = "log"
-    has_subagent: bool = False
-    sub_calls: List[SubCall] = field(default_factory=list)
+    msg: str
 
-    def full_text(self) -> str:
-        lines = [self.message.strip()]
-        if self.details:
-            lines.extend([line.rstrip("\n") for line in self.details])
-        for sub in self.sub_calls:
-            lines.append(f"[Tool Call] {sub.name}")
-            lines.extend(line.rstrip("\n") for line in sub.task_lines)
-            lines.extend(line.rstrip("\n") for line in sub.result_lines)
-        return "\n".join(line for line in lines if line is not None)
+    def first_line(self) -> str:
+        return self.msg.splitlines()[0] if self.msg else ""
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Convert AlphaSolve .log files into collapsible HTML reports."
-    )
-    parser.add_argument("--log", required=True, help="Path to the source log file.")
-    parser.add_argument(
-        "--output",
-        help="Optional output HTML path. Defaults to log_as_html/<logname>.html",
-    )
-    parser.add_argument(
-        "--title",
-        help="Optional custom title for the HTML page (default: derived from filename).",
-    )
-    return parser.parse_args()
+@dataclasses.dataclass
+class ToolCallBlock:
+    name: str
+    body: str
 
 
-def parse_log_file(log_path: Path) -> Tuple[List[str], List[LogEntry]]:
+@dataclasses.dataclass
+class RenderBlock:
+    """A typed block for rendering."""
+
+    kind: str  # thought | answer | toolcalls | logline
+    ts: Optional[str]
+    level: Optional[str]
+    title: str
+    content: str
+    tool_calls: Optional[List[ToolCallBlock]] = None
+
+
+@dataclasses.dataclass
+class Section:
+    """Hierarchical section for HTML output."""
+
+    title: str
+    kind: str  # agent | subagent | system | toolcall
+    # IMPORTANT: must preserve the original chronological order.
+    # We store a single ordered stream of items (blocks and nested sections).
+    items: List[Union[RenderBlock, "Section"]] = dataclasses.field(default_factory=list)
+    meta: Dict[str, str] = dataclasses.field(default_factory=dict)
+
+    def add_child(self, sec: "Section") -> "Section":
+        self.items.append(sec)
+        return sec
+
+    def add_block(self, blk: RenderBlock) -> None:
+        self.items.append(blk)
+
+
+def _read_text(path: str) -> str:
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        return f.read()
+
+
+def parse_log_records(text: str) -> Tuple[List[str], List[LogRecord]]:
+    """Parse file into (header_lines, records)."""
     header_lines: List[str] = []
-    entries: List[LogEntry] = []
-    current_entry: Optional[LogEntry] = None
+    records: List[LogRecord] = []
 
-    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-        for raw_line in handle:
-            line = raw_line.rstrip("\n")
-            match = ENTRY_PATTERN.match(line)
-            if match:
-                if current_entry:
-                    entries.append(current_entry)
-                timestamp, level, message = match.groups()
-                current_entry = LogEntry(
-                    timestamp=timestamp.strip(),
-                    level=level.strip(),
-                    message=message.strip(),
-                    details=[],
-                )
+    current: Optional[LogRecord] = None
+
+    for raw_line in text.splitlines():
+        m = _TS_LINE_RE.match(raw_line)
+        if m:
+            # flush previous
+            if current is not None:
+                records.append(current)
+            current = LogRecord(ts=m.group("ts"), level=m.group("level"), msg=m.group("msg"))
+        else:
+            # header / separator lines or continuation lines
+            if current is None:
+                header_lines.append(raw_line)
             else:
-                if current_entry is not None:
-                    current_entry.details.append(line)
-                else:
-                    header_lines.append(line)
+                current.msg += "\n" + raw_line
 
-    if current_entry:
-        entries.append(current_entry)
+    if current is not None:
+        records.append(current)
 
-    return header_lines, entries
+    # Trim trailing blank lines in header for nicer rendering
+    while header_lines and not header_lines[-1].strip():
+        header_lines.pop()
+    return header_lines, records
 
 
-def extract_tag(message: str) -> Optional[str]:
-    match = re.search(r"\[([^\]]+)\]", message)
-    if match:
-        return match.group(1).strip()
+def _detect_module_tag(msg: str) -> Optional[str]:
+    m = _MODULE_TAG_RE.search(msg)
+    if not m:
+        return None
+    return (m.group("tag") or "").strip()
+
+
+def _strip_emoji_prefix(msg: str) -> str:
+    # Common: "📝 [solver] ..." or "✅ [verifier] ..." etc.
+    # We only strip the first token if it *looks* like emoji + space.
+    if len(msg) >= 2 and msg[1] == " ":
+        return msg[2:]
+    return msg
+
+
+def _is_block_start(record: LogRecord, markers: Tuple[str, ...]) -> Optional[str]:
+    first = record.first_line().strip()
+    for mk in markers:
+        if first.startswith(mk):
+            return mk
     return None
 
 
-def is_contextual_tag(tag: Optional[str]) -> bool:
-    if not tag:
-        return False
-    lowered = tag.lower()
-    return any(keyword in lowered for keyword in CONTEXT_TAG_KEYWORDS)
+def parse_tool_calls(toolcalls_message: str) -> List[ToolCallBlock]:
+    """Parse the content after "[思维链中工具调用]" into tool call blocks."""
+    # Keep original newlines.
+    lines = toolcalls_message.splitlines()
 
+    # Drop leading marker line if present.
+    if lines and lines[0].strip().startswith(_TOOL_MARKER):
+        lines = lines[1:]
 
-def slugify(value: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "section"
+    blocks: List[ToolCallBlock] = []
+    current_name: Optional[str] = None
+    current_lines: List[str] = []
 
+    def flush():
+        nonlocal current_name, current_lines
+        if current_name is None:
+            return
+        body = "\n".join(current_lines).strip("\n")
+        blocks.append(ToolCallBlock(name=current_name, body=body))
+        current_name = None
+        current_lines = []
 
-def detect_subagent(text: str) -> bool:
-    lowered = text.lower()
-    if "math_research_subagent" in lowered or "subagent" in lowered:
-        return True
-    return "tool call" in lowered
-
-
-def classify_category(tag: Optional[str], text: str, has_subagent: bool) -> str:
-    lowered = text.lower()
-    tag_lower = tag.lower() if tag else ""
-    # Check if entering subagent (specific pattern: [subagent] entering subagent...)
-    if tag == "subagent" and "entering subagent" in lowered:
-        return "subagent_enter"
-    if has_subagent or "tool call" in lowered:
-        return "subagent"
-    if "tool call" in lowered or "[tool call]" in lowered or "工具" in lowered:
-        return "tool"
-    if tag and ("思维链" in tag or "chain" in tag_lower):
-        return "cot"
-    if tag and any(keyword in tag for keyword in ["回答", "answer", "result", "dependency"]):
-        return "answer"
-    if "cot length" in lowered or "answer length" in lowered or "metric" in lowered:
-        return "metric"
-    return "log"
-
-
-def determine_agent(
-    tag: Optional[str], message: str, fallback_major: Optional[str]
-) -> Optional[str]:
-    normalized_tag = tag.lower() if tag else None
-    if normalized_tag in MAJOR_AGENTS:
-        return normalized_tag
-    if normalized_tag and not is_contextual_tag(normalized_tag):
-        return normalized_tag
-
-    message_lower = message.lower()
-    for agent in MAJOR_AGENTS:
-        bracketed = f"[{agent}]"
-        if bracketed in message_lower:
-            return agent
-        if re.search(rf"\b{re.escape(agent)}\b", message_lower):
-            return agent
-
-    if tag and is_contextual_tag(tag):
-        return fallback_major
-
-    if fallback_major in MAJOR_AGENTS:
-        return fallback_major
-    return None
-
-
-def enrich_entries(entries: List[LogEntry]) -> None:
-    current_major_agent: Optional[str] = None
-    for entry in entries:
-        entry.tag = extract_tag(entry.message)
-        agent = determine_agent(entry.tag, entry.message, current_major_agent)
-        if agent in MAJOR_AGENTS:
-            current_major_agent = agent
-
-        entry.agent = agent or "global"
-
-        sub_calls = parse_subcalls(entry.details)
-        entry.sub_calls = sub_calls
-        entry.has_subagent = bool(sub_calls) or detect_subagent(entry.message)
-
-        entry.category = classify_category(
-            entry.tag,
-            entry.full_text(),
-            entry.has_subagent,
-        )
-
-
-def parse_subcalls(detail_lines: List[str]) -> List[SubCall]:
-    subcalls: List[SubCall] = []
-    current: Optional[SubCall] = None
-    recording_result = False
-
-    for line in detail_lines:
-        stripped = line.strip()
-        start_match = SUBCALL_START_PATTERN.match(stripped)
-        if start_match:
-            if current:
-                subcalls.append(current)
-            current = SubCall(name=start_match.group(1).strip())
-            recording_result = False
+    for ln in lines:
+        m = re.match(r"^\[Tool Call\]\s+(?P<name>.+?)\s*$", ln.strip())
+        if m:
+            flush()
+            current_name = (m.group("name") or "").strip()
+            current_lines = []
             continue
-
-        if stripped.startswith(RESULT_MARKER):
-            recording_result = True
+        # Otherwise part of current block (or prelude)
+        if current_name is None:
+            # prelude noise
             continue
+        current_lines.append(ln)
 
-        if current:
-            target = current.result_lines if recording_result else current.task_lines
-            target.append(line)
-
-    if current:
-        subcalls.append(current)
-    return subcalls
-
-
-def build_blocks(entries: List[LogEntry]) -> List[Dict[str, Any]]:
-    blocks: List[Dict[str, Any]] = []
-    counters: Dict[str, int] = {}
-    current_block: Optional[Dict[str, Any]] = None
-
-    for entry in entries:
-        agent = entry.agent or "global"
-        if not current_block or current_block["agent"] != agent:
-            counters[agent] = counters.get(agent, 0) + 1
-            current_block = {
-                "agent": agent,
-                "index": counters[agent],
-                "entries": [],
-            }
-            blocks.append(current_block)
-        current_block["entries"].append(entry)
-
+    flush()
     return blocks
 
 
-def truncate(text: str, length: int = 180) -> str:
-    clean = re.sub(r"\s+", " ", text).strip()
-    return clean if len(clean) <= length else clean[: length - 1].rstrip() + "…"
+def classify_record(record: LogRecord) -> RenderBlock:
+    first = record.first_line().strip()
+
+    mk = _is_block_start(record, _THOUGHT_MARKERS)
+    if mk is not None:
+        body = record.msg
+        # Strip the marker itself from content if present.
+        if body.startswith(mk):
+            body = body[len(mk) :]
+            if body.startswith("\n"):
+                body = body[1:]
+        return RenderBlock(
+            kind="thought",
+            ts=record.ts,
+            level=record.level,
+            title=f"Thought {mk}",
+            content=body,
+        )
+
+    mk = _is_block_start(record, _ANSWER_MARKERS)
+    if mk is not None:
+        body = record.msg
+        if body.startswith(mk):
+            body = body[len(mk) :]
+            if body.startswith("\n"):
+                body = body[1:]
+        return RenderBlock(
+            kind="answer",
+            ts=record.ts,
+            level=record.level,
+            title=f"Answer {mk}",
+            content=body,
+        )
+
+    if first.startswith(_TOOL_MARKER):
+        tcs = parse_tool_calls(record.msg)
+        # Improve UX: if there is exactly one tool call in this record, use the tool
+        # name as the title and render only that tool body.
+        if len(tcs) == 1:
+            tc0 = tcs[0]
+            return RenderBlock(
+                kind="toolcalls",
+                ts=record.ts,
+                level=record.level,
+                title=tc0.name,
+                content=f"[Tool Call] {tc0.name}\n{tc0.body}".strip("\n"),
+                tool_calls=tcs,
+            )
+
+        return RenderBlock(
+            kind="toolcalls",
+            ts=record.ts,
+            level=record.level,
+            title=_TOOL_MARKER,
+            content=record.msg,
+            tool_calls=tcs,
+        )
+
+    return RenderBlock(
+        kind="logline",
+        ts=record.ts,
+        level=record.level,
+        title="log",
+        content=record.msg,
+    )
 
 
-def format_header_block(header_lines: List[str]) -> str:
-    if not header_lines:
+def build_sections(header_lines: List[str], records: List[LogRecord]) -> Section:
+    root = Section(title="AlphaSolve Log", kind="root")
+
+    if header_lines:
+        root.add_block(
+            RenderBlock(
+                kind="logline",
+                ts=None,
+                level=None,
+                title="header",
+                content="\n".join(header_lines).strip("\n"),
+            )
+        )
+
+    system = root.add_child(Section(title="System", kind="system"))
+
+    # Create big-agent sections lazily, keep order of first appearance.
+    agent_sections: Dict[str, Section] = {}
+
+    def get_agent_section(name: str) -> Section:
+        if name not in agent_sections:
+            agent_sections[name] = root.add_child(Section(title=name.capitalize(), kind="agent"))
+        return agent_sections[name]
+
+    current_agent: Section = system
+    stack: List[Section] = [current_agent]
+    pending_subagent_tool: Optional[Section] = None
+
+    def infer_agent_from_message(tag_l: Optional[str], msg: str) -> Optional[str]:
+        """Best-effort agent inference.
+
+        Notes:
+        - Many LLMClient blocks (e.g. "[本轮思维链]") have no module tag.
+          We must attribute them to the currently executing big agent.
+        - Some solver logs (e.g. "final solver prompt is:") also have no [solver] tag.
+        """
+        if tag_l in BIG_AGENTS:
+            return tag_l
+        low = (msg or "").lower()
+        if "final solver prompt is" in low:
+            return "solver"
+        return None
+
+    def current_ctx() -> Section:
+        return stack[-1]
+
+    def in_subagent() -> bool:
+        return any(s.kind == "subagent" for s in stack)
+
+    for rec in records:
+        msg0 = rec.first_line()
+        tag = _detect_module_tag(_strip_emoji_prefix(msg0) if msg0 else "")
+        tag_l = tag.lower() if tag else None
+
+        # Switch big-agent context unless we're currently inside a subagent.
+        agent_hint = infer_agent_from_message(tag_l, rec.msg)
+        if agent_hint in BIG_AGENTS and not in_subagent():
+            current_agent = get_agent_section(agent_hint)
+            stack = [current_agent]
+            pending_subagent_tool = None
+
+        # Start subagent session when we see the entering line.
+        # (This happens BEFORE the parent tool summary record is written.)
+        blk = classify_record(rec)
+
+        # Start subagent session when we see the entering line.
+        # We MUST insert the tool-call node into the agent's stream *here* to preserve ordering:
+        # thought -> toolcall -> subagent(thought/toolcalls/answer) -> thought ...
+        if (tag_l == "subagent") and ("entering subagent" in rec.msg) and (not in_subagent()):
+            tool = Section(title="Tool call: math_research_subagent", kind="toolcall")
+            # Add the "entering" line as part of the tool call (outside the subagent content).
+            tool.add_block(blk)
+            current_ctx().add_child(tool)
+
+            sub = tool.add_child(Section(title="Subagent", kind="subagent"))
+            pending_subagent_tool = tool
+            stack.append(sub)
+            continue
+
+        # If we are inside a subagent and the parent tool summary arrives (it contains Tool Call math_research_subagent),
+        # attach it to the placeholder tool section and pop back to parent.
+        if in_subagent() and blk.kind == "toolcalls" and blk.tool_calls:
+            if any(tc.name.strip() == "math_research_subagent" for tc in blk.tool_calls):
+                # Attach summary to the tool section.
+                if pending_subagent_tool is not None:
+                    pending_subagent_tool.add_block(blk)
+                else:
+                    # Fallback: attach where we are.
+                    current_ctx().add_block(blk)
+                # Pop subagent context
+                stack = [current_agent]
+                pending_subagent_tool = None
+                continue
+
+        # Default attach: toolcall summaries are blocks under current context, unless they are math_research_subagent outside subagent.
+        if blk.kind == "toolcalls" and blk.tool_calls:
+            # Create child toolcall sections for each tool call, so they can be folded individually.
+            for tc in blk.tool_calls:
+                if tc.name.strip() == "math_research_subagent" and not in_subagent():
+                    tool = Section(title="Tool call: math_research_subagent", kind="toolcall")
+                    tool.add_block(
+                        RenderBlock(
+                            kind="toolcalls",
+                            ts=blk.ts,
+                            level=blk.level,
+                            title="math_research_subagent",
+                            content=f"[Tool Call] {tc.name}\n{tc.body}".strip("\n"),
+                            tool_calls=[tc],
+                        )
+                    )
+                    current_ctx().add_child(tool)
+                else:
+                    # Normal tool calls (run_python/run_wolfram/solver_format_guard/...) as nested blocks.
+                    tool = Section(title=f"Tool call: {tc.name}", kind="toolcall")
+                    tool.add_block(
+                        RenderBlock(
+                            kind="toolcalls",
+                            ts=blk.ts,
+                            level=blk.level,
+                            title=tc.name,
+                            content=f"[Tool Call] {tc.name}\n{tc.body}".strip("\n"),
+                            tool_calls=[tc],
+                        )
+                    )
+                    current_ctx().add_child(tool)
+            continue
+
+        # For regular blocks, attach to current context.
+        current_ctx().add_block(blk)
+
+    return root
+
+
+def _esc(s: str) -> str:
+    return html.escape(s, quote=False)
+
+
+def _fmt_ts(ts: Optional[str]) -> str:
+    if not ts:
         return ""
-    safe = html.escape("\n".join(header_lines).strip())
-    if not safe:
-        return ""
-    return f"""
-    <section class=\"file-header\">
-        <h2>File Header</h2>
-        <pre>{safe}</pre>
-    </section>
-    """
+    return ts
 
 
-def agent_display_name(agent: str) -> str:
-    key = agent.lower()
-    if key in AGENT_DISPLAY_NAMES:
-        return AGENT_DISPLAY_NAMES[key]
-    if agent == "global":
-        return "Global / Misc"
-    return agent.title()
+def _render_block(blk: RenderBlock) -> str:
+    ts = _fmt_ts(blk.ts)
+    level = (blk.level or "").strip()
 
+    if blk.kind in ("thought", "answer"):
+        # collapsed by default
+        title = f"{blk.title}{' — ' + ts if ts else ''}"
+        return (
+            f"<details class=\"blk {blk.kind}\">"
+            f"<summary><span class=\"sumTitle\">{_esc(title)}</span></summary>"
+            f"<pre class=\"content\">{_esc(blk.content)}</pre>"
+            f"</details>"
+        )
 
-def build_summary_grid(
-    meta: Dict[str, Any], agent_totals: Dict[str, int], category_totals: Dict[str, int]
-) -> str:
-    agent_chips = "".join(
-        f"<span class=\"chip agent-{slugify(agent)}\"><strong>{html.escape(agent_display_name(agent))}</strong><span>{count}</span></span>"
-        for agent, count in sorted(agent_totals.items(), key=lambda item: (-item[1], item[0]))
+    if blk.kind == "toolcalls":
+        # This blk may represent one tool call; render the raw body.
+        title = f"Tool call{': ' + blk.title if blk.title else ''}{' — ' + ts if ts else ''}"
+        body = blk.content
+        return (
+            f"<details class=\"blk toolcalls\">"
+            f"<summary><span class=\"sumTitle\">{_esc(title)}</span></summary>"
+            f"<pre class=\"content\">{_esc(body)}</pre>"
+            f"</details>"
+        )
+
+    # logline: if it's long or multi-line, make it foldable.
+    msg = blk.content or ""
+    is_multiline = "\n" in msg
+    is_long = len(msg) > 240
+    if is_multiline or is_long:
+        first = msg.splitlines()[0] if msg else ""
+        # Keep summary short for very long first lines.
+        if len(first) > 160:
+            first = first[:160] + " …"
+        summary = " ".join(x for x in [ts, level, first] if x)
+        return (
+            f"<details class=\"blk loglineFold level-{_esc(level)}\">"
+            f"<summary><span class=\"sumTitle\">{_esc(summary)}</span></summary>"
+            f"<pre class=\"content\">{_esc(msg)}</pre>"
+            f"</details>"
+        )
+
+    return (
+        f"<div class=\"logline level-{_esc(level)}\">"
+        f"<span class=\"ts\">{_esc(ts)}</span>"
+        f"<span class=\"lvl\">{_esc(level)}</span>"
+        f"<span class=\"msg\">{_esc(msg)}</span>"
+        f"</div>"
     )
 
-    category_chips = "".join(
-        f"<span class=\"chip category-{slugify(category)}\"><strong>{html.escape(CATEGORY_LABELS.get(category, category.title()))}</strong><span>{count}</span></span>"
-        for category, count in sorted(category_totals.items(), key=lambda item: (-item[1], item[0]))
+
+def _render_section(sec: Section, *, open_default: bool = True) -> str:
+    # Root is rendered outside.
+    classes = f"sec {sec.kind}"
+    open_attr = " open" if open_default and sec.kind in ("agent", "system") else ""
+    parts: List[str] = []
+
+    parts.append(f"<details class=\"{classes}\"{open_attr}>")
+    parts.append(f"<summary><span class=\"secTitle\">{_esc(sec.title)}</span></summary>")
+    parts.append("<div class=\"secBody\">")
+
+    for it in sec.items:
+        if isinstance(it, RenderBlock):
+            parts.append(_render_block(it))
+        else:
+            child = it
+            # Toolcall sections are collapsed by default, everything else open.
+            child_open = child.kind in ("agent", "system")
+            parts.append(_render_section(child, open_default=child_open))
+
+    parts.append("</div>")
+    parts.append("</details>")
+    return "\n".join(parts)
+
+
+def render_html(root: Section, source_log_path: str) -> str:
+    now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    title = f"AlphaSolve Log — {os.path.basename(source_log_path)}"
+
+    # Render: root.blocks (header) + root.children sections.
+    body_parts: List[str] = []
+    body_parts.append(
+        "<div class=\"topbar\">"
+        f"<div class=\"title\">{_esc(title)}</div>"
+        f"<div class=\"meta\">Generated: {_esc(now)} | Source: {_esc(source_log_path)}</div>"
+        "<div class=\"actions\">"
+        "<button onclick=\"toggleAll(true)\">Expand all</button>"
+        "<button onclick=\"toggleAll(false)\">Collapse all</button>"
+        "</div>"
+        "</div>"
     )
 
-    return f"""
-    <section class=\"summary-grid\">
-        <div class=\"card\">
-            <p class=\"label\">Log File</p>
-            <p class=\"value\">{html.escape(meta['log_name'])}</p>
-            <p class=\"sub\">{html.escape(meta['log_path'])}</p>
-        </div>
-        <div class=\"card\">
-            <p class=\"label\">Total Entries</p>
-            <p class=\"value\">{meta['entries']}</p>
-            <p class=\"sub\">Across {meta['blocks']} blocks</p>
-        </div>
-        <div class=\"card\">
-            <p class=\"label\">Generated</p>
-            <p class=\"value\">{html.escape(meta['generated'])}</p>
-            <p class=\"sub\">{html.escape(meta['timezone'])}</p>
-        </div>
-    </section>
-    <section class=\"chips-row\">
-        <div>
-            <h3>Agent Activity</h3>
-            <div class=\"chip-list\">{agent_chips or '<span class="muted">No agent data</span>'}</div>
-        </div>
-        <div>
-            <h3>Category Breakdown</h3>
-            <div class=\"chip-list\">{category_chips or '<span class="muted">No category data</span>'}</div>
-        </div>
-    </section>
-    """
+    # Root header (if any) as a folded block
+    # Root header blocks
+    for it in root.items:
+        if not isinstance(it, RenderBlock):
+            continue
+        blk = it
+        body_parts.append(
+            "<details class=\"sec header\">"
+            "<summary><span class=\"secTitle\">Log header</span></summary>"
+            f"<pre class=\"content\">{_esc(blk.content)}</pre>"
+            "</details>"
+        )
 
+    # Root sections
+    for it in root.items:
+        if isinstance(it, Section):
+            body_parts.append(_render_section(it, open_default=True))
 
-def render_entry(entry: LogEntry, entry_index: int) -> str:
-    summary_text = truncate(entry.message)
-    tag_badge = (
-        f"<span class=\"badge tag-badge\">{html.escape(entry.tag or 'untagged')}</span>"
+    css = _CSS
+    js = _JS
+    return (
+        "<!doctype html>\n"
+        "<html lang=\"zh\">\n"
+        "<head>\n"
+        "  <meta charset=\"utf-8\"/>\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"/>\n"
+        f"  <title>{_esc(title)}</title>\n"
+        f"  <style>\n{css}\n  </style>\n"
+        "</head>\n"
+        "<body>\n"
+        f"{''.join(body_parts)}\n"
+        f"<script>\n{js}\n</script>\n"
+        "</body>\n"
+        "</html>\n"
     )
-    level_badge = (
-        f"<span class=\"badge level-{entry.level.lower()}\">{entry.level}</span>"
-        if entry.level
-        else ""
-    )
-    category_badge = (
-        f"<span class=\"badge category-badge category-{entry.category}\">{html.escape(CATEGORY_LABELS.get(entry.category, entry.category.title()))}</span>"
-    )
-    timestamp_html = html.escape(entry.timestamp) if entry.timestamp else "—"
-    content_html = html.escape(entry.full_text() or "(no content)")
-    subcall_html = "".join(render_subcall(sub, idx + 1) for idx, sub in enumerate(entry.sub_calls))
-
-    return f"""
-    <details class=\"entry category-{entry.category}\" open>
-        <summary>
-            <div class=\"summary-line\">
-                {level_badge}
-                {category_badge}
-                {tag_badge}
-                <span class=\"summary-text\">{html.escape(summary_text)}</span>
-            </div>
-            <div class=\"summary-meta\">
-                <span>#{entry_index}</span>
-                <span>{timestamp_html}</span>
-                <span>{html.escape(entry.agent.title()) if entry.agent else ''}</span>
-            </div>
-        </summary>
-        <div class=\"entry-body\">
-            <pre>{content_html}</pre>
-            {subcall_html}
-        </div>
-    </details>
-    """
 
 
-def render_subcall(subcall: SubCall, index: int) -> str:
-    task = html.escape(subcall.section_text(subcall.task_lines) or "(no task provided)")
-    result = html.escape(subcall.section_text(subcall.result_lines) or "(no result provided)")
-    summary = truncate(subcall.name, 160)
-    return f"""
-    <details class=\"subcall\" open>
-        <summary>
-            <div class=\"summary-line\">
-                <span class=\"badge category-badge category-tool\">Subagent Tool Call</span>
-                <span class=\"summary-text\">{html.escape(summary)}</span>
-            </div>
-            <div class=\"summary-meta\">
-                <span>subcall #{index}</span>
-                <span>{html.escape(subcall.name)}</span>
-            </div>
-        </summary>
-        <div class=\"entry-body\">
-            <div class=\"subcall-section\">
-                <h4>Task</h4>
-                <pre>{task}</pre>
-            </div>
-            <div class=\"subcall-section\">
-                <h4>Result</h4>
-                <pre>{result}</pre>
-            </div>
-        </div>
-    </details>
-    """
+_CSS = r"""
+:root{
+  --bg:#0b1020;
+  --panel:#111a33;
+  --panel2:#0f1730;
+  --text:#e7ecff;
+  --muted:#aab3d6;
+  --border:#24305a;
+  --accent:#7aa2ff;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+}
+body{ margin:0; background:var(--bg); color:var(--text); font-family:var(--sans); }
+.topbar{
+  position:sticky; top:0; z-index:10;
+  background:linear-gradient(180deg, rgba(17,26,51,.98), rgba(17,26,51,.85));
+  border-bottom:1px solid var(--border);
+  padding:14px 16px;
+}
+.topbar .title{ font-size:16px; font-weight:700; }
+.topbar .meta{ font-size:12px; color:var(--muted); margin-top:4px; }
+.actions{ margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; }
+button{
+  background:var(--panel2);
+  color:var(--text);
+  border:1px solid var(--border);
+  border-radius:8px;
+  padding:6px 10px;
+  cursor:pointer;
+}
+button:hover{ border-color:var(--accent); }
 
+details{ border:1px solid var(--border); border-radius:10px; background:rgba(17,26,51,.6); margin:10px 16px; }
+details > summary{ cursor:pointer; padding:10px 12px; list-style:none; }
+details > summary::-webkit-details-marker{ display:none; }
+details > summary .secTitle{ font-weight:700; }
 
-def render_block(block: Dict[str, Any], block_index: int) -> str:
-    agent = block["agent"]
-    block_class = slugify(agent)
-    title = f"{agent_display_name(agent)} · #{block['index']} ({len(block['entries'])} entries)"
-    entries_html = "".join(
-        render_entry(entry, idx + 1)
-        for idx, entry in enumerate(block["entries"])
-    )
-    return f"""
-    <details class=\"agent-block agent-{block_class}\" open>
-        <summary>
-            <div>
-                <span class=\"badge agent-label\">{html.escape(agent_display_name(agent))}</span>
-                <span class=\"summary-text\">{html.escape(title)}</span>
-            </div>
-        </summary>
-        <div class=\"agent-body\">
-            {entries_html or '<p class="muted">No entries</p>'}
-        </div>
-    </details>
-    """
+.secBody{ padding:0 12px 12px 12px; }
 
+.sec.agent{ background:rgba(17,26,51,.8); }
+.sec.system{ background:rgba(17,26,51,.7); }
+.sec.toolcall{ background:rgba(15,23,48,.7); margin-left:28px; }
+.sec.subagent{ background:rgba(15,23,48,.5); margin-left:44px; }
 
-def build_html(
-    meta: Dict[str, Any],
-    header_lines: List[str],
-    blocks: List[Dict[str, Any]],
-    agent_totals: Dict[str, int],
-    category_totals: Dict[str, int],
-    title: str,
-) -> str:
-    header_html = format_header_block(header_lines)
-    summary_html = build_summary_grid(meta, agent_totals, category_totals)
-    blocks_html = "".join(render_block(block, idx) for idx, block in enumerate(blocks, start=1))
-    style = CSS_STYLES
-    script = JS_SCRIPT
-    return f"""<!DOCTYPE html>
-<html lang=\"en\">
-<head>
-    <meta charset=\"utf-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-    <title>{html.escape(title)}</title>
-    <style>{style}</style>
-    <script defer>{script}</script>
-</head>
-<body>
-    <header>
-        <div>
-            <h1>{html.escape(title)}</h1>
-            <p class=\"muted\">Generated from {html.escape(meta['log_name'])}</p>
-        </div>
-        <div class=\"actions\">
-            <button data-toggle=\"expand\">Expand All</button>
-            <button data-toggle=\"collapse\">Collapse All</button>
-        </div>
-    </header>
-    <main>
-        {summary_html}
-        {header_html}
-        <section class=\"blocks\">
-            {blocks_html}
-        </section>
-    </main>
-</body>
-</html>
-"""
+.blk{ margin:10px 0; }
+.blk > summary{ padding:8px 10px; border-radius:8px; }
+.blk.thought > summary{ color:#d5dbff; }
+.blk.answer > summary{ color:#d9ffd5; }
+.blk.toolcalls > summary{ color:#ffe9b5; }
+.sumTitle{ font-family:var(--sans); }
 
+.blk.loglineFold{ background:rgba(0,0,0,.12); }
+.blk.loglineFold > summary{ color:var(--muted); }
 
-CSS_STYLES = """
-:root {
-    color-scheme: dark;
-    --bg: #0b1120;
-    --panel: #111c34;
-    --border: rgba(148, 163, 184, 0.35);
-    --text: #e2e8f0;
-    --muted: #94a3b8;
-    --accent: #38bdf8;
-    font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+pre.content{
+  margin:0; padding:10px;
+  background:rgba(0,0,0,.25);
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:8px;
+  overflow:auto;
+  font-family:var(--mono);
+  font-size:12px;
+  line-height:1.45;
+  white-space:pre-wrap;
 }
-body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
+
+.logline{
+  display:grid;
+  grid-template-columns: 170px 70px 1fr;
+  gap:10px;
+  padding:8px 10px;
+  border:1px solid rgba(255,255,255,.06);
+  border-radius:8px;
+  background:rgba(0,0,0,.18);
+  margin:8px 0;
 }
-header {
-    padding: 1.5rem 2rem;
-    border-bottom: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 1rem;
-}
-header h1 {
-    margin: 0;
-    font-size: 1.5rem;
-}
-.actions button {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text);
-    padding: 0.5rem 0.9rem;
-    border-radius: 999px;
-    cursor: pointer;
-    transition: background 0.2s ease;
-}
-.actions button:hover {
-    background: rgba(148, 163, 184, 0.15);
-}
-main {
-    max-width: 1200px;
-    margin: 0 auto;
-    padding: 2rem;
-}
-.summary-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-    gap: 1rem;
-}
-.card {
-    border: 1px solid var(--border);
-    border-radius: 1rem;
-    padding: 1rem;
-    background: var(--panel);
-    box-shadow: 0 10px 30px rgba(15, 23, 42, 0.45);
-}
-.card .label {
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-size: 0.75rem;
-    color: var(--muted);
-    margin-bottom: 0.4rem;
-}
-.card .value {
-    margin: 0;
-    font-size: 1.35rem;
-}
-.card .sub {
-    margin: 0.3rem 0 0;
-    color: var(--muted);
-    font-size: 0.9rem;
-}
-.chips-row {
-    margin: 2rem 0 1rem;
-    display: grid;
-    gap: 1.5rem;
-    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-}
-.chip-list {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.6rem;
-}
-.chip {
-    background: rgba(56, 189, 248, 0.15);
-    border: 1px solid rgba(56, 189, 248, 0.4);
-    padding: 0.4rem 0.75rem;
-    border-radius: 999px;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.85rem;
-}
-.chip span {
-    font-variant-numeric: tabular-nums;
-    color: var(--muted);
-}
-.file-header pre {
-    background: rgba(15, 23, 42, 0.7);
-    border: 1px solid var(--border);
-    padding: 1rem;
-    border-radius: 0.8rem;
-    overflow-x: auto;
-}
-.blocks {
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-    margin-top: 2rem;
-}
-details {
-    border-radius: 1rem;
-    border: 1px solid var(--border);
-    background: rgba(15, 23, 42, 0.65);
-    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.45);
-}
-details summary {
-    cursor: pointer;
-    list-style: none;
-    padding: 1rem 1.25rem;
-    font-weight: 600;
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-}
-details[open] > summary {
-    border-bottom: 1px solid var(--border);
-}
-summary::-webkit-details-marker {
-    display: none;
-}
-.agent-body {
-    padding: 1rem 1.25rem 1.25rem;
-    display: flex;
-    flex-direction: column;
-    gap: 0.75rem;
-}
-.entry summary {
-    font-size: 0.95rem;
-}
-.entry-body {
-    padding: 0.75rem 1rem 1rem;
-}
-.entry pre {
-    margin: 0;
-    background: rgba(15, 23, 42, 0.9);
-    border: 1px solid rgba(56, 189, 248, 0.15);
-    border-radius: 0.75rem;
-    padding: 1rem;
-    overflow-x: auto;
-    font-family: 'JetBrains Mono', 'Fira Code', monospace;
-    font-size: 0.85rem;
-    line-height: 1.45;
-}
-.badge {
-    display: inline-flex;
-    align-items: center;
-    padding: 0.1rem 0.6rem;
-    border-radius: 999px;
-    font-size: 0.75rem;
-    border: 1px solid transparent;
-    text-transform: capitalize;
-}
-.tag-badge {
-    border-color: rgba(148, 163, 184, 0.35);
-    color: var(--muted);
-}
-.level-info { background: rgba(59, 130, 246, 0.2); border-color: rgba(59, 130, 246, 0.4); }
-.level-warning { background: rgba(251, 191, 36, 0.2); border-color: rgba(251, 191, 36, 0.4); }
-.level-error { background: rgba(239, 68, 68, 0.2); border-color: rgba(239, 68, 68, 0.4); }
-.level-metric { background: rgba(16, 185, 129, 0.2); border-color: rgba(16, 185, 129, 0.4); }
-.category-badge { border-color: rgba(56, 189, 248, 0.35); color: var(--text); }
-.category-subagent_enter { background: rgba(168, 85, 247, 0.2); border-color: rgba(168, 85, 247, 0.4); }
-.summary-line {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
-    align-items: center;
-}
-.summary-meta {
-    display: flex;
-    gap: 0.75rem;
-    font-size: 0.85rem;
-    color: var(--muted);
-}
-.muted { color: var(--muted); }
-.agent-label {
-    background: rgba(248, 250, 252, 0.08);
-    border-color: rgba(248, 250, 252, 0.3);
-}
-@media (max-width: 640px) {
-    header, main { padding: 1.25rem; }
-    .summary-line { flex-direction: column; align-items: flex-start; }
+.level-ERROR .lvl{ color:#ff7a7a; }
+.level-WARNING .lvl{ color:#ffd27a; }
+.level-INFO .lvl{ color:var(--accent); }
+.level-DEBUG .lvl{ color:#9aa6ff; }
+.logline .ts{ font-family:var(--mono); color:var(--muted); font-size:12px; }
+.logline .lvl{ font-family:var(--mono); color:var(--accent); font-size:12px; }
+.logline .msg{ font-family:var(--mono); font-size:12px; white-space:pre-wrap; }
+
+@media (max-width: 900px){
+  .logline{ grid-template-columns: 1fr; }
 }
 """
 
 
-JS_SCRIPT = """
-document.addEventListener('DOMContentLoaded', () => {
-    const buttons = document.querySelectorAll('[data-toggle]');
-    buttons.forEach(btn => {
-        btn.addEventListener('click', () => {
-            const action = btn.getAttribute('data-toggle');
-            const details = document.querySelectorAll('details');
-            details.forEach(node => {
-                if (action === 'expand') {
-                    node.setAttribute('open', '');
-                } else if (action === 'collapse') {
-                    node.removeAttribute('open');
-                }
-            });
-        });
-    });
-});
+_JS = r"""
+function toggleAll(open) {
+  const els = document.querySelectorAll('details');
+  els.forEach(d => { d.open = open; });
+}
 """
 
 
-def main() -> None:
-    args = parse_args()
-    log_path = Path(args.log).expanduser()
-    if not log_path.is_file():
-        raise SystemExit(f"Log file not found: {log_path}")
+def convert_file(input_path: str, output_dir: str) -> str:
+    text = _read_text(input_path)
+    header, records = parse_log_records(text)
+    root = build_sections(header, records)
+    html_text = render_html(root, input_path)
 
-    output_path = (
-        Path(args.output).expanduser()
-        if args.output
-        else Path("log_as_html") / f"{log_path.stem}.html"
+    os.makedirs(output_dir, exist_ok=True)
+    base = os.path.basename(input_path)
+    if base.lower().endswith(".log"):
+        base = base[: -len(".log")]
+    out_path = os.path.join(output_dir, base + ".html")
+    with open(out_path, "w", encoding="utf-8", errors="strict") as f:
+        f.write(html_text)
+    return out_path
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    p = argparse.ArgumentParser(description="Convert AlphaSolve .log into collapsible HTML")
+    p.add_argument("log_file", help="Path to the .log file (e.g. logs/xxxx.log)")
+    p.add_argument(
+        "--out-dir",
+        default="log_as_html",
+        help="Output directory for generated HTML (default: log_as_html)",
     )
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    args = p.parse_args(argv)
 
-    header_lines, entries = parse_log_file(log_path)
-    if not entries:
-        raise SystemExit("No log entries detected in the provided file.")
-
-    enrich_entries(entries)
-    blocks = build_blocks(entries)
-
-    agent_totals: Dict[str, int] = {}
-    category_totals: Dict[str, int] = {}
-    for entry in entries:
-        agent_totals[entry.agent] = agent_totals.get(entry.agent, 0) + 1
-        category_totals[entry.category] = category_totals.get(entry.category, 0) + 1
-
-    tz = datetime.now().astimezone().tzinfo
-    meta = {
-        "log_name": log_path.name,
-        "log_path": str(log_path.resolve()),
-        "entries": len(entries),
-        "blocks": len(blocks),
-        "generated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "timezone": str(tz) if tz else "local",
-    }
-
-    title = args.title or f"AlphaSolve Log · {log_path.stem}"
-    html_doc = build_html(
-        meta,
-        header_lines,
-        blocks,
-        agent_totals,
-        category_totals,
-        title,
-    )
-
-    output_path.write_text(html_doc, encoding="utf-8")
-    rel_path = os.path.relpath(output_path, Path.cwd())
-    print(f"HTML log written to {rel_path}")
+    out = convert_file(args.log_file, args.out_dir)
+    print(out)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
 
