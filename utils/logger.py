@@ -30,6 +30,7 @@ class Logger:
         self.print_to_console_default = print_to_console
         self.timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         self.log_filename = os.path.join(self.log_dir, f"{self.timestamp}.log")
+        self._streaming_open = False
 
         os.makedirs(self.log_dir, exist_ok=True)
 
@@ -51,6 +52,9 @@ class Logger:
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(file_formatter)
         self._logger.addHandler(file_handler)
+        # Keep a reference so we can append raw streaming content (no prefix, no extra newline)
+        # directly to the same underlying stream without introducing a second file handle.
+        self._file_handler = file_handler
         self._write_log_header()
 
     def get_log_filename(self) -> str:
@@ -73,7 +77,31 @@ class Logger:
         if print_to_console:
             print(message, end=end, flush=True)
 
-        if end != '\n' or not message.strip():
+        # Streaming mode: when caller uses end != "\n" (typically end=""), we treat it as
+        # incremental output and append to the log file without the timestamp/level prefix.
+        # This prevents one-prefix-per-fragment while still preserving the exact stream.
+        if end != '\n' or (message == '' and end == '\n'):
+            try:
+                self._file_handler.stream.write(message + end)
+                self._file_handler.flush()
+                self._streaming_open = not str(end).endswith('\n')
+                return
+            except Exception:
+                # Fall back to normal logging path if direct stream write fails.
+                # (e.g., file handler not initialized or stream closed)
+                pass
+
+        # If we previously wrote streaming fragments without a newline, ensure the next
+        # prefixed log entry starts on a new line.
+        if self._streaming_open:
+            try:
+                self._file_handler.stream.write('\n')
+                self._file_handler.flush()
+            except Exception:
+                pass
+            self._streaming_open = False
+
+        if not message.strip():
             return
 
         level = level.upper()
