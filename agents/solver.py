@@ -55,12 +55,6 @@ class Solver(Node):
 
         messages_to_send = [{"role": "user", "content": prompt}]
 
-        # For audit/debug: record the exact messages sent to LLM.
-        self.logger.log_print(
-            "event=llm_messages step=prep\n" + json.dumps(messages_to_send, ensure_ascii=False, indent=2),
-            module="solver",
-        )
-
         return AlphaSolveConfig.NORMAL, messages_to_send
 
 
@@ -81,7 +75,7 @@ class Solver(Node):
         b = time.time()
         messages = prep_res[1]
         # Solver 可使用工具（已在配置中设置）
-        answer, cot = self.llm.get_result(messages)
+        answer, cot, updated_messages = self.llm.get_result(messages)
 
         self.logger.log_print(
             f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",
@@ -89,7 +83,7 @@ class Solver(Node):
         )
 
         lemma = self.__build_lemma(self.problem, answer, cot)
-        return AlphaSolveConfig.CONJECTURE_GENERATED, lemma
+        return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 
 
     def post(self, shared, prep_res, exec_res):  ## 更新一下iteration 变量
@@ -121,6 +115,8 @@ class Solver(Node):
         shared["lemmas"].append(lemma)
         lemma_id = len(shared["lemmas"]) - 1
         shared["current_lemma_id"] = lemma_id
+
+        shared["messages_for_refiner"] = exec_res[2] if len(exec_res) > 2 else None
 
         self.logger.log_print(
             f"event=lemma_created step=post lemma_id={lemma_id} is_theorem={bool(lemma.get('is_theorem'))} solver_round_remaining={shared['solver_round_remaining']}",

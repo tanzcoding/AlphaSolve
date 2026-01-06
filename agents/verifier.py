@@ -157,7 +157,7 @@ class Verifier(Node):
             module="verifier",
         )
 
-        answer, cot = self.llm.get_result(messages_to_send)
+        answer, cot, _ = self.llm.get_result(messages_to_send)
 
         self.logger.log_print(
             f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",

@@ -295,7 +295,7 @@ Be thorough but efficient. Focus on delivering the correct result."""
         ]
         
         # 调用 get_result 执行子代理任务（工具已在配置中设置）
-        result, reasoning = client.get_result(messages)
+        result, reasoning, = client.get_result(messages)
         
     except Exception:
         err = traceback.format_exc().strip()

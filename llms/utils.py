@@ -44,7 +44,7 @@ class LLMClient:
         params.update(self._static_params)
         return params
     
-    def get_result(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Tuple[str, str]:
+    def get_result(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Tuple[str, str, List[Dict]]:
         """
         统一的获取 LLM 回复方法，始终使用流式输出
         
@@ -53,7 +53,7 @@ class LLMClient:
             tools: 工具列表（可选）。如果为None，使用self.tools；如果明确传入[]，则不使用工具
             
         Returns:
-            Tuple[str, str]: (answer_content, reasoning_content)
+            Tuple[str, str, List[Dict]]: (answer_content, reasoning_content, updated_messages)
         """
 
         # 确定使用的工具列表
@@ -114,7 +114,7 @@ class LLMClient:
             if tool_context:
                 self._cleanup_tool_context(tool_context)
 
-        return answer_content, reasoning_content
+        return answer_content, reasoning_content, messages
         
     def _get_one_response(self, messages: List[Dict], tools: List[Dict]) -> Dict:
         """
@@ -136,6 +136,12 @@ class LLMClient:
         content_parts = []
         tool_calls_acc = []
         is_answering = False
+
+        # For audit/debug: record the exact messages sent to LLM.
+        self.logger.log_print(
+            "event=llm_messages\n" + json.dumps(messages, ensure_ascii=False, indent=2),
+            module="call llm",
+        )
 
         # 判断是第一次调用还是继续思考
         # 如果messages最后一条是tool角色，说明是继续思考
@@ -173,7 +179,7 @@ class LLMClient:
             ct_part = getattr(delta, 'content', None)
             if ct_part:
                 if not is_answering:
-                    logger.log_print("\n" + "=" * 20 + "最终回答" + "=" * 20 + "\n")
+                    logger.log_print("=" * 20 + "最终回答" + "=" * 20 + "\n")
                     is_answering = True
                 logger.log_print(ct_part, end="")
                 content_parts.append(ct_part)
