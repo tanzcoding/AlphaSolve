@@ -1,11 +1,10 @@
 import time, json, random
-import agents.conjecture_graph
 
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
-from utils.logger import log_print
+from utils.logger import Logger
 
 from pocketflow import Node
 
@@ -15,52 +14,59 @@ VERIFY_RESULT_INVALID='boxed{invalid}'
 
 class Verifier(Node):
 
-    def __init__(self, llm, problem, prompt_file_path, print_to_console):
+    def __init__(self, llm, problem, prompt_file_path, logger):
         super(Verifier, self).__init__()
         self.problem = problem
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
-        self.llm = llm 
-        self.print_to_console = print_to_console
+        self.llm = llm
+        self.logger = logger
 
     def prep(self, shared): 
+        # READ ONLY from shared here.
+        lemma_id = shared["current_lemma_id"]
+        if lemma_id is None:
+            self.logger.log_print(
+                "event=no_current_lemma step=prep",
+                module="verifier",
+                level="ERROR",
+            )
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
-        log_print('[verifier]in verifier ..., begin to build context ...', print_to_console=self.print_to_console)
+        lemmas = shared["lemmas"]
+        lemma = lemmas[lemma_id]
 
-        current_conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
-        shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
+        ctx_ids = shared.build_reasoning_path(lemma_id, verified_only=True)
+        ctx_text = self.__render_context(ctx_ids, lemmas)
+        self.logger.log_print(
+            f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
+            module="verifier",
+        )
 
-        reasoning_path = shared_context.build_context_for_conjecture(current_conj)
-        print_to_console = shared[AlphaSolveConfig.PRINT_TO_CONSOLE]
-
-        log_print('[verifier] in verifier ..., building context done ...', print_to_console=self.print_to_console)
-        
-        return AlphaSolveConfig.NORMAL, current_conj, reasoning_path, shared_context, print_to_console
+        return AlphaSolveConfig.NORMAL, lemma_id, lemma, ctx_text
 
 
     def exec(self, prep_res):
-
-        if not prep_res or len(prep_res) == 0 or len(prep_res) < 5:
-            return AlphaSolveConfig.EXIT_ON_ERROR, None, None, None
+        if not prep_res or len(prep_res) < 4:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         code = prep_res[0]
+        if code != AlphaSolveConfig.NORMAL:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
-        if code == AlphaSolveConfig.VERIFIER_EXAUSTED:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None, None, None
-
-
-        current_conj, reasoning_path, shared_context = prep_res[1], prep_res[2], prep_res[3]
+        lemma_id, lemma, reasoning_ctx = prep_res[1], prep_res[2], prep_res[3]
 
         ## test time compute, 我们先直接撸 VERIFIER_SCALING_FACTOR 次, 任何一次错我们都认为错, 随机选择一个判错的 review 和 cot —— 这里和AIM不一样
         verifier_res = None
 
         result = [ ]
 
-        print_to_console = prep_res[4]
-
         for i in range(AlphaSolveConfig.VERIFIER_SCALING_FACTOR):
-            is_valid, review, cot = self.__verify(current_conj, reasoning_path, print_to_console)
-            log_print('[verifier] verifier test for iteration ', i, ' and result is: ', is_valid, print_to_console=self.print_to_console)
+            is_valid, review, cot = self.__verify(lemma, reasoning_ctx)
+            self.logger.log_print(
+                f"event=verify_try step=exec lemma_id={lemma_id} try={i} valid={is_valid}",
+                module="verifier",
+            )
 
             if not is_valid: ## 发现错误就直接退出了, 其实也可以不退出, 看看多次能否发现不同的错误
                 result.append((is_valid, review, cot))
@@ -74,73 +80,124 @@ class Verifier(Node):
                 index = random.randint(0, len(result))
 
             is_valid, review, cot = result[index]
-            return AlphaSolveConfig.NORMAL, is_valid, review, cot, current_conj, shared_context
+            return AlphaSolveConfig.NORMAL, lemma_id, is_valid, review, cot
 
         else:
             ## 说明全对了, 返回最后一次的结果
-            return AlphaSolveConfig.NORMAL, verifier_res[0], verifier_res[1], verifier_res[2], current_conj, shared_context
+            return AlphaSolveConfig.NORMAL, lemma_id, verifier_res[0], verifier_res[1], verifier_res[2]
 
 
     def post(self, shared, prep_res, exec_res): 
     
         ## post 做两件事情: (1) 返回决策(退出: 如果生成了 theorem, 改进: 走到refiner, 正确: 走到 solver ); (2) 把结果 submit 到 shared_context 里头
 
-        if not exec_res or len(exec_res) < 6: ## 退出
-            log_print('[verifier] illegal input in verifier exec', print_to_console=self.print_to_console)
+        # WRITE ONLY to shared here.
+        if not exec_res or len(exec_res) < 5:
+            self.logger.log_print(
+                "event=illegal_exec_res step=post",
+                module="verifier",
+                level="ERROR",
+            )
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        code, valid_conj, answer, cot, current_conj, shared_context = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4], exec_res[5]
- 
+        code, lemma_id, is_valid, review, cot = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4]
+  
         if code != AlphaSolveConfig.NORMAL:
-            log_print('[verifier] verifier encounter error ...', print_to_console=self.print_to_console)
+            self.logger.log_print(
+                "event=exec_error step=post",
+                module="verifier",
+                level="ERROR",
+            )
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         
-        ## 更新 context 
+        lemmas = shared["lemmas"]
+        lemma = lemmas[lemma_id]
 
-        if valid_conj:  ## 此时说明验证通过了, 生成了正确的conj
-            shared_context.submit(current_conj)
-            if current_conj.is_theorem: ## 说明问题已经解决了
-                log_print('[verifier] theorem proved successfully ...', print_to_console=self.print_to_console)
+        if is_valid:
+            lemma["status"] = "verified"
+            lemma["review"] = review
+            lemma["cot"] = cot
+
+            if lemma.get("is_theorem"):
+                self.logger.log_print(
+                    f"event=theorem_verified step=post lemma_id={lemma_id}",
+                    module="verifier",
+                )
                 return AlphaSolveConfig.DONE
-            else: ## 说明引理正确但是还没有解决问题, 此时返回 solver
-                log_print('[verifier] conjecture verified successfully ...', print_to_console=self.print_to_console)
-                return AlphaSolveConfig.CONJECTURE_VERIFIED
-        else:
-            current_conj.review = answer
-            log_print('[verifier] conjecture unverified, need refine ...', print_to_console=self.print_to_console)
-            return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
-    def __verify(self, current_conj, reasoning_path, print_to_console):
+            self.logger.log_print(
+                f"event=lemma_verified step=post lemma_id={lemma_id}",
+                module="verifier",
+            )
+            return AlphaSolveConfig.CONJECTURE_VERIFIED
 
-        prompt = self.__build_verifier_prompt(current_conj, reasoning_path)
+        lemma["status"] = "pending"
+        lemma["review"] = review
+        lemma["cot"] = cot
+        self.logger.log_print(
+            f"event=lemma_unverified step=post lemma_id={lemma_id}",
+            module="verifier",
+            level="WARNING",
+        )
+        return AlphaSolveConfig.CONJECTURE_UNVERIFIED
+
+    def __verify(self, lemma, reasoning_ctx):
+
+        prompt = self.__build_verifier_prompt(lemma, reasoning_ctx)
 
         b = time.time()
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
-        answer, cot = self.llm.get_result(messages_to_send, print_to_console=print_to_console)
-        
-        log_print(f'[verifier] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
+
+        # For audit/debug/HTML: record the exact messages sent to LLM.
+        self.logger.log_print(
+            "event=llm_messages step=exec\n" + json.dumps(messages_to_send, ensure_ascii=False, indent=2),
+            module="verifier",
+        )
+
+        answer, cot = self.llm.get_result(messages_to_send)
+
+        self.logger.log_print(
+            f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",
+            module="verifier",
+        )
 
         if VERIFY_RESULT_VALID in answer:
             return True, answer, cot
         else:
             return False, answer, cot
 
-    def __build_verifier_prompt(self, conj, reasoning_path):
+    def __build_verifier_prompt(self, lemma, reasoning_ctx):
         ## 把所有东西拼到 prompt 里
 
-        tmp = self.prompt_template.replace('{conjecture_content}', conj.conjecture).replace('{proof_content}', conj.proof)
+        tmp = self.prompt_template.replace('{conjecture_content}', lemma.get('statement', '')).replace('{proof_content}', lemma.get('proof', ''))
 
-        if reasoning_path:
-            tmp = tmp + '\n' + reasoning_path
+        if reasoning_ctx:
+            tmp = tmp + '\n' + reasoning_ctx
         
         return tmp
 
+    def __render_context(self, ctx_ids, lemmas):
+        if not ctx_ids:
+            return None
+        lines = []
+        lines.append("## Context and History Explorations")
+        lines.append("")
+        lines.append(
+            "Here is a list of context that we have collected for this problem or our history findings during exploration. "
+            "They serve as the background of the conjecture and proof and can be accepted without controversy as correct."
+        )
+        lines.append("")
+        for i, lemma_id in enumerate(ctx_ids):
+            lines.append(f" ** Conjecture-{i} **")
+            lines.append(f" {lemmas[lemma_id].get('statement')}")
+        return "\n".join(lines)
 
 
-def create_verifier_agent(problem, prompt_file_path, print_to_console):
 
-    llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG, print_to_console=print_to_console)
-    return Verifier(llm, problem, prompt_file_path, print_to_console)
+def create_verifier_agent(problem, prompt_file_path, logger):
+
+    llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
+    return Verifier(llm, problem, prompt_file_path, logger)

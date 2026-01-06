@@ -1,17 +1,13 @@
 from workflow import AlphaSolve
-from utils.logger import log_print
-
+from agents.utils import load_prompt_from_file
 
 if __name__== "__main__" :
-
-    log_print('[start] alpha solve agent ...')
-
-    alpha = AlphaSolve(print_to_console=True)
+    problem = load_prompt_from_file('problem.md')
+    alpha = AlphaSolve(problem=problem,print_to_console=True)
     solution = alpha.do_research()
 
-    log_print(solution)
-
-    log_print('[exit] alpha solve agent ...')
+    print("Final Solution:")
+    print(solution)
 
 
 

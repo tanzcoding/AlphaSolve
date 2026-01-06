@@ -1,13 +1,12 @@
 import time
 import json
-import agents.conjecture_graph
 
-from agents.utils import build_conjuecture_helper
+from agents.utils import build_conjecture_helper
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
-from utils.logger import log_print
+from utils.logger import Logger
 
 from pocketflow import Node
 
@@ -20,127 +19,236 @@ PROOF_END = '\\end{proof}'
 
 class Refiner(Node):
 
-    def __init__(self, llm, prompt_file_path, print_to_console): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, llm, prompt_file_path, logger): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Refiner, self).__init__()
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
-        self.llm = llm 
-        self.print_to_console = print_to_console
+        self.llm = llm
+        self.logger = logger
+        self.print_to_console = logger.print_to_console_default
 
     def prep(self,shared): 
-
-        log_print('[refiner] building refiner context...', print_to_console=self.print_to_console)
-
-        iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
-
+        # READ ONLY from shared here.
+        iteration = shared["verify_refine_round_remaining"]
         if iteration == 0:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None, None, None
- 
-        conj = shared[AlphaSolveConfig.CURRENT_CONJECTURE]
-        shared_context = shared[AlphaSolveConfig.SHARED_CONTEXT]
+            # Pass lemma_id through prep_res so post() can handle quota accounting
+            # without needing to read shared.
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, shared.get("current_lemma_id")
 
-        log_print('[refiner] in refiner ..., building context done ...', print_to_console=self.print_to_console)
- 
-        return AlphaSolveConfig.NORMAL, conj, shared_context.build_context_for_conjecture(conj), shared_context, self.print_to_console
+        lemma_id = shared["current_lemma_id"]
+        if lemma_id is None:
+            self.logger.log_print(
+                "event=no_current_lemma step=prep",
+                module="refiner",
+                print_to_console=self.print_to_console,
+                level="ERROR",
+            )
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
+
+        lemma = shared["lemmas"][lemma_id]
+        ctx_ids = shared.build_reasoning_path(lemma_id, verified_only=True)
+        ctx_text = self.__render_context(ctx_ids, shared["lemmas"])
+
+        self.logger.log_print(
+            f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)} remaining={iteration}",
+            module="refiner",
+            print_to_console=self.print_to_console,
+        )
+        return AlphaSolveConfig.NORMAL, lemma_id, lemma, ctx_text
 
     def exec(self, prep_res): 
-   
-        if not prep_res or len(prep_res) < 5:
-            return AlphaSolveConfig.EXIT_ON_ERROR
+        if not prep_res:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
+        # Quota-exhausted path: prep() returns a short tuple; handle it before
+        # validating the "normal" shape.
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None, None, None
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None
 
-        conj, reasoning_path, shared_context  = prep_res[1], prep_res[2], prep_res[3]
-         
-        if not conj.conjecture or not conj.proof:
-            return AlphaSolveConfig.EXIT_ON_ERROR
+        if len(prep_res) < 5:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
-        valid, new_conj = self.__refine(conj, reasoning_path, self.print_to_console, shared_context)
+        lemma_id, lemma, reasoning_ctx = prep_res[1], prep_res[2], prep_res[3]
+        if not lemma.get("statement") or not lemma.get("proof"):
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
-        return AlphaSolveConfig.NORMAL, valid, new_conj, conj, shared_context
+        valid, new_lemma = self.__refine(lemma, reasoning_ctx)
+        return AlphaSolveConfig.NORMAL, valid, new_lemma
 
     def post(self, shared, prep_res, exec_res): 
-
-        if not prep_res:
-            log_print('[refiner] illegal prep_res in refiner post', print_to_console=self.print_to_console)
-            return AlphaSolveConfig.EXIT_ON_ERROR
-        if not exec_res: ## 应该是出错了, 重新 refine 一次吧, 没啥意义, 容错用的
-            log_print('[refiner] illegal exec_res in refiner post', print_to_console=self.print_to_console)
+        # WRITE ONLY to shared here.
+        if not prep_res or not exec_res:
+            self.logger.log_print(
+                "event=illegal_io step=post",
+                module="refiner",
+                print_to_console=self.print_to_console,
+                level="ERROR",
+            )
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
+            # verify-refine quota exhausted: we are abandoning the current lemma.
+            # Bugfix: refund the solver lemma quota when the current lemma never
+            # becomes verified after all verify-refine attempts.
+            lemma_id = prep_res[1] if len(prep_res) > 1 else None
+            if lemma_id is not None and 0 <= lemma_id < len(shared.get("lemmas", [])):
+                lemma = shared["lemmas"][lemma_id]
+                # Mark rejected so it won't be reused as context.
+                lemma["status"] = "rejected"
+
+                # Refund only once per lemma (in case of unexpected re-entry).
+                if not lemma.get("solver_round_refunded"):
+                    lemma["solver_round_refunded"] = True
+                    before = shared["solver_round_remaining"]
+                    shared["solver_round_remaining"] = min(
+                        AlphaSolveConfig.SOLVER_ROUND_NUM,
+                        shared["solver_round_remaining"] + 1,
+                    )
+                    self.logger.log_print(
+                        f"event=verify_refine_exhausted_refund step=post lemma_id={lemma_id} solver_round_remaining={before}->{shared['solver_round_remaining']}",
+                        module="refiner",
+                        print_to_console=self.print_to_console,
+                        level="WARNING",
+                    )
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
-        is_conjecture_valid, next_conjecture = exec_res[1], exec_res[2]
-        
-        ## 更新 iteration 参数
-        iteration = shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND]
-        iteration -= 1
-        shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = iteration
+        if len(exec_res) < 3:
+            self.logger.log_print(
+                "event=illegal_exec_res step=post",
+                module="refiner",
+                print_to_console=self.print_to_console,
+                level="ERROR",
+            )
+            return AlphaSolveConfig.EXIT_ON_ERROR
 
-        if is_conjecture_valid:
-            if next_conjecture:
-                log_print('[refiner] refine success, new conjecture generated ...', print_to_console=self.print_to_console)
-                ## 后续都基于这条 conj 工作
-                shared[AlphaSolveConfig.CURRENT_CONJECTURE] = next_conjecture
+        # decrement verify/refine rounds
+        shared["verify_refine_round_remaining"] = shared["verify_refine_round_remaining"] - 1
 
+        lemma_id = prep_res[1]
+        is_valid, next_lemma = exec_res[1], exec_res[2]
+
+        if is_valid:
+            if next_lemma:
+                shared["lemmas"][lemma_id] = next_lemma  # in-place overwrite
+                shared["current_lemma_id"] = lemma_id
+                self.logger.log_print(
+                    f"event=refine_success step=post lemma_id={lemma_id} remaining={shared['verify_refine_round_remaining']}",
+                    module="refiner",
+                    print_to_console=self.print_to_console,
+                )
                 return AlphaSolveConfig.REFINE_SUCCESS
-            else:
-                log_print('[refiner] refine failed, no new conjecture generated ...', print_to_console=self.print_to_console)
-                return  AlphaSolveConfig.EXIT_ON_ERROR
+            self.logger.log_print(
+                f"event=refine_no_output step=post lemma_id={lemma_id}",
+                module="refiner",
+                print_to_console=self.print_to_console,
+                level="ERROR",
+            )
+            return AlphaSolveConfig.EXIT_ON_ERROR
 
-        else: ## 代表此时 refiner 觉得猜想不对，要返回solver
-            log_print('[refiner] conjecture wrong, need to go back to solver ...', print_to_console=self.print_to_console)
-            return AlphaSolveConfig.CONJECTURE_WRONG
+        # refiner considers lemma wrong => route to solver
+        shared["lemmas"][lemma_id]["status"] = "rejected"
+        self.logger.log_print(
+            f"event=lemma_wrong step=post lemma_id={lemma_id} remaining={shared['verify_refine_round_remaining']}",
+            module="refiner",
+            print_to_console=self.print_to_console,
+            level="WARNING",
+        )
+        return AlphaSolveConfig.CONJECTURE_WRONG
  
 
-    def __refine(self, conj, reasoning_path, print_to_console, shared_context): 
+    def __refine(self, lemma, reasoning_ctx): 
 
-        prompt = self.__build_refiner_prompt(conj, reasoning_path)
+        prompt = self.__build_refiner_prompt(lemma, reasoning_ctx)
 
         b = time.time()
         messages_to_send = [
             {"role": "user", "content": prompt}
         ]
-        answer, cot = self.llm.get_result(messages_to_send, print_to_console=print_to_console)
 
-        log_print(f'[refiner] using: {time.time() - b:.1f}s, answer length: {len(answer)}, cot length: {len(cot)}', print_to_console=self.print_to_console)
+        # For audit/debug/HTML: record the exact messages sent to LLM.
+        self.logger.log_print(
+            "event=llm_messages step=exec\n" + json.dumps(messages_to_send, ensure_ascii=False, indent=2),
+            module="refiner",
+            print_to_console=self.print_to_console,
+        )
+
+        answer, cot = self.llm.get_result(messages_to_send)
+
+        self.logger.log_print(
+            f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",
+            module="refiner",
+            print_to_console=self.print_to_console,
+        )
 
         conj2, proof = self.__extract_from_model(answer)
 
         valid =  INVALID_TAG not in answer 
 
-        if conj and proof:
-            return valid, shared_context.add_to_conjecture_graph_by_parent(conj, conj2, proof, cot)           
-        else:
-            return valid, None
+        if conj2 and proof:
+            next_lemma = {
+                **lemma,
+                "statement": conj2,
+                "proof": proof,
+                "cot": cot,
+                "status": "pending",
+            }
+            # keep dependencies as-is (solver only uses verified lemmas anyway)
+            return valid, next_lemma
+        return valid, None
 
 
     def __extract_from_model(self, model_output):
         
-        conj = build_conjuecture_helper(model_output, CONJECTURE_BEGIN, CONJECTURE_END)
-        proof = build_conjuecture_helper(model_output, PROOF_BEGIN, PROOF_END)        
+        conj = build_conjecture_helper(
+            model_output,
+            CONJECTURE_BEGIN,
+            CONJECTURE_END,
+            logger=self.logger,
+            module="refiner",
+        )
+        proof = build_conjecture_helper(
+            model_output,
+            PROOF_BEGIN,
+            PROOF_END,
+            logger=self.logger,
+            module="refiner",
+        )        
 
         return conj, proof
 
-    def __build_refiner_prompt(self, conjecture, reasoning_path): ## 把所有东西拼到 prompt 里
+    def __build_refiner_prompt(self, lemma, reasoning_ctx): ## 把所有东西拼到 prompt 里
 
-        if not conjecture.conjecture or not conjecture.proof: ## 容错
+        if not lemma.get("statement") or not lemma.get("proof"):
             return None
 
-        tmp = self.prompt_template.replace('{conjecture_content}', conjecture.conjecture).replace('{proof_content}', conjecture.proof)
+        tmp = self.prompt_template.replace('{conjecture_content}', lemma.get("statement", "")).replace('{proof_content}', lemma.get("proof", ""))
 
-        if conjecture.review:
-            tmp = tmp.replace('{review_content}', conjecture.review)
+        if lemma.get("review"):
+            tmp = tmp.replace('{review_content}', lemma.get("review"))
 
-        if reasoning_path:
-            tmp = tmp + '\n' + reasoning_path
+        if reasoning_ctx:
+            tmp = tmp + '\n' + reasoning_ctx
 
         return tmp
 
+    def __render_context(self, ctx_ids, lemmas):
+        if not ctx_ids:
+            return None
+        lines = []
+        lines.append("## Context and History Explorations")
+        lines.append("")
+        lines.append(
+            "Here is a list of context that we have collected for this problem or our history findings during exploration. "
+            "They serve as the background of the conjecture and proof and can be accepted without controversy as correct."
+        )
+        lines.append("")
+        for i, lemma_id in enumerate(ctx_ids):
+            lines.append(f" ** Conjecture-{i} **")
+            lines.append(f" {lemmas[lemma_id].get('statement')}")
+        return "\n".join(lines)
 
-def create_refiner_agent(prompt_file_path, print_to_console):
+
+def create_refiner_agent(prompt_file_path, logger:Logger):
  
-    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG, print_to_console=print_to_console)
-    return Refiner(llm, prompt_file_path, print_to_console)
+    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG, logger=logger)
+    return Refiner(llm, prompt_file_path, logger=logger)

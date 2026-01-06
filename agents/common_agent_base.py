@@ -1,12 +1,20 @@
+"""Legacy module.
+
+This file contains an old experimental implementation.
+It is NOT used by the current workflow and is left untouched per request.
+"""
+
 import time
 import json
 import agents.conjecture_graph
 import agents.shared_context
 
-from agents.utils import build_conjuecture_helper
+from agents.utils import build_conjecture_helper
 from agents.utils import load_prompt_from_file
 from llms.kimi import KimiClient
 from llms.deepseek import DeepSeekClient
+# NOTE: This legacy module still references AlphaSolveConfig shared-key constants.
+# The active workflow no longer imports/uses this file.
 from config.agent_config import AlphaSolveConfig
 from utils.logger import log_print
 
@@ -48,7 +56,8 @@ class Solver(Node):
 
             ## 这里需要 flush 一下 verifier 的quota
             log_print('[solver] flush verify and refine round to: ', print_to_console=True)
-            shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] =
+            # NOTE: legacy/incomplete code path (kept for history). Disabled to avoid syntax errors.
+            # shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM
             return AlphaSolveConfig.NORMAL, shared_context, hint
  
     def exec(self, prep_res): ## 执行主要的逻辑
@@ -128,10 +137,10 @@ class Solver(Node):
 
     def __build_conjecture(self, shared_context, resp_from_llm, cot = None):
    
-        conj = build_conjuecture_helper(resp_from_llm, CONJECTURE_BEGIN, CONJECTURE_END)
-        proof = build_conjuecture_helper(resp_from_llm, PROOF_BEGIN, PROOF_END)
+        conj = build_conjecture_helper(resp_from_llm, CONJECTURE_BEGIN, CONJECTURE_END)
+        proof = build_conjecture_helper(resp_from_llm, PROOF_BEGIN, PROOF_END)
 
-        dependencies = build_conjuecture_helper(resp_from_llm, DEPENDENCY_BEGIN, DEPENDENCY_END)
+        dependencies = build_conjecture_helper(resp_from_llm, DEPENDENCY_BEGIN, DEPENDENCY_END)
         data = [ ] 
 
         if not dependencies:
@@ -139,7 +148,7 @@ class Solver(Node):
  
         is_theorem = False
 
-        final_proof = build_conjuecture_helper(resp_from_llm, FINAL_BEGIN, FINAL_END)
+        final_proof = build_conjecture_helper(resp_from_llm, FINAL_BEGIN, FINAL_END)
 
         ## 情况一: 有 final proof, 那么有没有 conjecture / proof 还好
         ## 情况二: 都没有, 那就完犊子了, 返回空

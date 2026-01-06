@@ -1,49 +1,60 @@
 import os, time, threading, random
 
-from agents.utils import load_prompt_from_file
 from config.agent_config import AlphaSolveConfig
 from agents.shared_context import SharedContext
-from openai import OpenAI
-from utils.logger import log_print
 
 from agents.solver import create_solver_agent
 from agents.verifier import create_verifier_agent
 from agents.refiner import create_refiner_agent
 from agents.summarizer import create_summarizer_agent
 
-from pocketflow import Node, Flow
+from pocketflow import Flow
+
+from utils.logger import Logger
 
 class AlphaSolve:
 
     ## 首先, AIM 其实没什么东西可以复用的,整体上目前大部分Math Aget 都可以总结成, solve(explorer)-verify(reviewer)-refine 的模式
     ## 但是具体做看实验了, 因此 AlphaSolve 的主类仅封装: (1) solve(explorer)-verify(reviewer)-refine 的模式 (2) solve & verify & refine 的历史 trace
 
-    def __init__(self, print_to_console = False):
-        self.problem = load_prompt_from_file(AlphaSolveConfig.PROBLEM_PATH)
-        self.print_to_console = print_to_console
-        self.shared_context = SharedContext()
-        self.shared = { }
+    def __init__(self, problem, print_to_console = False):
+        self.problem = problem
+        self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH,print_to_console=print_to_console)
 
-        ## 把各种配置放到 shard context 里头
-        self.shared[AlphaSolveConfig.TOTAL_SOLVER_ROUND] =  AlphaSolveConfig.SOLVER_ROUND_NUM 
-        self.shared[AlphaSolveConfig.VERIFY_AND_REFINE_ROUND] = AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM
-        self.shared[AlphaSolveConfig.SHARED_CONTEXT] = self.shared_context
-        self.shared[AlphaSolveConfig.CURRENT_CONJECTURE] = None
-        self.shared[AlphaSolveConfig.HINT] = None
-        self.shared[AlphaSolveConfig.PRINT_TO_CONSOLE] = print_to_console
+        # shared is a single SharedContext(dict) instance.
+        # All nodes read only in prep and write only in post.
+        self.shared = SharedContext(
+            problem=self.problem,
+            solver_round_remaining=AlphaSolveConfig.SOLVER_ROUND_NUM,
+            verify_refine_round_remaining=AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM,
+            hint=None,
+            logger=self.logger,
+        )
 
 
     def __create_research_flow(self):  ## 主类入口
 
-        log_print('[AlphaSolve] create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH, print_to_console=self.print_to_console)
-        solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH, print_to_console=self.print_to_console)
+        self.logger.log_print(
+            '[AlphaSolve] create solver node, using model ',
+            AlphaSolveConfig.SOLVER_CONFIG['model'],
+            ' and prompt path ',
+            AlphaSolveConfig.SOLVER_PROMPT_PATH,
+            module='alphasolve',
+        )
+        solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH, logger=self.logger)
 
-        log_print('[AlphaSolve] create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH, print_to_console=self.print_to_console)
-        verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, print_to_console=self.print_to_console)
+        self.logger.log_print(
+            '[AlphaSolve] create verifier node, using model ',
+            AlphaSolveConfig.VERIFIER_CONFIG['model'],
+            ' and prompt path ',
+            AlphaSolveConfig.VERIFIER_PROMPT_PATH,
+            module='alphasolve',
+        )
+        verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, logger=self.logger)
        
-        refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH, print_to_console=self.print_to_console)
+        refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH, logger=self.logger)
      
-        summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, print_to_console=self.print_to_console)
+        summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, logger=self.logger)
 
         ## 成功生成 lemma, 下一站去 verifier
         solver - AlphaSolveConfig.CONJECTURE_GENERATED >> verifier 
@@ -76,13 +87,14 @@ class AlphaSolve:
 
         ## 走到这里就说明
         try:
-            result = self.shared[AlphaSolveConfig.RESULT_SUMMARY]
+            # New schema: result is stored directly on shared.
+            result = self.shared["result_summary"]
 
-            log_print('alpha solve result is: ', result, print_to_console=True)
+            self.logger.log_print('alpha solve result is: ', result, module='alphasolve')
 
             return result
         except KeyError:
-            log_print('error execute on alpha solve, no summary', print_to_console=self.print_to_console)
+            self.logger.log_print('error execute on alpha solve, no summary', module='alphasolve', level='ERROR')
             return None
 
 

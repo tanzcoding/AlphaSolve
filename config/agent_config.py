@@ -47,7 +47,7 @@ MOONSHOT_CONFIG = {
 VOLCANO_CONFIG = {
     'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
     'api_key': lambda: os.getenv('ARK_API_KEY'),
-    'model': 'doubao-seed-1-6-lite-251015',
+    'model': 'doubao-seed-1-6-flash',
     'timeout': 3600,
     'temperature': 1.0,
     # 火山引擎：通过 extra_body.enable_thinking 开启深度思考
@@ -105,8 +105,7 @@ CUSTOM_LLM_CONFIG_1 = {
 }
 
 class AlphaSolveConfig:
-    PROBLEM_PATH = 'problem.md'
-    STANDARD_SOLUTION_PATH = 'standard_solution.md'
+    LOG_PATH = 'logs'
 
     SOLVER = 'solver'
     VERIFIER = 'verifier'
@@ -116,28 +115,28 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [RESEARCH_SUBAGENT_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent
     REFINER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [RESEARCH_SUBAGENT_TOOL]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
@@ -148,18 +147,9 @@ class AlphaSolveConfig:
         'tools': [PYTHON_TOOL, WOLFRAM_TOOL]
     }
 
-    HINT = 'hint'
-
     VERIFIER_SCALING_FACTOR = 1
-    VERIFY_AND_REFINE_ROUND = 'verifier_refiner_round'
-    TOTAL_SOLVER_ROUND = 'solver_round'
-
-    PRINT_TO_CONSOLE = 'print_to_console'
-
-    SHARED_CONTEXT = 'shared_context'
-    CURRENT_CONJECTURE = 'corrent_conjecture'
-
-    RESULT_SUMMARY = 'result_summary'
+    # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
+    # Do NOT add shared-key constants here.
 
     ## 各种状态, 用来管理整个 agent system 的状态迁移
     CONJECTURE_GENERATED  = 'conjecture_generated'
@@ -185,5 +175,5 @@ class AlphaSolveConfig:
     SOLVER_EXAUSTED = 'solver_exausted'
 
     ## 
-    SOLVER_ROUND_NUM = 3
-    VERIFY_AND_REFINE_ROUND_NUM = 3
+    SOLVER_ROUND_NUM = 2
+    VERIFY_AND_REFINE_ROUND_NUM = 1

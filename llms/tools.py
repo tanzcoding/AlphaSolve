@@ -11,7 +11,7 @@ import json
 from typing import Optional, Tuple
 from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
-from utils.logger import log_print
+from utils.logger import Logger
 
 
 # NOTE:
@@ -232,7 +232,7 @@ def run_wolfram(code: str, session=None):
     return output, err
 
 
-def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Optional[str]]:
+def run_subagent(task_description: str, print_to_console: bool, logger: Logger) -> Tuple[str, Optional[str]]:
     """
     数学研究子代理执行器
     
@@ -248,7 +248,7 @@ def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Op
     result = ""
     err = None
     
-    log_print('[subagent] entering subagent...', print_to_console=print_to_console)
+    logger.log_print('[subagent] entering subagent...', module='subagent')
     
     try:
         # 动态导入以避免循环依赖
@@ -257,7 +257,7 @@ def run_subagent(task_description: str, print_to_console: bool) -> Tuple[str, Op
         
         # 使用 SUBAGENT_CONFIG 作为子代理配置
         config = AlphaSolveConfig.SUBAGENT_CONFIG
-        client = LLMClient(config, print_to_console=print_to_console)
+        client = LLMClient(config, logger)
         
         # 构建子代理的系统提示
         system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently.

@@ -1,16 +1,24 @@
 
 
-from utils.logger import log_print
-
-def build_conjuecture_helper(resp_from_llm, begin_str, end_str):
-    bindex = resp_from_llm.find(begin_str) + len(begin_str)
-    eindex = resp_from_llm.find(end_str)
-
-    if bindex < len(begin_str) or eindex < 0:
-        log_print('illegal respronse for problem missing ', begin_str, ' or ', end_str, ' begin index ', bindex, ' end index ', eindex, print_to_console=True)
+def build_conjecture_helper(resp_from_llm, begin_str, end_str, *, logger=None, module="agents.utils"):
+    """Extract the substring between two markers from an LLM response."""
+    if resp_from_llm is None:
         return None
 
-    return resp_from_llm[bindex: eindex]
+    begin_index = resp_from_llm.find(begin_str)
+    end_index = resp_from_llm.find(end_str)
+
+    if begin_index < 0 or end_index < 0 or begin_index + len(begin_str) > end_index:
+        message = (
+            f"illegal response missing '{begin_str}' or '{end_str}' "
+            f"(begin_index={begin_index}, end_index={end_index})"
+        )
+        if logger is not None:
+            logger.log_print(message, module=module, level='ERROR')
+        return None
+
+    begin_index += len(begin_str)
+    return resp_from_llm[begin_index:end_index]
 
 
 

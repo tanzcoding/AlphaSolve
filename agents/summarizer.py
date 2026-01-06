@@ -1,13 +1,12 @@
 import time
 import json
-import agents.conjecture_graph
 
-from agents.utils import build_conjuecture_helper
+from agents.utils import build_conjecture_helper
 
 from config.agent_config import AlphaSolveConfig
 
 from llms.utils import LLMClient
-from utils.logger import log_print
+from utils.logger import Logger
 
 from pocketflow import Node
 
@@ -20,28 +19,57 @@ PROOF_END = '\\end{proof}'
 
 class Summarizer(Node):
 
-    def __init__(self, problem, llm, prompt_file_path, print_to_console): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, problem, llm, prompt_file_path, logger): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Summarizer, self).__init__()
-        self.print_to_console = print_to_console
+        self.logger = logger
 
     def prep(self,shared): 
-        return None
+        # READ ONLY from shared.
+        lemma_id = shared["current_lemma_id"]
+        if lemma_id is None:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
+
+        # Include transitive dependencies + the final lemma, and output them in id order.
+        ids = shared.build_reasoning_path(lemma_id, verified_only=False)
+        ids.append(lemma_id)
+        ids = sorted(set(ids))
+
+        lemmas = shared["lemmas"]
+        bundle = []
+        for i in ids:
+            l = lemmas[i]
+            bundle.append(
+                {
+                    "id": i,
+                    "statement": l.get("statement"),
+                    "proof": l.get("proof"),
+                }
+            )
+        return AlphaSolveConfig.NORMAL, bundle
 
     def exec(self,prep_res): 
-        return None
+        if not prep_res or len(prep_res) < 2:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
+        if prep_res[0] != AlphaSolveConfig.NORMAL:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
+        bundle = prep_res[1]
+        return AlphaSolveConfig.NORMAL, json.dumps({"lemmas": bundle}, ensure_ascii=False, indent=2)
 
     def post(self, shared, prep_res, exec_res): 
-        result_map = {}
+        # WRITE ONLY to shared.
+        if not exec_res or len(exec_res) < 2:
+            return
+        if exec_res[0] != AlphaSolveConfig.NORMAL:
+            return
 
-        result_map['conjucture'] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].conjecture
-        result_map['proof'] = shared[AlphaSolveConfig.CURRENT_CONJECTURE].proof
+        shared["result_summary"] = exec_res[1]
+        self.logger.log_print(
+            "event=summary_written step=post",
+            module="summarizer",
+        )
+
+
+def create_summarizer_agent(problem, prompt_file_path, logger: Logger):
  
-        shared[AlphaSolveConfig.RESULT_SUMMARY] = json.dumps(result_map)
-
-        log_print('[summarizer] summarization done ...', print_to_console=self.print_to_console)
-
-
-def create_summarizer_agent(problem, prompt_file_path, print_to_console):
- 
-    llm = LLMClient(AlphaSolveConfig.SUMMARIZER_CONFIG)
-    return Summarizer(problem, llm, prompt_file_path, print_to_console) 
+    llm = LLMClient(AlphaSolveConfig.SUMMARIZER_CONFIG, logger=logger)
+    return Summarizer(problem, llm, prompt_file_path, logger=logger) 
