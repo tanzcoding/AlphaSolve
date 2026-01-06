@@ -3,7 +3,6 @@ import json
 from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
 from .tools import *
-from utils.logger import Logger
 
 class LLMClient:
     def __init__(self, config: Dict, logger: Logger):

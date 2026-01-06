@@ -248,7 +248,7 @@ def run_subagent(task_description: str, print_to_console: bool, logger: Logger) 
     result = ""
     err = None
     
-    logger.log_print('[subagent] entering subagent...', module='subagent')
+    logger.log_print('entering subagent...', module='subagent')
     
     try:
         # 动态导入以避免循环依赖
