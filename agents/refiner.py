@@ -65,7 +65,7 @@ class Refiner(Node):
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
             return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None
 
-        if len(prep_res) < 5:
+        if len(prep_res) < 4:
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         lemma_id, lemma, reasoning_ctx = prep_res[1], prep_res[2], prep_res[3]
