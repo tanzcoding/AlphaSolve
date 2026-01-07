@@ -62,7 +62,7 @@ class Solver(Node):
         messages = prep_res[1]
         _, _, updated_messages = self.llm.get_result(messages)
 
-        lemma = self.__build_lemma(self.problem, updated_messages)
+        lemma = self.__build_lemma(updated_messages)
         return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 
 
