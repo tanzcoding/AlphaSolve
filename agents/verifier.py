@@ -1,5 +1,5 @@
 import time, json, random
-
+from .shared_context import SharedContext, build_reasoning_path
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
@@ -36,7 +36,7 @@ class Verifier(Node):
         lemmas = shared["lemmas"]
         lemma = lemmas[lemma_id]
 
-        ctx_ids = shared.build_reasoning_path(lemma_id, verified_only=True)
+        ctx_ids = build_reasoning_path(lemmas, lemma_id, verified_only=True)
         ctx_text = self.__render_context(ctx_ids, lemmas)
         self.logger.log_print(
             f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
@@ -113,6 +113,7 @@ class Verifier(Node):
         
         lemmas = shared["lemmas"]
         lemma = lemmas[lemma_id]
+        lemma["verify_round"] = lemma.get("verify_round", 0) + 1
 
         if is_valid:
             lemma["status"] = "verified"

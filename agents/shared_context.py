@@ -59,45 +59,53 @@ class SharedContext(TypedDict):
     current_lemma_id: Optional[int]
     result_summary: Optional[str]
 
-    def build_reasoning_path(
-        self,
-        lemma_id: int,
-        *,
-        verified_only: bool = True,
-    ) -> List[int]:
-        """Return transitive dependencies for ``lemma_id`` as a topologically ordered list."""
 
-        lemmas: List[Lemma] = self["lemmas"]
-        if lemma_id < 0 or lemma_id >= len(lemmas):
-            raise IndexError(f"lemma_id out of range: {lemma_id}")
+def build_reasoning_path(
+    lemmas: List[Lemma],
+    lemma_id: int,
+    *,
+    verified_only: bool = True,
+) -> List[int]:
+    """Return transitive dependencies for ``lemma_id`` as a topologically ordered list.
 
-        seen: set[int] = set()
-        out: List[int] = []
+    Args:
+        lemmas: List of Lemma objects
+        lemma_id: Target lemma ID to build path for
+        verified_only: If True, only include verified lemmas in the path
 
-        def ok(i: int) -> bool:
-            if not verified_only:
-                return True
-            return lemmas[i].get("status") == "verified"
+    Returns:
+        Topologically ordered list of lemma IDs representing the reasoning path
+    """
+    if lemma_id < 0 or lemma_id >= len(lemmas):
+        raise IndexError(f"lemma_id out of range: {lemma_id}")
 
-        def dfs(i: int) -> None:
-            deps = lemmas[i].get("dependencies") or []
-            for d in deps:
-                if not isinstance(d, int):
-                    continue
-                if d < 0 or d >= len(lemmas):
-                    continue
-                if d >= i:
-                    continue
-                if verified_only and not ok(d):
-                    continue
-                if d in seen:
-                    continue
-                seen.add(d)
-                dfs(d)
-                out.append(d)
+    seen: set[int] = set()
+    out: List[int] = []
 
-        dfs(lemma_id)
-        return out
+    def ok(i: int) -> bool:
+        if not verified_only:
+            return True
+        return lemmas[i].get("status") == "verified"
+
+    def dfs(i: int) -> None:
+        deps = lemmas[i].get("dependencies") or []
+        for d in deps:
+            if not isinstance(d, int):
+                continue
+            if d < 0 or d >= len(lemmas):
+                continue
+            if d >= i:
+                continue
+            if verified_only and not ok(d):
+                continue
+            if d in seen:
+                continue
+            seen.add(d)
+            dfs(d)
+            out.append(d)
+
+    dfs(lemma_id)
+    return out
 
 
 def new_shared_context(*, problem: str, hint: Optional[str] = None) -> SharedContext:
@@ -146,9 +154,7 @@ def validate_lemma(lemma: Dict[str, Any], *, lemma_id: Optional[int] = None) -> 
         "dependencies",
         "status",
         "is_theorem",
-        "messages_for_refiner",
-        "verify_round",
-        "solver_round_refunded",
+        "history_messages",
     }
     missing = required - set(lemma.keys())
     if missing:
@@ -166,12 +172,10 @@ def validate_lemma(lemma: Dict[str, Any], *, lemma_id: Optional[int] = None) -> 
         raise ValueError("Lemma.status must be one of: pending|verified|rejected")
     if not isinstance(lemma.get("is_theorem"), bool):
         raise TypeError("Lemma.is_theorem must be bool")
-    if not isinstance(lemma.get("messages_for_refiner"), list):
-        raise TypeError("Lemma.messages_for_refiner must be List[ChatCompletionMessageParam]")
+    if not isinstance(lemma.get("history_messages"), list):
+        raise TypeError("Lemma.history_messages must be List[ChatCompletionMessageParam]")
     if not isinstance(lemma.get("verify_round"), int):
         raise TypeError("Lemma.verify_round must be int")
-    if not isinstance(lemma.get("solver_round_refunded"), bool):
-        raise TypeError("Lemma.solver_round_refunded must be bool")
 
     if lemma_id is not None:
         for d in deps:
@@ -179,5 +183,3 @@ def validate_lemma(lemma: Dict[str, Any], *, lemma_id: Optional[int] = None) -> 
                 raise ValueError(
                     f"Lemma.dependencies must reference earlier lemmas only: dep={d} >= self={lemma_id}"
                 )
-
-

@@ -90,7 +90,7 @@ class LLMClient:
                     break
                 
                 # 处理工具调用
-                logger.log_print("-" * 10 + "[思维链中工具调用]" + "-" * 10)
+                logger.log_print("\n" + "-" * 10 + "思维链中工具调用" + "-" * 10)
                 
                 for tc in tool_calls:
                     name = tc['function']['name']
@@ -154,9 +154,9 @@ class LLMClient:
         is_continuation = len(messages) > 0 and messages[-1].get('role') == 'tool'
         
         if is_continuation:
-            logger.log_print("-" * 10 + "[继续思考]" + "-" * 10)
+            logger.log_print("\n" + "-" * 10 + "继续思考" + "-" * 10)
         else:
-            logger.log_print("=" * 20 + "思维链内容" + "=" * 20)
+            logger.log_print("\n" + "=" * 20 + "思维链内容" + "=" * 20)
             if 'gpt' in self.model or 'gemini' in self.model or 'claude' in self.model or 'o4' in self.model or 'grok' in self.model or 'o3' in self.model or 'o1' in self.model:
                 logger.log_print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n")
 
@@ -185,7 +185,7 @@ class LLMClient:
             ct_part = getattr(delta, 'content', None)
             if ct_part:
                 if not is_answering:
-                    logger.log_print("=" * 20 + "最终回答" + "=" * 20 + "\n")
+                    logger.log_print("\n" + "=" * 20 + "最终回答" + "=" * 20)
                     is_answering = True
                 logger.log_print(ct_part, end="")
                 content_parts.append(ct_part)

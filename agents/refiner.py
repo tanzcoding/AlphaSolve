@@ -1,6 +1,6 @@
 import time
 import json
-
+from .shared_context import build_reasoning_path
 from agents.utils import extract_substring
 from agents.utils import load_prompt_from_file
 
@@ -29,13 +29,7 @@ class Refiner(Node):
 
     def prep(self,shared): 
         # READ ONLY from shared here.
-        iteration = shared["verify_refine_round_remaining"]
-        if iteration == 0:
-            # Pass lemma_id through prep_res so post() can handle quota accounting
-            # without needing to read shared.
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, shared.get("current_lemma_id")
-
-        lemma_id = shared["current_lemma_id"]
+        lemma_id = shared.get("current_lemma_id")
         if lemma_id is None:
             self.logger.log_print(
                 "event=no_current_lemma step=prep",
@@ -45,12 +39,17 @@ class Refiner(Node):
             )
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
+        if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.VERIFIER_MAX_ROUNDS:
+            # Pass lemma_id through prep_res so post() can handle quota accounting
+            # without needing to read shared.
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, lemma_id, None, None
+
         lemma = shared["lemmas"][lemma_id]
-        ctx_ids = shared.build_reasoning_path(lemma_id, verified_only=True)
+        ctx_ids = build_reasoning_path(shared["lemmas"],lemma_id, verified_only=True)
         ctx_text = self.__render_context(ctx_ids, shared["lemmas"])
 
         self.logger.log_print(
-            f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)} remaining={iteration}",
+            f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
             module="refiner",
             print_to_console=self.print_to_console,
         )
@@ -86,7 +85,7 @@ class Refiner(Node):
             )
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
+        if prep_res[0] == AlphaSolveConfig.VERIFIER_EXAUSTED:
             # verify-refine quota exhausted: we are abandoning the current lemma.
             # Bugfix: refund the solver lemma quota when the current lemma never
             # becomes verified after all verify-refine attempts.
@@ -95,21 +94,12 @@ class Refiner(Node):
                 lemma = shared["lemmas"][lemma_id]
                 # Mark rejected so it won't be reused as context.
                 lemma["status"] = "rejected"
-
-                # Refund only once per lemma (in case of unexpected re-entry).
-                if not lemma.get("solver_round_refunded"):
-                    lemma["solver_round_refunded"] = True
-                    before = shared["solver_round_remaining"]
-                    shared["solver_round_remaining"] = min(
-                        AlphaSolveConfig.SOLVER_ROUND_NUM,
-                        shared["solver_round_remaining"] + 1,
-                    )
-                    self.logger.log_print(
-                        f"event=verify_refine_exhausted_refund step=post lemma_id={lemma_id} solver_round_remaining={before}->{shared['solver_round_remaining']}",
-                        module="refiner",
-                        print_to_console=self.print_to_console,
-                        level="WARNING",
-                    )
+                self.logger.log_print(
+                    f"event=conjecture rejected and would not be refined again, step=post, lemma_id={lemma_id}",
+                    module="refiner",
+                    print_to_console=self.print_to_console,
+                    level="WARNING",
+                )
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
         if len(exec_res) < 3:
@@ -120,9 +110,6 @@ class Refiner(Node):
                 level="ERROR",
             )
             return AlphaSolveConfig.EXIT_ON_ERROR
-
-        # decrement verify/refine rounds
-        shared["verify_refine_round_remaining"] = shared["verify_refine_round_remaining"] - 1
 
         lemma_id = prep_res[1]
         is_valid, next_lemma = exec_res[1], exec_res[2]

@@ -80,13 +80,13 @@ class Solver(Node):
 
         lemma = exec_res[1]
         # Validate lemma structure before updating shared.
-        SharedContext.validate_lemma(lemma)
+        validate_lemma(lemma)
         shared["lemmas"].append(lemma)
         lemma_id = len(shared["lemmas"]) - 1
         shared["current_lemma_id"] = lemma_id
 
         self.logger.log_print(
-            f"event=lemma_created step=post lemma_id={lemma_id} is_theorem={bool(lemma.get('is_theorem'))} solver_round_remaining={shared['solver_round_remaining']}",
+            f"event=lemma_created step=post, lemma_id={lemma_id}, is_theorem={bool(lemma.get('is_theorem'))}, now has {len(shared['lemmas'])} lemmas",
             module="solver",
         )
 
