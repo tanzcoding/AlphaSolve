@@ -116,21 +116,21 @@ class AlphaSolveConfig:
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
         **VOLCANO_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL]
+        'tools': []
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
         **VOLCANO_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL]
+        'tools': []
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent
     REFINER_CONFIG = {
         **VOLCANO_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL]
+        'tools': []
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 

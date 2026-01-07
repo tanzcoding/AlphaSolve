@@ -116,7 +116,10 @@ class Solver(Node):
         lemma_id = len(shared["lemmas"]) - 1
         shared["current_lemma_id"] = lemma_id
 
-        shared["messages_for_refiner"] = exec_res[2] if len(exec_res) > 2 else None
+        # Persist the full message trace for the refiner. This is used as the
+        # conversation history to support diff-style refinement.
+        updated_messages = exec_res[2] if len(exec_res) > 2 else None
+        shared["messages_for_refiner"] = updated_messages if isinstance(updated_messages, list) else []
 
         self.logger.log_print(
             f"event=lemma_created step=post lemma_id={lemma_id} is_theorem={bool(lemma.get('is_theorem'))} solver_round_remaining={shared['solver_round_remaining']}",
