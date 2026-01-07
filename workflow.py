@@ -6,6 +6,7 @@ from agents.shared_context import new_shared_context
 from agents.solver import create_solver_agent
 from agents.verifier import create_verifier_agent
 from agents.diff_refiner import create_diff_refiner_agent
+from agents.refiner import create_refiner_agent
 from agents.summarizer import create_summarizer_agent
 
 from pocketflow import Flow
@@ -49,7 +50,7 @@ class AlphaSolve:
         )
         verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, logger=self.logger)
        
-        refiner = create_diff_refiner_agent(logger=self.logger)
+        refiner = create_refiner_agent(logger=self.logger)
      
         summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, logger=self.logger)
 

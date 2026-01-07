@@ -12,14 +12,12 @@ Focus on extracting and condensing the essence of the proof's reasoning.
 Present the final result strictly inside the following tags:
 
 ```
-\begin{summary}
+<summary>
 [Your concise summary here]
-\end{summary}
+</summary>
 ```
 
 Ensure that the summary is self-contained and understandable without referencing the original text.
 
-\begin{conjecture}[conjecture content]\end{conjecture}
-\begin{proof}[proof content]\end{proof}
-
-
+<conjecture>[conjecture content]</conjecture>
+<proof>[proof content]</proof>

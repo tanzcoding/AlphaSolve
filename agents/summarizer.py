@@ -12,10 +12,10 @@ from pocketflow import Node
 
 ## 一旦出现这条标签, 说明 lemma 是错的
 INVALID_TAG = '\\boxed{false}'
-CONJECTURE_BEGIN = '\\begin{conjecture}'
-CONJECTURE_END = '\\end{conjecture}'
-PROOF_BEGIN = '\\begin{proof}'
-PROOF_END = '\\end{proof}'
+CONJECTURE_BEGIN = '<conjecture>'
+CONJECTURE_END = '</conjecture>'
+PROOF_BEGIN = '<proof>'
+PROOF_END = '</proof>'
 
 class Summarizer(Node):
 

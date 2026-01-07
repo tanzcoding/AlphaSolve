@@ -1,7 +1,7 @@
 import time
 import json
 
-from agents.utils import build_conjecture_helper
+from agents.utils import extract_substring
 from agents.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
@@ -12,10 +12,10 @@ from pocketflow import Node
 
 ## 一旦出现这条标签, 说明 lemma 是错的
 INVALID_TAG = '\\boxed{false}'
-CONJECTURE_BEGIN = '\\begin{conjecture}'
-CONJECTURE_END = '\\end{conjecture}'
-PROOF_BEGIN = '\\begin{proof}'
-PROOF_END = '\\end{proof}'
+CONJECTURE_BEGIN = '<conjecture>'
+CONJECTURE_END = '</conjecture>'
+PROOF_BEGIN = '<proof>'
+PROOF_END = '</proof>'
 
 class Refiner(Node):
 
@@ -199,14 +199,14 @@ class Refiner(Node):
 
     def __extract_from_model(self, model_output):
         
-        conj = build_conjecture_helper(
+        conj = extract_substring(
             model_output,
             CONJECTURE_BEGIN,
             CONJECTURE_END,
             logger=self.logger,
             module="refiner",
         )
-        proof = build_conjecture_helper(
+        proof = extract_substring(
             model_output,
             PROOF_BEGIN,
             PROOF_END,
