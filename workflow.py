@@ -33,20 +33,20 @@ class AlphaSolve:
     def __create_research_flow(self):  ## 主类入口
 
         self.logger.log_print(
-            '[AlphaSolve] create solver node, using model ',
+            'create solver node, using model ',
             AlphaSolveConfig.SOLVER_CONFIG['model'],
             ' and prompt path ',
             AlphaSolveConfig.SOLVER_PROMPT_PATH,
-            module='alphasolve',
+            module='AlphaSolve',
         )
         solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH, logger=self.logger)
 
         self.logger.log_print(
-            '[AlphaSolve] create verifier node, using model ',
+            'create verifier node, using model ',
             AlphaSolveConfig.VERIFIER_CONFIG['model'],
             ' and prompt path ',
             AlphaSolveConfig.VERIFIER_PROMPT_PATH,
-            module='alphasolve',
+            module='AlphaSolve',
         )
         verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, logger=self.logger)
        
@@ -88,11 +88,11 @@ class AlphaSolve:
             # New schema: result is stored directly on shared.
             result = self.shared["result_summary"]
 
-            self.logger.log_print('alpha solve result is: ', result, module='alphasolve')
+            self.logger.log_print('AlphaSolve result is: ', result, module='AlphaSolve')
 
             return result
         except KeyError:
-            self.logger.log_print('error execute on alpha solve, no summary', module='alphasolve', level='ERROR')
+            self.logger.log_print('error execute on AlphaSolve, no summary', module='AlphaSolve', level='ERROR')
             return None
 
 

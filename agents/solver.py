@@ -52,17 +52,18 @@ class Solver(Node):
         ## 处理异常情况
         if not self._valid_prep_res(prep_res):
             self.logger.log_print('[solver] illegal prep_res in solver exec', module="solver", level="ERROR")
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
+            return AlphaSolveConfig.EXIT_ON_ERROR, None, None, None
 
         code = prep_res[0]
 
         if code == AlphaSolveConfig.SOLVER_EXAUSTED:
-            return AlphaSolveConfig.EXIT_ON_EXAUSTED, None
+            return AlphaSolveConfig.EXIT_ON_EXAUSTED, None, None, None
 
         messages = prep_res[1]
         _, _, updated_messages = self.llm.get_result(messages)
 
         lemma = self.__build_lemma(updated_messages)
+        
         return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 
 
@@ -193,11 +194,7 @@ class Solver(Node):
         if not exec_res or len(exec_res) == 0:
             self.logger.log_print('illegal exec_res with length: ', len(exec_res) if exec_res else 0, level="ERROR")
             return False
-        if not exec_res[1]:
-            self.logger.log_print('illegal exec_res with empty lemma', level="ERROR")
-            return False
         return True
-       
 
 def create_solver_agent(problem, prompt_file_path,logger):
     

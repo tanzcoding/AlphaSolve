@@ -2,7 +2,7 @@ import time
 import json
 
 from agents.utils import extract_substring
-
+from .shared_context import build_reasoning_path
 from config.agent_config import AlphaSolveConfig
 
 from llms.utils import LLMClient
@@ -28,9 +28,16 @@ class Summarizer(Node):
         lemma_id = shared["current_lemma_id"]
         if lemma_id is None:
             return AlphaSolveConfig.EXIT_ON_ERROR, None
+        if shared["lemmas"][lemma_id].get("status") != "verified" or not shared["lemmas"][lemma_id].get("is_theorem", True):
+            self.logger.log_print(
+                "event=AlphaSolve failed to solve the problem, step=prep",
+                module="summarizer",
+                level="ERROR",
+            )
+            return AlphaSolveConfig.EXIT_ON_FAILURE, None
 
         # Include transitive dependencies + the final lemma, and output them in id order.
-        ids = shared.build_reasoning_path(lemma_id, verified_only=False)
+        ids = build_reasoning_path(shared["lemmas"], lemma_id, verified_only=False)
         ids.append(lemma_id)
         ids = sorted(set(ids))
 

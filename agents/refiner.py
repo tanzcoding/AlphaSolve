@@ -1,6 +1,6 @@
 import time
 import json
-from .shared_context import build_reasoning_path
+from .shared_context import build_reasoning_path, Lemma
 from agents.utils import extract_substring
 from agents.utils import load_prompt_from_file
 
@@ -39,7 +39,7 @@ class Refiner(Node):
             )
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
-        if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.VERIFIER_MAX_ROUNDS:
+        if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.MAX_VERIFY_AND_REFINE_ROUND:
             # Pass lemma_id through prep_res so post() can handle quota accounting
             # without needing to read shared.
             return AlphaSolveConfig.VERIFIER_EXAUSTED, lemma_id, None, None

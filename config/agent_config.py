@@ -166,7 +166,8 @@ class AlphaSolveConfig:
     ## used by all
     EXIT_ON_EXAUSTED = 'exit_on_exausted'    
     EXIT_ON_ERROR = 'exit_on_error'
-    EXIT_ON_SUCCESS = 'exit_on_success'    
+    EXIT_ON_SUCCESS = 'exit_on_success'
+    EXIT_ON_FAILURE = 'exit_on_failure'
 
 
     ## 内部状态

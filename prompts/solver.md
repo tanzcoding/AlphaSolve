@@ -56,7 +56,7 @@ When proposing a new conjecture, your response should follow this format:
 
 ### Special Case: Complete Proof of Original Problem
 
-When you think the time is right that you are able to prove the original problem completely and rigorously, you can state a new conjecture that answer or repeat the problem and wrap it insite `<conjecture></conjecture>`, then output your proof inside `<final_proof>` and `</final_proof>`, and explicitly write down its dependency in `<dependency></dependency>`. In this case, you do not need to propose any new conjectures.
+When you think the time is right that you are able to prove the original problem completely and rigorously, you can state a new conjecture that answer or repeat the problem and wrap it insite `<conjecture></conjecture>`, then **output your proof inside `<final_proof>` and `</final_proof>`**, and explicitly write down its dependency in `<dependency></dependency>`. In this case, you do not need to propose any new conjectures.
 
 **Format Specification:**
 - Use `<conjecture>` and `</conjecture>` to wrap the final conjecture
@@ -66,3 +66,5 @@ When you think the time is right that you are able to prove the original problem
 ## Important Reminder
 
 **Correctness first.** Use `final_proof` only with full certainty; otherwise keep proposing smaller, solid conjectures.
+
+**Remember to indicate when you have a final proof.** 
