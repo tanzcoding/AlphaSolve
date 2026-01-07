@@ -1,7 +1,7 @@
 import time
 import json
 
-from agents.utils import build_conjecture_helper
+from agents.utils import extract_substring
 
 from config.agent_config import AlphaSolveConfig
 
@@ -71,5 +71,5 @@ class Summarizer(Node):
 
 def create_summarizer_agent(problem, prompt_file_path, logger: Logger):
  
-    llm = LLMClient(AlphaSolveConfig.SUMMARIZER_CONFIG, logger=logger)
+    llm = LLMClient(module='summarizer', config=AlphaSolveConfig.SUMMARIZER_CONFIG, logger=logger)
     return Summarizer(problem, llm, prompt_file_path, logger=logger) 

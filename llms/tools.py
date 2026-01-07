@@ -305,24 +305,28 @@ Be thorough but efficient. Focus on delivering the correct result."""
 
 # ===== Solver 格式提醒工具（面向 LLM function-calling） =====
 # 来自 prompts/solver.md 的关键约束：
-# - 输出必须以 \begin{conjecture} 或 \begin{final_proof} 起手（允许前置空白），不能有任何其他前置内容
+# - 输出必须以 <conjecture>起手，不能有任何其他前置内容
+# - 用<conjecture>和</conjecture>包裹猜想内容
+# - 若非最终证明，则紧接着用<proof>和</proof>包裹证明内容
+# - 最终证明则用<final_proof>和</final_proof>包裹证明内容
+# - 输出必须包含 <dependency> 环境
 # - 仅允许两种整体结构（并建议无额外尾随内容）：
 #   A) conjecture + proof + dependency
 #   B) final_proof + dependency
 # - dependency 环境内必须是 JSON array（例如 [] 或 [0,3,4]）
 
 _SOLVER_CONJ_FULL_RE = re.compile(
-    r"^\s*\\begin\{conjecture\}.*?\\end\{conjecture\}\s*"
-    r"\\begin\{proof\}.*?\\end\{proof\}\s*"
-    r"\\begin\{dependency\}.*?\\end\{dependency\}\s*$",
+    r"^\s*<conjecture>.*?</conjecture>\s*"
+    r"<proof>.*?</proof>\s*"
+    r"<dependency>.*?</dependency>\s*$",
     re.DOTALL,
 )
 _SOLVER_FINAL_FULL_RE = re.compile(
-    r"^\s*\\begin\{final_proof\}.*?\\end\{final_proof\}\s*"
-    r"\\begin\{dependency\}.*?\\end\{dependency\}\s*$",
+    r"^\s*<final_proof>.*?</final_proof>\s*"
+    r"<dependency>.*?</dependency>\s*$",
     re.DOTALL,
 )
-_SOLVER_DEP_RE = re.compile(r"\\begin\{dependency\}(.*?)\\end\{dependency\}", re.DOTALL)
+_SOLVER_DEP_RE = re.compile(r"<dependency>(.*?)</dependency>", re.DOTALL)
 
 
 def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str]]:
@@ -336,14 +340,14 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
     """
     try:
         expected_format = (
-            "Your response must start with \\begin{conjecture} or \\begin{final_proof} (no preface). "
-            "Allowed structures (and no extra text outside these environments):\n"
-            "1) \\begin{conjecture}...\\end{conjecture}\n"
-            "   \\begin{proof}...\\end{proof}\n"
-            "   \\begin{dependency}[...]\\end{dependency}\n"
-            "2) \\begin{final_proof}...\\end{final_proof}\n"
-            "   \\begin{dependency}[...]\\end{dependency}\n"
-            "Inside dependency must be a JSON array like [] or [0, 3, 4]."
+            "Response must start immediately with <conjecture> (standard case) or <final_proof> (complete solution). "
+            "Only two structures are allowed, with no extra text outside them:\n"
+            "1) <conjecture>...</conjecture>\n"
+            "   <proof>...</proof>\n"
+            "   <dependency>[...]</dependency>\n"
+            "2) <final_proof>...</final_proof>\n"
+            "   <dependency>[...]</dependency>\n"
+            "Inside <dependency></dependency> you must place a JSON array like [] or [0, 3, 4]."
         )
 
         text = candidate_response or ""
@@ -357,9 +361,10 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
 
         issues = []
         stripped = text.lstrip()
-        if not (stripped.startswith("\\begin{conjecture}") or stripped.startswith("\\begin{final_proof}")):
+        starts_with_conj = stripped.startswith("<conjecture>")
+        if not starts_with_conj:
             issues.append(
-                "Response must start with \\begin{conjecture} or \\begin{final_proof} (no preface content)."
+                "Response must start with <conjecture>, with no preface content."
             )
 
         matches_final = bool(_SOLVER_FINAL_FULL_RE.match(text))
@@ -373,7 +378,7 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
         dep_ids = None
         dep_match = _SOLVER_DEP_RE.search(text)
         if dep_match is None:
-            issues.append("Missing \\begin{dependency}...\\end{dependency} block.")
+            issues.append("Missing <dependency>...</dependency> block.")
         else:
             dep_raw = (dep_match.group(1) or "").strip()
             try:
@@ -510,7 +515,7 @@ SOLVER_FORMAT_GUARD_TOOL = {
                 'candidate_response': {
                     'type': 'string',
                     'description': (
-                        "(Optional) Draft response to validate. Must start with \\begin{conjecture} or \\begin{final_proof} "
+                        "(Optional) Draft response to validate. If empty, the tool returns a format reminder. "
                         "and contain only the allowed environments."
                     )
                 }

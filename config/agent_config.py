@@ -116,7 +116,7 @@ class AlphaSolveConfig:
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
         **VOLCANO_CONFIG,
-        'tools': []
+        'tools': [SOLVER_FORMAT_GUARD_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
@@ -175,5 +175,5 @@ class AlphaSolveConfig:
     SOLVER_EXAUSTED = 'solver_exausted'
 
     ## 
-    SOLVER_ROUND_NUM = 2
-    VERIFY_AND_REFINE_ROUND_NUM = 1
+    MAX_LEMMA_NUM = 2
+    MAX_VERIFY_AND_REFINE_ROUND = 1

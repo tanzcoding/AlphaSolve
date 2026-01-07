@@ -199,5 +199,5 @@ class Verifier(Node):
 
 def create_verifier_agent(problem, prompt_file_path, logger):
 
-    llm = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
+    llm = LLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
     return Verifier(llm, problem, prompt_file_path, logger)

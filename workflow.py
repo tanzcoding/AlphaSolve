@@ -1,7 +1,7 @@
 import os, time, threading, random
 
 from config.agent_config import AlphaSolveConfig
-from agents.shared_context import SharedContext
+from agents.shared_context import new_shared_context
 
 from agents.solver import create_solver_agent
 from agents.verifier import create_verifier_agent
@@ -23,12 +23,9 @@ class AlphaSolve:
 
         # shared is a single SharedContext(dict) instance.
         # All nodes read only in prep and write only in post.
-        self.shared = SharedContext(
+        self.shared = new_shared_context(
             problem=self.problem,
-            solver_round_remaining=AlphaSolveConfig.SOLVER_ROUND_NUM,
-            verify_refine_round_remaining=AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM,
             hint=None,
-            logger=self.logger,
         )
 
 

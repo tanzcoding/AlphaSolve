@@ -5,7 +5,7 @@ from wolframclient.evaluation import WolframLanguageSession
 from .tools import *
 
 class LLMClient:
-    def __init__(self, config: Dict, logger: Logger):
+    def __init__(self, module: str, config: Dict, logger: Logger):
         """
         初始化 LLM 客户端
         
@@ -13,6 +13,7 @@ class LLMClient:
             config: 包含供应商配置的字典，包括 base_url, api_key, model, tools 等
             print_to_console: 是否将流式输出打印到控制台（默认False）
         """
+        self.module = module
         self.config = config
         self.logger = logger
 
@@ -55,7 +56,7 @@ class LLMClient:
         Returns:
             Tuple[str, str, List[Dict]]: (answer_content, reasoning_content, updated_messages)
         """
-
+        b = time.time()
         # 确定使用的工具列表
         if tools is None:
             tools = self.tools if self.tools else []
@@ -114,6 +115,11 @@ class LLMClient:
             if tool_context:
                 self._cleanup_tool_context(tool_context)
 
+        logger.log_print(
+            f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer_content)} cot_len={len(reasoning_content)}",
+            module=self.module,
+        )
+
         return answer_content, reasoning_content, messages
         
     def _get_one_response(self, messages: List[Dict], tools: List[Dict]) -> Dict:
@@ -138,9 +144,9 @@ class LLMClient:
         is_answering = False
 
         # For audit/debug: record the exact messages sent to LLM.
-        self.logger.log_print(
+        logger.log_print(
             "event=llm_messages\n" + json.dumps(messages, ensure_ascii=False, indent=2),
-            module="call llm",
+            module=self.module,
         )
 
         # 判断是第一次调用还是继续思考

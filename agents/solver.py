@@ -1,24 +1,23 @@
-import time
 import json
 from agents.shared_context import SharedContext
-
-from agents.utils import build_conjecture_helper
-from agents.utils import load_prompt_from_file
+from typing import Optional
+from agents.utils import extract_substring, load_prompt_from_file
 from llms.utils import LLMClient
 from config.agent_config import AlphaSolveConfig
+from .shared_context import *
 
 from pocketflow import Node
 
 
-CONJECTURE_BEGIN = '\\begin{conjecture}'
-CONJECTURE_END = '\\end{conjecture}'
-PROOF_BEGIN = '\\begin{proof}'
-PROOF_END = '\\end{proof}'
-DEPENDENCY_BEGIN = '\\begin{dependency}'
-DEPENDENCY_END = '\\end{dependency}'
+CONJECTURE_BEGIN = '<conjecture>'
+CONJECTURE_END = '</conjecture>'
+PROOF_BEGIN = '<proof>'
+PROOF_END = '</proof>'
+DEPENDENCY_BEGIN = '<dependency>'
+DEPENDENCY_END = '</dependency>'
 
-FINAL_BEGIN = '\\begin{final_proof}'
-FINAL_END = '\\end{final_proof}'
+FINAL_BEGIN = '<final_proof>'
+FINAL_END = '</final_proof>'
 
 
 class Solver(Node):
@@ -32,25 +31,16 @@ class Solver(Node):
         self.logger = logger
 
     def prep(self, shared): ## 按照 pocket-flow 的定义, 这一步是从 shard(一个dict) 里面拿出所有依赖
-        # READ ONLY from shared here.
-        iteration = shared["solver_round_remaining"]
-        if iteration == 0:
-            self.logger.log_print(
-                "event=quota_exhausted step=prep remaining=0",
-                module="solver",
-                level="WARNING",
-            )
+        # 在prep函数中读取shared的内容
+        if self._quota_is_exhausted(shared):
             return AlphaSolveConfig.SOLVER_EXAUSTED, None
 
-        hint = shared["hint"]
-
-        remaining_lemma_quota = iteration
         prompt = self.__build_solver_prompt(
             prompt_template=self.prompt_template,
             problem=self.problem,
             verified_lemmas=[l for l in (shared["lemmas"] or []) if l.get("status") == "verified"],
-            remaining_lemma_quota=remaining_lemma_quota,
-            hint=hint,
+            remaining_lemma_quota=AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"]),
+            hint=shared["hint"],
         )
 
         messages_to_send = [{"role": "user", "content": prompt}]
@@ -60,11 +50,8 @@ class Solver(Node):
 
     def exec(self, prep_res): ## 执行主要的逻辑
         ## 处理异常情况
-        if not prep_res:
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
-
-        if len(prep_res) < 2:
-            self.logger.log_print('illegal prep_res with length: ', len(prep_res), module="solver", level="ERROR")
+        if not self._valid_prep_res(prep_res):
+            self.logger.log_print('[solver] illegal prep_res in solver exec', module="solver", level="ERROR")
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         code = prep_res[0]
@@ -72,24 +59,18 @@ class Solver(Node):
         if code == AlphaSolveConfig.SOLVER_EXAUSTED:
             return AlphaSolveConfig.EXIT_ON_EXAUSTED, None
 
-        b = time.time()
         messages = prep_res[1]
-        # Solver 可使用工具（已在配置中设置）
-        answer, cot, updated_messages = self.llm.get_result(messages)
+        _, _, updated_messages = self.llm.get_result(messages)
 
-        self.logger.log_print(
-            f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",
-            module="solver",
-        )
-
-        lemma = self.__build_lemma(self.problem, answer, cot)
+        lemma = self.__build_lemma(self.problem, updated_messages)
         return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 
 
     def post(self, shared, prep_res, exec_res):  ## 更新一下iteration 变量
-        # WRITE ONLY to shared here.
-        if not exec_res or len(exec_res) == 0:
-            self.logger.log_print('[solver] illegal exec_res in solver post', module="solver", level="ERROR")
+        # 在post函数中更新shared的内容
+
+        # 处理异常情况
+        if not self._valid_exec_res(exec_res):
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         #处理solver步数耗尽
@@ -97,29 +78,12 @@ class Solver(Node):
             self.logger.log_print('[solver] solver exhausted during post ...', module="solver", level="WARNING")
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
-
-        # 不知道为什么没有生成引理, 直接重新开始
-        if not exec_res[1]:
-            self.logger.log_print('[solver] no conjecture generated ...', module="solver", level="ERROR")
-            return AlphaSolveConfig.EXIT_ON_ERROR
-
-        # decrement solver rounds
-        shared["solver_round_remaining"] = shared["solver_round_remaining"] - 1
-
-        # reset verify/refine rounds
-        shared["verify_refine_round_remaining"] = AlphaSolveConfig.VERIFY_AND_REFINE_ROUND_NUM
-
         lemma = exec_res[1]
-        # Validate lemma structure before mutating shared.
+        # Validate lemma structure before updating shared.
         SharedContext.validate_lemma(lemma)
         shared["lemmas"].append(lemma)
         lemma_id = len(shared["lemmas"]) - 1
         shared["current_lemma_id"] = lemma_id
-
-        # Persist the full message trace for the refiner. This is used as the
-        # conversation history to support diff-style refinement.
-        updated_messages = exec_res[2] if len(exec_res) > 2 else None
-        shared["messages_for_refiner"] = updated_messages if isinstance(updated_messages, list) else []
 
         self.logger.log_print(
             f"event=lemma_created step=post lemma_id={lemma_id} is_theorem={bool(lemma.get('is_theorem'))} solver_round_remaining={shared['solver_round_remaining']}",
@@ -156,24 +120,30 @@ class Solver(Node):
         return tmp
 
 
-    def __build_lemma(self, problem, resp_from_llm, cot=None):
-
-        conj = build_conjecture_helper(
+    def __build_lemma(self, messages)-> Optional[Lemma]:
+        resp_from_llm = messages[-1]["content"]
+        statement = extract_substring(
             resp_from_llm,
             CONJECTURE_BEGIN,
             CONJECTURE_END,
             logger=self.logger,
             module="solver",
         )
-        proof = build_conjecture_helper(
+        proof = extract_substring(
             resp_from_llm,
             PROOF_BEGIN,
             PROOF_END,
             logger=self.logger,
             module="solver",
         )
-
-        dependencies = build_conjecture_helper(
+        final_proof = extract_substring(
+            resp_from_llm,
+            FINAL_BEGIN,
+            FINAL_END,
+            logger=self.logger,
+            module="solver",
+        )
+        dependencies = extract_substring(
             resp_from_llm,
             DEPENDENCY_BEGIN,
             DEPENDENCY_END,
@@ -184,35 +154,52 @@ class Solver(Node):
         if dependencies:
             deps = json.loads(dependencies)  # expects JSON array of ints
 
-        is_theorem = False
-        final_proof = build_conjecture_helper(
-            resp_from_llm,
-            FINAL_BEGIN,
-            FINAL_END,
-            logger=self.logger,
+        if statement and proof:
+            return new_lemma(
+                statement=statement,
+                proof=proof,
+                dependencies=deps,
+                is_theorem=False,
+                status="pending",
+                history_messages=messages,
+            )
+        elif statement and final_proof:
+            # Case: final proof + statement => theorem
+            return new_lemma(
+                statement=statement,
+                proof=final_proof,
+                dependencies=deps,
+                is_theorem=True,
+                status="pending",
+                history_messages=messages,
+            )
+        return None
+    
+    def _quota_is_exhausted(self, shared):
+        remaining_rounds = AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"])
+        self.logger.log_print(
+            f"solver_round_remaining={remaining_rounds}, {len(shared['lemmas'])} lemmas generated so far, max allowed={AlphaSolveConfig.MAX_LEMMA_NUM}",
             module="solver",
-        )
-
-        # Case: final proof => theorem
-        if final_proof:
-            conj = problem
-            proof = final_proof
-            is_theorem = True
-        else:
-            if not conj or not proof:
-                return None
-
-        return SharedContext.new_lemma(
-            statement=conj,
-            proof=proof,
-            dependencies=deps,
-            is_theorem=is_theorem,
-            status="pending",
-            cot=cot,
-        )
+            )
+        return remaining_rounds <= 0
+    
+    def _valid_prep_res(self, prep_res):
+        if not prep_res or len(prep_res) < 2:
+            self.logger.log_print('illegal prep_res with length: ', len(prep_res) if prep_res else 0, level="ERROR")
+            return False
+        return True
+    
+    def _valid_exec_res(self, exec_res):
+        if not exec_res or len(exec_res) == 0:
+            self.logger.log_print('illegal exec_res with length: ', len(exec_res) if exec_res else 0, level="ERROR")
+            return False
+        if not exec_res[1]:
+            self.logger.log_print('illegal exec_res with empty lemma', level="ERROR")
+            return False
+        return True
        
 
 def create_solver_agent(problem, prompt_file_path,logger):
     
-    llm = LLMClient(AlphaSolveConfig.SOLVER_CONFIG, logger=logger)
+    llm = LLMClient(module='solver', config=AlphaSolveConfig.SOLVER_CONFIG, logger=logger)
     return Solver(llm, problem, prompt_file_path, logger=logger)

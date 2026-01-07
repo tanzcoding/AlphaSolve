@@ -250,5 +250,5 @@ class Refiner(Node):
 
 def create_refiner_agent(prompt_file_path, logger:Logger):
  
-    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG, logger=logger)
+    llm = LLMClient(module='refiner', config=AlphaSolveConfig.REFINER_CONFIG, logger=logger)
     return Refiner(llm, prompt_file_path, logger=logger)

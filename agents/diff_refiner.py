@@ -467,6 +467,6 @@ class DiffRefiner(Node):
 
 
 def create_diff_refiner_agent(logger: Logger):
-    llm = LLMClient(AlphaSolveConfig.REFINER_CONFIG, logger=logger)
+    llm = LLMClient(module='diff_refiner', config=AlphaSolveConfig.REFINER_CONFIG, logger=logger)
     return DiffRefiner(llm, logger=logger)
 
