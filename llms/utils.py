@@ -2,6 +2,7 @@ from typing import Dict, List, Tuple, Optional
 import json
 from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
+from .exceptions import LLMServiceException
 from .tools import *
 
 class LLMClient:
@@ -171,8 +172,12 @@ class LLMClient:
         )
 
         # 流式读取并拼接
+        finish_reason = None
         for chunk in stream:
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            delta = choice.delta
+            if getattr(choice, 'finish_reason', None):
+                finish_reason = choice.finish_reason
 
             # 处理 reasoning_content
             rc_part = getattr(delta, 'reasoning_content', None)
@@ -194,6 +199,15 @@ class LLMClient:
             tc_delta = getattr(delta, 'tool_calls', None)
             if tc_delta:
                 self._process_tool_calls(tc_delta, tool_calls_acc)
+
+        # 检查结束原因
+        if not finish_reason:
+            raise LLMServiceException("LLM response missing finish_reason", status="missing_finish_reason")
+        if finish_reason not in ("stop", "tool_calls"):
+            raise LLMServiceException(
+                f"LLM response interrupted, finish_reason={finish_reason}",
+                status=finish_reason,
+            )
 
         # 拼接成完整的message
         reasoning_content = ''.join(reasoning_parts)
