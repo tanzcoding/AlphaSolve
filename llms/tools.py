@@ -550,10 +550,11 @@ RESEARCH_SUBAGENT_TOOL = {
 SOLVER_FORMAT_GUARD_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'solver_format_guard',
+        'name': 'generate_conjecture_format_guard',
         'description': (
             "Format reminder + strict validator for solver outputs per prompts/solver.md. "
-            "Call with no arguments to get a reminder; call with candidate_response to validate it."
+            "Call with no arguments to get a reminder; call with candidate_response to validate it. "
+            "IMPORTANT: This tool only checks the format, using this tool will not consume lemma budget."
         ),
         'parameters': {
             'type': 'object',

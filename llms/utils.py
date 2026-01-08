@@ -499,10 +499,10 @@ class LLMClient:
             
             tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
         
-        elif name == 'solver_format_guard':
+        elif name == 'generate_conjecture_format_guard':
             candidate_response = args.get('candidate_response', '')
             if self.logger.print_to_console_default:
-                print(f"[Tool Call] solver_format_guard\nCandidate response length: {len(candidate_response)}")
+                print(f"[Tool Call] generate_conjecture_format_guard\nCandidate response length: {len(candidate_response)}")
             
             if candidate_response:
                 log_parts.append(f"Candidate response length: {len(candidate_response)}")
