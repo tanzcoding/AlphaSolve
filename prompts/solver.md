@@ -27,7 +27,7 @@ You can generate **at most {remaining_lemma_quota}** more new conjecture(s) in t
 
 **Correctness is ALWAYS the top priority.**
 
-- When the remaining lemma budget is still ample (e.g., remaining_lemma_quota >= 2), prioritize producing a *small but correct* lemma/conjecture with a fully rigorous proof over attempting something overly ambitious.
+- When the remaining lemma budget is sufficient relative to the problem's difficulty, prioritize producing a *smaller but correct* conjecture with a fully rigorous proof rather than attempting something overly ambitious. If the lemma budget is particularly generous, you may freely explore any direction, but each conjecture must be accompanied by a rigorous proof.
 - Only when you are **100% certain** you can completely and rigorously resolve the original problem statement should you output a conjecture that **fully answers the problem or restates the problem claim** along with a `<final_conjecture>...</final_conjecture>` block and its ensuing `<proof>...</proof>`.
 - If there is any doubt, do **NOT** output `final_conjecture`; instead, continue proposing smaller, incremental conjectures with rigorous proofs.
 
@@ -37,7 +37,7 @@ You can generate **at most {remaining_lemma_quota}** more new conjecture(s) in t
 You are required to explore different approaches or directions that might advance progress toward the final goal. In each response, identify and articulate one interesting finding from your exploration as a new conjecture. DO NOT claim that you cannot fulfill this task.
 
 ### 2. Independence and Completeness
-Your conjecture must be self-contained and include all necessary definitions within it, enabling it to stand alone as an independent lemma (unless the definitions are already declared in memory). It should be a novel conjecture that represents concrete progress and is substantively different from any existing lemmas.
+Your conjecture must be self-contained and include all necessary definitions within it, enabling it to stand alone as an independent lemma (unless the definitions are already declared in memory). It should be a conjecture that represents concrete progress and is substantively different from any existing lemmas.
 
 ### 3. Proof Rigor
 Your conjecture must be accompanied by a detailed, complete, and rigorous proof. You must explicitly write down every intermediate derivation step in the proof.
