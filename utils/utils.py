@@ -31,7 +31,7 @@ def apply_unified_diff(original_text: str, diff_text: str) -> str:
         The modified text after applying the diff
 
     Raises:
-        ValueError: If the diff cannot be applied
+        ValueError: If the diff cannot be applied or is in invalid format
     """
     import re
 
@@ -40,6 +40,14 @@ def apply_unified_diff(original_text: str, diff_text: str) -> str:
 
     if not diff_text:
         return original_text
+    
+    # Check for common mistakes: diff wrapped in XML tags
+    if '<proof>' in diff_text or '<conjecture>' in diff_text:
+        raise ValueError(
+            "Invalid diff format: detected XML tags like <proof> or <conjecture>. "
+            "You must use unified diff format with lines starting with '+' (add) or '-' (delete), "
+            "NOT full text replacement wrapped in XML tags."
+        )
 
     lines = original_text.split('\n')
     diff_lines = diff_text.split('\n')
@@ -56,6 +64,7 @@ def apply_unified_diff(original_text: str, diff_text: str) -> str:
     hunk_new_count = 0
 
     in_hunk = False
+    has_diff_markers = False  # Track if we found any +/- lines
 
     for line in diff_lines:
         # Unified diff header: @@ -old_start,old_count +new_start,new_count @@
@@ -83,8 +92,10 @@ def apply_unified_diff(original_text: str, diff_text: str) -> str:
         if in_hunk and current_hunk is not None:
             if line.startswith('+') and not line.startswith('+++'):
                 current_hunk['lines'].append(('add', line[1:]))
+                has_diff_markers = True
             elif line.startswith('-') and not line.startswith('---'):
                 current_hunk['lines'].append(('del', line[1:]))
+                has_diff_markers = True
             elif line.startswith(' '):
                 current_hunk['lines'].append(('ctx', line[1:]))
             elif line.startswith('@@'):
@@ -110,6 +121,14 @@ def apply_unified_diff(original_text: str, diff_text: str) -> str:
     # Don't forget to add the last hunk
     if current_hunk is not None:
         hunks.append(current_hunk)
+    
+    # Validate that we found actual diff content
+    if not has_diff_markers:
+        raise ValueError(
+            "Invalid diff format: no lines starting with '+' or '-' found. "
+            "Unified diff must contain lines starting with '+' (additions) or '-' (deletions). "
+            "Make sure you're using proper diff syntax, not plain text."
+        )
 
     # Apply hunks to the original text
     for hunk in hunks:

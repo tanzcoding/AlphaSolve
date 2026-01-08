@@ -57,13 +57,77 @@ class DiffRefiner(Node):
         lemma = prep_res[1]
         shared = prep_res[2]
         messages_to_send = lemma.get("history_messages", [])
+        
+        diff_instructions = """
+CRITICAL INSTRUCTION: You MUST use the apply_diff tool with proper unified diff format.
+
+=== UNIFIED DIFF FORMAT REQUIREMENTS ===
+
+1. Start each hunk with: @@ -old_line,old_count +new_line,new_count @@
+2. Lines to REMOVE start with '-' (minus)
+3. Lines to ADD start with '+' (plus)
+4. Context lines (unchanged) start with ' ' (space)
+
+=== CORRECT EXAMPLE ===
+To replace "Old text" with "New expanded text" while keeping surrounding content:
+
+@@ -1,5 +1,7 @@
+ ### Introduction
+ This is context
+-Old text that needs improvement
++New expanded text with better explanation
++Additional supporting details
+ ### Conclusion
+ Final remarks
+
+=== COMMON MISTAKES TO AVOID ===
+❌ DON'T output full replacement text without diff markers
+❌ DON'T use <proof></proof> or <conjecture></conjecture> tags
+❌ DON'T forget the @@ header line
+❌ DON'T use only '+' lines without corresponding '-' lines (unless truly adding new content)
+
+=== YOUR TASK ===
+Review the feedback below and use apply_diff tool to make targeted improvements.
+You can modify the conjecture_diff, proof_diff, or both parameters.
+
+=== AFTER SUCCESSFUL APPLY_DIFF ===
+After successfully using apply_diff, output a brief acknowledgment of the changes made.
+Keep it concise and professional. Do not ask questions or offer further assistance."""
+
         messages_to_send.append(
             {
                 "role": "user",
-                "content": "Here is the verifier's review of your conjecture/proof. Please refine the conjecture/proof using the apply_diff tool. \n\n<review>" + lemma.get("review", "") + "</review>\n",
+                "content": (
+                    diff_instructions + "\n\n"
+                    "<review>\n" + lemma.get("review", "") + "\n</review>\n"
+                ),
             }
         )
+        
+        original_length = len(messages_to_send)
         _, _, updated_messages = self.llm.get_result(messages_to_send, shared=shared)
+        
+        # Check if apply_diff tool was used in the newly generated messages
+        used_apply_diff = False
+        new_messages = updated_messages[original_length:]  # Only check new messages
+        for msg in new_messages:
+            if msg.get('role') == 'assistant' and msg.get('tool_calls'):
+                for tool_call in msg['tool_calls']:
+                    if tool_call.get('function', {}).get('name') == 'apply_diff':
+                        used_apply_diff = True
+                        break
+            if used_apply_diff:
+                break
+        
+        # If apply_diff was not used, revert to original messages
+        if not used_apply_diff:
+            self.logger.log_print(
+                "event=apply_diff_not_used, reverting to original messages",
+                module="diff_refiner",
+                level="WARNING"
+            )
+            updated_messages = lemma.get("history_messages", [])
+        
         return AlphaSolveConfig.NORMAL, updated_messages
 
     def post(self, shared, prep_res, exec_res):

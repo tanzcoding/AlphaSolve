@@ -152,9 +152,46 @@ class LLMClient:
     ) -> Tuple[Optional[Dict], Optional[str]]:
         """Best-effort parsing of tool arguments emitted by the LLM."""
         # Remove common LLM output artifacts that may appear after JSON
-        # Examples: ]<|FunctionCallEnd|>, ]<|end|>, etc.
-        cleaned = re.sub(r'(\}|\])\s*<\|[^>]+\|>.*$', r'\1', raw_args)
-        cleaned = re.sub(r'(\}|\])\s*\].*$', r'\1', cleaned)
+        # Strategy: Find the first complete JSON object/array, discard everything after
+        
+        cleaned = raw_args.strip()
+        
+        # First, remove <|xxx|> markers and everything after them
+        cleaned = re.sub(r'<\|[^>]+\|>.*$', '', cleaned)
+        cleaned = cleaned.strip()
+        
+        # Try to find where the valid JSON ends by matching braces/brackets
+        # For a JSON object starting with {, find the matching }
+        # For a JSON array starting with [, find the matching ]
+        if cleaned and cleaned[0] in ('{', '['):
+            opening = cleaned[0]
+            closing = '}' if opening == '{' else ']'
+            depth = 0
+            in_string = False
+            escape_next = False
+            
+            for i, char in enumerate(cleaned):
+                if escape_next:
+                    escape_next = False
+                    continue
+                    
+                if char == '\\':
+                    escape_next = True
+                    continue
+                
+                if char == '"' and not in_string:
+                    in_string = True
+                elif char == '"' and in_string:
+                    in_string = False
+                elif not in_string:
+                    if char == opening:
+                        depth += 1
+                    elif char == closing:
+                        depth -= 1
+                        if depth == 0:
+                            # Found the end of the JSON structure
+                            cleaned = cleaned[:i+1]
+                            break
         
         candidates = [cleaned]
         
@@ -218,12 +255,13 @@ class LLMClient:
                 error_msg = f"{error_msg}: {last_error}"
             return None, error_msg
         
-        # Special handling for diff operations with XML tags
-        # Check if this is a diff_text containing conjecture/proof tags
+        # Special handling for apply_diff tool: add lemma context
         if isinstance(parsed_result, dict):
-            diff_text = parsed_result.get('diff_text', '')
-            if diff_text and ('<conjecture' in diff_text or '<proof' in diff_text or
-                            '<conjecture_diff>' in diff_text or '<proof_diff>' in diff_text):
+            # Check if this is an apply_diff call (has conjecture_diff or proof_diff params)
+            has_conjecture_diff = 'conjecture_diff' in parsed_result
+            has_proof_diff = 'proof_diff' in parsed_result
+            
+            if has_conjecture_diff or has_proof_diff:
                 # This is a diff operation, add lemma context if available
                 lemma = None
                 if shared is not None:
@@ -484,14 +522,27 @@ class LLMClient:
             
             tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
         elif name == 'apply_diff':
-            diff_text = args.get('diff_text', '')
+            conjecture_diff = args.get('conjecture_diff', '')
+            proof_diff = args.get('proof_diff', '')
             lemma: Optional[Lemma] = args.get('lemma') or context.get('current_lemma')
+            
             if lemma is None:
                 error = "No lemma provided for apply_diff"
                 log_parts.append(f"[error]\n{error}")
                 tool_content = json.dumps({'error': error}, ensure_ascii=False)
             else:
-                result = apply_diff_to_lemma(lemma, diff_text)
+                if self.logger.print_to_console_default:
+                    if conjecture_diff:
+                        print(f"[Tool Call] apply_diff\nConjecture diff:\n{conjecture_diff[:200]}...")
+                    if proof_diff:
+                        print(f"Proof diff:\n{proof_diff[:200]}...")
+                
+                if conjecture_diff:
+                    log_parts.append(f"Conjecture diff length: {len(conjecture_diff)}")
+                if proof_diff:
+                    log_parts.append(f"Proof diff length: {len(proof_diff)}")
+                
+                result = apply_diff_to_lemma(lemma, conjecture_diff, proof_diff)
                 log_parts.append(f"[result]\n{result}")
                 tool_content = result
         
