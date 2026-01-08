@@ -116,21 +116,21 @@ class AlphaSolveConfig:
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [SOLVER_FORMAT_GUARD_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL,SOLVER_FORMAT_GUARD_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': []
+        'tools': [RESEARCH_SUBAGENT_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent
     REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': []
+        'tools': [RESEARCH_SUBAGENT_TOOL]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
@@ -144,7 +144,7 @@ class AlphaSolveConfig:
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [PYTHON_TOOL, WOLFRAM_TOOL]
+        'tools': [PYTHON_TOOL]
     }
 
     VERIFIER_SCALING_FACTOR = 1

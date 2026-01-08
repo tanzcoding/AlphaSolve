@@ -232,7 +232,7 @@ def run_wolfram(code: str, session=None):
     return output, err
 
 
-def run_subagent(task_description: str, print_to_console: bool, logger: Logger) -> Tuple[str, Optional[str]]:
+def run_subagent(task_description: str, logger: Logger) -> Tuple[str, Optional[str]]:
     """
     数学研究子代理执行器
     
@@ -257,7 +257,7 @@ def run_subagent(task_description: str, print_to_console: bool, logger: Logger) 
         
         # 使用 SUBAGENT_CONFIG 作为子代理配置
         config = AlphaSolveConfig.SUBAGENT_CONFIG
-        client = LLMClient(config, logger)
+        client = LLMClient(module='subagent', config=config, logger=logger)
         
         # 构建子代理的系统提示
         system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently.
@@ -446,11 +446,11 @@ WOLFRAM_TOOL = {
 RESEARCH_SUBAGENT_DESCRIPTION = """A specialized autonomous sub-agent for detailed mathematical computations and verifications. This tool is your computational workhorse — DELEGATE *small, concrete sub-tasks* to it instead of doing them yourself.
 
 **CRITICAL (scope): Do NOT hand the entire original problem to the sub-agent.**
-You MUST first decompose the work and delegate only a *well-scoped* piece (one computation / one check / one derivation). Keep each delegation focused, bounded, and verifiable.
+You MUST first decompose the work, decide what to explore and delegate only a *well-scoped* piece (one computation / one check / one derivation). Keep each delegation focused, bounded, and verifiable.
 
 **CRITICAL (division of labor): YOU do high-level reasoning; the sub-agent does the math.**
-- You (the main agent) should focus on: proposing approaches, choosing lemmas, deciding what to compute, and interpreting/organizing results.
-- The sub-agent should focus on: actually computing/simplifying/solving/verifying with Python/Wolfram.
+- You (the main agent) should focus on: proposing approaches, choosing lemmas, deciding what to explore, and interpreting/organizing results.
+- The sub-agent should focus on: actually computing/simplifying/solving/verifying with Python/Wolfram, or any other smaller and concrete mathematics tasks.
 - Avoid doing step-by-step algebra/calculus manually in the main response. If you find yourself about to “work it out”, STOP and delegate that concrete computation.
 
 Examples of good main-agent text:

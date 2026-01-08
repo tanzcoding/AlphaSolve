@@ -333,7 +333,7 @@ class LLMClient:
                 print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}")
             
             log_parts.append(f"Task:\n{task_description}")
-            result, error = run_subagent(task_description, self.logger.print_to_console_default, self.logger)
+            result, error = run_subagent(task_description, self.logger)
             
             if self.logger.print_to_console_default:
                 if result:
