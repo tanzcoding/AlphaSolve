@@ -308,11 +308,11 @@ Be thorough but efficient. Focus on delivering the correct result."""
 # - 输出必须以 <conjecture>起手，不能有任何其他前置内容
 # - 用<conjecture>和</conjecture>包裹猜想内容
 # - 若非最终证明，则紧接着用<proof>和</proof>包裹证明内容
-# - 最终证明则用<final_proof>和</final_proof>包裹证明内容
+# - 最终猜想则用<final_conjecture>和</final_conjecture>包裹猜想内容，并仍需跟随<proof>...</proof>
 # - 输出必须包含 <dependency> 环境
 # - 仅允许两种整体结构（并建议无额外尾随内容）：
 #   A) conjecture + proof + dependency
-#   B) final_proof + dependency
+#   B) final_conjecture + proof + dependency
 # - dependency 环境内必须是 JSON array（例如 [] 或 [0,3,4]）
 
 _SOLVER_CONJ_FULL_RE = re.compile(
@@ -322,7 +322,8 @@ _SOLVER_CONJ_FULL_RE = re.compile(
     re.DOTALL,
 )
 _SOLVER_FINAL_FULL_RE = re.compile(
-    r"^\s*<final_proof>.*?</final_proof>\s*"
+    r"^\s*<final_conjecture>.*?</final_conjecture>\s*"
+    r"<proof>.*?</proof>\s*"
     r"<dependency>.*?</dependency>\s*$",
     re.DOTALL,
 )
@@ -340,14 +341,16 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
     """
     try:
         expected_format = (
-            "Response must start immediately with <conjecture> (standard case) or <final_proof> (complete solution). "
+            "Response must start immediately with either <conjecture> or <final_conjecture>. "
             "Only two structures are allowed, with no extra text outside them:\n"
             "1) <conjecture>...</conjecture>\n"
             "   <proof>...</proof>\n"
             "   <dependency>[...]</dependency>\n"
-            "2) <final_proof>...</final_proof>\n"
+            "2) <final_conjecture>...</final_conjecture>\n"
+            "   <proof>...</proof>\n"
             "   <dependency>[...]</dependency>\n"
             "Inside <dependency></dependency> you must place a JSON array like [] or [0, 3, 4]."
+            "VERY IMPORTANT: when your conjecture is a complete solution to the problem, use <final_conjecture> instead of <conjecture>."
         )
 
         text = candidate_response or ""
@@ -362,16 +365,17 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
         issues = []
         stripped = text.lstrip()
         starts_with_conj = stripped.startswith("<conjecture>")
-        if not starts_with_conj:
+        starts_with_final = stripped.startswith("<final_conjecture>")
+        if not (starts_with_conj or starts_with_final):
             issues.append(
-                "Response must start with <conjecture>, with no preface content."
+                "Response must start with <conjecture> or <final_conjecture>, with no preface content."
             )
 
         matches_final = bool(_SOLVER_FINAL_FULL_RE.match(text))
         matches_conj = bool(_SOLVER_CONJ_FULL_RE.match(text))
         if not (matches_final or matches_conj):
             issues.append(
-                "Overall structure invalid. It must be exactly either (conjecture+proof+dependency) or (final_proof+dependency), "
+                "Overall structure invalid. It must be exactly either (conjecture+proof+dependency) or (final_conjecture+proof+dependency), "
                 "with no extra content outside these environments."
             )
 

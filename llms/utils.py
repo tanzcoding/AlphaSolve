@@ -116,7 +116,7 @@ class LLMClient:
                 self._cleanup_tool_context(tool_context)
 
         logger.log_print(
-            f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer_content)} cot_len={len(reasoning_content)}",
+            f"\nevent=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer_content)} cot_len={len(reasoning_content)}",
             module=self.module,
         )
 

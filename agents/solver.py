@@ -11,13 +11,12 @@ from pocketflow import Node
 
 CONJECTURE_BEGIN = '<conjecture>'
 CONJECTURE_END = '</conjecture>'
+FINAL_CONJECTURE_BEGIN = '<final_conjecture>'
+FINAL_CONJECTURE_END = '</final_conjecture>'
 PROOF_BEGIN = '<proof>'
 PROOF_END = '</proof>'
 DEPENDENCY_BEGIN = '<dependency>'
 DEPENDENCY_END = '</dependency>'
-
-FINAL_BEGIN = '<final_proof>'
-FINAL_END = '</final_proof>'
 
 
 class Solver(Node):
@@ -63,7 +62,7 @@ class Solver(Node):
         _, _, updated_messages = self.llm.get_result(messages)
 
         lemma = self.__build_lemma(updated_messages)
-        
+
         return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 
 
@@ -76,7 +75,7 @@ class Solver(Node):
 
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
-            self.logger.log_print('[solver] solver exhausted during post ...', module="solver", level="WARNING")
+            self.logger.log_print('solver exhausted during post ...', module="solver", level="WARNING")
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
         lemma = exec_res[1]
@@ -105,13 +104,14 @@ class Solver(Node):
             lines.append("## Context and History Explorations")
             lines.append("")
             lines.append(
-                "Here is a list of context that we have collected for this problem or our history findings during exploration. "
+                "Here is a list of lemmas that we have collected for this problem or our history findings during exploration. "
                 "They serve as the background of the conjecture and proof and can be accepted without controversy as correct."
             )
-            lines.append("")
+            lines.append("<memory>")
             for i, l in enumerate(verified_lemmas):
-                lines.append(f" ** Conjecture-{i} **")
+                lines.append(f" ** Lemma-{i} **")
                 lines.append(f" {l.get('statement')}")
+            lines.append("</memory>")
             tmp = tmp + "\n\n" + "\n".join(lines)
 
         if hint:
@@ -130,17 +130,17 @@ class Solver(Node):
             logger=self.logger,
             module="solver",
         )
+        final_statement = extract_substring(
+            resp_from_llm,
+            FINAL_CONJECTURE_BEGIN,
+            FINAL_CONJECTURE_END,
+            logger=self.logger,
+            module="solver",
+        )
         proof = extract_substring(
             resp_from_llm,
             PROOF_BEGIN,
             PROOF_END,
-            logger=self.logger,
-            module="solver",
-        )
-        final_proof = extract_substring(
-            resp_from_llm,
-            FINAL_BEGIN,
-            FINAL_END,
             logger=self.logger,
             module="solver",
         )
@@ -164,11 +164,11 @@ class Solver(Node):
                 status="pending",
                 history_messages=messages,
             )
-        elif statement and final_proof:
-            # Case: final proof + statement => theorem
+        elif final_statement and proof:
+            # Case: final conjecture + proof => theorem
             return new_lemma(
-                statement=statement,
-                proof=final_proof,
+                statement=final_statement,
+                proof=proof,
                 dependencies=deps,
                 is_theorem=True,
                 status="pending",

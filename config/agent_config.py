@@ -115,28 +115,28 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': [SOLVER_FORMAT_GUARD_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': []
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent
     REFINER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': []
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
@@ -176,5 +176,5 @@ class AlphaSolveConfig:
     SOLVER_EXAUSTED = 'solver_exausted'
 
     ## 
-    MAX_LEMMA_NUM = 2
+    MAX_LEMMA_NUM = 3
     MAX_VERIFY_AND_REFINE_ROUND = 1
