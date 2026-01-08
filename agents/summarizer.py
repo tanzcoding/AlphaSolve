@@ -25,6 +25,8 @@ class Summarizer(Node):
 
     def prep(self,shared): 
         # READ ONLY from shared.
+        self.logger.log_print('entering summarizer...', module='summarizer')
+
         lemma_id = shared["current_lemma_id"]
         if lemma_id is None:
             return AlphaSolveConfig.EXIT_ON_ERROR, None

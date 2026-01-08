@@ -176,5 +176,5 @@ class AlphaSolveConfig:
     SOLVER_EXAUSTED = 'solver_exausted'
 
     ## 
-    MAX_LEMMA_NUM = 3
-    MAX_VERIFY_AND_REFINE_ROUND = 1
+    MAX_LEMMA_NUM = 10
+    MAX_VERIFY_AND_REFINE_ROUND = 3

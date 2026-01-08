@@ -31,6 +31,8 @@ class Solver(Node):
 
     def prep(self, shared): ## 按照 pocket-flow 的定义, 这一步是从 shard(一个dict) 里面拿出所有依赖
         # 在prep函数中读取shared的内容
+        self.logger.log_print('entering solver...', module='solver')
+
         if self._quota_is_exhausted(shared):
             return AlphaSolveConfig.SOLVER_EXAUSTED, None
 

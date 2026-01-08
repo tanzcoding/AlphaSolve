@@ -24,6 +24,8 @@ class Verifier(Node):
 
     def prep(self, shared): 
         # READ ONLY from shared here.
+        self.logger.log_print('entering verifier...', module='verifier')
+
         lemma_id = shared["current_lemma_id"]
         if lemma_id is None:
             self.logger.log_print(

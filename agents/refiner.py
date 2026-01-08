@@ -29,6 +29,8 @@ class Refiner(Node):
 
     def prep(self,shared): 
         # READ ONLY from shared here.
+        self.logger.log_print('entering refiner...', module='refiner')
+
         lemma_id = shared.get("current_lemma_id")
         if lemma_id is None:
             self.logger.log_print(
