@@ -1,5 +1,5 @@
 import os
-from llms.tools import RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL, PYTHON_TOOL, WOLFRAM_TOOL
+from llms.tools import RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL, PYTHON_TOOL, WOLFRAM_TOOL, APPLY_DIFF_TOOL
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
 # 说明：
@@ -115,28 +115,34 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
-        **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL,SOLVER_FORMAT_GUARD_TOOL]
+        **VOLCANO_CONFIG,
+        'tools': [SOLVER_FORMAT_GUARD_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
-        **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL]
+        **VOLCANO_CONFIG,
+        'tools': []
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent
     REFINER_CONFIG = {
-        **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL]
+        **VOLCANO_CONFIG,
+        'tools': []
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
+    # DiffRefiner 可以使用 subagent
+    DIFFREFINER_CONFIG = {
+        **VOLCANO_CONFIG,
+        'tools': [APPLY_DIFF_TOOL]
+    }
+
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
@@ -147,7 +153,7 @@ class AlphaSolveConfig:
         'tools': [PYTHON_TOOL]
     }
 
-    VERIFIER_SCALING_FACTOR = 1
+    VERIFIER_SCALING_FACTOR = 3
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 

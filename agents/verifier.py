@@ -1,6 +1,6 @@
 import time, json, random
 from .shared_context import SharedContext, build_reasoning_path
-from agents.utils import load_prompt_from_file
+from utils.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
@@ -100,6 +100,7 @@ class Verifier(Node):
                 module="verifier",
                 level="ERROR",
             )
+            self.logger.log_print('exiting verifier...', module='verifier')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         code, lemma_id, is_valid, review, cot = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4]
@@ -110,6 +111,7 @@ class Verifier(Node):
                 module="verifier",
                 level="ERROR",
             )
+            self.logger.log_print('exiting verifier...', module='verifier')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         
@@ -127,12 +129,14 @@ class Verifier(Node):
                     f"event=theorem_verified step=post lemma_id={lemma_id}",
                     module="verifier",
                 )
+                self.logger.log_print('exiting verifier...', module='verifier')
                 return AlphaSolveConfig.DONE
 
             self.logger.log_print(
                 f"event=lemma_verified step=post lemma_id={lemma_id}",
                 module="verifier",
             )
+            self.logger.log_print('exiting verifier...', module='verifier')
             return AlphaSolveConfig.CONJECTURE_VERIFIED
 
         lemma["status"] = "pending"
@@ -143,6 +147,7 @@ class Verifier(Node):
             module="verifier",
             level="WARNING",
         )
+        self.logger.log_print('exiting verifier...', module='verifier')
         return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
     def __verify(self, lemma, reasoning_ctx):

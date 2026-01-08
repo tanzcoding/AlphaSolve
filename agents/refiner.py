@@ -1,8 +1,7 @@
 import time
 import json
-from .shared_context import build_reasoning_path, Lemma
-from agents.utils import extract_substring
-from agents.utils import load_prompt_from_file
+from .shared_context import build_reasoning_path, Lemma, new_lemma
+from utils.utils import extract_substring, load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
@@ -25,7 +24,6 @@ class Refiner(Node):
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.llm = llm
         self.logger = logger
-        self.print_to_console = logger.print_to_console_default
 
     def prep(self,shared): 
         # READ ONLY from shared here.
@@ -85,6 +83,7 @@ class Refiner(Node):
                 print_to_console=self.print_to_console,
                 level="ERROR",
             )
+            self.logger.log_print('exiting refiner...', module='refiner')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         if prep_res[0] == AlphaSolveConfig.VERIFIER_EXAUSTED:
@@ -102,6 +101,7 @@ class Refiner(Node):
                     print_to_console=self.print_to_console,
                     level="WARNING",
                 )
+            self.logger.log_print('exiting refiner...', module='refiner')
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
         if len(exec_res) < 3:
@@ -111,6 +111,7 @@ class Refiner(Node):
                 print_to_console=self.print_to_console,
                 level="ERROR",
             )
+            self.logger.log_print('exiting refiner...', module='refiner')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         lemma_id = prep_res[1]
@@ -119,12 +120,12 @@ class Refiner(Node):
         if is_valid:
             if next_lemma:
                 shared["lemmas"][lemma_id] = next_lemma  # in-place overwrite
-                shared["current_lemma_id"] = lemma_id
                 self.logger.log_print(
                     f"event=refine_success step=post lemma_id={lemma_id} remaining={shared['verify_refine_round_remaining']}",
                     module="refiner",
                     print_to_console=self.print_to_console,
                 )
+                self.logger.log_print('exiting refiner...', module='refiner')
                 return AlphaSolveConfig.REFINE_SUCCESS
             self.logger.log_print(
                 f"event=refine_no_output step=post lemma_id={lemma_id}",
@@ -132,6 +133,7 @@ class Refiner(Node):
                 print_to_console=self.print_to_console,
                 level="ERROR",
             )
+            self.logger.log_print('exiting refiner...', module='refiner')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         # refiner considers lemma wrong => route to solver
@@ -142,6 +144,7 @@ class Refiner(Node):
             print_to_console=self.print_to_console,
             level="WARNING",
         )
+        self.logger.log_print('exiting refiner...', module='refiner')
         return AlphaSolveConfig.CONJECTURE_WRONG
  
 
@@ -174,13 +177,14 @@ class Refiner(Node):
         valid =  INVALID_TAG not in answer 
 
         if conj2 and proof:
-            next_lemma = {
-                **lemma,
-                "statement": conj2,
-                "proof": proof,
-                "cot": cot,
-                "status": "pending",
-            }
+            next_lemma = new_lemma(
+                statement=conj2,
+                proof=proof,
+                cot=cot,
+                status="pending",
+                history_messages=lemma.get("history_messages", []),
+                verify_round=lemma.get("verify_round", 0)+1,
+            )
             # keep dependencies as-is (solver only uses verified lemmas anyway)
             return valid, next_lemma
         return valid, None

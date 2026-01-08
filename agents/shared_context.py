@@ -17,7 +17,6 @@ expansion for verifiers via :func:`build_reasoning_path`.
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, TypedDict, Literal
 from openai.types.chat import ChatCompletionMessageParam
-from config.agent_config import AlphaSolveConfig
 
 
 LemmaStatus = Literal["pending", "verified", "rejected"]
@@ -130,7 +129,7 @@ def new_lemma(
     review: Optional[str] = None,
     cot: Optional[str] = None,
     history_messages: Optional[List[ChatCompletionMessageParam]] = None,
-    verify_round: int = AlphaSolveConfig.MAX_VERIFY_AND_REFINE_ROUND,
+    verify_round: Optional[int] = None,
 ) -> Lemma:
     return {
         "statement": statement,

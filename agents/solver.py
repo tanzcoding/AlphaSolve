@@ -1,7 +1,7 @@
 import json
 from agents.shared_context import SharedContext
 from typing import Optional
-from agents.utils import extract_substring, load_prompt_from_file
+from utils.utils import extract_substring, load_prompt_from_file
 from llms.utils import LLMClient
 from config.agent_config import AlphaSolveConfig
 from .shared_context import *
@@ -73,11 +73,13 @@ class Solver(Node):
 
         # 处理异常情况
         if not self._valid_exec_res(exec_res):
+            self.logger.log_print('exiting solver...', module='solver')
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
             self.logger.log_print('solver exhausted during post ...', module="solver", level="WARNING")
+            self.logger.log_print('exiting solver...', module='solver')
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
         lemma = exec_res[1]
@@ -92,6 +94,7 @@ class Solver(Node):
             module="solver",
         )
 
+        self.logger.log_print('exiting solver...', module='solver')
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
@@ -165,6 +168,7 @@ class Solver(Node):
                 is_theorem=False,
                 status="pending",
                 history_messages=messages,
+                verify_round=0,
             )
         elif final_statement and proof:
             # Case: final conjecture + proof => theorem
@@ -175,6 +179,7 @@ class Solver(Node):
                 is_theorem=True,
                 status="pending",
                 history_messages=messages,
+                verify_round=0,
             )
         return None
     

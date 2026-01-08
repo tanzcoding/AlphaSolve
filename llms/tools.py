@@ -12,6 +12,8 @@ from typing import Optional, Tuple
 from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
 from utils.logger import Logger
+from agents.shared_context import Lemma
+from utils.utils import extract_substring, apply_unified_diff
 
 
 # NOTE:
@@ -405,7 +407,61 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
         return json.dumps(payload, ensure_ascii=False), None
     except Exception:
         return "", traceback.format_exc().strip()
+    
 
+def apply_diff_to_lemma(lemma: Lemma, diff_text: str):
+    """
+    应用 DIFFS（统一 diff 格式）到 lemma 的 statement 和 proof。
+
+    Args:
+        lemma: Lemma对象
+        diff_text: 统一 diff 格式的差异文本
+
+    """
+    CONJECTURE_DIFF_BEGIN = '<conjecture_diff>'
+    CONJECTURE_DIFF_END = '</conjecture_diff>'
+    PROOF_DIFF_BEGIN = '<proof_diff>'
+    PROOF_DIFF_END = '</proof_diff>'
+    statement = lemma.get("statement", "")
+    proof = lemma.get("proof", "")
+
+    statement_diff = extract_substring(
+        diff_text,
+        CONJECTURE_DIFF_BEGIN,
+        CONJECTURE_DIFF_END
+    )
+    proof_diff = extract_substring(
+        diff_text,
+        PROOF_DIFF_BEGIN,
+        PROOF_DIFF_END
+    )
+
+    new_statement = statement
+    new_proof = proof
+    error_message = None
+
+    try:
+        if statement_diff is not None and statement_diff.strip():
+            new_statement = apply_unified_diff(statement, statement_diff)
+        if proof_diff is not None and proof_diff.strip():
+            new_proof = apply_unified_diff(proof, proof_diff)
+    except Exception as exc:
+        # Keep lemma unchanged and report the error back to the caller
+        error_message = f"Failed to apply diff: {exc}"
+        new_statement = statement
+        new_proof = proof
+
+    lemma.update({
+        "statement": new_statement,
+        "proof": new_proof,
+        "apply_diff_error": error_message,
+    })
+
+    return json.dumps({
+        "statement": new_statement,
+        "proof": new_proof,
+        "error": error_message,
+    }, ensure_ascii=False)
 
 # ===== 定义工具函数规范 =====
 # 定义一个工具列表，告诉AI模型它可以使用的工具
@@ -529,9 +585,28 @@ SOLVER_FORMAT_GUARD_TOOL = {
     }
 }
 
-
-# Backward-compatible default tools for agents that only need the subagent.
-TOOLS = [RESEARCH_SUBAGENT_TOOL]
-
-# Tools intended for the solver agent.
-SOLVER_TOOLS = [RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL]
+APPLY_DIFF_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'apply_diff',
+        'description': (
+            "Apply unified diff format changes to a lemma's statement and proof. "
+            "The diff_text should contain <conjecture_diff>...</conjecture_diff> and/or "
+            "<proof_diff>...</proof_diff> sections with the respective diffs."
+            "If the diff is succesfully applied, the lemma object is updated in place and this tool returns the updated lemma"
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'diff_text': {
+                    'type': 'string',
+                    'description': (
+                        "The unified diff format text containing changes to apply. "
+                        "Use <conjecture_diff> and <proof_diff> tags to specify diffs for each part."
+                    )
+                }
+            },
+            'required': ['diff_text']
+        }
+    }
+}

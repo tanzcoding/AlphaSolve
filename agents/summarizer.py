@@ -1,7 +1,7 @@
 import time
 import json
 
-from agents.utils import extract_substring
+from utils.utils import extract_substring
 from .shared_context import build_reasoning_path
 from config.agent_config import AlphaSolveConfig
 
@@ -67,8 +67,10 @@ class Summarizer(Node):
     def post(self, shared, prep_res, exec_res): 
         # WRITE ONLY to shared.
         if not exec_res or len(exec_res) < 2:
+            self.logger.log_print('exiting summarizer...', module='summarizer')
             return
         if exec_res[0] != AlphaSolveConfig.NORMAL:
+            self.logger.log_print('exiting summarizer...', module='summarizer')
             return
 
         shared["result_summary"] = exec_res[1]
@@ -76,6 +78,7 @@ class Summarizer(Node):
             "event=summary_written step=post",
             module="summarizer",
         )
+        self.logger.log_print('exiting summarizer...', module='summarizer')
 
 
 def create_summarizer_agent(problem, prompt_file_path, logger: Logger):

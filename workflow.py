@@ -50,7 +50,7 @@ class AlphaSolve:
         )
         verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, logger=self.logger)
        
-        refiner = create_refiner_agent(logger=self.logger, prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH)
+        refiner = create_diff_refiner_agent(logger=self.logger)
      
         summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, logger=self.logger)
 

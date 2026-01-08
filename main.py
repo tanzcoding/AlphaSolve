@@ -1,5 +1,5 @@
 from workflow import AlphaSolve
-from agents.utils import load_prompt_from_file
+from utils.utils import load_prompt_from_file
 
 if __name__== "__main__" :
     problem = load_prompt_from_file('problem.md')

@@ -1,9 +1,11 @@
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Any
 import json
+import re
 from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
 from .exceptions import LLMServiceException
 from .tools import *
+from agents.shared_context import Lemma, SharedContext
 
 class LLMClient:
     def __init__(self, module: str, config: Dict, logger: Logger):
@@ -46,7 +48,12 @@ class LLMClient:
         params.update(self._static_params)
         return params
     
-    def get_result(self, messages: List[Dict], tools: Optional[List[Dict]] = None) -> Tuple[str, str, List[Dict]]:
+    def get_result(
+        self,
+        messages: List[Dict],
+        tools: Optional[List[Dict]] = None,
+        shared: Optional[SharedContext] = None,
+    ) -> Tuple[str, str, List[Dict]]:
         """
         统一的获取 LLM 回复方法，始终使用流式输出
         
@@ -95,8 +102,23 @@ class LLMClient:
                 
                 for tc in tool_calls:
                     name = tc['function']['name']
-                    args = json.loads(tc['function']['arguments'] or '{}')
-                    
+                    raw_args = tc['function'].get('arguments') or '{}'
+                    args, parse_error = self._parse_tool_arguments(raw_args, shared)
+                    if args is None:
+                        warning_msg = (
+                            f"event=tool_args_parse_error name={name} error={parse_error}"
+                        )
+                        logger.log_print(warning_msg, module=self.module, level="ERROR")
+                        error_payload = json.dumps({'error': parse_error}, ensure_ascii=False)
+                        reasoning_content += (warning_msg + "\n")
+                        messages.append({
+                            'role': 'tool',
+                            'tool_call_id': tc.get('id'),
+                            'name': name,
+                            'content': error_payload,
+                        })
+                        continue
+
                     # 执行工具
                     tool_content, log_parts = self._execute_tool(name, args, tool_context)
                     
@@ -123,6 +145,97 @@ class LLMClient:
 
         return answer_content, reasoning_content, messages
         
+    def _parse_tool_arguments(
+        self,
+        raw_args: str,
+        shared: Optional[SharedContext] = None,
+    ) -> Tuple[Optional[Dict], Optional[str]]:
+        """Best-effort parsing of tool arguments emitted by the LLM."""
+        # Remove common LLM output artifacts that may appear after JSON
+        # Examples: ]<|FunctionCallEnd|>, ]<|end|>, etc.
+        cleaned = re.sub(r'(\}|\])\s*<\|[^>]+\|>.*$', r'\1', raw_args)
+        cleaned = re.sub(r'(\}|\])\s*\].*$', r'\1', cleaned)
+        
+        candidates = [cleaned]
+        
+        # Strategy: Aggressive backslash escaping for LaTeX
+        # Replace all backslashes with doubled backslashes, then restore valid JSON escapes
+        fixed = cleaned.replace('\\', '\\\\')  # First, double all backslashes
+        # Now restore the over-escaped valid JSON sequences
+        fixed = fixed.replace('\\\\\\\\', '\\\\')  # \\\\ -> \\ (was already escaped)
+        fixed = fixed.replace('\\\\"', '\\"')      # \\" -> \" (quote)
+        fixed = fixed.replace('\\\\/', '\\/')      # \\/ -> \/ (slash, optional)
+        fixed = fixed.replace('\\\\b', '\\b')      # \\b -> \b (backspace)
+        fixed = fixed.replace('\\\\f', '\\f')      # \\f -> \f (formfeed)
+        fixed = fixed.replace('\\\\n', '\\n')      # \\n -> \n (newline)
+        fixed = fixed.replace('\\\\r', '\\r')      # \\r -> \r (carriage return)
+        fixed = fixed.replace('\\\\t', '\\t')      # \\t -> \t (tab)
+        fixed = fixed.replace('\\\\u', '\\u')      # \\u -> \u (unicode)
+        if fixed != cleaned:
+            candidates.append(fixed)
+
+        # Escape literal control characters that break JSON decoding
+        escaped_controls = (cleaned
+                            .replace('\r', r'\r')
+                            .replace('\n', r'\n')
+                            .replace('\t', r'\t'))
+        if escaped_controls != cleaned:
+            candidates.append(escaped_controls)
+        
+        # Combine both: escape controls then fix backslashes
+        combined = escaped_controls.replace('\\', '\\\\')
+        combined = combined.replace('\\\\\\\\', '\\\\')
+        combined = combined.replace('\\\\"', '\\"')
+        combined = combined.replace('\\\\/', '\\/')
+        combined = combined.replace('\\\\b', '\\b')
+        combined = combined.replace('\\\\f', '\\f')
+        combined = combined.replace('\\\\n', '\\n')
+        combined = combined.replace('\\\\r', '\\r')
+        combined = combined.replace('\\\\t', '\\t')
+        combined = combined.replace('\\\\u', '\\u')
+        if combined not in candidates:
+            candidates.append(combined)
+
+        last_error: Optional[Exception] = None
+        parsed_result = None
+        
+        # Try to parse JSON with various escape strategies
+        for candidate in candidates:
+            for strict in (True, False):
+                try:
+                    parsed_result = json.loads(candidate, strict=strict)
+                    break
+                except json.JSONDecodeError as exc:
+                    last_error = exc
+                    continue
+            if parsed_result is not None:
+                break
+        
+        # If parsing failed, return error
+        if parsed_result is None:
+            error_msg = "failed to decode tool arguments"
+            if last_error is not None:
+                error_msg = f"{error_msg}: {last_error}"
+            return None, error_msg
+        
+        # Special handling for diff operations with XML tags
+        # Check if this is a diff_text containing conjecture/proof tags
+        if isinstance(parsed_result, dict):
+            diff_text = parsed_result.get('diff_text', '')
+            if diff_text and ('<conjecture' in diff_text or '<proof' in diff_text or
+                            '<conjecture_diff>' in diff_text or '<proof_diff>' in diff_text):
+                # This is a diff operation, add lemma context if available
+                lemma = None
+                if shared is not None:
+                    lemma_id = shared.get('current_lemma_id')
+                    lemmas = shared.get('lemmas', [])
+                    if lemma_id is not None and 0 <= lemma_id < len(lemmas):
+                        lemma = lemmas[lemma_id]
+                if lemma is not None:
+                    parsed_result['lemma'] = lemma
+        
+        return parsed_result, None
+
     def _get_one_response(self, messages: List[Dict], tools: List[Dict]) -> Dict:
         """
         获取一次响应，结束原因可能为工具调用或最终回答
@@ -242,7 +355,7 @@ class LLMClient:
         """初始化工具执行上下文"""
         context = {
             'python_env': {},
-            'wolfram_session': None
+            'wolfram_session': None,
         }
         
         # 检查是否需要Wolfram session
@@ -370,6 +483,17 @@ class LLMClient:
                 log_parts.append(f"[error]\n{error}")
             
             tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
+        elif name == 'apply_diff':
+            diff_text = args.get('diff_text', '')
+            lemma: Optional[Lemma] = args.get('lemma') or context.get('current_lemma')
+            if lemma is None:
+                error = "No lemma provided for apply_diff"
+                log_parts.append(f"[error]\n{error}")
+                tool_content = json.dumps({'error': error}, ensure_ascii=False)
+            else:
+                result = apply_diff_to_lemma(lemma, diff_text)
+                log_parts.append(f"[result]\n{result}")
+                tool_content = result
         
         else:
             if self.logger.print_to_console_default:
