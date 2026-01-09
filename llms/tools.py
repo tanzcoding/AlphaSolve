@@ -3,6 +3,8 @@ import sys
 import traceback
 import ast
 import time
+import threading
+import queue
 import builtins
 import types
 import importlib
@@ -199,7 +201,7 @@ def run_python(code: str, env: dict = None, timeout_seconds: int = 300) -> Tuple
     return buf.getvalue(), err
 
 
-def run_wolfram(code: str, session=None):
+def run_wolfram(code: str, session=None, timeout_seconds: int = 300):
     """
     Wolfram 语言执行器
     
@@ -213,25 +215,40 @@ def run_wolfram(code: str, session=None):
     Returns:
         (output: str, error: str | None)
     """
-    output = ""
-    err = None
-    
+    if session is None:
+        raise ValueError("Wolfram session must be provided by the caller")
+
+    result_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue(maxsize=1)
+
+    def _worker():
+        try:
+            result = session.evaluate(wlexpr(code))
+            result_queue.put(("output", str(result)))
+        except Exception:
+            result_queue.put(("error", traceback.format_exc().strip()))
+
+    worker = threading.Thread(target=_worker, daemon=True)
+    worker.start()
+    worker.join(timeout_seconds)
+
+    if worker.is_alive():
+        # 超时：终止 Wolfram session 并返回 timeout
+        err = "timeout"
+        try:
+            session.terminate()
+        except Exception as terminate_exc:
+            err = f"timeout (failed to terminate session cleanly: {terminate_exc})"
+        return "", err
+
     try:
-        # 如果没有提供 session，session 应该由调用者管理
-        # 这里假设 session 一定会被传入（由 get_result_with_tools 管理）
-        if session is None:
-            raise ValueError("Wolfram session must be provided by the caller")
-        
-        # 执行 Wolfram 代码
-        result = session.evaluate(wlexpr(code))
-        
-        # 将结果转换为字符串
-        output = str(result)
-        
-    except Exception as e:
-        err = traceback.format_exc().strip()
-    
-    return output, err
+        kind, payload = result_queue.get_nowait()
+    except queue.Empty:
+        return "", "unknown_error: wolfram worker produced no result"
+
+    if kind == "output":
+        return payload, None
+    else:
+        return "", payload
 
 
 def run_subagent(task_description: str, logger: Logger) -> Tuple[str, Optional[str]]:

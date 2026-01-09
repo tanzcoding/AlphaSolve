@@ -414,21 +414,26 @@ class LLMClient:
             'python_env': {},
             'wolfram_session': None,
         }
-        
+
         # 检查是否需要Wolfram session
         needs_wolfram = any(tool.get('function', {}).get('name') == 'run_wolfram' for tool in tools)
         if needs_wolfram:
-            if self.logger.print_to_console_default:
-                print("[正在启动 Wolfram Language Session...]\n", end="")
-            try:
-                context['wolfram_session'] = WolframLanguageSession()
-                if self.logger.print_to_console_default:
-                    print("[Wolfram Language Session 已启动]\n", end="")
-            except Exception as e:
-                if self.logger.print_to_console_default:
-                    print(f"[警告] Wolfram session 启动失败: {e}\n", end="")
+            context['wolfram_session'] = self._start_wolfram_session()
 
         return context
+
+    def _start_wolfram_session(self) -> Optional[WolframLanguageSession]:
+        if self.logger.print_to_console_default:
+            print("[正在启动 Wolfram Language Session...]\n", end="")
+        try:
+            session = WolframLanguageSession()
+            if self.logger.print_to_console_default:
+                print("[Wolfram Language Session 已启动]\n", end="")
+            return session
+        except Exception as exc:
+            if self.logger.print_to_console_default:
+                print(f"[警告] Wolfram session 启动失败: {exc}\n", end="")
+            return None
     
     def _cleanup_tool_context(self, context: Dict):
         """清理工具执行上下文"""
@@ -477,13 +482,21 @@ class LLMClient:
                 print(f"[Tool Call] run_wolfram\nCode:\n{code}")
             
             log_parts.append(f"Code:\n{code}")
-            
-            if context['wolfram_session'] is None:
+
+            session = context.get('wolfram_session')
+            if session is None:
+                session = self._start_wolfram_session()
+                context['wolfram_session'] = session
+
+            if session is None:
                 error = "Wolfram session not available"
                 output = ""
             else:
-                output, error = run_wolfram(code, context['wolfram_session'])
-            
+                output, error = run_wolfram(code, session)
+
+            if isinstance(error, str) and error.startswith('timeout'):
+                context['wolfram_session'] = self._start_wolfram_session()
+
             if self.logger.print_to_console_default:
                 if output:
                     print(f"[output]\n{output}")
