@@ -1,5 +1,12 @@
 import os
-from llms.tools import RESEARCH_SUBAGENT_TOOL, SOLVER_FORMAT_GUARD_TOOL, PYTHON_TOOL, WOLFRAM_TOOL, APPLY_DIFF_TOOL
+from llms.tools import (
+    RESEARCH_SUBAGENT_TOOL,
+    SOLVER_FORMAT_GUARD_TOOL,
+    PYTHON_TOOL,
+    WOLFRAM_TOOL,
+    APPLY_DIFF_TOOL,
+    SEARCH_REPLACE_TOOL,
+)
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
 # 说明：
@@ -15,7 +22,6 @@ DEEPSEEK_CONFIG = {
     # DeepSeek：通过特定模型名启用思考模式
     'model': 'deepseek-reasoner',
     'timeout': 3600,
-    'temperature': 1.0,
     'params': {}
 }
 
@@ -116,7 +122,7 @@ class AlphaSolveConfig:
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [SOLVER_FORMAT_GUARD_TOOL]
+        'tools': []
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
@@ -137,7 +143,7 @@ class AlphaSolveConfig:
     # DiffRefiner 可以使用 subagent
     DIFFREFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [APPLY_DIFF_TOOL]
+        'tools': [SEARCH_REPLACE_TOOL]
     }
 
     # Summarizer 不使用工具
@@ -182,5 +188,5 @@ class AlphaSolveConfig:
     SOLVER_EXAUSTED = 'solver_exausted'
 
     ## 
-    MAX_LEMMA_NUM = 10
+    MAX_LEMMA_NUM = 15
     MAX_VERIFY_AND_REFINE_ROUND = 3

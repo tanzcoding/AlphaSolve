@@ -13,7 +13,7 @@ from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
 from utils.logger import Logger
 from agents.shared_context import Lemma
-from utils.utils import extract_substring, apply_unified_diff
+from utils.utils import extract_substring, apply_unified_diff, search_and_replace
 
 
 # NOTE:
@@ -264,17 +264,25 @@ def run_subagent(task_description: str, logger: Logger) -> Tuple[str, Optional[s
         # 构建子代理的系统提示
         system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently.
 
+**CRITICAL: Correctness is your absolute responsibility.** Every result you provide must be mathematically sound and rigorously verified. The success of the overall research depends on the accuracy of your work.
+
 You have access to:
 - run_python: Execute Python code with sympy, numpy, scipy, and other scientific libraries
 - run_wolfram: Execute Wolfram Language for symbolic mathematics and advanced computations
 
 Approach:
-1. Understand the problem clearly
+1. Understand the problem clearly and assess its complexity
 2. Break it down into logical steps
 3. Use computational tools when needed
 4. Provide a clear, concise final answer
 
-Be thorough but efficient. Focus on delivering the correct result."""
+**When you encounter a task that exceeds your capabilities:**
+- Do NOT attempt to solve it beyond your capacity
+- Disclose the complexity and limitations to the superior agent
+- Suggest a smaller, more manageable subtask that you CAN complete
+- Clearly state what you have confirmed, discovered, or verified so far
+
+This enables the superior agent to make informed decisions about task decomposition and resource allocation."""
         experience = """<experiences>
 [Experience 1] For symbolic math, try BOTH SymPy (run_python) and Wolfram Language (run_wolfram) if the first attempt is inconclusive. Many tasks have complementary strengths: SymPy is great for quick algebraic manipulation and programmable workflows; Wolfram is often more robust for hard symbolic transforms.
 
@@ -293,7 +301,7 @@ Be thorough but efficient. Focus on delivering the correct result."""
         
         messages = [
             {"role": "system", "content": system_prompt+"\n\n"+experience},
-            {"role": "user", "content": task_description}
+            {"role": "user", "content": "<task_description>\n" + task_description + "\n</task_description>"},
         ]
         
         # 调用 get_result 执行子代理任务（工具已在配置中设置）
@@ -425,17 +433,73 @@ def apply_diff_to_lemma(lemma: Lemma, conjecture_diff: str = "", proof_diff: str
     new_statement = statement
     new_proof = proof
     error_message = None
+    errors = []
 
     try:
         if conjecture_diff and conjecture_diff.strip():
-            new_statement = apply_unified_diff(statement, conjecture_diff)
+            try:
+                new_statement = apply_unified_diff(statement, conjecture_diff)
+            except Exception as exc:
+                errors.append(f"conjecture_diff: {exc}")
+                new_statement = statement
         if proof_diff and proof_diff.strip():
-            new_proof = apply_unified_diff(proof, proof_diff)
+            try:
+                new_proof = apply_unified_diff(proof, proof_diff)
+            except Exception as exc:
+                errors.append(f"proof_diff: {exc}")
+                new_proof = proof
     except Exception as exc:
         # Keep lemma unchanged and report the error back to the caller
-        error_message = f"Failed to apply diff: {exc}"
+        errors.append(str(exc))
         new_statement = statement
         new_proof = proof
+
+    if errors:
+        error_message = "Failed to apply diff: " + "; ".join(errors)
+
+    lemma.update({
+        "statement": new_statement,
+        "proof": new_proof,
+        "apply_diff_error": error_message,
+    })
+
+    return json.dumps({
+        "statement": new_statement,
+        "proof": new_proof,
+        "error": error_message,
+    }, ensure_ascii=False)
+
+
+def apply_search_replace_to_lemma(
+    lemma: Lemma,
+    statement_operation: str = "",
+    proof_operation: str = "",
+):
+    """Apply SEARCH/REPLACE blocks to lemma statement and proof."""
+    statement = lemma.get("statement", "")
+    proof = lemma.get("proof", "")
+
+    new_statement = statement
+    new_proof = proof
+    errors = []
+
+    if statement_operation and statement_operation.strip():
+        try:
+            new_statement = search_and_replace(statement, statement_operation)
+        except Exception as exc:
+            errors.append(f"statement_operation: {exc}")
+            new_statement = statement
+
+    if proof_operation and proof_operation.strip():
+        try:
+            new_proof = search_and_replace(proof, proof_operation)
+        except Exception as exc:
+            errors.append(f"proof_operation: {exc}")
+            new_proof = proof
+
+    error_message = None
+    if errors:
+        error_message = "Failed to apply SEARCH/REPLACE: " + "; ".join(errors)
 
     lemma.update({
         "statement": new_statement,
@@ -550,11 +614,11 @@ RESEARCH_SUBAGENT_TOOL = {
 SOLVER_FORMAT_GUARD_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'generate_conjecture_format_guard',
+        'name': 'generate_conjecture_format_checker',
         'description': (
-            "Format reminder + strict validator for solver outputs per prompts/solver.md. "
-            "Call with no arguments to get a reminder; call with candidate_response to validate it. "
-            "IMPORTANT: This tool only checks the format, using this tool will not consume lemma budget."
+            "Call with no arguments to get a format reminder; call with candidate_response to validate its format. "
+            "IMPORTANT: This tool does NOT generate a conjecture or lemma. It only validates format and does not consume lemma budget."
+            ""
         ),
         'parameters': {
             'type': 'object',
@@ -575,12 +639,14 @@ SOLVER_FORMAT_GUARD_TOOL = {
 APPLY_DIFF_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'apply_diff',
+        'name': 'refine_conjecture_with_diff',
         'description': (
-            "Apply unified diff format changes to modify a lemma's statement and/or proof. "
-            "CRITICAL: You MUST use proper unified diff format, NOT full text replacement. "
-            "Unified diff allows surgical edits to specific parts while preserving the rest, "
-            "which is essential for expanding proofs without rewriting everything."
+            "Apply unified diff edits to the active conjecture statement string and/or proof string. "
+            "The XML tags <conjecture> and <proof> are NOT parts of the statement/proof content and should NOT be included in the diffs. "
+            "(1) Use the familiar unified diff syntax with @@ headers but OMIT line numbers, "
+            "(2) Keep diffs simple—no JSON, XML, or raw text dumps, just +/-/space prefixes, "
+            "(3) Prefer high-level hunks that replace whole arguments/paragraphs instead of scattered single-line tweaks, and "
+            "(4) Be flexible but precise: include every line that changes so the patch applies cleanly (indentation matters)."
         ),
         'parameters': {
             'type': 'object',
@@ -588,47 +654,89 @@ APPLY_DIFF_TOOL = {
                 'conjecture_diff': {
                     'type': 'string',
                     'description': (
-                        "Unified diff to modify the conjecture/statement. MUST follow this exact format:\n\n"
-                        "1. Each change block MUST start with a hunk header: @@ -old_line,old_count +new_line,new_count @@\n"
-                        "2. Lines to DELETE start with '-' (minus sign)\n"
-                        "3. Lines to ADD start with '+' (plus sign)\n"
-                        "4. Context lines (unchanged) start with ' ' (single space)\n"
-                        "5. You MUST have BOTH deletions (-) AND additions (+), unless truly only adding or only deleting\n\n"
-                        "CORRECT Example - Replace one paragraph with another:\n"
-                        "@@ -1,3 +1,3 @@\n"
-                        " # Header stays\n"
-                        "-Old paragraph content that will be removed\n"
-                        "+New improved paragraph content\n"
-                        " # Next section unchanged\n\n"
-                        "WRONG: Just listing new content without '-' lines\n"
-                        "WRONG: Using <conjecture></conjecture> tags\n"
-                        "Leave empty if conjecture doesn't need changes."
+                        "Unified diff hunks that modify the conjecture/statement. Format tips:\n"
+                        "- Begin each hunk with `@@ ... @@` (no line numbers needed).\n"
+                        "- Use '-' for lines you remove, '+' for new lines, leading space for context.\n"
+                        "- Replace entire paragraphs/sections when they fundamentally change.\n"
+                        "- Include enough context so the patch can be located reliably.\n\n"
+                        "Example (rename variable and add clarification):\n"
+                        "@@ ... @@\n"
+                        "-Let n be arbitrary.\n"
+                        "+Let k be arbitrary.\n"
+                        "-Assume n > 0 so the induction applies.\n"
+                        "+Assume k > 0 so the induction anchor holds.\n"
+                        " Explanation line stays.\n\n"
+                        "Do NOT include the <conjecture> tags themselves. "
+                        "Leave empty when no statement edits are required."
                     )
                 },
                 'proof_diff': {
                     'type': 'string',
                     'description': (
-                        "Unified diff to modify the proof. MUST follow this exact format:\n\n"
-                        "1. Each change block MUST start with a hunk header: @@ -old_line,old_count +new_line,new_count @@\n"
-                        "2. Lines to DELETE start with '-' (minus sign)\n"
-                        "3. Lines to ADD start with '+'  (plus sign)\n"
-                        "4. Context lines (unchanged) start with ' ' (single space)\n"
-                        "5. You MUST have BOTH deletions (-) AND additions (+), unless truly only adding or only deleting\n\n"
-                        "CORRECT Example - Improve Step 2 while keeping Step 1 and 3:\n"
-                        "@@ -5,7 +5,9 @@\n"
+                        "Unified diff hunks that modify the proof. Follow the same rules as above:\n"
+                        "- `@@ ... @@` headers mark each block; no numeric ranges.\n"
+                        "- `-` old lines, `+` new lines, space for context; keep indentation intact.\n"
+                        "- Prefer replacing whole subproofs/lemmas instead of piecemeal edits.\n"
+                        "- Start a new hunk whenever you jump to another section.\n\n"
+                        "Example (replace a faulty Step 2 with a rigorous version):\n"
+                        "@@ ... @@\n"
                         " ### Step 1: Setup\n"
-                        " Initial analysis...\n"
-                        " \n"
-                        "-### Step 2: Old approach\n"
-                        "-Basic calculation\n"
-                        "+### Step 2: Improved rigorous approach\n"
-                        "+Detailed calculation with justification\n"
-                        "+Additional lemma application\n"
-                        " \n"
-                        " ### Step 3: Conclusion\n\n"
-                        "WRONG: Only '-' lines without corresponding '+' lines\n"
-                        "WRONG: Using <proof></proof> tags\n"
-                        "Leave empty if proof doesn't need changes."
+                        " Context line\n"
+                        "-### Step 2: Hand-wavy argument\n"
+                        "-We assert the bound without justification.\n"
+                        "+### Step 2: Rigorous estimate\n"
+                        "+Apply Lemma A to bound f(x).\n"
+                        "+Use monotonicity to conclude g(x) ≥ f(x).\n"
+                        " ### Step 3: Finish\n\n"
+                        "Do NOT include the <proof> tags themselves. "
+                        "Leave empty when the proof requires no changes."
+                    )
+                }
+            },
+            'required': []
+        }
+    }
+}
+
+SEARCH_REPLACE_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'refine_conjecture_with_search_replace',
+        'description': (
+            "Apply SEARCH/REPLACE edits to the active conjecture statement and/or proof. Always supply operations in the canonical block format:\n"
+            "<<<<<<< SEARCH\n<text to locate> (supports BEGIN_MARKER ... END_MARKER ranges)\n"
+            "=======\n<replacement text>\n>>>>>>> REPLACE\n"
+            "Best practices:\n"
+            "- When rewriting an entire step/section, prefer the BEGIN_MARKER ... END_MARKER shorthand so you replace the whole block without pasting the entire original text.\n"
+            "- The tool may be invoked multiple times; make incremental edits (one logical change per call) so failures are easy to recover from.\n"
+            "- If you only need to strengthen/expand a single hand-wavy sentence, just replace that sentence directly—no need for markers.\n"
+            "Common patterns:\n"
+            "1) Direct replacement (fix a sentence):\n"
+            "   <<<<<<< SEARCH\n   The integral equals 0.\n   =======\n   The integral equals 1.\n   >>>>>>> REPLACE\n"
+            "2) Multi-line span via markers (replace a whole paragraph):\n"
+            "   <<<<<<< SEARCH\n   BEGIN_PROOF...END_PROOF\n   =======\n   Updated paragraph\n   >>>>>>> REPLACE\n"
+            "   Both markers are removed unless reintroduced in the replacement.\n"
+            "3) Pure insertion (leave replacement non-empty, make SEARCH a zero-width anchor or nearby text). Example inserting a remark after a sentence:\n"
+            "   <<<<<<< SEARCH\n   Therefore the claim holds.\n   =======\n   Therefore the claim holds.\n   Remark: the bound is sharp when n=2.\n   >>>>>>> REPLACE\n"
+            "4) Deletion (set replacement to empty string):\n"
+            "   <<<<<<< SEARCH\n   This obsolete lemma...\n   =======\n   \n   >>>>>>> REPLACE\n"
+            "Mix and match: provide statement_operation for conjecture edits, proof_operation for proof edits, or both."
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'statement_operation': {
+                    'type': 'string',
+                    'description': (
+                        "SEARCH/REPLACE block applied to the conjecture statement. "
+                        "Markers inside the SEARCH block are treated as part of the match."
+                    )
+                },
+                'proof_operation': {
+                    'type': 'string',
+                    'description': (
+                        "SEARCH/REPLACE block applied to the proof text. "
+                        "Omit or leave empty when no proof changes are needed."
                     )
                 }
             },

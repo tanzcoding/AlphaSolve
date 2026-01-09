@@ -13,7 +13,6 @@ from pocketflow import Node
 # If this tag appears, the refiner believes the conjecture/lemma is false.
 
 
-
 class DiffRefiner(Node):
     """A refiner that only accept apply unified diffs to modify unverified conjectures.
 
@@ -57,42 +56,28 @@ class DiffRefiner(Node):
         lemma = prep_res[1]
         shared = prep_res[2]
         messages_to_send = lemma.get("history_messages", [])
-        
-        diff_instructions = """
-CRITICAL INSTRUCTION: You MUST use the apply_diff tool with proper unified diff format.
 
-=== UNIFIED DIFF FORMAT REQUIREMENTS ===
+        diff_instructions = """Repair the current conjecture statement and/or proof so they satisfy the review. Focus on the mathematics first; editing tools are just the delivery mechanism.
 
-1. Start each hunk with: @@ -old_line,old_count +new_line,new_count @@
-2. Lines to REMOVE start with '-' (minus)
-3. Lines to ADD start with '+' (plus)
-4. Context lines (unchanged) start with ' ' (space)
+Workflow:
+1. Read the review carefully and decide the precise edits needed in the statement and/or proof.
+2. You MUST call one (or both) of the editing tools to make changes:
+   - `refine_conjecture_with_diff` for unified diff edits (provide `conjecture_diff`, `proof_diff`, or both).
+   - `refine_conjecture_with_search_replace` for SEARCH/REPLACE operations (provide `statement_operation`, `proof_operation`, or both).
+   Direct text replies never modify the conjecture—only tool calls do.
 
-=== CORRECT EXAMPLE ===
-To replace "Old text" with "New expanded text" while keeping surrounding content:
+Unified diff reminder (full spec lives in the tool description):
+- Start each hunk with `@@ ... @@` and DO NOT emit numeric line ranges.
+- `-` removes existing lines, `+` adds new lines, a leading space marks unchanged context.
+- Replace whole logical blocks when possible, instead of scattered single-line tweaks.
+- Provide enough context/indentation so the patch matches cleanly; never dump raw <proof>...</proof> text.
 
-@@ -1,5 +1,7 @@
- ### Introduction
- This is context
--Old text that needs improvement
-+New expanded text with better explanation
-+Additional supporting details
- ### Conclusion
- Final remarks
+SEARCH/REPLACE reminder:
+- Use the `<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE` block format.
+- `BEGIN_MARKER ... END_MARKER` spans include both markers in the replaced text.
+- Supply enough and exact text so the tool can locate the snippet reliably.
 
-=== COMMON MISTAKES TO AVOID ===
-❌ DON'T output full replacement text without diff markers
-❌ DON'T use <proof></proof> or <conjecture></conjecture> tags
-❌ DON'T forget the @@ header line
-❌ DON'T use only '+' lines without corresponding '-' lines (unless truly adding new content)
-
-=== YOUR TASK ===
-Review the feedback below and use apply_diff tool to make targeted improvements.
-You can modify the conjecture_diff, proof_diff, or both parameters.
-
-=== AFTER SUCCESSFUL APPLY_DIFF ===
-After successfully using apply_diff, output a brief acknowledgment of the changes made.
-Keep it concise and professional. Do not ask questions or offer further assistance."""
+After successfully refining the conjecture/proof, briefly summarize what changed (no follow-up questions)."""
 
         messages_to_send.append(
             {
@@ -103,10 +88,10 @@ Keep it concise and professional. Do not ask questions or offer further assistan
                 ),
             }
         )
-        
+
         original_length = len(messages_to_send)
         _, _, updated_messages = self.llm.get_result(messages_to_send, shared=shared)
-        
+
         # Check if apply_diff tool was used in the newly generated messages
         used_apply_diff = False
         new_messages = updated_messages[original_length:]  # Only check new messages
@@ -118,7 +103,7 @@ Keep it concise and professional. Do not ask questions or offer further assistan
                         break
             if used_apply_diff:
                 break
-        
+
         # If apply_diff was not used, revert to original messages
         if not used_apply_diff:
             self.logger.log_print(
@@ -127,7 +112,7 @@ Keep it concise and professional. Do not ask questions or offer further assistan
                 level="WARNING"
             )
             updated_messages = lemma.get("history_messages", [])
-        
+
         return AlphaSolveConfig.NORMAL, updated_messages
 
     def post(self, shared, prep_res, exec_res):
@@ -161,7 +146,7 @@ Keep it concise and professional. Do not ask questions or offer further assistan
         if len(exec_res) < 2:
             self.logger.log_print(
                 "event=illegal_exec_res step=post",
-                module="refiner",
+                module="diff_refiner",
                 level="ERROR",
             )
             self.logger.log_print('exiting refiner...', module='refiner')
@@ -172,11 +157,10 @@ Keep it concise and professional. Do not ask questions or offer further assistan
         shared["lemmas"][lemma_id]["status"] = "pending"
         updated_messages = exec_res[1]
         shared["lemmas"][lemma_id]["history_messages"] = updated_messages
-        
+
         return AlphaSolveConfig.REFINE_SUCCESS
 
 
 def create_diff_refiner_agent(logger: Logger):
     llm = LLMClient(module='diff_refiner', config=AlphaSolveConfig.DIFFREFINER_CONFIG, logger=logger)
     return DiffRefiner(llm, logger=logger)
-

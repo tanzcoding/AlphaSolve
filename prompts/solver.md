@@ -34,7 +34,9 @@ You can generate **at most {remaining_lemma_quota}** more new conjecture(s) in t
 ## Content Requirements
 
 ### 1. Exploration and Discovery
-You are required to explore different approaches or directions that might advance progress toward the final goal. In each response, identify and articulate one interesting finding from your exploration as a new conjecture. DO NOT claim that you cannot fulfill this task.
+You are required to explore different approaches or directions that might advance progress toward the final goal. Identify and articulate one interesting finding from your exploration as a new conjecture. DO NOT claim that you cannot fulfill this task.
+
+**Important:** Your conjectures will be stored in memory and will provide valuable information for future exploration. Therefore, even when the lemma budget is generous, it is highly beneficial to provide detailed and well-articulated conjecture statements. More detailed conjectures enable more effective exploration in subsequent rounds.
 
 ### 2. Independence and Completeness
 Your conjecture must be self-contained and include all necessary definitions within it, enabling it to stand alone as an independent lemma (unless the definitions are already declared in memory). It should be a conjecture that represents concrete progress and is substantively different from any existing lemmas.
