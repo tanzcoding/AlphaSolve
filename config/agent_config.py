@@ -4,8 +4,8 @@ from llms.tools import (
     SOLVER_FORMAT_GUARD_TOOL,
     PYTHON_TOOL,
     WOLFRAM_TOOL,
-    APPLY_DIFF_TOOL,
-    SEARCH_REPLACE_TOOL,
+    MODIFY_STATEMENT_TOOL,
+    MODIFY_PROOF_TOOL,
 )
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
@@ -121,14 +121,14 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': []
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': []
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
@@ -140,10 +140,16 @@ class AlphaSolveConfig:
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
-    # DiffRefiner 可以使用 subagent
-    DIFFREFINER_CONFIG = {
+    # NoHistoryRefiner 强制使用 search/replace 工具
+    NO_HISTORY_REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [SEARCH_REPLACE_TOOL]
+        'tools': [MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
+    }
+    NO_HISTORY_REFINER_PROMPT_PATH = 'prompts/no_history_refiner.md'
+    # WithHistoryRefiner 可以使用 subagent
+    WITH_HISTORY_REFINER_CONFIG = {
+        **DEEPSEEK_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
     }
 
     # Summarizer 不使用工具
@@ -151,7 +157,7 @@ class AlphaSolveConfig:
         **DEEPSEEK_CONFIG,
         'tools': None
     }
-    SUMMARIZER_PROMPT_PATH = 'prompts/refiner.md'
+    SUMMARIZER_PROMPT_PATH = 'prompts/summarizer.md'
 
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {

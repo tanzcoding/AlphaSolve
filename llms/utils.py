@@ -258,12 +258,17 @@ class LLMClient:
         # Special handling for editing tools: add lemma context
         if isinstance(parsed_result, dict):
             # Check if this is an apply_diff call (has conjecture_diff or proof_diff params)
-            has_conjecture_diff = 'conjecture_diff' in parsed_result
-            has_proof_diff = 'proof_diff' in parsed_result
-            has_statement_operation = 'statement_operation' in parsed_result
-            has_proof_operation = 'proof_operation' in parsed_result
+            has_new_statement = 'new_statement' in parsed_result
+            has_begin_marker = 'begin_marker' in parsed_result
+            has_end_marker = 'end_marker' in parsed_result
+            has_proof_replacement = 'proof_replacement' in parsed_result
 
-            if has_conjecture_diff or has_proof_diff or has_statement_operation or has_proof_operation:
+            if (
+                has_new_statement
+                or has_begin_marker
+                or has_end_marker
+                or has_proof_replacement
+            ):
                 # This is an editing operation, add lemma context if available
                 lemma = None
                 if shared is not None:
@@ -524,52 +529,47 @@ class LLMClient:
             
             tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
         elif name == 'refine_conjecture_with_diff':
-            conjecture_diff = args.get('conjecture_diff', '')
-            proof_diff = args.get('proof_diff', '')
+            tool_content = json.dumps({'error': 'refine_conjecture_with_diff is deprecated'}, ensure_ascii=False)
+        elif name == 'modify_statement':
+            new_statement = args.get('new_statement', '')
             lemma: Optional[Lemma] = args.get('lemma') or context.get('current_lemma')
-            
+
             if lemma is None:
-                error = "No lemma provided for apply_diff"
+                error = "No lemma provided for modify_statement"
                 log_parts.append(f"[error]\n{error}")
                 tool_content = json.dumps({'error': error}, ensure_ascii=False)
             else:
                 if self.logger.print_to_console_default:
-                    if conjecture_diff:
-                        print(f"[Tool Call] refine_conjecture_with_diff\nConjecture diff:\n{conjecture_diff[:200]}...")
-                    if proof_diff:
-                        print(f"Proof diff:\n{proof_diff[:200]}...")
-                
-                if conjecture_diff:
-                    log_parts.append(f"Conjecture diff length: {len(conjecture_diff)}")
-                if proof_diff:
-                    log_parts.append(f"Proof diff length: {len(proof_diff)}")
-                
-                result = apply_diff_to_lemma(lemma, conjecture_diff, proof_diff)
+                    print("[Tool Call] modify_statement\nNew statement preview:\n"
+                          f"{new_statement[:200]}...")
+                log_parts.append(f"New statement length: {len(new_statement)}")
+                result = apply_new_statement_to_lemma(lemma, new_statement)
                 log_parts.append(f"[result]\n{result}")
                 tool_content = result
-        elif name == 'refine_conjecture_with_search_replace':
-            statement_operation = args.get('statement_operation', '')
-            proof_operation = args.get('proof_operation', '')
+
+        elif name == 'modify_proof':
+            begin_marker = args.get('begin_marker', '')
+            end_marker = args.get('end_marker', '')
+            proof_replacement = args.get('proof_replacement', '')
             lemma: Optional[Lemma] = args.get('lemma') or context.get('current_lemma')
 
             if lemma is None:
-                error = "No lemma provided for search/replace"
+                error = "No lemma provided for modify_proof"
                 log_parts.append(f"[error]\n{error}")
                 tool_content = json.dumps({'error': error}, ensure_ascii=False)
             else:
                 if self.logger.print_to_console_default:
-                    if statement_operation:
-                        print("[Tool Call] refine_conjecture_with_search_replace\nStatement op preview:\n"
-                              f"{statement_operation[:200]}...")
-                    if proof_operation:
-                        print(f"Proof op preview:\n{proof_operation[:200]}...")
-
-                if statement_operation:
-                    log_parts.append(f"Statement operation length: {len(statement_operation)}")
-                if proof_operation:
-                    log_parts.append(f"Proof operation length: {len(proof_operation)}")
-
-                result = apply_search_replace_to_lemma(lemma, statement_operation, proof_operation)
+                    print("[Tool Call] modify_proof\n"
+                          f"begin={begin_marker[:60]}... end={end_marker[:60]}...\n"
+                          f"replacement sample={proof_replacement[:200]}...")
+                log_parts.append(
+                    "Proof anchors lengths: begin={} end={} replacement={}".format(
+                        len(begin_marker),
+                        len(end_marker),
+                        len(proof_replacement),
+                    )
+                )
+                result = apply_proof_anchor_edit(lemma, begin_marker, end_marker, proof_replacement)
                 log_parts.append(f"[result]\n{result}")
                 tool_content = result
         

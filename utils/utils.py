@@ -301,12 +301,21 @@ def search_and_replace(text: str, operation: str) -> str:
         raise ValueError("SEARCH/REPLACE block is missing the '>>>>>>> REPLACE' terminator")
 
     def _normalize(section: str) -> str:
+        """Normalize a SEARCH/REPLACE section.
+
+        - Normalize newlines
+        - Dedent (so indented examples in prompts still work)
+        - Trim at most one leading/trailing newline introduced by block formatting
+        - Strip trailing spaces on each line to avoid accidental whitespace leftovers
+          when deleting a substring adjacent to spaces.
+        """
         normalized = section.replace('\r\n', '\n').replace('\r', '\n')
         normalized = textwrap.dedent(normalized)
         if normalized.startswith('\n'):
             normalized = normalized[1:]
         if normalized.endswith('\n'):
             normalized = normalized[:-1]
+        normalized = '\n'.join(line.rstrip() for line in normalized.split('\n'))
         return normalized
 
     search_text = _normalize(search_section)

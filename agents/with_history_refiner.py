@@ -10,11 +10,8 @@ from .shared_context import SharedContext, Lemma
 from pocketflow import Node
 
 
-# If this tag appears, the refiner believes the conjecture/lemma is false.
-
-
-class DiffRefiner(Node):
-    """A refiner that only accept apply unified diffs to modify unverified conjectures.
+class WithHistoryRefiner(Node):
+    """A refiner that DOES expose solver history (history_messages) along with the review.
 
     Contract:
     - It sends the LLM: shared['lemmas'][shared['current_lemma_id']] + appended verifier review.
@@ -23,7 +20,7 @@ class DiffRefiner(Node):
     """
 
     def __init__(self, llm: LLMClient, logger: Logger):
-        super(DiffRefiner, self).__init__()
+        super(WithHistoryRefiner, self).__init__()
         self.llm = llm
         self.logger = logger
 
@@ -62,20 +59,14 @@ class DiffRefiner(Node):
 Workflow:
 1. Read the review carefully and decide the precise edits needed in the statement and/or proof.
 2. You MUST call one (or both) of the editing tools to make changes:
-   - `refine_conjecture_with_diff` for unified diff edits (provide `conjecture_diff`, `proof_diff`, or both).
-   - `refine_conjecture_with_search_replace` for SEARCH/REPLACE operations (provide `statement_operation`, `proof_operation`, or both).
+   - `modify_statement` (provide `new_statement`) to replace the entire conjecture statement.
+   - `modify_proof` (provide `begin_marker`, `end_marker`, `proof_replacement`) to replace a span of the proof.
    Direct text replies never modify the conjecture—only tool calls do.
 
-Unified diff reminder (full spec lives in the tool description):
-- Start each hunk with `@@ ... @@` and DO NOT emit numeric line ranges.
-- `-` removes existing lines, `+` adds new lines, a leading space marks unchanged context.
-- Replace whole logical blocks when possible, instead of scattered single-line tweaks.
-- Provide enough context/indentation so the patch matches cleanly; never dump raw <proof>...</proof> text.
-
-SEARCH/REPLACE reminder:
-- Use the `<<<<<<< SEARCH ... ======= ... >>>>>>> REPLACE` block format.
-- `BEGIN_MARKER ... END_MARKER` spans include both markers in the replaced text.
-- Supply enough and exact text so the tool can locate the snippet reliably.
+Proof-anchor reminder:
+- `begin_marker` and `end_marker` are inclusive: both are removed along with the replaced span unless reintroduced in `proof_replacement`.
+- Each marker must be ≤50 characters and should appear verbatim in the current proof.
+- Make incremental edits; you can call `modify_proof` multiple times.
 
 After successfully refining the conjecture/proof, briefly summarize what changed (no follow-up questions)."""
 
@@ -161,6 +152,6 @@ After successfully refining the conjecture/proof, briefly summarize what changed
         return AlphaSolveConfig.REFINE_SUCCESS
 
 
-def create_diff_refiner_agent(logger: Logger):
-    llm = LLMClient(module='diff_refiner', config=AlphaSolveConfig.DIFFREFINER_CONFIG, logger=logger)
-    return DiffRefiner(llm, logger=logger)
+def create_with_history_refiner_agent(logger: Logger):
+    llm = LLMClient(module='with_history_refiner', config=AlphaSolveConfig.WITH_HISTORY_REFINER_CONFIG, logger=logger)
+    return WithHistoryRefiner(llm, logger=logger)

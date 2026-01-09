@@ -415,102 +415,59 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
         return json.dumps(payload, ensure_ascii=False), None
     except Exception:
         return "", traceback.format_exc().strip()
-    
 
-def apply_diff_to_lemma(lemma: Lemma, conjecture_diff: str = "", proof_diff: str = ""):
-    """
-    应用 DIFFS（统一 diff 格式）到 lemma 的 statement 和 proof。
 
-    Args:
-        lemma: Lemma对象
-        conjecture_diff: conjecture的统一 diff 格式差异文本
-        proof_diff: proof的统一 diff 格式差异文本
-
-    """
-    statement = lemma.get("statement", "")
-    proof = lemma.get("proof", "")
-
-    new_statement = statement
-    new_proof = proof
-    error_message = None
-    errors = []
-
-    try:
-        if conjecture_diff and conjecture_diff.strip():
-            try:
-                new_statement = apply_unified_diff(statement, conjecture_diff)
-            except Exception as exc:
-                errors.append(f"conjecture_diff: {exc}")
-                new_statement = statement
-        if proof_diff and proof_diff.strip():
-            try:
-                new_proof = apply_unified_diff(proof, proof_diff)
-            except Exception as exc:
-                errors.append(f"proof_diff: {exc}")
-                new_proof = proof
-    except Exception as exc:
-        # Keep lemma unchanged and report the error back to the caller
-        errors.append(str(exc))
-        new_statement = statement
-        new_proof = proof
-
-    if errors:
-        error_message = "Failed to apply diff: " + "; ".join(errors)
+def apply_new_statement_to_lemma(lemma: Lemma, new_statement: str) -> str:
+    """Replace the lemma statement entirely with the provided text."""
+    if not isinstance(new_statement, str) or not new_statement.strip():
+        raise ValueError("new_statement must be a non-empty string")
 
     lemma.update({
         "statement": new_statement,
-        "proof": new_proof,
-        "apply_diff_error": error_message,
+        "apply_diff_error": None,
     })
 
     return json.dumps({
         "statement": new_statement,
-        "proof": new_proof,
-        "error": error_message,
+        "proof": lemma.get("proof", ""),
+        "error": None,
     }, ensure_ascii=False)
 
 
-def apply_search_replace_to_lemma(
+def apply_proof_anchor_edit(
     lemma: Lemma,
-    statement_operation: str = "",
-    proof_operation: str = "",
-):
-    """Apply SEARCH/REPLACE blocks to lemma statement and proof."""
-    statement = lemma.get("statement", "")
+    begin_marker: str,
+    end_marker: str,
+    proof_replacement: str,
+) -> str:
+    """Replace the proof span between begin_marker and end_marker (inclusive)."""
+
+    if not begin_marker.strip() or not end_marker.strip():
+        raise ValueError("Both begin_marker and end_marker must be provided")
+    if len(begin_marker) > 50 or len(end_marker) > 50:
+        raise ValueError("Markers must be 50 characters or fewer")
+
     proof = lemma.get("proof", "")
+    start_idx = proof.find(begin_marker)
+    if start_idx == -1:
+        raise ValueError("begin_marker not found in proof text")
 
-    new_statement = statement
-    new_proof = proof
-    errors = []
+    end_idx = proof.find(end_marker, start_idx + len(begin_marker))
+    if end_idx == -1:
+        raise ValueError("end_marker not found after begin_marker")
 
-    if statement_operation and statement_operation.strip():
-        try:
-            new_statement = search_and_replace(statement, statement_operation)
-        except Exception as exc:
-            errors.append(f"statement_operation: {exc}")
-            new_statement = statement
-
-    if proof_operation and proof_operation.strip():
-        try:
-            new_proof = search_and_replace(proof, proof_operation)
-        except Exception as exc:
-            errors.append(f"proof_operation: {exc}")
-            new_proof = proof
-
-    error_message = None
-    if errors:
-        error_message = "Failed to apply SEARCH/REPLACE: " + "; ".join(errors)
+    end_idx += len(end_marker)
+    new_proof = proof[:start_idx] + proof_replacement + proof[end_idx:]
 
     lemma.update({
-        "statement": new_statement,
         "proof": new_proof,
-        "apply_diff_error": error_message,
+        "apply_diff_error": None,
     })
 
     return json.dumps({
-        "statement": new_statement,
+        "statement": lemma.get("statement", ""),
         "proof": new_proof,
-        "error": error_message,
+        "error": None,
     }, ensure_ascii=False)
 
 # ===== 定义工具函数规范 =====
@@ -610,7 +567,6 @@ RESEARCH_SUBAGENT_TOOL = {
     }
 }
 
-
 SOLVER_FORMAT_GUARD_TOOL = {
     'type': 'function',
     'function': {
@@ -636,111 +592,72 @@ SOLVER_FORMAT_GUARD_TOOL = {
     }
 }
 
-APPLY_DIFF_TOOL = {
+
+MODIFY_STATEMENT_DESCRIPTION = """Replace the entire conjecture statement with a new statement.
+
+Guidelines:
+- Provide the fully revised statement via `new_statement`.
+- Ensure the statement is self-contained (unless dependent lemmas already define the required notions).
+- Use Markdown/LaTeX for mathematical clarity.
+- You may call this tool multiple times; each call overwrites the entire statement.
+"""
+
+
+MODIFY_STATEMENT_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'refine_conjecture_with_diff',
-        'description': (
-            "Apply unified diff edits to the active conjecture statement string and/or proof string. "
-            "The XML tags <conjecture> and <proof> are NOT parts of the statement/proof content and should NOT be included in the diffs. "
-            "(1) Use the familiar unified diff syntax with @@ headers but OMIT line numbers, "
-            "(2) Keep diffs simple—no JSON, XML, or raw text dumps, just +/-/space prefixes, "
-            "(3) Prefer high-level hunks that replace whole arguments/paragraphs instead of scattered single-line tweaks, and "
-            "(4) Be flexible but precise: include every line that changes so the patch applies cleanly (indentation matters)."
-        ),
+        'name': 'modify_statement',
+        'description': MODIFY_STATEMENT_DESCRIPTION,
         'parameters': {
             'type': 'object',
             'properties': {
-                'conjecture_diff': {
+                'new_statement': {
                     'type': 'string',
-                    'description': (
-                        "Unified diff hunks that modify the conjecture/statement. Format tips:\n"
-                        "- Begin each hunk with `@@ ... @@` (no line numbers needed).\n"
-                        "- Use '-' for lines you remove, '+' for new lines, leading space for context.\n"
-                        "- Replace entire paragraphs/sections when they fundamentally change.\n"
-                        "- Include enough context so the patch can be located reliably.\n\n"
-                        "Example (rename variable and add clarification):\n"
-                        "@@ ... @@\n"
-                        "-Let n be arbitrary.\n"
-                        "+Let k be arbitrary.\n"
-                        "-Assume n > 0 so the induction applies.\n"
-                        "+Assume k > 0 so the induction anchor holds.\n"
-                        " Explanation line stays.\n\n"
-                        "Do NOT include the <conjecture> tags themselves. "
-                        "Leave empty when no statement edits are required."
-                    )
-                },
-                'proof_diff': {
-                    'type': 'string',
-                    'description': (
-                        "Unified diff hunks that modify the proof. Follow the same rules as above:\n"
-                        "- `@@ ... @@` headers mark each block; no numeric ranges.\n"
-                        "- `-` old lines, `+` new lines, space for context; keep indentation intact.\n"
-                        "- Prefer replacing whole subproofs/lemmas instead of piecemeal edits.\n"
-                        "- Start a new hunk whenever you jump to another section.\n\n"
-                        "Example (replace a faulty Step 2 with a rigorous version):\n"
-                        "@@ ... @@\n"
-                        " ### Step 1: Setup\n"
-                        " Context line\n"
-                        "-### Step 2: Hand-wavy argument\n"
-                        "-We assert the bound without justification.\n"
-                        "+### Step 2: Rigorous estimate\n"
-                        "+Apply Lemma A to bound f(x).\n"
-                        "+Use monotonicity to conclude g(x) ≥ f(x).\n"
-                        " ### Step 3: Finish\n\n"
-                        "Do NOT include the <proof> tags themselves. "
-                        "Leave empty when the proof requires no changes."
-                    )
+                    'description': 'Complete replacement text for the conjecture statement.'
                 }
             },
-            'required': []
+            'required': ['new_statement']
         }
     }
 }
 
-SEARCH_REPLACE_TOOL = {
+
+MODIFY_PROOF_DESCRIPTION = """Replace a span of the proof using short anchors.
+
+Parameters:
+- `begin_marker`: ≤50 characters that appear verbatim in the current proof and mark the inclusive start of the edit.
+- `end_marker`: ≤50 characters that appear after the begin marker and mark the inclusive end of the edit.
+- `proof_replacement`: Text that replaces the span from the first character of `begin_marker` through the last character of `end_marker` (anchors are removed unless reintroduced).
+
+Guidelines:
+- Choose anchors that are unique yet short (≤50 chars each).
+- The replacement may be empty (deletion) or contain multiple paragraphs (insertion/rewrite).
+- Call this tool as many times as necessary to stage complex edits.
+"""
+
+
+MODIFY_PROOF_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'refine_conjecture_with_search_replace',
-        'description': (
-            "Apply SEARCH/REPLACE edits to the active conjecture statement and/or proof. Always supply operations in the canonical block format:\n"
-            "<<<<<<< SEARCH\n<text to locate> (supports BEGIN_MARKER ... END_MARKER ranges)\n"
-            "=======\n<replacement text>\n>>>>>>> REPLACE\n"
-            "Best practices:\n"
-            "- When rewriting an entire step/section, prefer the BEGIN_MARKER ... END_MARKER shorthand so you replace the whole block without pasting the entire original text.\n"
-            "- The tool may be invoked multiple times; make incremental edits (one logical change per call) so failures are easy to recover from.\n"
-            "- If you only need to strengthen/expand a single hand-wavy sentence, just replace that sentence directly—no need for markers.\n"
-            "Common patterns:\n"
-            "1) Direct replacement (fix a sentence):\n"
-            "   <<<<<<< SEARCH\n   The integral equals 0.\n   =======\n   The integral equals 1.\n   >>>>>>> REPLACE\n"
-            "2) Multi-line span via markers (replace a whole paragraph):\n"
-            "   <<<<<<< SEARCH\n   BEGIN_PROOF...END_PROOF\n   =======\n   Updated paragraph\n   >>>>>>> REPLACE\n"
-            "   Both markers are removed unless reintroduced in the replacement.\n"
-            "3) Pure insertion (leave replacement non-empty, make SEARCH a zero-width anchor or nearby text). Example inserting a remark after a sentence:\n"
-            "   <<<<<<< SEARCH\n   Therefore the claim holds.\n   =======\n   Therefore the claim holds.\n   Remark: the bound is sharp when n=2.\n   >>>>>>> REPLACE\n"
-            "4) Deletion (set replacement to empty string):\n"
-            "   <<<<<<< SEARCH\n   This obsolete lemma...\n   =======\n   \n   >>>>>>> REPLACE\n"
-            "Mix and match: provide statement_operation for conjecture edits, proof_operation for proof edits, or both."
-        ),
+        'name': 'modify_proof',
+        'description': MODIFY_PROOF_DESCRIPTION,
         'parameters': {
             'type': 'object',
             'properties': {
-                'statement_operation': {
+                'begin_marker': {
                     'type': 'string',
-                    'description': (
-                        "SEARCH/REPLACE block applied to the conjecture statement. "
-                        "Markers inside the SEARCH block are treated as part of the match."
-                    )
+                    'description': '≤50 character snippet marking the inclusive start of the span to replace.'
                 },
-                'proof_operation': {
+                'end_marker': {
                     'type': 'string',
-                    'description': (
-                        "SEARCH/REPLACE block applied to the proof text. "
-                        "Omit or leave empty when no proof changes are needed."
-                    )
+                    'description': '≤50 character snippet marking the inclusive end of the span to replace.'
+                },
+                'proof_replacement': {
+                    'type': 'string',
+                    'description': 'Replacement text that will take the place of the removed span.'
                 }
             },
-            'required': []
+            'required': ['begin_marker', 'end_marker', 'proof_replacement']
         }
     }
 }
