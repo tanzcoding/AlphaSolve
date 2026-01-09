@@ -80,12 +80,26 @@ DASHSCOPE_CONFIG = {
 }
 
 # OpenRouter 官方
-OPENROUTER_CONFIG = {
+OPENROUTER_GPT_5_CONFIG = {
     'base_url': 'https://openrouter.ai/api/v1',
     'api_key': lambda: os.getenv('OPENROUTER_API_KEY'),
     'model': 'openai/gpt-5',
     'timeout': 3600,
-    'temperature': 1.0,
+    # OpenRouter：通过 extra_body.reasoning.effort 调整思考强度
+    'params': {
+        'extra_body': {
+            'reasoning': {
+                'effort': 'high'
+            }
+        }
+    }
+}
+
+OPENROUTER_GEMINI_2_0_FLASH_CONFIG = {
+    'base_url': 'https://openrouter.ai/api/v1',
+    'api_key': lambda: os.getenv('OPENROUTER_API_KEY'),
+    'model': 'google/gemini-2.5-flash',
+    'timeout': 3600,
     # OpenRouter：通过 extra_body.reasoning.effort 调整思考强度
     'params': {
         'extra_body': {
@@ -121,15 +135,15 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': []
+        **DEEPSEEK_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent
     VERIFIER_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': []
+        **DEEPSEEK_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
@@ -143,7 +157,7 @@ class AlphaSolveConfig:
     # NoHistoryRefiner 强制使用 search/replace 工具
     NO_HISTORY_REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
     }
     NO_HISTORY_REFINER_PROMPT_PATH = 'prompts/no_history_refiner.md'
     # WithHistoryRefiner 可以使用 subagent

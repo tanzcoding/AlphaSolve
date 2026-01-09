@@ -608,13 +608,18 @@ SOLVER_FORMAT_GUARD_TOOL = {
 }
 
 
-MODIFY_STATEMENT_DESCRIPTION = """Replace the entire conjecture statement with a new statement.
+MODIFY_STATEMENT_DESCRIPTION = """Replace the conjecture statement *in full*.
 
 Guidelines:
-- Provide the fully revised statement via `new_statement`.
-- Ensure the statement is self-contained (unless dependent lemmas already define the required notions).
-- Use Markdown/LaTeX for mathematical clarity.
-- You may call this tool multiple times; each call overwrites the entire statement.
+- Put the complete replacement text in `new_statement`.
+- Write the statement as a standalone, self-contained sentence (unless the required notions are already defined by dependent lemmas).
+- Do **not** add a label prefix such as "Lemma:", "Conjecture:", or "Proposition:" (the surrounding UI already supplies the label).
+  Examples:
+    - Good: "For all real x, we have ..."
+    - Bad: "Lemma: For all real x, we have ..."
+    - OK: "(Classification of …) For all real x, we have ..."  (a brief parenthetical title/context is fine)
+- Use Markdown and/or LaTeX when it improves mathematical clarity.
+- You can call this tool multiple times; each call overwrites the entire statement.
 """
 
 

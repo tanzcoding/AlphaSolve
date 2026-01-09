@@ -257,7 +257,19 @@ class LLMClient:
         
         # Special handling for editing tools: add lemma context
         if isinstance(parsed_result, dict):
-            # Check if this is an apply_diff call (has conjecture_diff or proof_diff params)
+            # Normalize common over-escaping in markers.
+            # The model may output markers with doubled backslashes (e.g. "\\\\eta")
+            # even when the proof text contains single backslashes ("\\eta").
+            # We only normalize markers (not the replacement body) to preserve intent.
+            for _k in ("begin_marker", "end_marker"):
+                v = parsed_result.get(_k)
+                if isinstance(v, str) and "\\\\" in v:
+                    # Collapse repeated double-backslashes down to single-backslashes.
+                    # Repeat until stable so 4->2->1 style over-escaping is handled.
+                    while "\\\\" in v:
+                        v = v.replace("\\\\", "\\")
+                    parsed_result[_k] = v
+
             has_new_statement = 'new_statement' in parsed_result
             has_begin_marker = 'begin_marker' in parsed_result
             has_end_marker = 'end_marker' in parsed_result
