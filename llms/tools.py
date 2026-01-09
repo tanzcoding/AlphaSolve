@@ -419,19 +419,27 @@ def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str
 
 def apply_new_statement_to_lemma(lemma: Lemma, new_statement: str) -> str:
     """Replace the lemma statement entirely with the provided text."""
-    if not isinstance(new_statement, str) or not new_statement.strip():
-        raise ValueError("new_statement must be a non-empty string")
+    try:
+        if not isinstance(new_statement, str) or not new_statement.strip():
+            raise ValueError("new_statement must be a non-empty string")
 
-    lemma.update({
-        "statement": new_statement,
-        "apply_diff_error": None,
-    })
+        lemma.update({
+            "statement": new_statement,
+            "apply_diff_error": None,
+        })
 
-    return json.dumps({
-        "statement": new_statement,
-        "proof": lemma.get("proof", ""),
-        "error": None,
-    }, ensure_ascii=False)
+        return json.dumps({
+            "statement": new_statement,
+            "proof": lemma.get("proof", ""),
+            "error": None,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        # Do NOT raise; keep lemma unchanged and return a machine-readable error
+        return json.dumps({
+            "statement": lemma.get("statement", ""),
+            "proof": lemma.get("proof", ""),
+            "error": str(exc),
+        }, ensure_ascii=False)
 
 
 def apply_proof_anchor_edit(
@@ -441,34 +449,41 @@ def apply_proof_anchor_edit(
     proof_replacement: str,
 ) -> str:
     """Replace the proof span between begin_marker and end_marker (inclusive)."""
+    try:
+        if not begin_marker.strip() or not end_marker.strip():
+            raise ValueError("Both begin_marker and end_marker must be provided")
+        if len(begin_marker) > 100 or len(end_marker) > 100:
+            raise ValueError("Markers must be 100 characters or fewer")
 
-    if not begin_marker.strip() or not end_marker.strip():
-        raise ValueError("Both begin_marker and end_marker must be provided")
-    if len(begin_marker) > 50 or len(end_marker) > 50:
-        raise ValueError("Markers must be 50 characters or fewer")
+        proof = lemma.get("proof", "")
+        start_idx = proof.find(begin_marker)
+        if start_idx == -1:
+            raise ValueError("begin_marker not found in proof text")
 
-    proof = lemma.get("proof", "")
-    start_idx = proof.find(begin_marker)
-    if start_idx == -1:
-        raise ValueError("begin_marker not found in proof text")
+        end_idx = proof.find(end_marker, start_idx + len(begin_marker))
+        if end_idx == -1:
+            raise ValueError("end_marker not found after begin_marker")
 
-    end_idx = proof.find(end_marker, start_idx + len(begin_marker))
-    if end_idx == -1:
-        raise ValueError("end_marker not found after begin_marker")
+        end_idx += len(end_marker)
+        new_proof = proof[:start_idx] + proof_replacement + proof[end_idx:]
 
-    end_idx += len(end_marker)
-    new_proof = proof[:start_idx] + proof_replacement + proof[end_idx:]
+        lemma.update({
+            "proof": new_proof,
+            "apply_diff_error": None,
+        })
 
-    lemma.update({
-        "proof": new_proof,
-        "apply_diff_error": None,
-    })
-
-    return json.dumps({
-        "statement": lemma.get("statement", ""),
-        "proof": new_proof,
-        "error": None,
-    }, ensure_ascii=False)
+        return json.dumps({
+            "statement": lemma.get("statement", ""),
+            "proof": new_proof,
+            "error": None,
+        }, ensure_ascii=False)
+    except Exception as exc:
+        # Do NOT raise; keep lemma unchanged and return a machine-readable error
+        return json.dumps({
+            "statement": lemma.get("statement", ""),
+            "proof": lemma.get("proof", ""),
+            "error": str(exc),
+        }, ensure_ascii=False)
 
 # ===== 定义工具函数规范 =====
 # 定义一个工具列表，告诉AI模型它可以使用的工具
@@ -625,12 +640,12 @@ MODIFY_STATEMENT_TOOL = {
 MODIFY_PROOF_DESCRIPTION = """Replace a span of the proof using short anchors.
 
 Parameters:
-- `begin_marker`: ≤50 characters that appear verbatim in the current proof and mark the inclusive start of the edit.
-- `end_marker`: ≤50 characters that appear after the begin marker and mark the inclusive end of the edit.
+- `begin_marker`: ≤100 characters that appear verbatim in the current proof and mark the inclusive start of the edit.
+- `end_marker`: ≤100 characters that appear after the begin marker and mark the inclusive end of the edit.
 - `proof_replacement`: Text that replaces the span from the first character of `begin_marker` through the last character of `end_marker` (anchors are removed unless reintroduced).
 
 Guidelines:
-- Choose anchors that are unique yet short (≤50 chars each).
+- Choose anchors that are unique yet short (≤100 chars each).
 - The replacement may be empty (deletion) or contain multiple paragraphs (insertion/rewrite).
 - Call this tool as many times as necessary to stage complex edits.
 """
@@ -646,11 +661,11 @@ MODIFY_PROOF_TOOL = {
             'properties': {
                 'begin_marker': {
                     'type': 'string',
-                    'description': '≤50 character snippet marking the inclusive start of the span to replace.'
+                    'description': '≤100 character snippet marking the inclusive start of the span to replace. As short and unique as possible. Recommended ≤50 character.'
                 },
                 'end_marker': {
                     'type': 'string',
-                    'description': '≤50 character snippet marking the inclusive end of the span to replace.'
+                    'description': '≤100 character snippet marking the inclusive end of the span to replace. As short and unique as possible. Recommended ≤50 character.'
                 },
                 'proof_replacement': {
                     'type': 'string',

@@ -560,8 +560,8 @@ class LLMClient:
             else:
                 if self.logger.print_to_console_default:
                     print("[Tool Call] modify_proof\n"
-                          f"begin={begin_marker[:60]}... end={end_marker[:60]}...\n"
-                          f"replacement sample={proof_replacement[:200]}...")
+                          f"begin_marker={begin_marker[:100]}\nend_marker={end_marker[:100]}\n"
+                          f"first 200 replacement={proof_replacement[:200]}...")
                 log_parts.append(
                     "Proof anchors lengths: begin={} end={} replacement={}".format(
                         len(begin_marker),
