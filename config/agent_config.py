@@ -176,7 +176,7 @@ class AlphaSolveConfig:
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [PYTHON_TOOL]
+        'tools': [PYTHON_TOOL, WOLFRAM_TOOL]
     }
 
     VERIFIER_SCALING_FACTOR = 6
