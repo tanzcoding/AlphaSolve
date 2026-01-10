@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 benchmark_results*
-problem*
 pocketflow/
 logs/
 logs_as_html/
