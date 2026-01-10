@@ -1,1 +1,0 @@
-Show that the convex radius of a Riemannian manifold is continuous.
