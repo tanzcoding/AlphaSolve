@@ -176,10 +176,10 @@ class AlphaSolveConfig:
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [PYTHON_TOOL, WOLFRAM_TOOL]
+        'tools': [PYTHON_TOOL]
     }
 
-    VERIFIER_SCALING_FACTOR = 3
+    VERIFIER_SCALING_FACTOR = 6
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 
@@ -209,4 +209,4 @@ class AlphaSolveConfig:
 
     ## 
     MAX_LEMMA_NUM = 15
-    MAX_VERIFY_AND_REFINE_ROUND = 3
+    MAX_VERIFY_AND_REFINE_ROUND = 6
