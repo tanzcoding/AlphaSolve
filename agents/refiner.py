@@ -9,8 +9,6 @@ from utils.logger import Logger
 
 from pocketflow import Node
 
-## 一旦出现这条标签, 说明 lemma 是错的
-INVALID_TAG = '\\boxed{false}'
 CONJECTURE_BEGIN = '<conjecture>'
 CONJECTURE_END = '</conjecture>'
 PROOF_BEGIN = '<proof>'
@@ -34,38 +32,37 @@ class Refiner(Node):
             self.logger.log_print(
                 "event=no_current_lemma step=prep",
                 module="refiner",
-                print_to_console=self.print_to_console,
                 level="ERROR",
             )
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.MAX_VERIFY_AND_REFINE_ROUND:
-            # Pass lemma_id through prep_res so post() can handle quota accounting
-            # without needing to read shared.
             return AlphaSolveConfig.VERIFIER_EXAUSTED, lemma_id, None, None
 
         lemma = shared["lemmas"][lemma_id]
         ctx_ids = build_reasoning_path(shared["lemmas"],lemma_id, verified_only=True)
         ctx_text = self.__render_context(ctx_ids, shared["lemmas"])
 
+        prompt = self.__build_refiner_prompt(lemma, ctx_text)
+
         self.logger.log_print(
             f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
             module="refiner",
             print_to_console=self.print_to_console,
         )
-        return AlphaSolveConfig.NORMAL, lemma_id, lemma, ctx_text
+        return AlphaSolveConfig.NORMAL, prompt, shared
 
     def exec(self, prep_res): 
         if not prep_res:
+            return AlphaSolveConfig.EXIT_ON_ERROR, None
+        
+        if len(prep_res) < 4:
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         # Quota-exhausted path: prep() returns a short tuple; handle it before
         # validating the "normal" shape.
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
             return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None
-
-        if len(prep_res) < 4:
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         lemma_id, lemma, reasoning_ctx = prep_res[1], prep_res[2], prep_res[3]
         if not lemma.get("statement") or not lemma.get("proof"):

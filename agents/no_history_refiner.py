@@ -21,6 +21,7 @@ class NoHistoryRefiner(Node):
         self.logger = logger
 
     def prep(self, shared: SharedContext):
+        # READ ONLY from shared here.
         self.logger.log_print('entering refiner...', module='search_refiner')
 
         lemma_id = shared.get("current_lemma_id")
@@ -41,6 +42,11 @@ class NoHistoryRefiner(Node):
 
         prompt = self.__build_refiner_prompt(lemma, ctx_text)
 
+        self.logger.log_print(
+            f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
+            module="refiner",
+            print_to_console=self.print_to_console,
+        )
         return AlphaSolveConfig.NORMAL, prompt, shared
 
     def exec(self, prep_res):
