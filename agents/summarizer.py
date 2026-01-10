@@ -17,6 +17,31 @@ CONJECTURE_END = '</conjecture>'
 PROOF_BEGIN = '<proof>'
 PROOF_END = '</proof>'
 
+
+def _format_lemmas_as_markdown(bundle):
+    if not bundle:
+        return "No verified lemmas were produced."
+
+    lines = [
+        "The research pipeline verified the following lemmas:",
+    ]
+
+    for entry in bundle:
+        lemma_id = entry.get("id", "?")
+        statement = (entry.get("statement") or "(statement missing)").strip()
+        proof = (entry.get("proof") or "(proof missing)").strip()
+
+        lines.append("")
+        lines.append(f"### Lemma {lemma_id}")
+        lines.append("")
+        lines.append("**Statement**")
+        lines.append(statement)
+        lines.append("")
+        lines.append("**Proof**")
+        lines.append(proof)
+
+    return "\n".join(lines).strip()
+
 class Summarizer(Node):
 
     def __init__(self, problem, llm, prompt_file_path, logger): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
@@ -62,7 +87,7 @@ class Summarizer(Node):
         if prep_res[0] != AlphaSolveConfig.NORMAL:
             return AlphaSolveConfig.EXIT_ON_ERROR, None
         bundle = prep_res[1]
-        return AlphaSolveConfig.NORMAL, json.dumps({"lemmas": bundle}, ensure_ascii=False, indent=2)
+        return AlphaSolveConfig.NORMAL, _format_lemmas_as_markdown(bundle)
 
     def post(self, shared, prep_res, exec_res): 
         # WRITE ONLY to shared.
