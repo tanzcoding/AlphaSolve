@@ -10,7 +10,21 @@ You should provide your refinement using XML tags:
 - Use `<proof></proof>` to wrap your refined or rewritten proof
 - Use `<conjecture></conjecture>` to wrap a modified conjecture statement (only when modification is necessary)
 
+**Critical Requirement**: Your response must ONLY contain content within these XML tags. **Nothing else should be included** - no explanations, no introductions, no conclusions, no apologies, no text outside the tags, no conversational text. Just the XML tags with their content inside.
+
 **Important**: You must provide at least one of `<proof>` or `<conjecture>` in your response. You may provide both if needed.
+
+#### Example Output
+
+```
+<conjecture>
+For any integer n > 2, the equation x^n + y^n = z^n has no non-trivial integer solutions.
+</conjecture>
+
+<proof>
+We prove this by contradiction. Assume there exist positive integers x, y, z, n > 2 such that x^n + y^n = z^n. Without loss of generality, assume x, y, z are coprime... [rest of proof]
+</proof>
+```
 
 ### When to Modify the Conjecture Statement
 
