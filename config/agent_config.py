@@ -6,6 +6,7 @@ from llms.tools import (
     WOLFRAM_TOOL,
     MODIFY_STATEMENT_TOOL,
     MODIFY_PROOF_TOOL,
+    READ_PROOF_TOOL,
 )
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
@@ -136,7 +137,7 @@ class AlphaSolveConfig:
     # Solver 可以使用 subagent 和 format_guard
     SOLVER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL]
+        'tools': [READ_PROOF_TOOL,RESEARCH_SUBAGENT_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
@@ -150,7 +151,7 @@ class AlphaSolveConfig:
     # Refiner 可以使用 subagent
     REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': []
+        'tools': [READ_PROOF_TOOL,RESEARCH_SUBAGENT_TOOL]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
@@ -176,7 +177,7 @@ class AlphaSolveConfig:
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [PYTHON_TOOL, WOLFRAM_TOOL]
+        'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
     VERIFIER_SCALING_FACTOR = 6

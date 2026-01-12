@@ -75,6 +75,11 @@ class LLMClient:
         
         # 初始化工具执行环境
         tool_context = self._init_tool_context(tools) if tools else {}
+
+        # Expose shared to tool executor (the model does NOT see `shared` directly).
+        # Tools like read_proof(lemma_id) can fetch lemma text from this context.
+        if tool_context is not None:
+            tool_context['shared'] = shared
         
         # 多轮对话直至没有工具调用
         max_iterations = 100
@@ -469,12 +474,13 @@ class LLMClient:
                 if error:
                     print(f"[error]\n{error}")
             
+            tool_content = ""
             if stdout:
+                tool_content = tool_content + f"[stdout]\n{stdout}"
                 log_parts.append(f"[stdout]\n{stdout}")
             if error:
+                tool_content = tool_content + f"[error]\n{error}"
                 log_parts.append(f"[error]\n{error}")
-            
-            tool_content = json.dumps({'stdout': stdout, 'error': error}, ensure_ascii=False)
         
         elif name == 'run_wolfram':
             code = args.get('code', '')
@@ -503,12 +509,13 @@ class LLMClient:
                 if error:
                     print(f"[error]\n{error}")
             
+            tool_content = ""
             if output:
+                tool_content = tool_content + f"[output]\n{output}"
                 log_parts.append(f"[output]\n{output}")
             if error:
+                tool_content = tool_content + f"[error]\n{error}"
                 log_parts.append(f"[error]\n{error}")
-            
-            tool_content = json.dumps({'output': output, 'error': error}, ensure_ascii=False)
         
         elif name == 'math_research_subagent':
             task_description = args.get('task_description', '')
@@ -524,12 +531,14 @@ class LLMClient:
                 if error:
                     print(f"[error]\n{error}")
             
+            tool_content = ''
             if result:
                 log_parts.append(f"[result]\n{result}")
+                tool_content = tool_content + f"[result]\n{result}"
             if error:
                 log_parts.append(f"[error]\n{error}")
+                tool_content = tool_content + f"[error]\n{error}"
             
-            tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
         
         elif name == 'generate_conjecture_format_checker':
             candidate_response = args.get('candidate_response', '')
@@ -597,6 +606,44 @@ class LLMClient:
                 result = apply_proof_anchor_edit(lemma, begin_marker, end_marker, proof_replacement)
                 log_parts.append(f"[result]\n{result}")
                 tool_content = result
+
+        elif name == 'read_proof':
+            lemma_id = args.get('lemma_id', None)
+            shared = context.get('shared')
+
+            if shared is None:
+                tool_content = (
+                    "[read_proof error] shared context is not provided. "
+                    "Enable it by calling LLMClient.get_result(..., shared=shared)."
+                )
+                log_parts.append(f"[error]\n{tool_content}")
+            else:
+                try:
+                    if not isinstance(lemma_id, int):
+                        raise TypeError("lemma_id must be an integer")
+
+                    lemmas = shared.get('lemmas')
+                    if lemmas is None:
+                        raise ValueError("Currently no existing lemmas!")
+                    if lemma_id < 0 or lemma_id >= len(lemmas):
+                        raise IndexError(f"lemma_id out of range: {lemma_id}")
+
+                    lemma = lemmas[lemma_id]
+                    statement = lemma.get('statement', '')
+                    proof = lemma.get('proof', '')
+
+                    # IMPORTANT: return plain text (NOT JSON) to preserve backslashes (LaTeX).
+                    tool_content = (
+                        f"## Lemma-{lemma_id}\n\n"
+                        f"{statement}\n\n"
+                        f"## Proof\n\n"
+                        f"{proof}"
+                    )
+                    log_parts.append(f"lemma_id={lemma_id}")
+                    log_parts.append(f"[result]\n(len={len(tool_content)})")
+                except Exception as exc:
+                    tool_content = f"[read_proof error] {exc}"
+                    log_parts.append(f"[error]\n{tool_content}")
         
         else:
             if self.logger.print_to_console_default:

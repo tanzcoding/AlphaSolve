@@ -1,5 +1,5 @@
 import time, json, random
-from .shared_context import SharedContext, build_reasoning_path
+from .shared_context import SharedContext, build_reasoning_path, save_snapshot
 from utils.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
@@ -14,9 +14,8 @@ VERIFY_RESULT_INVALID='boxed{invalid}'
 
 class Verifier(Node):
 
-    def __init__(self, llm, problem, prompt_file_path, logger):
+    def __init__(self, llm, prompt_file_path, logger):
         super(Verifier, self).__init__()
-        self.problem = problem
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.llm = llm
@@ -89,7 +88,7 @@ class Verifier(Node):
             return AlphaSolveConfig.NORMAL, lemma_id, verifier_res[0], verifier_res[1], verifier_res[2]
 
 
-    def post(self, shared, prep_res, exec_res): 
+    def post(self, shared, prep_res, exec_res):
     
         ## post 做两件事情: (1) 返回决策(退出: 如果生成了 theorem, 改进: 走到refiner, 正确: 走到 solver ); (2) 把结果 submit 到 shared_context 里头
 
@@ -101,6 +100,7 @@ class Verifier(Node):
                 level="ERROR",
             )
             self.logger.log_print('exiting verifier...', module='verifier')
+            save_snapshot(shared, "verifier", AlphaSolveConfig.EXIT_ON_ERROR)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         code, lemma_id, is_valid, review, cot = exec_res[0], exec_res[1], exec_res[2], exec_res[3], exec_res[4]
@@ -112,6 +112,7 @@ class Verifier(Node):
                 level="ERROR",
             )
             self.logger.log_print('exiting verifier...', module='verifier')
+            save_snapshot(shared, "verifier", AlphaSolveConfig.EXIT_ON_ERROR)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         
@@ -130,6 +131,7 @@ class Verifier(Node):
                     module="verifier",
                 )
                 self.logger.log_print('exiting verifier...', module='verifier')
+                save_snapshot(shared, "verifier", AlphaSolveConfig.DONE)
                 return AlphaSolveConfig.DONE
 
             self.logger.log_print(
@@ -137,6 +139,7 @@ class Verifier(Node):
                 module="verifier",
             )
             self.logger.log_print('exiting verifier...', module='verifier')
+            save_snapshot(shared, "verifier", AlphaSolveConfig.CONJECTURE_VERIFIED)
             return AlphaSolveConfig.CONJECTURE_VERIFIED
 
         lemma["status"] = "pending"
@@ -148,6 +151,7 @@ class Verifier(Node):
             level="WARNING",
         )
         self.logger.log_print('exiting verifier...', module='verifier')
+        save_snapshot(shared, "verifier", AlphaSolveConfig.CONJECTURE_UNVERIFIED)
         return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
     def __verify(self, lemma, reasoning_ctx):
@@ -205,7 +209,7 @@ class Verifier(Node):
 
 
 
-def create_verifier_agent(problem, prompt_file_path, logger):
+def create_verifier_agent(prompt_file_path, logger):
 
     llm = LLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
-    return Verifier(llm, problem, prompt_file_path, logger)
+    return Verifier(llm, prompt_file_path, logger)

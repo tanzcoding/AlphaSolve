@@ -1,10 +1,11 @@
 import json
-from agents.shared_context import SharedContext
+from agents.shared_context import SharedContext, save_snapshot
 from typing import Optional
 from utils.utils import extract_substring, load_prompt_from_file
 from llms.utils import LLMClient
 from config.agent_config import AlphaSolveConfig
 from .shared_context import *
+from utils.logger import Logger
 
 from pocketflow import Node
 
@@ -21,9 +22,8 @@ DEPENDENCY_END = '</dependency>'
 
 class Solver(Node):
     
-    def __init__(self, llm, problem, prompt_file_path, logger):
+    def __init__(self, llm: LLMClient, prompt_file_path, logger: Logger):
         super(Solver, self).__init__()
-        self.problem = problem
         self.prompt_file_path = prompt_file_path
         self.llm = llm
         self.prompt_template = load_prompt_from_file(prompt_file_path)
@@ -38,7 +38,7 @@ class Solver(Node):
 
         prompt = self.__build_solver_prompt(
             prompt_template=self.prompt_template,
-            problem=self.problem,
+            problem=shared["problem"],
             verified_lemmas=[l for l in (shared["lemmas"] or []) if l.get("status") == "verified"],
             remaining_lemma_quota=AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"]),
             hint=shared["hint"],
@@ -74,17 +74,35 @@ class Solver(Node):
         # 处理异常情况
         if not self._valid_exec_res(exec_res):
             self.logger.log_print('exiting solver...', module='solver')
+            save_snapshot(shared, "solver", AlphaSolveConfig.EXIT_ON_ERROR)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         #处理solver步数耗尽
         if exec_res[0] == AlphaSolveConfig.EXIT_ON_EXAUSTED:
             self.logger.log_print('solver exhausted during post ...', module="solver", level="WARNING")
             self.logger.log_print('exiting solver...', module='solver')
+            save_snapshot(shared, "solver", AlphaSolveConfig.EXIT_ON_EXAUSTED)
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
 
         lemma = exec_res[1]
         # Validate lemma structure before updating shared.
         validate_lemma(lemma)
+
+        if not lemma['is_theorem']:
+            self.logger.log_print(
+                f"event=check_theorem step=post",
+                module="solver",
+            )
+            check_message = f"Check if the following statement **fully** addresses the problem. Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
+            response,_,_ = self.llm.get_result([{"role": "user", "content": check_message}])
+            answer = response.strip().lower()
+            if answer == 'yes':
+                lemma['is_theorem'] = True
+                self.logger.log_print(
+                    f"event=lemma_marked_as_theorem step=post",
+                    module="solver",
+                )
+
         shared["lemmas"].append(lemma)
         lemma_id = len(shared["lemmas"]) - 1
         shared["current_lemma_id"] = lemma_id
@@ -95,6 +113,10 @@ class Solver(Node):
         )
 
         self.logger.log_print('exiting solver...', module='solver')
+        
+        # Save snapshot after updating shared
+        save_snapshot(shared, "solver", AlphaSolveConfig.CONJECTURE_GENERATED)
+        
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
@@ -109,14 +131,13 @@ class Solver(Node):
             lines.append("## Context and History Explorations")
             lines.append("")
             lines.append(
-                "Here is a list of lemmas that we have collected for this problem or our history findings during exploration. "
+                "Here is a list of lemma that we have collected for this problem or our history findings during exploration. "
                 "They serve as the background of the conjecture and proof and can be accepted without controversy as correct."
             )
-            lines.append("<memory>")
+            lines.append("")
             for i, l in enumerate(verified_lemmas):
                 lines.append(f" ** Lemma-{i} **")
                 lines.append(f" {l.get('statement')}")
-            lines.append("</memory>")
             tmp = tmp + "\n\n" + "\n".join(lines)
 
         if hint:
@@ -203,7 +224,7 @@ class Solver(Node):
             return False
         return True
 
-def create_solver_agent(problem, prompt_file_path,logger):
+def create_solver_agent(prompt_file_path,logger):
     
     llm = LLMClient(module='solver', config=AlphaSolveConfig.SOLVER_CONFIG, logger=logger)
-    return Solver(llm, problem, prompt_file_path, logger=logger)
+    return Solver(llm, prompt_file_path, logger=logger)

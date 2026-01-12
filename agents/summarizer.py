@@ -2,7 +2,7 @@ import time
 import json
 
 from utils.utils import extract_substring
-from .shared_context import build_reasoning_path
+from .shared_context import build_reasoning_path, save_snapshot
 from config.agent_config import AlphaSolveConfig
 
 from llms.utils import LLMClient
@@ -89,13 +89,15 @@ class Summarizer(Node):
         bundle = prep_res[1]
         return AlphaSolveConfig.NORMAL, _format_lemmas_as_markdown(bundle)
 
-    def post(self, shared, prep_res, exec_res): 
+    def post(self, shared, prep_res, exec_res):
         # WRITE ONLY to shared.
         if not exec_res or len(exec_res) < 2:
             self.logger.log_print('exiting summarizer...', module='summarizer')
+            save_snapshot(shared, "summarizer", "exit")
             return
         if exec_res[0] != AlphaSolveConfig.NORMAL:
             self.logger.log_print('exiting summarizer...', module='summarizer')
+            save_snapshot(shared, "summarizer", "exit")
             return
 
         shared["result_summary"] = exec_res[1]
@@ -104,6 +106,7 @@ class Summarizer(Node):
             module="summarizer",
         )
         self.logger.log_print('exiting summarizer...', module='summarizer')
+        save_snapshot(shared, "summarizer", "completed")
 
 
 def create_summarizer_agent(problem, prompt_file_path, logger: Logger):

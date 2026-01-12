@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AlphaSolve Progress Visualization</title>
+    <!-- Markdown + LaTeX rendering is loaded dynamically (multi-CDN fallback) in the script. -->
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        h1 {
+            color: #2d3748;
+            margin-bottom: 15px;
+            font-size: 28px;
+        }
+
+        .problem-content {
+            background: #f7fafc;
+            padding: 20px;
+            border-radius: 8px;
+            border-left: 4px solid #667eea;
+            color: #2d3748;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .main-content {
+            display: grid;
+            grid-template-columns: 420px 1fr;
+            gap: 20px;
+        }
+
+        @media (max-width: 1024px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .lemmas-section {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            max-height: 80vh;
+            overflow: hidden;
+        }
+
+        .lemmas-toolbar {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .search {
+            flex: 1;
+            position: relative;
+        }
+
+        .search input {
+            width: 100%;
+            padding: 10px 12px 10px 36px;
+            border-radius: 10px;
+            border: 1px solid #e2e8f0;
+            background: #f7fafc;
+            outline: none;
+            font-size: 14px;
+            color: #2d3748;
+        }
+
+        .search svg {
+            position: absolute;
+            left: 10px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 16px;
+            height: 16px;
+            fill: #a0aec0;
+        }
+
+        .section-title {
+            font-size: 20px;
+            font-weight: 600;
+            color: #2d3748;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e2e8f0;
+        }
+
+        .lemma-card {
+            background: #f7fafc;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 15px;
+            border-left: 4px solid #cbd5e0;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .lemma-card:hover {
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .lemma-card.selected {
+            outline: 2px solid #667eea;
+            box-shadow: 0 6px 18px rgba(102, 126, 234, 0.25);
+        }
+
+        .lemma-card.verified {
+            border-left-color: #48bb78;
+            background: #f0fff4;
+        }
+
+        .lemma-card.pending {
+            border-left-color: #ed8936;
+            background: #fffaf0;
+        }
+
+        .lemma-card.rejected {
+            border-left-color: #f56565;
+            background: #fff5f5;
+        }
+
+        .lemma-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .lemma-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: #2d3748;
+        }
+
+        .lemma-status {
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+        }
+
+        .status-verified {
+            background: #48bb78;
+            color: white;
+        }
+
+        .status-pending {
+            background: #ed8936;
+            color: white;
+        }
+
+        .status-rejected {
+            background: #f56565;
+            color: white;
+        }
+
+        .lemma-content {
+            margin-top: 12px;
+        }
+
+        .lemma-section {
+            margin-bottom: 12px;
+        }
+
+        .lemma-section-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: #4a5568;
+            margin-bottom: 6px;
+        }
+
+        .lemma-text {
+            font-size: 14px;
+            color: #2d3748;
+            line-height: 1.6;
+            white-space: pre-wrap;
+        }
+
+        .lemma-meta {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            font-size: 12px;
+            color: #718096;
+        }
+
+        .detail-section {
+            background: white;
+            border-radius: 12px;
+            padding: 25px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            min-height: 80vh;
+            overflow: hidden;
+        }
+
+        .detail-scroll {
+            max-height: calc(80vh - 64px);
+            overflow-y: auto;
+            padding-right: 6px;
+        }
+
+        .detail-block {
+            background: #f7fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 10px;
+            padding: 16px;
+            margin-bottom: 14px;
+        }
+
+        .detail-block h3 {
+            font-size: 14px;
+            color: #4a5568;
+            margin-bottom: 8px;
+        }
+
+        .detail-pre {
+            white-space: pre-wrap;
+            line-height: 1.6;
+            font-size: 14px;
+            color: #2d3748;
+        }
+
+        .detail-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            font-size: 12px;
+            color: #718096;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #a0aec0;
+        }
+
+        .refresh-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 15px 25px;
+            border-radius: 30px;
+            font-size: 14px;
+            font-weight: 600;
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .refresh-btn:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 6px 16px rgba(102, 126, 234, 0.5);
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            background: #edf2f7;
+            color: #4a5568;
+        }
+
+        .badge.theorem {
+            background: #bee3f8;
+            color: #2c5282;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🤖 AlphaSolve Progress Visualization</h1>
+            <div class="problem-content" id="problemContent">
+                Loading problem...
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="lemmas-section">
+                <h2 class="section-title">📚 Lemmas (<span id="lemmaCount">0</span>)</h2>
+                <div class="lemmas-toolbar">
+                    <div class="search">
+                        <svg viewBox="0 0 512 512" aria-hidden="true"><path d="M505 442.7 405.3 343c-4.5-4.5-10.6-7-17-7H372c27.6-35.3 44-79.7 44-128C416 93.1 322.9 0 208 0S0 93.1 0 208s93.1 208 208 208c48.3 0 92.7-16.4 128-44v16.3c0 6.4 2.5 12.5 7 17l99.7 99.7c9.4 9.4 24.6 9.4 33.9 0l28.3-28.3c9.4-9.4 9.4-24.6.1-34zM208 336c-70.7 0-128-57.2-128-128 0-70.7 57.2-128 128-128 70.7 0 128 57.2 128 128 0 70.7-57.2 128-128 128z"/></svg>
+                        <input id="lemmaSearch" placeholder="搜索引理..." />
+                    </div>
+                </div>
+                <div id="lemmasList" style="overflow-y:auto;max-height:calc(80vh - 140px);padding-right:6px;">
+                    <div class="empty-state">No lemmas yet...</div>
+                </div>
+            </div>
+
+            <div class="detail-section">
+                <h2 class="section-title">🔎 Lemma Details</h2>
+                <div id="lemmaDetail" class="detail-scroll">
+                    <div class="empty-state">从左侧列表选择一个引理查看详情...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="refresh-btn" onclick="loadData()">🔄 Refresh</button>
+
+    <!-- Manual JSON loader: works when opened via file:// (no localhost needed for data). -->
+    <input id="jsonFileInput" type="file" accept="application/json,.json" style="display:none" />
+    <button id="loadJsonBtn" class="refresh-btn" style="right:160px;background:#2d3748;" onclick="document.getElementById('jsonFileInput').click()">📄 Load JSON</button>
+
+    <div id="statusBar" style="position:fixed;left:20px;bottom:20px;max-width:calc(100vw - 160px);background:rgba(255,255,255,0.95);border-radius:10px;padding:12px 14px;box-shadow:0 4px 14px rgba(0,0,0,0.12);font-size:13px;color:#2d3748;display:none;">
+        <div id="statusText"></div>
+    </div>
+
+    <script>
+        let currentData = null;
+        let selectedLemmaId = null;
+        let selectedJsonFile = null;
+        let lastLibsStatus = { marked: false, katex: false, autoRender: false };
+
+        function loadCssOnce(url) {
+            return new Promise((resolve, reject) => {
+                const exists = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+                    .some(l => (l.href || '') === url);
+                if (exists) return resolve();
+                const link = document.createElement('link');
+                link.rel = 'stylesheet';
+                link.href = url;
+                link.onload = () => resolve();
+                link.onerror = () => reject(new Error('CSS load failed: ' + url));
+                document.head.appendChild(link);
+            });
+        }
+
+        function loadScriptOnce(url) {
+            return new Promise((resolve, reject) => {
+                const exists = Array.from(document.scripts).some(s => (s.src || '') === url);
+                if (exists) return resolve();
+                const script = document.createElement('script');
+                script.src = url;
+                script.async = true;
+                script.onload = () => resolve();
+                script.onerror = () => reject(new Error('Script load failed: ' + url));
+                document.head.appendChild(script);
+            });
+        }
+
+        async function loadFirstSuccessful(loaders) {
+            let lastErr = null;
+            for (const fn of loaders) {
+                try {
+                    await fn();
+                    return;
+                } catch (e) {
+                    lastErr = e;
+                }
+            }
+            throw lastErr || new Error('All loaders failed');
+        }
+
+        let libsReady = null;
+        async function ensureLibsLoaded() {
+            if (libsReady) return libsReady;
+            libsReady = (async () => {
+                // Markdown renderer (marked)
+                if (typeof window.marked === 'undefined') {
+                    await loadFirstSuccessful([
+                        () => loadScriptOnce('https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js'),
+                        () => loadScriptOnce('https://unpkg.com/marked@12.0.2/marked.min.js'),
+                        () => loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js'),
+                    ]);
+                }
+
+                // KaTeX + auto-render
+                if (typeof window.renderMathInElement === 'undefined') {
+                    await loadFirstSuccessful([
+                        () => loadCssOnce('https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css'),
+                        () => loadCssOnce('https://unpkg.com/katex@0.16.11/dist/katex.min.css'),
+                        () => loadCssOnce('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.css'),
+                    ]);
+
+                    await loadFirstSuccessful([
+                        () => loadScriptOnce('https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js'),
+                        () => loadScriptOnce('https://unpkg.com/katex@0.16.11/dist/katex.min.js'),
+                        () => loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/katex.min.js'),
+                    ]);
+
+                    await loadFirstSuccessful([
+                        () => loadScriptOnce('https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js'),
+                        () => loadScriptOnce('https://unpkg.com/katex@0.16.11/dist/contrib/auto-render.min.js'),
+                        () => loadScriptOnce('https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.11/contrib/auto-render.min.js'),
+                    ]);
+                }
+
+                // Track what actually loaded (useful when CDNs are blocked).
+                lastLibsStatus = {
+                    marked: typeof window.marked !== 'undefined',
+                    katex: typeof window.katex !== 'undefined',
+                    autoRender: typeof window.renderMathInElement === 'function',
+                };
+
+                // Configure marked
+                if (typeof window.marked !== 'undefined' && window.marked?.setOptions) {
+                    window.marked.setOptions({
+                        gfm: true,
+                        // Keep as false so marked does not inject <br> for single newlines.
+                        // <br> splits text nodes and can prevent KaTeX auto-render from matching
+                        // multi-line math blocks that use \[...\] or $$...$$.
+                        breaks: false,
+                        headerIds: false,
+                        mangle: false,
+                    });
+                }
+            })();
+
+            return libsReady;
+        }
+
+        function preprocessMarkdownForMath(text) {
+            // Two common reasons KaTeX auto-render fails here:
+            // 1) marked turns newlines into <br>, which can split a math block into multiple text nodes.
+            // 2) Markdown backslash escaping can remove the backslash from delimiters like \[ and \(.
+            //
+            // Strategy:
+            // - Collapse newlines inside math blocks (\[...\], $$...$$, \(...\)) to keep them contiguous.
+            // - Convert \[...\] to $$...$$ and \(...\) to $...$ before Markdown parsing.
+            //   This avoids edge-cases where Markdown escaping interferes with backslash-delimiters.
+            let src = (text ?? '').toString();
+            if (!src) return '';
+
+            // Collapse whitespace/newlines inside math blocks.
+            src = src
+                .replace(/\\\[[\s\S]*?\\\]/g, (m) => {
+                    const inner = m.slice(2, -2).replace(/\s*\r?\n\s*/g, ' ');
+                    return '\\[' + inner + '\\]';
+                })
+                .replace(/\$\$[\s\S]*?\$\$/g, (m) => {
+                    const inner = m.slice(2, -2).replace(/\s*\r?\n\s*/g, ' ');
+                    return '$$' + inner + '$$';
+                })
+                .replace(/\\\([\s\S]*?\\\)/g, (m) => {
+                    const inner = m.slice(2, -2).replace(/\s*\r?\n\s*/g, ' ');
+                    return '\\(' + inner + '\\)';
+                });
+
+            // Convert backslash delimiters to dollar delimiters (KaTeX auto-render supports both).
+            // Do this AFTER collapsing so we don't introduce newlines inside $...$.
+            src = src
+                .replace(/\\\[/g, '$$')
+                .replace(/\\\]/g, '$$')
+                .replace(/\\\(/g, '$')
+                .replace(/\\\)/g, '$');
+
+            return src;
+        }
+
+        function mdToHtmlBlock(text) {
+            const src = (text ?? '').toString();
+            if (!src) return '';
+
+            // Render LaTeX BEFORE Markdown parsing by protecting math blocks with placeholders.
+            // This avoids Markdown inserting tags (<p>, <br>, ...) into formulas.
+            const segments = [];
+            const protect = (latex, displayMode) => {
+                const key = `@@MATH${segments.length}@@`;
+                const normalized = String(latex ?? '').replace(/\r?\n/g, ' ').trim();
+                if (window.katex?.renderToString) {
+                    segments.push({
+                        key,
+                        html: window.katex.renderToString(normalized, { displayMode, throwOnError: false }),
+                    });
+                } else {
+                    // Fallback: keep original delimiters so auto-render (if available) can still try.
+                    segments.push({ key, html: escapeHtml(displayMode ? `$$${normalized}$$` : `$${normalized}$`) });
+                }
+                return key;
+            };
+
+            let tmp = src;
+
+            // Prefer matching double-backslash delimiters first (e.g. \\[ ... \\])
+            tmp = tmp.replace(/\\\\\[([\s\S]*?)\\\\\]/g, (_m, body) => protect(body, true));
+            tmp = tmp.replace(/\\\\\(([\s\S]*?)\\\\\)/g, (_m, body) => protect(body, false));
+
+            // Single-backslash delimiters (e.g. \[ ... \])
+            tmp = tmp.replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => protect(body, true));
+            tmp = tmp.replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => protect(body, false));
+
+            // Dollar delimiters
+            tmp = tmp.replace(/\$\$([\s\S]*?)\$\$/g, (_m, body) => protect(body, true));
+            tmp = tmp.replace(/\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_m, body) => protect(body, false));
+
+            let html;
+            if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
+                html = window.marked.parse(tmp);
+            } else {
+                html = '<div class="detail-pre">' + escapeHtml(tmp) + '</div>';
+            }
+
+            for (const seg of segments) {
+                html = html.split(seg.key).join(seg.html);
+            }
+            return html;
+        }
+
+        function mdToHtmlInline(text) {
+            const src = (text ?? '').toString();
+            if (!src) return '';
+
+            const segments = [];
+            const protect = (latex, displayMode) => {
+                const key = `@@MATH${segments.length}@@`;
+                const normalized = String(latex ?? '').replace(/\r?\n/g, ' ').trim();
+                if (window.katex?.renderToString) {
+                    segments.push({
+                        key,
+                        html: window.katex.renderToString(normalized, { displayMode, throwOnError: false }),
+                    });
+                } else {
+                    segments.push({ key, html: escapeHtml(displayMode ? `$$${normalized}$$` : `$${normalized}$`) });
+                }
+                return key;
+            };
+
+            let tmp = src;
+            tmp = tmp.replace(/\\\\\[([\s\S]*?)\\\\\]/g, (_m, body) => protect(body, true));
+            tmp = tmp.replace(/\\\\\(([\s\S]*?)\\\\\)/g, (_m, body) => protect(body, false));
+            tmp = tmp.replace(/\\\[([\s\S]*?)\\\]/g, (_m, body) => protect(body, true));
+            tmp = tmp.replace(/\\\(([\s\S]*?)\\\)/g, (_m, body) => protect(body, false));
+            tmp = tmp.replace(/\$\$([\s\S]*?)\$\$/g, (_m, body) => protect(body, true));
+            tmp = tmp.replace(/\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_m, body) => protect(body, false));
+
+            let html;
+            if (typeof window.marked !== 'undefined' && typeof window.marked.parseInline === 'function') {
+                html = window.marked.parseInline(tmp);
+            } else {
+                html = escapeHtml(tmp);
+            }
+
+            for (const seg of segments) {
+                html = html.split(seg.key).join(seg.html);
+            }
+            return html;
+        }
+
+        function renderMath(root) {
+            // Guard for cases where CDN is blocked.
+            if (typeof window.renderMathInElement !== 'function' || !root) return;
+            try {
+                window.renderMathInElement(root, {
+                    delimiters: [
+                        { left: '$$', right: '$$', display: true },
+                        { left: '$', right: '$', display: false },
+                        { left: "\\[", right: "\\]", display: true },
+                        { left: "\\(", right: "\\)", display: false },
+                    ],
+                    throwOnError: false,
+                });
+            } catch (e) {
+                console.warn('KaTeX render failed:', e);
+            }
+        }
+
+        function showStatus(message) {
+            const bar = document.getElementById('statusBar');
+            const text = document.getElementById('statusText');
+            bar.style.display = 'block';
+            text.textContent = message;
+        }
+
+        function readJsonFromSelectedFile() {
+            return new Promise((resolve, reject) => {
+                if (!selectedJsonFile) {
+                    reject(new Error('No JSON file selected'));
+                    return;
+                }
+                const reader = new FileReader();
+                reader.onload = () => {
+                    try {
+                        const text = String(reader.result || '');
+                        resolve(JSON.parse(text));
+                    } catch (e) {
+                        reject(e);
+                    }
+                };
+                reader.onerror = () => reject(reader.error || new Error('FileReader failed'));
+                reader.readAsText(selectedJsonFile);
+            });
+        }
+
+        async function loadData() {
+            try {
+                // Libraries are best-effort; still show plain text if they fail.
+                try {
+                    await ensureLibsLoaded();
+                } catch (e) {
+                    console.warn('Failed to load render libraries:', e);
+                }
+
+                // Manual mode for file://
+                if (window.location.protocol === 'file:') {
+                    if (!selectedJsonFile) {
+                        showStatus('Opened via file://. Click “Load JSON” and select progress/shared_state.json (manual load, no localhost needed for data).');
+                        return;
+                    }
+                    const data = await readJsonFromSelectedFile();
+                    currentData = data;
+                    renderData(data);
+                    // Best-effort: run math render again across the whole page.
+                    renderMath(document.body);
+                    const libsMsg = (lastLibsStatus.autoRender ? 'katex:ok' : 'katex:missing') + ',' + (lastLibsStatus.marked ? 'marked:ok' : 'marked:missing');
+                    showStatus(`Loaded ${data.snapshots?.length || 0} snapshots from local file. Last updated: ${data.last_updated || 'unknown'}. (${libsMsg})`);
+                    return;
+                }
+
+                // Server mode (http/https): auto-refresh via fetch
+                const response = await fetch('./progress/shared_state.json', { cache: 'no-store' });
+                if (!response.ok) {
+                    showStatus(`progress/shared_state.json not available yet (HTTP ${response.status}). Run AlphaSolve to generate snapshots, then refresh.`);
+                    return;
+                }
+
+                const data = await response.json();
+                currentData = data;
+                renderData(data);
+                // Best-effort: run math render again across the whole page.
+                renderMath(document.body);
+                const libsMsg = (lastLibsStatus.autoRender ? 'katex:ok' : 'katex:missing') + ',' + (lastLibsStatus.marked ? 'marked:ok' : 'marked:missing');
+                showStatus(`Loaded ${data.snapshots?.length || 0} snapshots. Last updated: ${data.last_updated || 'unknown'}. (${libsMsg})`);
+            } catch (error) {
+                console.error('Error loading data:', error);
+                if (window.location.protocol === 'file:') {
+                    showStatus('Failed to load local JSON. Please ensure you selected a valid progress/shared_state.json.');
+                } else {
+                    showStatus('Failed to fetch progress/shared_state.json. Run: python -m http.server 8000, then open http://localhost:8000/progress.html');
+                }
+            }
+        }
+
+        function renderData(data) {
+            if (!data || !data.snapshots || data.snapshots.length === 0) {
+                return;
+            }
+
+            // Get latest snapshot
+            const latest = data.snapshots[data.snapshots.length - 1];
+            
+            // Render problem
+            const problemEl = document.getElementById('problemContent');
+            problemEl.innerHTML = mdToHtmlBlock(latest.problem || 'No problem defined');
+            renderMath(problemEl);
+
+            // Render lemmas list + details
+            const lemmas = latest.lemmas || [];
+            renderLemmas(lemmas, latest.current_lemma_id);
+        }
+
+        function renderLemmas(lemmas, currentLemmaId) {
+            const lemmasList = document.getElementById('lemmasList');
+            const lemmaCount = document.getElementById('lemmaCount');
+            
+            lemmaCount.textContent = lemmas.length;
+
+            if (lemmas.length === 0) {
+                lemmasList.innerHTML = '<div class="empty-state">No lemmas yet...</div>';
+                return;
+            }
+
+            // Choose default selection
+            if (selectedLemmaId === null) {
+                if (typeof currentLemmaId === 'number') selectedLemmaId = currentLemmaId;
+                else if (lemmas.length > 0) selectedLemmaId = lemmas[lemmas.length - 1].id;
+            }
+
+            const q = (document.getElementById('lemmaSearch').value || '').trim().toLowerCase();
+            const filtered = q
+                ? lemmas.filter(l => (l.statement || '').toLowerCase().includes(q) || String(l.id).includes(q))
+                : lemmas;
+
+            lemmasList.innerHTML = filtered.map(lemma => {
+                const statusClass = lemma.status || 'pending';
+                const statusText = {
+                    'verified': '✓ Verified',
+                    'pending': '⏳ Pending',
+                    'rejected': '✗ Rejected'
+                }[statusClass] || statusClass;
+
+                const selectedClass = (lemma.id === selectedLemmaId) ? 'selected' : '';
+
+                return `
+                    <div class="lemma-card ${statusClass} ${selectedClass}" data-lemma-id="${lemma.id}">
+                        <div class="lemma-header">
+                            <div class="lemma-title">
+                                Lemma ${lemma.id}
+                                ${lemma.is_theorem ? '<span class="badge theorem">Theorem</span>' : ''}
+                            </div>
+                            <span class="lemma-status status-${statusClass}">${statusText}</span>
+                        </div>
+                        <div class="lemma-content">
+                            <div class="lemma-section">
+                                <div class="lemma-section-title">Statement:</div>
+                                <div class="lemma-text">${mdToHtmlInline(lemma.statement || 'N/A')}</div>
+                            </div>
+                        </div>
+                        <div class="lemma-meta">
+                            <span>Dependencies: [${lemma.dependencies.join(', ') || 'none'}]</span>
+                            <span>Verify Round: ${lemma.verify_round}</span>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            // Render math in list statements
+            renderMath(lemmasList);
+
+            // Bind click
+            for (const el of lemmasList.querySelectorAll('[data-lemma-id]')) {
+                el.addEventListener('click', () => {
+                    selectedLemmaId = Number(el.getAttribute('data-lemma-id'));
+                    renderLemmas(lemmas, currentLemmaId);
+                    renderLemmaDetail(lemmas, selectedLemmaId);
+                });
+            }
+
+            // Render detail for selected
+            renderLemmaDetail(lemmas, selectedLemmaId);
+        }
+
+        function renderLemmaDetail(lemmas, lemmaId) {
+            const pane = document.getElementById('lemmaDetail');
+            const lemma = lemmas.find(l => l.id === lemmaId);
+            if (!lemma) {
+                pane.innerHTML = '<div class="empty-state">从左侧列表选择一个引理查看详情...</div>';
+                return;
+            }
+
+            const statusText = {
+                'verified': '✓ Verified',
+                'pending': '⏳ Pending',
+                'rejected': '✗ Rejected'
+            }[lemma.status] || (lemma.status || 'pending');
+
+            pane.innerHTML = `
+                <div class="detail-block">
+                    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+                        <div style="font-size:18px;font-weight:700;color:#2d3748;">Lemma ${lemma.id} ${lemma.is_theorem ? '<span class="badge theorem">Theorem</span>' : ''}</div>
+                        <span class="lemma-status status-${lemma.status || 'pending'}">${statusText}</span>
+                    </div>
+                    <div class="detail-meta" style="margin-top:10px;">
+                        <span class="badge">Dependencies: [${(lemma.dependencies || []).join(', ') || 'none'}]</span>
+                        <span class="badge">Verify round: ${lemma.verify_round ?? 0}</span>
+                    </div>
+                </div>
+
+                <div class="detail-block">
+                    <h3>Statement</h3>
+                    <div class="detail-pre">${mdToHtmlBlock(lemma.statement || '')}</div>
+                </div>
+
+                <div class="detail-block">
+                    <h3>Proof</h3>
+                    <div class="detail-pre">${mdToHtmlBlock(lemma.proof || '')}</div>
+                </div>
+
+                ${lemma.review ? `
+                    <div class="detail-block">
+                        <h3>Review</h3>
+                        <div class="detail-pre">${mdToHtmlBlock(lemma.review || '')}</div>
+                    </div>
+                ` : ''}
+            `;
+
+            // Render math in detail pane
+            renderMath(pane);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Auto-refresh every 3 seconds in server mode.
+        // In file:// mode, “Refresh” will re-parse the selected file (best-effort).
+        setInterval(() => {
+            if (window.location.protocol !== 'file:') loadData();
+        }, 3000);
+
+        // File input binding (manual JSON load).
+        document.getElementById('jsonFileInput').addEventListener('change', async (e) => {
+            selectedJsonFile = e.target.files && e.target.files[0] ? e.target.files[0] : null;
+            selectedLemmaId = null;
+            currentData = null;
+            await loadData();
+        });
+
+        // Initial load: load libs early so markdown/latex works immediately.
+        ensureLibsLoaded().catch(() => {
+            showStatus('Failed to load markdown/latex render libraries (CDN blocked). Content will show as plain text.');
+        }).finally(() => loadData());
+
+        // Search binding
+        document.getElementById('lemmaSearch').addEventListener('input', () => {
+            if (!currentData?.snapshots?.length) return;
+            const latest = currentData.snapshots[currentData.snapshots.length - 1];
+            renderLemmas(latest.lemmas || [], latest.current_lemma_id);
+        });
+    </script>
+</body>
+</html>

@@ -39,7 +39,9 @@ class AlphaSolve:
             AlphaSolveConfig.SOLVER_PROMPT_PATH,
             module='AlphaSolve',
         )
-        solver = create_solver_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH, logger=self.logger)
+        solver = create_solver_agent(
+            prompt_file_path=AlphaSolveConfig.SOLVER_PROMPT_PATH,
+            logger=self.logger)
 
         self.logger.log_print(
             'create verifier node, using model ',
@@ -48,14 +50,25 @@ class AlphaSolve:
             AlphaSolveConfig.VERIFIER_PROMPT_PATH,
             module='AlphaSolve',
         )
-        verifier = create_verifier_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH, logger=self.logger)
+        verifier = create_verifier_agent(
+            prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH,
+            logger=self.logger)
        
-        refiner = create_no_history_refiner_agent(
-            prompt_file_path=AlphaSolveConfig.NO_HISTORY_REFINER_PROMPT_PATH,
-            logger=self.logger,
+        self.logger.log_print(
+            'create refiner node, using model ',
+            AlphaSolveConfig.REFINER_CONFIG['model'],
+            ' and prompt path ',
+            AlphaSolveConfig.REFINER_PROMPT_PATH,
+            module='AlphaSolve',
         )
+        refiner = create_refiner_agent(
+            prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH,
+            logger=self.logger)
      
-        summarizer = create_summarizer_agent(problem=self.problem, prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, logger=self.logger)
+        summarizer = create_summarizer_agent(
+            problem=self.problem,
+            prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH,
+            logger=self.logger)
 
         ## 成功生成 lemma, 下一站去 verifier
         solver - AlphaSolveConfig.CONJECTURE_GENERATED >> verifier 

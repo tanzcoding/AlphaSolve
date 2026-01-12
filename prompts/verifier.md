@@ -10,6 +10,8 @@ A valid proof must satisfy the following three conditions:
 
 Please state your verification result inside $\boxed{}$ as $\boxed{valid}$ or $\boxed{invalid}$. You also need to include the rationale on your decision in your response.
 
+**Important:** If the proof is mostly correct but has a little gap, label it invalid.
+
 ## Conjecture
 
 {conjecture_content}

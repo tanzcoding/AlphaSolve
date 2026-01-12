@@ -581,6 +581,7 @@ The sub-agent autonomously:
 
 **Your role:** Do the high-level decomposition, choose *which* sub-questions to compute/verify, and integrate the results into the final reasoning. Use the sub-agent for concrete computations and checks, not as a replacement for end-to-end problem solving.
 """
+
 RESEARCH_SUBAGENT_TOOL = {
     'type': 'function',
     'function': {
@@ -695,6 +696,36 @@ MODIFY_PROOF_TOOL = {
                 }
             },
             'required': ['begin_marker', 'end_marker', 'proof_replacement']
+        }
+    }
+}
+
+
+# ===== Lemma 阅读工具（面向 LLM function-calling） =====
+# 用 lemma_id 读取某个已生成 lemma 的 statement / proof。
+# 注意：模型侧并不知道 shared 的存在；它只需要按 prompt 中的 lemma id 来请求读取即可。
+READ_PROOF_DESCRIPTION = """Read the full proof of an existing lemma by its id.
+
+Use this tool when you need to reference the exact text of a lemma that already exists.
+
+Parameters:
+- lemma_id: integer index of the lemma (0-based).
+"""
+
+READ_PROOF_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'read_proof',
+        'description': READ_PROOF_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'lemma_id': {
+                    'type': 'integer',
+                    'description': '0-based lemma id to read.'
+                }
+            },
+            'required': ['lemma_id']
         }
     }
 }

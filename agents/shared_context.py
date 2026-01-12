@@ -182,3 +182,66 @@ def validate_lemma(lemma: Dict[str, Any], *, lemma_id: Optional[int] = None) -> 
                 raise ValueError(
                     f"Lemma.dependencies must reference earlier lemmas only: dep={d} >= self={lemma_id}"
                 )
+
+
+def save_snapshot(shared: SharedContext, node_name: str, status: str = "normal"):
+    """Save a snapshot of shared context for visualization.
+    
+    Args:
+        shared: The shared context to save
+        node_name: Name of the node that just executed
+        status: Status/result of the node execution
+    """
+    import json
+    import os
+    from datetime import datetime
+    
+    # Create progress directory if needed
+    os.makedirs("progress", exist_ok=True)
+    
+    # Create a serializable snapshot
+    snapshot = {
+        "timestamp": datetime.now().isoformat(),
+        "node": node_name,
+        "status": status,
+        "problem": shared.get("problem", ""),
+        "current_lemma_id": shared.get("current_lemma_id"),
+        "lemmas": []
+    }
+    
+    # Process lemmas to make them serializable
+    for idx, lemma in enumerate(shared.get("lemmas", [])):
+        lemma_data = {
+            "id": idx,
+            "statement": lemma.get("statement", ""),
+            "proof": lemma.get("proof", ""),
+            "dependencies": lemma.get("dependencies", []),
+            "status": lemma.get("status", "pending"),
+            "review": lemma.get("review"),
+            "is_theorem": lemma.get("is_theorem", False),
+            "verify_round": lemma.get("verify_round", 0)
+        }
+        snapshot["lemmas"].append(lemma_data)
+    
+    # Load existing snapshots
+    progress_file = "progress/shared_state.json"
+    snapshots = []
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                snapshots = data.get("snapshots", [])
+        except:
+            pass
+    
+    # Append new snapshot
+    snapshots.append(snapshot)
+    
+    # Save all snapshots
+    output = {
+        "snapshots": snapshots,
+        "last_updated": datetime.now().isoformat()
+    }
+    
+    with open(progress_file, 'w', encoding='utf-8') as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)

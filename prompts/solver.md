@@ -45,6 +45,15 @@ You are required to explore different approaches or directions that might advanc
 
 **Important:** Your conjectures will be stored in memory and will provide valuable information for future exploration. Therefore, even when the lemma budget is generous, it is highly beneficial to provide detailed and well-articulated conjecture statements. More detailed conjectures enable more effective exploration in subsequent rounds.
 
+**Diversity and Intermediate Results:** When exploring the problem, consider capturing valuable **diverse** intermediate results even if they don't directly solve the original problem. These could include:
+- Useful calculations, formulas, or bounds that establish relationships between key quantities
+- Partial results that solve special cases or simplified versions of the problem
+- Insights or knowledge about the mathematical objects involved
+- Computational techniques or transformations that may prove useful in future exploration
+- Lemmas that establish important properties, even if narrower in scope than the final goal
+
+Such intermediate findings contribute to the collective understanding and can serve as stepping stones or provide inspiration for subsequent exploration rounds.
+
 ### 2. Independence and Completeness
 Your conjecture must be self-contained and include all necessary definitions within it, enabling it to stand alone as an independent lemma (unless the definitions are already declared in memory). It should be a conjecture that represents concrete progress and is substantively different from any existing lemmas.
 

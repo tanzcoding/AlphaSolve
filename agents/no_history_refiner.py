@@ -45,7 +45,6 @@ class NoHistoryRefiner(Node):
         self.logger.log_print(
             f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
             module="refiner",
-            print_to_console=self.print_to_console,
         )
         return AlphaSolveConfig.NORMAL, prompt, shared
 
@@ -66,10 +65,6 @@ class NoHistoryRefiner(Node):
 
     def post(self, shared: SharedContext, prep_res, exec_res):
         if prep_res[0] == AlphaSolveConfig.VERIFIER_EXAUSTED:
-            # verify-refine quota exhausted: we are abandoning the current lemma.
-            # Bugfix: refund the solver lemma quota when the current lemma never
-            # becomes verified after all verify-refine attempts.
-            # In the post function, we should get lemma_id like this:
             lemma_id = shared.get("current_lemma_id")
             if lemma_id is not None and 0 <= lemma_id < len(shared.get("lemmas", [])):
                 lemma = shared["lemmas"][lemma_id]

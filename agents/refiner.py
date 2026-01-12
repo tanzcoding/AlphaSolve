@@ -1,6 +1,4 @@
-import time
-import json
-from .shared_context import build_reasoning_path, Lemma, new_lemma
+from .shared_context import build_reasoning_path, Lemma, new_lemma, save_snapshot
 from utils.utils import extract_substring, load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
@@ -16,7 +14,7 @@ PROOF_END = '</proof>'
 
 class Refiner(Node):
 
-    def __init__(self, llm, prompt_file_path, logger): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
+    def __init__(self, llm: LLMClient, prompt_file_path, logger): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
         super(Refiner, self).__init__()
         self.prompt_file_path = prompt_file_path
         self.prompt_template = load_prompt_from_file(prompt_file_path)
@@ -37,57 +35,50 @@ class Refiner(Node):
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.MAX_VERIFY_AND_REFINE_ROUND:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, lemma_id, None, None
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, None
 
         lemma = shared["lemmas"][lemma_id]
         ctx_ids = build_reasoning_path(shared["lemmas"],lemma_id, verified_only=True)
         ctx_text = self.__render_context(ctx_ids, shared["lemmas"])
 
         prompt = self.__build_refiner_prompt(lemma, ctx_text)
+        messages_to_send = [
+            {"role": "user", "content": prompt}
+        ]
 
         self.logger.log_print(
             f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
             module="refiner",
-            print_to_console=self.print_to_console,
         )
-        return AlphaSolveConfig.NORMAL, prompt, shared
+        return AlphaSolveConfig.NORMAL, messages_to_send
 
     def exec(self, prep_res): 
-        if not prep_res:
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
-        
-        if len(prep_res) < 4:
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
+        if not prep_res or len(prep_res) < 2:
+            return AlphaSolveConfig.EXIT_ON_ERROR
 
-        # Quota-exhausted path: prep() returns a short tuple; handle it before
-        # validating the "normal" shape.
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, True, None
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None
 
-        lemma_id, lemma, reasoning_ctx = prep_res[1], prep_res[2], prep_res[3]
-        if not lemma.get("statement") or not lemma.get("proof"):
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
+        messages_to_send = prep_res[1]
+        response,_,_ = self.llm.get_result(messages_to_send)
+        new_statement, new_proof = self.__extract_from_model(response)
 
-        valid, new_lemma = self.__refine(lemma, reasoning_ctx)
-        return AlphaSolveConfig.NORMAL, valid, new_lemma
+        return AlphaSolveConfig.NORMAL, new_statement, new_proof
 
-    def post(self, shared, prep_res, exec_res): 
+    def post(self, shared, prep_res, exec_res):
         # WRITE ONLY to shared here.
-        if not prep_res or not exec_res:
+        if len(exec_res) < 3 or exec_res[0] == AlphaSolveConfig.EXIT_ON_ERROR:
             self.logger.log_print(
                 "event=illegal_io step=post",
                 module="refiner",
-                print_to_console=self.print_to_console,
                 level="ERROR",
             )
             self.logger.log_print('exiting refiner...', module='refiner')
+            save_snapshot(shared, "refiner", AlphaSolveConfig.EXIT_ON_ERROR)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        if prep_res[0] == AlphaSolveConfig.VERIFIER_EXAUSTED:
-            # verify-refine quota exhausted: we are abandoning the current lemma.
-            # Bugfix: refund the solver lemma quota when the current lemma never
-            # becomes verified after all verify-refine attempts.
-            lemma_id = prep_res[1] if len(prep_res) > 1 else None
+        if exec_res[0] == AlphaSolveConfig.VERIFIER_EXAUSTED:
+            lemma_id = shared.get("current_lemma_id")
             if lemma_id is not None and 0 <= lemma_id < len(shared.get("lemmas", [])):
                 lemma = shared["lemmas"][lemma_id]
                 # Mark rejected so it won't be reused as context.
@@ -95,97 +86,42 @@ class Refiner(Node):
                 self.logger.log_print(
                     f"event=conjecture rejected and would not be refined again, step=post, lemma_id={lemma_id}",
                     module="refiner",
-                    print_to_console=self.print_to_console,
                     level="WARNING",
                 )
             self.logger.log_print('exiting refiner...', module='refiner')
+            save_snapshot(shared, "refiner", AlphaSolveConfig.EXIT_ON_EXAUSTED)
             return AlphaSolveConfig.EXIT_ON_EXAUSTED
+        
+        new_statement = exec_res[1]
+        new_proof = exec_res[2]
 
-        if len(exec_res) < 3:
+        refine_success = False
+        
+        if new_statement and len(new_statement)>5:
+            shared["lemmas"][shared["current_lemma_id"]]["statement"] = new_statement
+            refine_success = True
             self.logger.log_print(
-                "event=illegal_exec_res step=post",
+                f"event=statement updated:\n<conjecture>{new_statement}\n</conjecture>",
                 module="refiner",
-                print_to_console=self.print_to_console,
+            )
+        if new_proof and len(new_proof)>5:
+            shared["lemmas"][shared["current_lemma_id"]]["proof"] = new_proof
+            refine_success = True
+            self.logger.log_print(
+                f"event=proof updated:\n<proof>{new_proof}\n</proof>",
+                module="refiner",
+            )
+        if not refine_success:
+            self.logger.log_print(
+                "event=refiner_no_output step=exec",
+                module="refiner",
                 level="ERROR",
             )
-            self.logger.log_print('exiting refiner...', module='refiner')
+            save_snapshot(shared, "refiner", AlphaSolveConfig.EXIT_ON_ERROR)
             return AlphaSolveConfig.EXIT_ON_ERROR
-
-        lemma_id = prep_res[1]
-        is_valid, next_lemma = exec_res[1], exec_res[2]
-
-        if is_valid:
-            if next_lemma:
-                shared["lemmas"][lemma_id] = next_lemma  # in-place overwrite
-                self.logger.log_print(
-                    f"event=refine_success step=post lemma_id={lemma_id} remaining={shared['verify_refine_round_remaining']}",
-                    module="refiner",
-                    print_to_console=self.print_to_console,
-                )
-                self.logger.log_print('exiting refiner...', module='refiner')
-                return AlphaSolveConfig.REFINE_SUCCESS
-            self.logger.log_print(
-                f"event=refine_no_output step=post lemma_id={lemma_id}",
-                module="refiner",
-                print_to_console=self.print_to_console,
-                level="ERROR",
-            )
-            self.logger.log_print('exiting refiner...', module='refiner')
-            return AlphaSolveConfig.EXIT_ON_ERROR
-
-        # refiner considers lemma wrong => route to solver
-        shared["lemmas"][lemma_id]["status"] = "rejected"
-        self.logger.log_print(
-            f"event=lemma_wrong step=post lemma_id={lemma_id} remaining={shared['verify_refine_round_remaining']}",
-            module="refiner",
-            print_to_console=self.print_to_console,
-            level="WARNING",
-        )
-        self.logger.log_print('exiting refiner...', module='refiner')
-        return AlphaSolveConfig.CONJECTURE_WRONG
- 
-
-    def __refine(self, lemma, reasoning_ctx): 
-
-        prompt = self.__build_refiner_prompt(lemma, reasoning_ctx)
-
-        b = time.time()
-        messages_to_send = [
-            {"role": "user", "content": prompt}
-        ]
-
-        # For audit/debug/HTML: record the exact messages sent to LLM.
-        self.logger.log_print(
-            "event=llm_messages step=exec\n" + json.dumps(messages_to_send, ensure_ascii=False, indent=2),
-            module="refiner",
-            print_to_console=self.print_to_console,
-        )
-
-        answer, cot, _ = self.llm.get_result(messages_to_send)
-
-        self.logger.log_print(
-            f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",
-            module="refiner",
-            print_to_console=self.print_to_console,
-        )
-
-        conj2, proof = self.__extract_from_model(answer)
-
-        valid =  INVALID_TAG not in answer 
-
-        if conj2 and proof:
-            next_lemma = new_lemma(
-                statement=conj2,
-                proof=proof,
-                cot=cot,
-                status="pending",
-                history_messages=lemma.get("history_messages", []),
-                verify_round=lemma.get("verify_round", 0)+1,
-            )
-            # keep dependencies as-is (solver only uses verified lemmas anyway)
-            return valid, next_lemma
-        return valid, None
-
+        
+        save_snapshot(shared, "refiner", AlphaSolveConfig.REFINE_SUCCESS)
+        return AlphaSolveConfig.REFINE_SUCCESS
 
     def __extract_from_model(self, model_output):
         
@@ -228,12 +164,12 @@ class Refiner(Node):
         lines.append("## Context and History Explorations")
         lines.append("")
         lines.append(
-            "Here is a list of context that we have collected for this problem or our history findings during exploration. "
+            "Here is a list of lemma that we have collected for this problem or our history findings during exploration. "
             "They serve as the background of the conjecture and proof and can be accepted without controversy as correct."
         )
         lines.append("")
         for i, lemma_id in enumerate(ctx_ids):
-            lines.append(f" ** Conjecture-{i} **")
+            lines.append(f" ** Lemma-{i} **")
             lines.append(f" {lemmas[lemma_id].get('statement')}")
         return "\n".join(lines)
 
