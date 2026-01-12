@@ -93,7 +93,7 @@ class Solver(Node):
                 f"event=check_theorem step=post",
                 module="solver",
             )
-            check_message = f"Check if the following statement **fully** addresses the problem. Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
+            check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it answers the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
             response,_,_ = self.llm.get_result([{"role": "user", "content": check_message}])
             answer = response.strip().lower()
             if answer == 'yes':

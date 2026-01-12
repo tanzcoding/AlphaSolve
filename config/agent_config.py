@@ -180,7 +180,7 @@ class AlphaSolveConfig:
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
-    VERIFIER_SCALING_FACTOR = 6
+    VERIFIER_SCALING_FACTOR = 3
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 

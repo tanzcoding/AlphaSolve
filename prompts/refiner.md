@@ -20,7 +20,9 @@ You should modify the conjecture statement in the following situations:
 
 2. **Negating the statement**: If you can confirm that the current statement is actually false, you may write a negated/opposite statement. The new statement should be **self-contained** and complete, unless the definitions have already appeared in the provided dependent lemmas.
 
-3. **Extracting intermediate results for diversity**: If the original conjecture cannot be proven, you may extract valuable intermediate results (e.g., useful calculations for future exploration, or useful knowledge for subsequent research) as a new statement.
+3. **Extracting intermediate results (RECOMMENDED)**: If your refinement results in an overly lengthy proof, you may extract valuable intermediate results (e.g., useful calculations for future exploration or insights for subsequent research) as a new statement. The new statement must be accompanied by a new proof.
+
+In all cases, the new statement MUST be **self-contained**.
 
 ### Guidelines for Refinement
 
