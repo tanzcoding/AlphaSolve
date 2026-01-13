@@ -46,7 +46,7 @@ class Solver(Node):
 
         messages_to_send = [{"role": "user", "content": prompt}]
 
-        return AlphaSolveConfig.NORMAL, messages_to_send
+        return AlphaSolveConfig.NORMAL, messages_to_send,shared
 
 
     def exec(self, prep_res): ## 执行主要的逻辑
@@ -61,7 +61,8 @@ class Solver(Node):
             return AlphaSolveConfig.EXIT_ON_EXAUSTED, None, None, None
 
         messages = prep_res[1]
-        _, _, updated_messages = self.llm.get_result(messages)
+        shared = prep_res[2]
+        _, _, updated_messages = self.llm.get_result(messages,shared=shared)
 
         lemma = self.__build_lemma(updated_messages)
 
@@ -94,7 +95,7 @@ class Solver(Node):
                 module="solver",
             )
             check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it answers the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
-            response,_,_ = self.llm.get_result([{"role": "user", "content": check_message}])
+            response,_,_ = self.llm.get_result(messages=[{"role": "user", "content": check_message}],tools=None,shared=shared)
             answer = response.strip().lower()
             if answer == 'yes':
                 lemma['is_theorem'] = True
@@ -133,6 +134,7 @@ class Solver(Node):
             lines.append(
                 "Here is a list of lemma that we have collected for this problem or our history findings during exploration. "
                 "They serve as the background of the conjecture and proof and can be accepted without controversy as correct."
+                "You can also use the 'read_lemma' tool to read the proof of a lemma. By doing so, you can learn from the previous proof(s) and extend them to help you construct new conjectures and proofs."
             )
             lines.append("")
             for i, l in enumerate(verified_lemmas):
@@ -213,7 +215,7 @@ class Solver(Node):
         return remaining_rounds <= 0
     
     def _valid_prep_res(self, prep_res):
-        if not prep_res or len(prep_res) < 2:
+        if not prep_res or len(prep_res) < 3:
             self.logger.log_print('illegal prep_res with length: ', len(prep_res) if prep_res else 0, level="ERROR")
             return False
         return True

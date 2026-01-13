@@ -1,4 +1,5 @@
 from typing import Dict, List, Tuple, Optional, Any
+import os
 import json
 import re
 from openai import OpenAI
@@ -77,9 +78,12 @@ class LLMClient:
         tool_context = self._init_tool_context(tools) if tools else {}
 
         # Expose shared to tool executor (the model does NOT see `shared` directly).
-        # Tools like read_proof(lemma_id) can fetch lemma text from this context.
+        # Tools like read_lemma(lemma_id) / read_conjecture() can fetch lemma text from this context.
         if tool_context is not None:
             tool_context['shared'] = shared
+
+        if len(shared['lemmas']) <= 1:
+            tools = [t for t in tools if t.get('function', {}).get('name') != 'read_lemma']
         
         # 多轮对话直至没有工具调用
         max_iterations = 100
@@ -289,8 +293,8 @@ class LLMClient:
                 # This is an editing operation, add lemma context if available
                 lemma = None
                 if shared is not None:
-                    lemma_id = shared.get('current_lemma_id')
-                    lemmas = shared.get('lemmas', [])
+                    lemma_id = shared['current_lemma_id']
+                    lemmas = shared['lemmas']
                     if lemma_id is not None and 0 <= lemma_id < len(lemmas):
                         lemma = lemmas[lemma_id]
                 if lemma is not None:
@@ -401,17 +405,41 @@ class LLMClient:
 
     def _process_tool_calls(self, tc_delta, tool_calls_acc):
         """将流式 tool_calls 片段聚合为完整调用"""
-        for i, tc in enumerate(tc_delta):
-            while len(tool_calls_acc) <= i:
+        for fallback_i, tc in enumerate(tc_delta):
+            # IMPORTANT:
+            # In streamed tool calls, each delta may carry an explicit `index`.
+            # Do NOT rely on enumeration order; otherwise multiple tool calls can
+            # be merged incorrectly when the stream yields sparse indices.
+            if isinstance(tc, dict):
+                idx = tc.get('index', fallback_i)
+                tc_id = tc.get('id')
+                fn = tc.get('function')
+            else:
+                idx = getattr(tc, 'index', fallback_i)
+                tc_id = getattr(tc, 'id', None)
+                fn = getattr(tc, 'function', None)
+
+            if not isinstance(idx, int) or idx < 0:
+                idx = fallback_i
+
+            while len(tool_calls_acc) <= idx:
                 tool_calls_acc.append({'id': None, 'type': 'function', 'function': {'name': '', 'arguments': ''}})
-            if getattr(tc, 'id', None):
-                tool_calls_acc[i]['id'] = tc.id
-            fn = getattr(tc, 'function', None)
+
+            if tc_id:
+                tool_calls_acc[idx]['id'] = tc_id
+
             if fn:
-                if getattr(fn, 'name', None):
-                    tool_calls_acc[i]['function']['name'] = fn.name
-                if getattr(fn, 'arguments', None):
-                    tool_calls_acc[i]['function']['arguments'] += fn.arguments
+                if isinstance(fn, dict):
+                    fn_name = fn.get('name')
+                    fn_args = fn.get('arguments')
+                else:
+                    fn_name = getattr(fn, 'name', None)
+                    fn_args = getattr(fn, 'arguments', None)
+
+                if fn_name:
+                    tool_calls_acc[idx]['function']['name'] = fn_name
+                if fn_args:
+                    tool_calls_acc[idx]['function']['arguments'] += fn_args
 
     def _init_tool_context(self, tools: List[Dict]) -> Dict:
         """初始化工具执行上下文"""
@@ -430,14 +458,35 @@ class LLMClient:
     def _start_wolfram_session(self) -> Optional[WolframLanguageSession]:
         if self.logger.print_to_console_default:
             print("[正在启动 Wolfram Language Session...]\n", end="")
+
+        # Prefer the default startup mechanism first. If it fails, fall back to
+        # an explicit kernel path specified via environment variable WOLFRAM_KERNEL.
         try:
             session = WolframLanguageSession()
             if self.logger.print_to_console_default:
                 print("[Wolfram Language Session 已启动]\n", end="")
             return session
-        except Exception as exc:
+        except Exception as exc_default:
+            kernel_path = os.environ.get("WOLFRAM_KERNEL")
+            if kernel_path:
+                try:
+                    session = WolframLanguageSession(kernel_path)
+                    if self.logger.print_to_console_default:
+                        print("[Wolfram Language Session 已启动 (via WOLFRAM_KERNEL)]\n", end="")
+                    return session
+                except Exception as exc_env:
+                    if self.logger.print_to_console_default:
+                        print(
+                            f"[警告] Wolfram session 启动失败: default={exc_default}; WOLFRAM_KERNEL={kernel_path!r} error={exc_env}\n",
+                            end="",
+                        )
+                    return None
+
             if self.logger.print_to_console_default:
-                print(f"[警告] Wolfram session 启动失败: {exc}\n", end="")
+                print(
+                    f"[警告] Wolfram session 启动失败: default={exc_default}; env WOLFRAM_KERNEL not set\n",
+                    end="",
+                )
             return None
     
     def _cleanup_tool_context(self, context: Dict):
@@ -519,11 +568,12 @@ class LLMClient:
         
         elif name == 'math_research_subagent':
             task_description = args.get('task_description', '')
+            shared = context.get('shared')
             if self.logger.print_to_console_default:
                 print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}")
             
             log_parts.append(f"Task:\n{task_description}")
-            result, error = run_subagent(task_description, self.logger)
+            result, error = run_subagent(task_description, self.logger, shared)
             
             if self.logger.print_to_console_default:
                 if result:
@@ -607,13 +657,13 @@ class LLMClient:
                 log_parts.append(f"[result]\n{result}")
                 tool_content = result
 
-        elif name == 'read_proof':
+        elif name == 'read_lemma':
             lemma_id = args.get('lemma_id', None)
             shared = context.get('shared')
 
             if shared is None:
                 tool_content = (
-                    "[read_proof error] shared context is not provided. "
+                    "[read_lemma error] shared context is not provided. "
                     "Enable it by calling LLMClient.get_result(..., shared=shared)."
                 )
                 log_parts.append(f"[error]\n{tool_content}")
@@ -622,7 +672,7 @@ class LLMClient:
                     if not isinstance(lemma_id, int):
                         raise TypeError("lemma_id must be an integer")
 
-                    lemmas = shared.get('lemmas')
+                    lemmas = shared['lemmas']
                     if lemmas is None:
                         raise ValueError("Currently no existing lemmas!")
                     if lemma_id < 0 or lemma_id >= len(lemmas):
@@ -642,7 +692,49 @@ class LLMClient:
                     log_parts.append(f"lemma_id={lemma_id}")
                     log_parts.append(f"[result]\n(len={len(tool_content)})")
                 except Exception as exc:
-                    tool_content = f"[read_proof error] {exc}"
+                    tool_content = f"[read_lemma error] {exc}"
+                    log_parts.append(f"[error]\n{tool_content}")
+
+        elif name in ('read_conjecture', 'read_current_conjecture_again'):
+            shared = context.get('shared')
+
+            if shared is None:
+                tool_content = (
+                    f"[{name} error] shared context is not provided. "
+                    "Enable it by calling LLMClient.get_result(..., shared=shared)."
+                )
+                log_parts.append(f"[error]\n{tool_content}")
+            else:
+                try:
+                    lemma_id = shared['current_lemma_id']
+                    if lemma_id is None:
+                        raise ValueError("current_lemma_id is not set")
+                    if not isinstance(lemma_id, int):
+                        raise TypeError("current_lemma_id must be an integer")
+
+                    lemmas = shared['lemmas']
+                    if lemmas is None:
+                        raise ValueError("Currently no lemmas in shared context")
+                    if lemma_id < 0 or lemma_id >= len(lemmas):
+                        raise IndexError(f"current_lemma_id out of range: {lemma_id}")
+
+                    lemma = lemmas[lemma_id]
+                    statement = lemma.get('statement', '')
+                    proof = lemma.get('proof', '')
+                    content = (
+                        f"<conjecture>\n"
+                        f"{statement}\n"
+                        f"</conjecture>\n"
+                        f"<proof>\n"
+                        f"{proof}\n"
+                        f"</proof>"
+                    )
+                    # IMPORTANT: return plain text (NOT JSON) to preserve backslashes (LaTeX).
+                    tool_content = content
+                    log_parts.append(content)
+                    log_parts.append(f"[result]\n(len={len(tool_content)})")
+                except Exception as exc:
+                    tool_content = f"[{name} error] {exc}"
                     log_parts.append(f"[error]\n{tool_content}")
         
         else:

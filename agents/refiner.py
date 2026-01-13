@@ -32,7 +32,7 @@ class Refiner(Node):
                 module="refiner",
                 level="ERROR",
             )
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
+            return AlphaSolveConfig.EXIT_ON_ERROR, None, None
 
         if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.MAX_VERIFY_AND_REFINE_ROUND:
             return AlphaSolveConfig.VERIFIER_EXAUSTED, None
@@ -50,17 +50,26 @@ class Refiner(Node):
             f"event=context_built step=prep lemma_id={lemma_id} ctx_size={len(ctx_ids)}",
             module="refiner",
         )
-        return AlphaSolveConfig.NORMAL, messages_to_send
+        return AlphaSolveConfig.NORMAL, messages_to_send, shared
 
     def exec(self, prep_res): 
-        if not prep_res or len(prep_res) < 2:
+        if not prep_res or len(prep_res) < 3:
             return AlphaSolveConfig.EXIT_ON_ERROR
 
         if AlphaSolveConfig.VERIFIER_EXAUSTED == prep_res[0]:
             return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None
 
         messages_to_send = prep_res[1]
-        response,_,_ = self.llm.get_result(messages_to_send)
+        shared = prep_res[2]
+        for _ in range(AlphaSolveConfig.REFINER_MAX_RETRY):
+            response,_,_ = self.llm.get_result(messages=messages_to_send,shared=shared)
+            if self.__validate_response(response):
+                break
+            self.logger.log_print(
+                "event=invalid_response, try refine again, step=exec",
+                module="refiner",
+                level="WARNING",
+            )
         new_statement, new_proof = self.__extract_from_model(response)
 
         return AlphaSolveConfig.NORMAL, new_statement, new_proof
@@ -122,6 +131,33 @@ class Refiner(Node):
         
         save_snapshot(shared, "refiner", AlphaSolveConfig.REFINE_SUCCESS)
         return AlphaSolveConfig.REFINE_SUCCESS
+
+    def __validate_response(self, response):
+        if self.__has_unique_conjecture(response) and self.__has_unique_proof(response):
+            return True
+        return False
+
+    def __has_unique_conjecture(self, response):
+        begin_count = response.count(CONJECTURE_BEGIN)
+        end_count = response.count(CONJECTURE_END)
+        if not (begin_count == 1 and end_count == 1):
+            return False
+        begin_index = response.find(CONJECTURE_BEGIN)
+        end_index = response.find(CONJECTURE_END)
+        if not (begin_index < end_index):
+            return False
+        return True
+
+    def __has_unique_proof(self, response):
+        begin_count = response.count(PROOF_BEGIN)
+        end_count = response.count(PROOF_END)
+        if not (begin_count == 1 and end_count == 1):
+            return False
+        begin_index = response.find(PROOF_BEGIN)
+        end_index = response.find(PROOF_END)
+        if not (begin_index < end_index):
+            return False
+        return True
 
     def __extract_from_model(self, model_output):
         

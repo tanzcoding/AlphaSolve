@@ -10,12 +10,13 @@ import types
 import importlib
 import re
 import json
+import os
 from typing import Optional, Tuple
-from wolframclient.evaluation import WolframLanguageSession
 from wolframclient.language import wlexpr
 from utils.logger import Logger
 from agents.shared_context import Lemma
 from utils.utils import extract_substring, apply_unified_diff, search_and_replace
+from agents.shared_context import SharedContext
 
 
 # NOTE:
@@ -251,7 +252,7 @@ def run_wolfram(code: str, session=None, timeout_seconds: int = 300):
         return "", payload
 
 
-def run_subagent(task_description: str, logger: Logger) -> Tuple[str, Optional[str]]:
+def run_subagent(task_description: str, logger: Logger, shared: SharedContext) -> Tuple[str, Optional[str]]:
     """
     数学研究子代理执行器
     
@@ -278,42 +279,15 @@ def run_subagent(task_description: str, logger: Logger) -> Tuple[str, Optional[s
         config = AlphaSolveConfig.SUBAGENT_CONFIG
         client = LLMClient(module='subagent', config=config, logger=logger)
         
-        # 构建子代理的系统提示
-        system_prompt = """You are a specialized mathematical research sub-agent. Your task is to solve the given mathematical problem independently.
-
-**CRITICAL: Correctness is your absolute responsibility.** Every result you provide must be mathematically sound and rigorously verified. The success of the overall research depends on the accuracy of your work.
-
-You have access to:
-- run_python: Execute Python code with sympy, numpy, scipy, and other scientific libraries
-- run_wolfram: Execute Wolfram Language for symbolic mathematics and advanced computations
-
-Approach:
-1. Understand the problem clearly and assess its complexity
-2. Break it down into logical steps
-3. Use computational tools when needed
-4. Provide a clear, concise final answer
-
-**When you encounter a task that exceeds your capabilities:**
-- Do NOT attempt to solve it beyond your capacity
-- Disclose the complexity and limitations to the superior agent
-- Suggest a smaller, more manageable subtask that you CAN complete
-- Clearly state what you have confirmed, discovered, or verified so far
-
-This enables the superior agent to make informed decisions about task decomposition and resource allocation."""
+        # 构建子代理的系统提示（回答会进入主 agent 上下文：尽量省 token，但数学推导必须完整展开）
+        system_prompt = """You are a mathematical research sub-agent. Solve the given subtask correctly (compute/verify/derive).
+Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified. 
+Ask for clarifications if the task is ambiguous. Tell the main agent if the task is not self-contained or too large for you to handle.
+Tools available: run_python (SymPy/NumPy/SciPy), run_wolfram (Wolfram Language).
+OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
+If the subtask is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
         experience = """<experiences>
-[Experience 1] For symbolic math, try BOTH SymPy (run_python) and Wolfram Language (run_wolfram) if the first attempt is inconclusive. Many tasks have complementary strengths: SymPy is great for quick algebraic manipulation and programmable workflows; Wolfram is often more robust for hard symbolic transforms.
-
-[Experience 2] For indefinite integrals (symbolic antiderivatives), Wolfram Language (Integrate) is often more reliable than SymPy for difficult expressions. If SymPy returns an unevaluated Integral / cannot find a closed form, switch to Wolfram; also consider reporting conditions/assumptions (e.g., parameter ranges) that make a closed form possible.
-
-[Experience 3] When simplifying expressions, always state assumptions. In SymPy, use symbols(..., positive=True/real=True) and simplify/together/factor/cancel; in Wolfram, prefer FullSimplify[..., Assumptions -> ...]. Many "different-looking" results are equivalent only under assumptions.
-
-[Experience 4] For solving equations/inequalities with parameters, prefer Wolfram's Reduce for full condition sets. SymPy's solve can miss branches; use solveset or reduce_inequalities when appropriate, and verify solutions by substitution.
-
-[Experience 5] For differential equations: try SymPy dsolve for simple ODEs; for harder ODE/PDE or when you need piecewise/parameter conditions, use Wolfram DSolve/NDSolve. Always verify by differentiating and substituting back.
-
-[Experience 6] For numeric verification, increase precision to avoid false negatives (e.g., SymPy evalf(n=50), mpmath.mp.dps=50; Wolfram WorkingPrecision -> 50). Check multiple random points and edge cases (singularities, boundaries, large magnitude).
-
-[Experience 7] Watch for branch cuts (Log, Power, Sqrt, inverse trig). If results disagree, test on representative domains and explicitly choose principal branches; present domain restrictions in the final explanation.
+Use SymPy first; if inconclusive/hard symbolic, switch to Wolfram for powerful symbolic capability. Always include assumptions (domains/parameters). For param equations/inequalities prefer Reduce and verify branches by substitution. For numerics: increase precision; test random points + edge/singularity cases. Watch branch cuts (Log/Sqrt/Power).
 </experiences>"""
         
         messages = [
@@ -322,7 +296,7 @@ This enables the superior agent to make informed decisions about task decomposit
         ]
         
         # 调用 get_result 执行子代理任务（工具已在配置中设置）
-        result, reasoning,_ = client.get_result(messages)
+        result, reasoning,_ = client.get_result(messages=messages, shared=shared)
         
     except Exception:
         err = traceback.format_exc().strip()
@@ -442,21 +416,11 @@ def apply_new_statement_to_lemma(lemma: Lemma, new_statement: str) -> str:
 
         lemma.update({
             "statement": new_statement,
-            "apply_diff_error": None,
         })
 
-        return json.dumps({
-            "statement": new_statement,
-            "proof": lemma.get("proof", ""),
-            "error": None,
-        }, ensure_ascii=False)
+        return "Conjecture statement updated successfully:\n" + f"<conjecture>\n{lemma.get("statement", "")}</conjecture>"
     except Exception as exc:
-        # Do NOT raise; keep lemma unchanged and return a machine-readable error
-        return json.dumps({
-            "statement": lemma.get("statement", ""),
-            "proof": lemma.get("proof", ""),
-            "error": str(exc),
-        }, ensure_ascii=False)
+        return "[error]\n" + str(exc)
 
 
 def apply_proof_anchor_edit(
@@ -489,18 +453,9 @@ def apply_proof_anchor_edit(
             "apply_diff_error": None,
         })
 
-        return json.dumps({
-            "statement": lemma.get("statement", ""),
-            "proof": new_proof,
-            "error": None,
-        }, ensure_ascii=False)
+        return "Updated successfully:\n" + f"<conjecture>\n{lemma.get("statement", "")}</conjecture>\n<proof>{lemma.get("proof", "")}</proof>"
     except Exception as exc:
-        # Do NOT raise; keep lemma unchanged and return a machine-readable error
-        return json.dumps({
-            "statement": lemma.get("statement", ""),
-            "proof": lemma.get("proof", ""),
-            "error": str(exc),
-        }, ensure_ascii=False)
+        return "[error]\n" + str(exc)
 
 # ===== 定义工具函数规范 =====
 # 定义一个工具列表，告诉AI模型它可以使用的工具
@@ -538,48 +493,20 @@ WOLFRAM_TOOL = {
         }
     }
 }
-RESEARCH_SUBAGENT_DESCRIPTION = """A specialized autonomous sub-agent for detailed mathematical computations and verifications. This tool is your computational workhorse — DELEGATE *small, concrete sub-tasks* to it instead of doing them yourself.
+RESEARCH_SUBAGENT_DESCRIPTION = """Autonomous sub-agent for concrete math computations/verifications (symbolic or numeric) using tools like Python/Wolfram.
 
-**CRITICAL (scope): Do NOT hand the entire original problem to the sub-agent.**
-You MUST first decompose the work, decide what to explore and delegate only a *well-scoped* piece (one computation / one check / one derivation). Keep each delegation focused, bounded, and verifiable.
+**CRITICAL:** Each call spawns a NEW sub-agent with NO memory of previous calls. Provide a self-contained task description every time.
 
-**CRITICAL (division of labor): YOU do high-level reasoning; the sub-agent does the math.**
-- You (the main agent) should focus on: proposing approaches, choosing lemmas, deciding what to explore, and interpreting/organizing results.
-- The sub-agent should focus on: actually computing/simplifying/solving/verifying with Python/Wolfram, or any other smaller and concrete mathematics tasks.
-- Avoid doing step-by-step algebra/calculus manually in the main response. If you find yourself about to “work it out”, STOP and delegate that concrete computation.
+**Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded task (one computation/check/derivation).
 
-Examples of good main-agent text:
-- “I will try transforming the ODE into standard form and ask the sub-agent to solve it.”
-- “I’ll ask the sub-agent to compute this integral and then I’ll analyze the parameter conditions.”
-- “Let’s test the conjectured identity numerically at random points and then attempt symbolic simplification.”
-Examples of bad main-agent behavior:
-- Expanding and simplifying long expressions by hand.
-- Performing multi-line derivative/integral manipulations manually.
-- Claiming an equality without tool-backed verification.
+**Division of labor:** You do high-level strategy (plan, choose what method to use, and decide what to explore) and integrate results; the sub-agent does the computation.
 
-**CRITICAL (delegation style): Delegate small tasks early and often.**
-The goal is to offload computational heavy lifting while you keep control of the overall strategy and the final integrated solution.
+**CRITICAL (when to use): Call subagent EARLY and very OFTEN.** If you are about to do any nontrivial calculation/verification (multi-line algebra, symbolic simplification, case splits, solving equations/ODEs, checking edge cases, numeric experiments), you MUST call the sub-agent instead of doing it manually. If you catch yourself “working it out”, STOP and delegate that concrete subtask.
 
-The sub-agent autonomously:
-- Performs multi-step symbolic derivations, algebraic manipulations, and equation solving using Python (SymPy/NumPy/SciPy) and Wolfram Language
-- Executes numerical computations, optimizations, simulations, and high-precision calculations
-- Verifies conjectures, checks edge cases, validates intermediate results, and explores counterexamples
-- Conducts asymptotic analysis, solves differential equations, and derives intermediate formulas
-- Returns detailed, verified results with working and justification
+**Reliability:** The sub-agent can be wrong—keep tasks verifiable and cross-check results by delegating the same or similar task to a second sub-agent if needed.
 
-**What to delegate (small, concrete requests):**
-- “Simplify this expression under these assumptions; return a canonical form.”
-- “Compute/verify this integral/limit/series expansion; show steps.”
-- “Solve this equation/ODE for these parameters; list solution branches.”
-- “Numerically test this claim on these ranges; report counterexamples if any.”
-- “Check edge cases (e.g., x→0, x→∞, parameter boundaries) for this lemma.”
-
-**What NOT to delegate:**
-- “Solve the whole problem.”
-- “Figure out the entire approach/proof.”
-- Dumping the full prompt without narrowing it to a specific computation or verification goal.
-
-**Your role:** Do the high-level decomposition, choose *which* sub-questions to compute/verify, and integrate the results into the final reasoning. Use the sub-agent for concrete computations and checks, not as a replacement for end-to-end problem solving.
+Good requests (small + concrete): simplify under assumptions; compute/verify an integral/limit/series; solve an equation/ODE with parameter cases; compute a Groebner basis / eliminate variables / check ideal membership; compute a fundamental group / homology in a toy case; check whether a map is continuous/smooth from explicit formulas; verify a coordinate chart transition; compute curvature/Christoffel symbols for a given metric; numeric testing/counterexamples; edge-case checks.
+Bad requests: "solve the whole problem", "find the entire approach", dumping the full prompt.
 """
 
 RESEARCH_SUBAGENT_TOOL = {
@@ -592,7 +519,7 @@ RESEARCH_SUBAGENT_TOOL = {
             'properties': {
                 'task_description': {
                     'type': 'string',
-                    'description': 'A clear and concise description of the mathematical research task to be solved by the sub-agent.'
+                    'description': 'A clear, complete and **self-contained** description of the mathematical research task to be solved by the sub-agent.'
                 }
             },
             'required': ['task_description']
@@ -701,22 +628,19 @@ MODIFY_PROOF_TOOL = {
 }
 
 
-# ===== Lemma 阅读工具（面向 LLM function-calling） =====
-# 用 lemma_id 读取某个已生成 lemma 的 statement / proof。
-# 注意：模型侧并不知道 shared 的存在；它只需要按 prompt 中的 lemma id 来请求读取即可。
-READ_PROOF_DESCRIPTION = """Read the full proof of an existing lemma by its id.
+READ_LEMMA_DESCRIPTION = """Read the full proof of an existing lemma by its id.
 
-Use this tool when you need to reference the exact text of a lemma that already exists.
+Use this tool when you want to read the full proof of an existing collected lemma in the background.
 
 Parameters:
 - lemma_id: integer index of the lemma (0-based).
 """
 
-READ_PROOF_TOOL = {
+READ_LEMMA_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'read_proof',
-        'description': READ_PROOF_DESCRIPTION,
+        'name': 'read_lemma',
+        'description': READ_LEMMA_DESCRIPTION,
         'parameters': {
             'type': 'object',
             'properties': {
@@ -726,6 +650,26 @@ READ_PROOF_TOOL = {
                 }
             },
             'required': ['lemma_id']
+        }
+    }
+}
+
+
+READ_CURRENT_CONJECTURE_AGAIN_DESCRIPTION = """Read the statement and proof of the current conjecture yet to be refined.
+
+Use this tool when you need to double check or reference the exact text of the current conjecture you are working on. NO parameter is needed.
+"""
+
+READ_CURRENT_CONJECTURE_AGAIN_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'read_current_conjecture_again',
+        'description': READ_CURRENT_CONJECTURE_AGAIN_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+            },
+            'required': []
         }
     }
 }

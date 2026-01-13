@@ -32,7 +32,7 @@ class Verifier(Node):
                 module="verifier",
                 level="ERROR",
             )
-            return AlphaSolveConfig.EXIT_ON_ERROR, None
+            return AlphaSolveConfig.EXIT_ON_ERROR, None, None, None, shared
 
         lemmas = shared["lemmas"]
         lemma = lemmas[lemma_id]
@@ -44,11 +44,11 @@ class Verifier(Node):
             module="verifier",
         )
 
-        return AlphaSolveConfig.NORMAL, lemma_id, lemma, ctx_text
+        return AlphaSolveConfig.NORMAL, lemma_id, lemma, ctx_text, shared
 
 
     def exec(self, prep_res):
-        if not prep_res or len(prep_res) < 4:
+        if not prep_res or len(prep_res) < 5:
             return AlphaSolveConfig.EXIT_ON_ERROR, None
 
         code = prep_res[0]
@@ -59,11 +59,11 @@ class Verifier(Node):
 
         ## test time compute, 我们先直接撸 VERIFIER_SCALING_FACTOR 次, 任何一次错我们都认为错, 随机选择一个判错的 review 和 cot —— 这里和AIM不一样
         verifier_res = None
-
+        shared = prep_res[4]
         result = [ ]
 
         for i in range(AlphaSolveConfig.VERIFIER_SCALING_FACTOR):
-            is_valid, review, cot = self.__verify(lemma, reasoning_ctx)
+            is_valid, review, cot = self.__verify(lemma, reasoning_ctx, shared)
             self.logger.log_print(
                 f"event=verify_try step=exec lemma_id={lemma_id} try={i} valid={is_valid}",
                 module="verifier",
@@ -154,7 +154,7 @@ class Verifier(Node):
         save_snapshot(shared, "verifier", AlphaSolveConfig.CONJECTURE_UNVERIFIED)
         return AlphaSolveConfig.CONJECTURE_UNVERIFIED
 
-    def __verify(self, lemma, reasoning_ctx):
+    def __verify(self, lemma, reasoning_ctx, shared):
 
         prompt = self.__build_verifier_prompt(lemma, reasoning_ctx)
 
@@ -169,7 +169,7 @@ class Verifier(Node):
             module="verifier",
         )
 
-        answer, cot, _ = self.llm.get_result(messages_to_send)
+        answer, cot, _ = self.llm.get_result(messages_to_send,shared=shared)
 
         self.logger.log_print(
             f"event=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer)} cot_len={len(cot)}",
@@ -203,7 +203,7 @@ class Verifier(Node):
         )
         lines.append("")
         for i, lemma_id in enumerate(ctx_ids):
-            lines.append(f" ** Conjecture-{i} **")
+            lines.append(f" ** Lemma-{i} **")
             lines.append(f" {lemmas[lemma_id].get('statement')}")
         return "\n".join(lines)
 

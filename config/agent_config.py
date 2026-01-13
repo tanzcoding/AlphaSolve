@@ -6,7 +6,8 @@ from llms.tools import (
     WOLFRAM_TOOL,
     MODIFY_STATEMENT_TOOL,
     MODIFY_PROOF_TOOL,
-    READ_PROOF_TOOL,
+    READ_LEMMA_TOOL,
+    READ_CURRENT_CONJECTURE_AGAIN_TOOL,
 )
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
@@ -134,31 +135,31 @@ class AlphaSolveConfig:
 
     ## 在这里设置 AlphaSolve 使用的 LLM 配置
     
-    # Solver 可以使用 subagent 和 format_guard
+    # Solver 可以使用 subagent，也可以阅读已有 lemma 的证明
     SOLVER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [READ_PROOF_TOOL,RESEARCH_SUBAGENT_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
-    # Verifier 可以使用 subagent
+    # Verifier 可以使用 subagent，可以再读一遍当前猜想及其证明，也可以阅读已有 lemma 的证明
     VERIFIER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    # Refiner 可以使用 subagent
+    # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [READ_PROOF_TOOL,RESEARCH_SUBAGENT_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
     # NoHistoryRefiner 强制使用 search/replace 工具
     NO_HISTORY_REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
+        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
     }
     NO_HISTORY_REFINER_PROMPT_PATH = 'prompts/no_history_refiner.md'
     # WithHistoryRefiner 可以使用 subagent
@@ -180,7 +181,7 @@ class AlphaSolveConfig:
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
-    VERIFIER_SCALING_FACTOR = 3
+    VERIFIER_SCALING_FACTOR = 5
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 
@@ -209,5 +210,6 @@ class AlphaSolveConfig:
     SOLVER_EXAUSTED = 'solver_exausted'
 
     ## 
-    MAX_LEMMA_NUM = 15
-    MAX_VERIFY_AND_REFINE_ROUND = 6
+    MAX_LEMMA_NUM = 30
+    MAX_VERIFY_AND_REFINE_ROUND = 10
+    REFINER_MAX_RETRY = 3

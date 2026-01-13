@@ -10,7 +10,7 @@ A valid proof must satisfy the following three conditions:
 
 Please state your verification result inside $\boxed{}$ as $\boxed{valid}$ or $\boxed{invalid}$. You also need to include the rationale on your decision in your response.
 
-**Important:** If the proof is mostly correct but has a little gap, label it invalid.
+**Important:** If the proof is mostly correct but has a little gap, label it invalid. The proof should not cite results from papers (i.e., no “by Theorem X in [paper] ...”); any nontrivial claim must be proved within the proof or follow from standard, widely-known facts stated explicitly.
 
 ## Conjecture
 
@@ -19,5 +19,3 @@ Please state your verification result inside $\boxed{}$ as $\boxed{valid}$ or $\
 ## Proof
 
 {proof_content}
-
-

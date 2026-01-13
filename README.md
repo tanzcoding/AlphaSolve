@@ -56,6 +56,10 @@ export ARK_API_KEY="your_ark_api_key"
 export DASHSCOPE_API_KEY="your_dashscope_api_key"
 export OPENROUTER_API_KEY="your_openrouter_api_key"
 ```
+2. Set up your Wolfram Engine path in the environment variables. For windows:
+```bash
+export WOLFRAM_KERNEL="your_wolfram_engine_path/WolframKernel.exe"
+```
 2. Place your mathematical problem in the [`problem.md`](problem.md) file
 3. Run the main solver:
 ```bash
