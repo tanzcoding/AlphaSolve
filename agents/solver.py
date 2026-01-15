@@ -65,7 +65,19 @@ class Solver(Node):
 
         lemma = self.__build_lemma(updated_messages)
 
-        return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
+        ask_for_hint_prompt = (
+            "To ultimately solve this hard problem, what directions are worth exploring next? Please share your insights."
+            "You can also suggest problems or subproblems that are related to the main problem and worth investigating."
+            "Please answer within six sentences."
+        )
+
+        ask_for_hint_messages = [message for message in updated_messages if message["role"] != "system"]
+        ask_for_hint_messages.append({"role": "user", "content": ask_for_hint_prompt})
+
+        updated_messages.append({"role": "user", "content": ask_for_hint_prompt})
+
+        hint, _, _ = self.llm.get_result(ask_for_hint_messages, shared=shared, tools=None)
+        return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages, hint
 
 
     def post(self, shared, prep_res, exec_res):  ## 更新一下iteration 变量
@@ -112,6 +124,14 @@ class Solver(Node):
             module="solver",
         )
 
+        hint = exec_res[3]
+        if hint and len(hint.strip()) > 0:
+            shared["hint"] = hint
+            self.logger.log_print(
+                f"event=hint_updated: {hint.strip()}",
+                module="solver",
+            )
+
         self.logger.log_print('exiting solver...', module='solver')
         
         # Save snapshot after updating shared
@@ -142,7 +162,7 @@ class Solver(Node):
             tmp = tmp + "\n\n" + "\n".join(lines)
 
         if hint:
-            tmp = tmp + "\n\n" + str(hint)
+            tmp = tmp + "\n\n" + "## Hint and Suggestions" + "\n\n" + str(hint)
 
         self.logger.log_print("event=prompt_built step=prep", module="solver")
         return tmp

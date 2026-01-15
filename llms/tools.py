@@ -283,7 +283,7 @@ Correctness is mandatory: clearly state assumptions; every result you provide mu
 Ask for clarifications if the task is ambiguous. Tell the main agent if the task is not self-contained or too large for you to handle.
 Tools available: run_python (SymPy/NumPy/SciPy), run_wolfram (Wolfram Language).
 OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
-WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something.
+WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something. If the task is not suited for using python/Wolfram, please compute/derive it manually and provide detailed reasoning steps.
 If the subtask is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
         experience = """<experiences>
 Use SymPy first; if inconclusive/hard symbolic, switch to Wolfram for powerful symbolic capability. Always include assumptions (domains/parameters). For param equations/inequalities prefer Reduce and verify branches by substitution. For numerics: increase precision; test random points + edge/singularity cases. Watch branch cuts (Log/Sqrt/Power).

@@ -12,7 +12,7 @@ Generate a conjecture and its corresponding proof. While the ultimate goal is to
 
 Across all future explorations, you have a remaining budget of **{remaining_lemma_quota}** conjecture(s). In this run, you must propose exactly **one** conjecture.
 
-# Output Format
+## Output Format
 
 1. Use `\begin{conjecture}` and `\end{conjecture}` to wrap your conjecture statement. 
   - At the beginning, use `[]` to wrap a brief description of the conjecture.
