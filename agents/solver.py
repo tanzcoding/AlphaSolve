@@ -10,14 +10,12 @@ from utils.logger import Logger
 from pocketflow import Node
 
 
-CONJECTURE_BEGIN = '<conjecture>'
-CONJECTURE_END = '</conjecture>'
-FINAL_CONJECTURE_BEGIN = '<final_conjecture>'
-FINAL_CONJECTURE_END = '</final_conjecture>'
-PROOF_BEGIN = '<proof>'
-PROOF_END = '</proof>'
-DEPENDENCY_BEGIN = '<dependency>'
-DEPENDENCY_END = '</dependency>'
+CONJECTURE_BEGIN = r'\begin{conjecture}'
+CONJECTURE_END = r'\end{conjecture}'
+PROOF_BEGIN = r'\begin{proof}'
+PROOF_END = r'\end{proof}'
+DEPENDENCY_BEGIN = r'\begin{dependency}'
+DEPENDENCY_END = r'\end{dependency}'
 
 
 class Solver(Node):
@@ -44,7 +42,8 @@ class Solver(Node):
             hint=shared["hint"],
         )
 
-        messages_to_send = [{"role": "user", "content": prompt}]
+        messages_to_send = [{"role": "system", "content": "You are an expert mathematician. You will be given a problem and a list of Lemmas (if any) we have established. Try to propose a new conjecture that can help solve the problem at hand. If your conjecture is verified by the user, it will be added to our list of Lemmas. "},
+                            {"role": "user", "content": prompt}]
 
         return AlphaSolveConfig.NORMAL, messages_to_send,shared
 
@@ -158,13 +157,6 @@ class Solver(Node):
             logger=self.logger,
             module="solver",
         )
-        final_statement = extract_substring(
-            resp_from_llm,
-            FINAL_CONJECTURE_BEGIN,
-            FINAL_CONJECTURE_END,
-            logger=self.logger,
-            module="solver",
-        )
         proof = extract_substring(
             resp_from_llm,
             PROOF_BEGIN,
@@ -189,17 +181,6 @@ class Solver(Node):
                 proof=proof,
                 dependencies=deps,
                 is_theorem=False,
-                status="pending",
-                history_messages=messages,
-                verify_round=0,
-            )
-        elif final_statement and proof:
-            # Case: final conjecture + proof => theorem
-            return new_lemma(
-                statement=final_statement,
-                proof=proof,
-                dependencies=deps,
-                is_theorem=True,
                 status="pending",
                 history_messages=messages,
                 verify_round=0,

@@ -7,10 +7,10 @@ from utils.logger import Logger
 
 from pocketflow import Node
 
-CONJECTURE_BEGIN = '<conjecture>'
-CONJECTURE_END = '</conjecture>'
-PROOF_BEGIN = '<proof>'
-PROOF_END = '</proof>'
+CONJECTURE_BEGIN = r'\begin{conjecture}'
+CONJECTURE_END = r'\end{conjecture}'
+PROOF_BEGIN = r'\begin{proof}'
+PROOF_END = r'\end{proof}'
 
 class Refiner(Node):
 

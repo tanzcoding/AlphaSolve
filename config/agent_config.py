@@ -1,7 +1,8 @@
 import os
 from llms.tools import (
     RESEARCH_SUBAGENT_TOOL,
-    SOLVER_FORMAT_GUARD_TOOL,
+    SOLVER_RESPONSE_FORMAT_REMINDER,
+    REFINER_RESPONSE_FORMAT_REMINDER,
     PYTHON_TOOL,
     WOLFRAM_TOOL,
     MODIFY_STATEMENT_TOOL,
@@ -138,7 +139,7 @@ class AlphaSolveConfig:
     # Solver 可以使用 subagent，也可以阅读已有 lemma 的证明
     SOLVER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
@@ -152,7 +153,7 @@ class AlphaSolveConfig:
     # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 

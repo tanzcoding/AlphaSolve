@@ -4,19 +4,19 @@ You are an expert across all domains in math. Refine the proof in response to th
 
 ### Output Format
 
-Return exactly two XML tags:
-- Use `<conjecture></conjecture>` to wrap a modified conjecture statement
-- Use `<proof></proof>` to wrap your refined or rewritten proof
+Return exactly two LaTeX environments:
+- Use `\begin{conjecture}` and `\end{conjecture}` to wrap a modified conjecture statement
+- Use `\begin{proof}` and `\end{proof}` to wrap your refined or rewritten proof
 
-Inside the `<conjecture>` tag, write **only the bare mathematical statement**.
-- Do **NOT** include any numbering or prefixes inside the tag (e.g., “Lemma 1.”, “Proposition”, “Conjecture”, “Theorem”, “Claim”).
+Inside the conjecture statement, write **only the bare mathematical statement**.
+- Do **NOT** include any numbering or prefixes inside the tag (e.g., “Lemma 1.”, “Proposition”, “Conjecture”, “Theorem”).
 
-**Critical Requirement**: Output ONLY these two tags (no other text).
+**Critical Requirement**: Output ONLY these two LaTeX environments (no other text outside the LaTeX environments).
 
 ### Guidelines for Refinement
 
 - Make the proof **correct, complete, and rigorous**, addressing all issues raised in the review
-- If the statement is unchanged, repeat it inside `<conjecture>`.
+- If the statement is unchanged, repeat it inside the conjecture statement.
 - If you change the statement, make it **self-contained**, clear, and precise, and prove it.
 
 ### When to Modify the Conjecture Statement

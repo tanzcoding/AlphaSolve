@@ -8,8 +8,6 @@ import queue
 import builtins
 import types
 import importlib
-import re
-import json
 import os
 from typing import Optional, Tuple
 from wolframclient.language import wlexpr
@@ -285,6 +283,7 @@ Correctness is mandatory: clearly state assumptions; every result you provide mu
 Ask for clarifications if the task is ambiguous. Tell the main agent if the task is not self-contained or too large for you to handle.
 Tools available: run_python (SymPy/NumPy/SciPy), run_wolfram (Wolfram Language).
 OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
+WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something.
 If the subtask is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
         experience = """<experiences>
 Use SymPy first; if inconclusive/hard symbolic, switch to Wolfram for powerful symbolic capability. Always include assumptions (domains/parameters). For param equations/inequalities prefer Reduce and verify branches by substitution. For numerics: increase precision; test random points + edge/singularity cases. Watch branch cuts (Log/Sqrt/Power).
@@ -306,104 +305,59 @@ Use SymPy first; if inconclusive/hard symbolic, switch to Wolfram for powerful s
 
 # ===== Solver 格式提醒工具（面向 LLM function-calling） =====
 # 来自 prompts/solver.md 的关键约束：
-# - 输出必须以 <conjecture>起手，不能有任何其他前置内容
-# - 用<conjecture>和</conjecture>包裹猜想内容
-# - 若非最终证明，则紧接着用<proof>和</proof>包裹证明内容
-# - 最终猜想则用<final_conjecture>和</final_conjecture>包裹猜想内容，并仍需跟随<proof>...</proof>
-# - 输出必须包含 <dependency> 环境
-# - 仅允许两种整体结构（并建议无额外尾随内容）：
-#   A) conjecture + proof + dependency
-#   B) final_conjecture + proof + dependency
-# - dependency 环境内必须是 JSON array（例如 [] 或 [0,3,4]）
+# - 输出必须以 \begin{conjecture} 起手，不能有任何其他前置内容
+# - 用 \begin{conjecture} 和 \end{conjecture} 包裹猜想内容
+# - 用 \begin{proof} 和 \end{proof} 包裹证明内容
+# - 输出必须包含 \begin{dependency} 环境
+# - 整体结构为：conjecture + proof + dependency（建议无额外尾随内容）
+# - dependency 环境格式为 \begin{dependency}[...]\end{dependency}，其中 [...] 是 JSON array
 
-_SOLVER_CONJ_FULL_RE = re.compile(
-    r"^\s*<conjecture>.*?</conjecture>\s*"
-    r"<proof>.*?</proof>\s*"
-    r"<dependency>.*?</dependency>\s*$",
-    re.DOTALL,
-)
-_SOLVER_FINAL_FULL_RE = re.compile(
-    r"^\s*<final_conjecture>.*?</final_conjecture>\s*"
-    r"<proof>.*?</proof>\s*"
-    r"<dependency>.*?</dependency>\s*$",
-    re.DOTALL,
-)
-_SOLVER_DEP_RE = re.compile(r"<dependency>(.*?)</dependency>", re.DOTALL)
+def solver_response_format_reminder() -> Tuple[str, Optional[str]]:
+    """`response_format_reminder` tool implementation.
 
-
-def solver_format_guard(candidate_response: str = "") -> Tuple[str, Optional[str]]:
-    """给 solver 输出提供格式提醒与校验。
-
-    - 若 candidate_response 为空：返回格式提醒（mode="reminder"）。
-    - 若 candidate_response 非空：严格校验整体结构与 dependency JSON（mode="check"）。
-
-    Returns:
-        (result_json_str, error_str|None)
+    Per `SOLVER_FORMAT_GUARD_TOOL` description:
+    - NO parameters.
+    - Returns plain-text format requirements.
     """
     try:
         expected_format = (
-            "Response must start immediately with either <conjecture> or <final_conjecture>. "
-            "Only two structures are allowed, with no extra text outside them:\n"
-            "1) <conjecture>...</conjecture>\n"
-            "   <proof>...</proof>\n"
-            "   <dependency>[...]</dependency>\n"
-            "2) <final_conjecture>...</final_conjecture>\n"
-            "   <proof>...</proof>\n"
-            "   <dependency>[...]</dependency>\n"
-            "Inside <dependency></dependency> you must place a JSON array like [] or [0, 3, 4]."
-            "VERY IMPORTANT: when your conjecture is a complete solution to the problem, use <final_conjecture> instead of <conjecture>."
+            "Response must start immediately with \\begin{conjecture}. "
+            "The required structure is:\n"
+            "\\begin{conjecture}\n"
+            "[Brief description]\n"
+            "Pure mathematical statement in LaTeX\n"
+            "\\end{conjecture}\n"
+            "\\begin{proof}\n"
+            "Rigorous and detailed proof\n"
+            "\\end{proof}\n"
+            "\\begin{dependency}[...]\\end{dependency}\n"
+            "Inside \\begin{dependency}[...]\\end{dependency} you must place a JSON array like [] or [0, 3, 4]."
         )
+        return expected_format, None
+    except Exception:
+        return "", traceback.format_exc().strip()
+    
+def refiner_response_format_reminder() -> Tuple[str, Optional[str]]:
+    """`response_format_reminder` tool implementation.
 
-        text = candidate_response or ""
-        if not text.strip():
-            payload = {
-                "ok": True,
-                "mode": "reminder",
-                "expected_format": expected_format,
-            }
-            return json.dumps(payload, ensure_ascii=False), None
-
-        issues = []
-        stripped = text.lstrip()
-        starts_with_conj = stripped.startswith("<conjecture>")
-        starts_with_final = stripped.startswith("<final_conjecture>")
-        if not (starts_with_conj or starts_with_final):
-            issues.append(
-                "Response must start with <conjecture> or <final_conjecture>, with no preface content."
-            )
-
-        matches_final = bool(_SOLVER_FINAL_FULL_RE.match(text))
-        matches_conj = bool(_SOLVER_CONJ_FULL_RE.match(text))
-        if not (matches_final or matches_conj):
-            issues.append(
-                "Overall structure invalid. It must be exactly either (conjecture+proof+dependency) or (final_conjecture+proof+dependency), "
-                "with no extra content outside these environments."
-            )
-
-        dep_ids = None
-        dep_match = _SOLVER_DEP_RE.search(text)
-        if dep_match is None:
-            issues.append("Missing <dependency>...</dependency> block.")
-        else:
-            dep_raw = (dep_match.group(1) or "").strip()
-            try:
-                dep_ids = json.loads(dep_raw) if dep_raw else []
-                if not isinstance(dep_ids, list):
-                    issues.append("Dependency content must be a JSON array, e.g. [] or [0, 3, 4].")
-                    dep_ids = None
-            except Exception:
-                issues.append(
-                    "Dependency content is not valid JSON. It must be a JSON array like [] or [0, 3, 4]."
-                )
-
-        payload = {
-            "ok": len(issues) == 0,
-            "mode": "check",
-            "issues": issues,
-            "dependency": dep_ids,
-            "expected_format": expected_format,
-        }
-        return json.dumps(payload, ensure_ascii=False), None
+    Per `SOLVER_FORMAT_GUARD_TOOL` description:
+    - NO parameters.
+    - Returns plain-text format requirements.
+    """
+    try:
+        expected_format = (
+            "Response must start immediately with \\begin{conjecture}. "
+            "The required structure is:\n"
+            "\\begin{conjecture}\n"
+            "Do **NOT** include any numbering or prefixes inside the tag (e.g., “Lemma 1.”, “Proposition”, “Conjecture”, “Theorem”)"
+            "[Brief description]\n"
+            "Pure mathematical statement in LaTeX\n"
+            "\\end{conjecture}\n"
+            "\\begin{proof}\n"
+            "Rigorous and detailed corrected proof\n"
+            "\\end{proof}\n"
+        )
+        return expected_format, None
     except Exception:
         return "", traceback.format_exc().strip()
 
@@ -463,7 +417,7 @@ PYTHON_TOOL = {
     'type': 'function',
     'function': {
         'name': 'run_python',
-        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. Perfect for step-by-step mathematical computations and data analysis. IMPORTANT: Execution has a hard time limit (~5 minutes). If time limit is exceeded, the tool returns error=\"timeout\" and the environment changes from that execution are rolled back. SECURITY: Importing matplotlib/pylab is blocked in this runtime.",
+        'description': "Execute Python code in an interactive environment similar to Jupyter Notebook. Key features: 1) Variables and imports persist across multiple code executions in the SAME conversation - you don't need to re-import libraries or re-define variables. 2) The last expression in your code will be automatically displayed (like Jupyter) - you can omit print() for the final result. 3) Use print() for intermediate outputs or multiple values. 4) Supports sympy, numpy, scipy, math, itertools, functools, and other standard libraries. IMPORTANT: Execution has a hard time limit (~5 minutes). If time limit is exceeded, the tool returns error=\"timeout\" and the environment changes from that execution are rolled back. SECURITY: Importing matplotlib/pylab is blocked in this runtime.",
         'parameters': {
             'type': 'object',
             'properties': {
@@ -527,26 +481,31 @@ RESEARCH_SUBAGENT_TOOL = {
     }
 }
 
-SOLVER_FORMAT_GUARD_TOOL = {
+SOLVER_RESPONSE_FORMAT_REMINDER = {
     'type': 'function',
     'function': {
-        'name': 'generate_conjecture_format_checker',
+        'name': 'solver_response_format_reminder',
         'description': (
-            "Call with no arguments to get a format reminder; call with candidate_response to validate its format. "
-            "IMPORTANT: This tool does NOT generate a conjecture or lemma. It only validates format and does not consume lemma budget."
-            ""
+            "When you are about to output the conjecture and the proof, call this tool to get a format reminder. "
         ),
         'parameters': {
             'type': 'object',
-            'properties': {
-                'candidate_response': {
-                    'type': 'string',
-                    'description': (
-                        "(Optional) Draft response to validate. If empty, the tool returns a format reminder. "
-                        "and contain only the allowed environments."
-                    )
-                }
-            },
+            'properties': {},
+            'required': []
+        }
+    }
+}
+
+REFINER_RESPONSE_FORMAT_REMINDER = {
+    'type': 'function',
+    'function': {
+        'name': 'refiner_response_format_reminder',
+        'description': (
+            "When you are about to output the refined conjecture and the proof, call this tool to get a format reminder. "
+        ),
+        'parameters': {
+            'type': 'object',
+            'properties': {},
             'required': []
         }
     }
@@ -628,7 +587,7 @@ MODIFY_PROOF_TOOL = {
 }
 
 
-READ_LEMMA_DESCRIPTION = """Read the full proof of an existing lemma by its id.
+READ_LEMMA_DESCRIPTION = """Read the full proof of an existing lemma (if any) by its id.
 
 Use this tool when you want to read the full proof of an existing collected lemma in the background.
 

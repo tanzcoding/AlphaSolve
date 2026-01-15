@@ -588,30 +588,44 @@ class LLMClient:
             if error:
                 log_parts.append(f"[error]\n{error}")
                 tool_content = tool_content + f"[error]\n{error}"
-            
         
-        elif name == 'generate_conjecture_format_checker':
-            candidate_response = args.get('candidate_response', '')
+        elif name == 'solver_response_format_reminder':
             if self.logger.print_to_console_default:
-                print(f"[Tool Call] generate_conjecture_format_checker\nCandidate response length: {len(candidate_response)}")
-            
-            if candidate_response:
-                log_parts.append(f"Candidate response length: {len(candidate_response)}")
-            
-            result, error = solver_format_guard(candidate_response)
-            
+                print("[Tool Call] solver_response_format_reminder")
+
+            result, error = solver_response_format_reminder()
+
             if self.logger.print_to_console_default:
                 if result:
                     print(f"[result]\n{result}")
                 if error:
                     print(f"[error]\n{error}")
-            
+
             if result:
                 log_parts.append(f"[result]\n{result}")
             if error:
                 log_parts.append(f"[error]\n{error}")
-            
-            tool_content = json.dumps({'result': result, 'error': error}, ensure_ascii=False)
+
+            tool_content = result if result else ""
+        
+        elif name == 'refiner_response_format_reminder':
+            if self.logger.print_to_console_default:
+                print("[Tool Call] refiner_response_format_reminder")
+
+            result, error = refiner_response_format_reminder()
+            if self.logger.print_to_console_default:
+                if result:
+                    print(f"[result]\n{result}")
+                if error:
+                    print(f"[error]\n{error}")
+
+            if result:
+                log_parts.append(f"[result]\n{result}")
+            if error:
+                log_parts.append(f"[error]\n{error}")
+
+            tool_content = result if result else ""
+
         elif name == 'refine_conjecture_with_diff':
             tool_content = json.dumps({'error': 'refine_conjecture_with_diff is deprecated'}, ensure_ascii=False)
         elif name == 'modify_statement':
@@ -674,6 +688,8 @@ class LLMClient:
 
                     lemmas = shared['lemmas']
                     if lemmas is None:
+                        raise ValueError("Currently no existing lemmas!")
+                    if len(lemmas) == 0:
                         raise ValueError("Currently no existing lemmas!")
                     if lemma_id < 0 or lemma_id >= len(lemmas):
                         raise IndexError(f"lemma_id out of range: {lemma_id}")
