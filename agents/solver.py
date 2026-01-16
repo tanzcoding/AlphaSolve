@@ -66,12 +66,18 @@ class Solver(Node):
         lemma = self.__build_lemma(updated_messages)
 
         ask_for_hint_prompt = (
-            "To ultimately solve this hard problem, what directions are worth exploring next? Please share your insights."
-            "You can also suggest problems or subproblems that are related to the main problem and worth investigating."
-            "Please answer within six sentences."
+            "In your next response, you are NOT required to propose a new conjecture. "
+            "In your next response, you are NOT required to propose a new conjecture. "
+            "Based on your exploration and the conjecture you just proposed, reflect on the insights you've gained. "
+            "What promising research directions emerge from your current understanding of the problem? "
+            "Identify specific subproblems, conjectures, or intermediate results that could serve as stepping stones toward the ultimate solution. "
+            "Consider which aspects of the problem remain underexplored and what mathematical tools or techniques might be most valuable to apply next. "
+            "Your insights will guide future conjecture generation and help prioritize the most promising avenues of investigation. "
+            "Please provide your reflections in a concise manner (within 8-10 sentences)."
         )
 
-        ask_for_hint_messages = [message for message in updated_messages if message["role"] != "system"]
+        filtered_messages = [message for message in updated_messages if message["role"] != "system"]
+        ask_for_hint_messages = filtered_messages[:1] + filtered_messages[-1:] if filtered_messages else []
         ask_for_hint_messages.append({"role": "user", "content": ask_for_hint_prompt})
 
         updated_messages.append({"role": "user", "content": ask_for_hint_prompt})

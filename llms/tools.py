@@ -286,7 +286,7 @@ OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize 
 WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something. If the task is not suited for using python/Wolfram, please compute/derive it manually and provide detailed reasoning steps.
 If the subtask is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
         experience = """<experiences>
-Use SymPy first; if inconclusive/hard symbolic, switch to Wolfram for powerful symbolic capability. Always include assumptions (domains/parameters). For param equations/inequalities prefer Reduce and verify branches by substitution. For numerics: increase precision; test random points + edge/singularity cases. Watch branch cuts (Log/Sqrt/Power).
+Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one try. Always include assumptions (domains/parameters).
 </experiences>"""
         
         messages = [

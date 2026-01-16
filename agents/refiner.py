@@ -86,7 +86,7 @@ class Refiner(Node):
             save_snapshot(shared, "refiner", AlphaSolveConfig.EXIT_ON_ERROR)
             return AlphaSolveConfig.EXIT_ON_ERROR
 
-        if exec_res[0] == AlphaSolveConfig.VERIFIER_EXAUSTED:
+        if exec_res[0] >= AlphaSolveConfig.VERIFIER_EXAUSTED:
             lemma_id = shared.get("current_lemma_id")
             if lemma_id is not None and 0 <= lemma_id < len(shared.get("lemmas", [])):
                 lemma = shared["lemmas"][lemma_id]

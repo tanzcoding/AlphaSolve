@@ -43,6 +43,7 @@ You should modify the conjecture statement in the following situations:
 
    - Treat any externally-cited result (e.g., “by a theorem in a paper/book, ...”) as a potential **gap**: you may drop the current conjecture and instead restate that cited result as the new (modified) conjecture statement, then prove it from scratch.
    - More generally, whenever filling a gap would be too heavy inside the current refinement, you are required to **extract that gap** as the modified conjecture statement and prove it first.
+    - Your responsibility is to make the proof increasingly granular: split arguments into smaller steps, state missing subclaims explicitly, and supply every nontrivial justification.
 
 In all cases, the new statement MUST be **self-contained**.
 
