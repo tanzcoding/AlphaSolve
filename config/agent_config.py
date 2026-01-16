@@ -32,7 +32,6 @@ DEEPSEEK_CONFIG = {
 PARASAIL_CONFIG = {
     'base_url': 'https://api.parasail.io/v1',
     'api_key': lambda: os.getenv('PARASAIL_API_KEY'),
-    # DeepSeek：通过特定模型名启用思考模式
     'model': 'deepseek-ai/DeepSeek-V3.2',
     'timeout': 3600,
     'params': {
@@ -40,6 +39,16 @@ PARASAIL_CONFIG = {
             'enable_thinking': True
         }
     }
+}
+
+# LongCat 官方
+LONGCAT_CONFIG = {
+    'base_url': 'https://api.longcat.chat/openai',
+    'api_key': lambda: os.getenv('LONGCAT_API_KEY'),
+    # 通过特定模型名启用思考模式
+    'model': 'LongCat-Flash-Thinking-2601',
+    'timeout': 3600,
+    'params': {}
 }
 
 # Moonshot 官方
