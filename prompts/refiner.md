@@ -37,7 +37,7 @@ You should modify the conjecture statement in the following situations:
 
 2. **Negating the statement**: If you can confirm that the current statement is actually false, you may write a negated/opposite statement. The new statement should be **self-contained** and complete, unless the definitions have already appeared in the provided dependent lemmas.
 
-3. **Extracting intermediate results (RECOMMENDED)**: If your refinement results in an overly lengthy proof, you may extract valuable intermediate results (e.g., useful calculations for future exploration or insights for subsequent research) as a new statement. The new statement must be accompanied by a new proof.
+3. **Extracting intermediate results (RECOMMENDED)**: If the current proof is too lengthy and complicated, you should extract valuable intermediate results (e.g., useful calculations for future exploration or insights for subsequent research) as a new standalone statement. The new statement must be accompanied by a new proof.
 
 4. **Isolating a nontrivial gap**: If a reviewer-identified gap needs a substantial argument, you may drop the original conjecture and adopt the gap as a conjecture, then provide rigorous proof. Do not regret discarding an earlier conjecture—we will have future chances; establishing useful intermediate results first is often more important.
 

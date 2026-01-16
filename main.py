@@ -3,7 +3,8 @@ from utils.utils import load_prompt_from_file
 
 if __name__== "__main__" :
     problem = load_prompt_from_file('problems/problem_1.md')
-    hint = load_prompt_from_file('hint.md')
+    hint= None
+    #hint = load_prompt_from_file('hint.md')
     alpha = AlphaSolve(problem=problem, hint=hint, print_to_console=True)
     solution = alpha.do_research()
 

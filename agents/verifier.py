@@ -21,7 +21,7 @@ class Verifier(Node):
         self.llm = llm
         self.logger = logger
 
-    def prep(self, shared): 
+    def prep(self, shared: SharedContext): 
         # READ ONLY from shared here.
         self.logger.log_print('entering verifier...', module='verifier')
 
@@ -36,6 +36,8 @@ class Verifier(Node):
 
         lemmas = shared["lemmas"]
         lemma = lemmas[lemma_id]
+
+        self.logger.log_print(f'this lemma has been labeled invalid and refined {lemma["verify_round"]} times', module='verifier')
 
         ctx_ids = build_reasoning_path(lemmas, lemma_id, verified_only=True)
         ctx_text = self.__render_context(ctx_ids, lemmas)

@@ -738,12 +738,50 @@ class LLMClient:
                     statement = lemma.get('statement', '')
                     proof = lemma.get('proof', '')
                     content = (
-                        f"<conjecture>\n"
+                        r"\begin{conjecture}\n"
                         f"{statement}\n"
-                        f"</conjecture>\n"
-                        f"<proof>\n"
+                        r"\end{conjecture}\n"
+                        r"\begin{proof}\n"
                         f"{proof}\n"
-                        f"</proof>"
+                        r"\end{proof}"
+                    )
+                    # IMPORTANT: return plain text (NOT JSON) to preserve backslashes (LaTeX).
+                    tool_content = content
+                    log_parts.append(content)
+                    log_parts.append(f"[result]\n(len={len(tool_content)})")
+                except Exception as exc:
+                    tool_content = f"[{name} error] {exc}"
+                    log_parts.append(f"[error]\n{tool_content}")
+
+        elif name == 'read_review_again':
+            shared = context.get('shared')
+
+            if shared is None:
+                tool_content = (
+                    f"[{name} error] shared context is not provided. "
+                    "Enable it by calling LLMClient.get_result(..., shared=shared)."
+                )
+                log_parts.append(f"[error]\n{tool_content}")
+            else:
+                try:
+                    lemma_id = shared['current_lemma_id']
+                    if lemma_id is None:
+                        raise ValueError("current_lemma_id is not set")
+                    if not isinstance(lemma_id, int):
+                        raise TypeError("current_lemma_id must be an integer")
+
+                    lemmas = shared['lemmas']
+                    if lemmas is None:
+                        raise ValueError("Currently no lemmas in shared context")
+                    if lemma_id < 0 or lemma_id >= len(lemmas):
+                        raise IndexError(f"current_lemma_id out of range: {lemma_id}")
+
+                    lemma = lemmas[lemma_id]
+                    statement = lemma.get('review', '')
+                    content = (
+                        r"\begin{review}\n"
+                        f"{statement}\n"
+                        r"\end{review}"
                     )
                     # IMPORTANT: return plain text (NOT JSON) to preserve backslashes (LaTeX).
                     tool_content = content

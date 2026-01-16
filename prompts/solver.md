@@ -16,7 +16,7 @@ Across all future explorations, you have a remaining budget of **{remaining_lemm
 
 1. Use `\begin{conjecture}` and `\end{conjecture}` to wrap your conjecture statement. 
   - At the beginning, use `[]` to wrap a brief description of the conjecture.
-  - Then, give the pure mathematical statemet which must be well written in LaTeX.
+  - Then, give the pure mathematical statement which must be well written in LaTeX.
   - Do **NOT** include any numbering or prefixes inside the tag (e.g., “Lemma 1.”, “Proposition”, “Conjecture”, “Theorem”)
 2. Use `\begin{proof}` and `\end{proof}` to wrap the proof of the conjecture.
 3. Use `\begin{dependency}` and `\end{dependency}` to wrap the JSON list of lemma that your conjecture is built upon. Use an empty array `[]` when the conjecture does not depend on other lemmas.

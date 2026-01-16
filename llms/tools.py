@@ -589,7 +589,7 @@ MODIFY_PROOF_TOOL = {
 
 READ_LEMMA_DESCRIPTION = """Read the full proof of an existing lemma (if any) by its id.
 
-Use this tool when you want to read the full proof of an existing collected lemma in the background.
+Use this tool when you want to read the full proof of an existing collected lemma in the background. By doing so, you can learn more about the lemma's proof.
 
 Parameters:
 - lemma_id: integer index of the lemma (0-based).
@@ -624,6 +624,25 @@ READ_CURRENT_CONJECTURE_AGAIN_TOOL = {
     'function': {
         'name': 'read_current_conjecture_again',
         'description': READ_CURRENT_CONJECTURE_AGAIN_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+            },
+            'required': []
+        }
+    }
+}
+
+READ_REVIEW_AGAIN_DESCRIPTION = """Read the full text of the previous review comments.
+
+Use this tool when you need to double check or reference the exact text of the previous review comments. NO parameter is needed.
+"""
+
+READ_REVIEW_AGAIN_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'read_review_again',
+        'description': READ_REVIEW_AGAIN_DESCRIPTION,
         'parameters': {
             'type': 'object',
             'properties': {

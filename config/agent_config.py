@@ -9,6 +9,7 @@ from llms.tools import (
     MODIFY_PROOF_TOOL,
     READ_LEMMA_TOOL,
     READ_CURRENT_CONJECTURE_AGAIN_TOOL,
+    READ_REVIEW_AGAIN_TOOL,
 )
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
@@ -153,7 +154,7 @@ class AlphaSolveConfig:
     # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REFINER_CONFIG = {
         **DEEPSEEK_CONFIG,
-        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
+        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 

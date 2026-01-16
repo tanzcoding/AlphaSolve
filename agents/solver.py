@@ -65,25 +65,7 @@ class Solver(Node):
 
         lemma = self.__build_lemma(updated_messages)
 
-        ask_for_hint_prompt = (
-            "In your next response, you are NOT required to propose a new conjecture. "
-            "In your next response, you are NOT required to propose a new conjecture. "
-            "Based on your exploration and the conjecture you just proposed, reflect on the insights you've gained. "
-            "What promising research directions emerge from your current understanding of the problem? "
-            "Identify specific subproblems, conjectures, or intermediate results that could serve as stepping stones toward the ultimate solution. "
-            "Consider which aspects of the problem remain underexplored and what mathematical tools or techniques might be most valuable to apply next. "
-            "Your insights will guide future conjecture generation and help prioritize the most promising avenues of investigation. "
-            "Please provide your reflections in a concise manner (within 8-10 sentences)."
-        )
-
-        filtered_messages = [message for message in updated_messages if message["role"] != "system"]
-        ask_for_hint_messages = filtered_messages[:1] + filtered_messages[-1:] if filtered_messages else []
-        ask_for_hint_messages.append({"role": "user", "content": ask_for_hint_prompt})
-
-        updated_messages.append({"role": "user", "content": ask_for_hint_prompt})
-
-        hint, _, _ = self.llm.get_result(ask_for_hint_messages, shared=shared, tools=None)
-        return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages, hint
+        return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 
 
     def post(self, shared, prep_res, exec_res):  ## 更新一下iteration 变量
@@ -112,7 +94,7 @@ class Solver(Node):
                 module="solver",
             )
             check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it answers the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
-            response,_,_ = self.llm.get_result(messages=[{"role": "user", "content": check_message}],tools=None,shared=shared)
+            response,_,_ = self.llm.get_result(messages=[{"role": "user", "content": check_message}],tools=[],shared=shared)
             answer = response.strip().lower()
             if answer == 'yes':
                 lemma['is_theorem'] = True
@@ -129,14 +111,6 @@ class Solver(Node):
             f"event=lemma_created step=post, lemma_id={lemma_id}, is_theorem={bool(lemma.get('is_theorem'))}, now has {len(shared['lemmas'])} lemmas",
             module="solver",
         )
-
-        hint = exec_res[3]
-        if hint and len(hint.strip()) > 0:
-            shared["hint"] = hint
-            self.logger.log_print(
-                f"event=hint_updated: {hint.strip()}",
-                module="solver",
-            )
 
         self.logger.log_print('exiting solver...', module='solver')
         
