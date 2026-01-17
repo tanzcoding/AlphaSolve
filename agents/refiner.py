@@ -35,7 +35,7 @@ class Refiner(Node):
             return AlphaSolveConfig.EXIT_ON_ERROR, None, None
 
         if shared["lemmas"][lemma_id].get("verify_round", 0) >= AlphaSolveConfig.MAX_VERIFY_AND_REFINE_ROUND:
-            return AlphaSolveConfig.VERIFIER_EXAUSTED, None
+            return AlphaSolveConfig.VERIFIER_EXAUSTED, None, None
 
         lemma = shared["lemmas"][lemma_id]
         ctx_ids = build_reasoning_path(shared["lemmas"],lemma_id, verified_only=True)
