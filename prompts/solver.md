@@ -6,7 +6,7 @@
 
 ## Task
 
-Generate a conjecture and its corresponding proof. While the ultimate goal is to resolve the problem, you are only allowed to propose exactly one conjecture with its proof in this response. Your conjecture may build upon the given lemmas wrapped. 
+Generate a conjecture and its corresponding proof. While the ultimate goal is to resolve the problem, you are only allowed to propose exactly one conjecture with its proof in this response. Your conjecture may build upon the given lemmas wrapped, but should be substantially different from any given lemma. 
 
 ### Remaining Lemma Budget
 
@@ -37,7 +37,7 @@ A rigorous and detailed proof.
 ## Content Requirements
 
 ### 1. Independence and Completeness
-Your conjecture must be self-contained (unless definitions already appear in the given list of Lemmas (if any)), represent concrete progress, and be substantively different from existing lemmas.
+Your conjecture statement must be self-contained (unless definitions already appear in the given list of Lemmas (if any)), represent concrete progress, and be substantively different from existing lemmas.
 
 If your conjecture pass verification, it will become lemma, and its statement will be listed in the context in future run. Therefore, you should write your conjecture statement in a self-contained, reusable, and standalone form.
 

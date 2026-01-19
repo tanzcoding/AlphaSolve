@@ -7,6 +7,7 @@ from wolframclient.evaluation import WolframLanguageSession
 from .exceptions import LLMServiceException
 from .tools import *
 from agents.shared_context import Lemma, SharedContext
+from copy import deepcopy
 
 class LLMClient:
     def __init__(self, module: str, config: Dict, logger: Logger):
@@ -73,6 +74,7 @@ class LLMClient:
         logger = self.logger
         reasoning_content = ""
         answer_content = ""
+        messages = deepcopy(messages)
         
         # 初始化工具执行环境
         tool_context = self._init_tool_context(tools) if tools else {}

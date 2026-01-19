@@ -61,7 +61,7 @@ class Refiner(Node):
 
         messages_to_send = prep_res[1]
         shared = prep_res[2]
-        for _ in range(AlphaSolveConfig.REFINER_MAX_RETRY):
+        for attempt in range(AlphaSolveConfig.REFINER_MAX_RETRY):
             response,_,_ = self.llm.get_result(messages=messages_to_send,shared=shared)
             if self.__validate_response(response):
                 break

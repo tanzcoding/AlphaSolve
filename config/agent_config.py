@@ -66,13 +66,31 @@ MOONSHOT_CONFIG = {
 VOLCANO_CONFIG = {
     'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
     'api_key': lambda: os.getenv('ARK_API_KEY'),
-    'model': 'doubao-seed-1-6-flash',
+    'model': 'deepseek-v3-2-251201',
     'timeout': 3600,
-    'temperature': 1.0,
-    # 火山引擎：通过 extra_body.enable_thinking 开启深度思考
+    'max_tokens': 64000,
+    # 火山引擎：通过 extra_body.thinking = enabled 开启深度思考
     'params': {
         'extra_body': {
-            'enable_thinking': True
+            'thinking': {
+                'type': 'enabled'
+            }
+        }
+    }
+}
+
+# 字节跳动火山引擎的coding套餐
+VOLCANO_CODING_CONFIG = {
+    'base_url': 'https://ark.cn-beijing.volces.com/api/coding/v3',
+    'api_key': lambda: os.getenv('ARK_API_KEY'),
+    'model': 'ark-code-latest',
+    'timeout': 3600,
+    'max_tokens': 32000,
+    'params': {
+        'extra_body': {
+            'thinking': {
+                'type': 'enabled'
+            }
         }
     }
 }
@@ -148,51 +166,51 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent，也可以阅读已有 lemma 的证明
     SOLVER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent，可以再读一遍当前猜想及其证明，也可以阅读已有 lemma 的证明
     VERIFIER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REFINER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
     # NoHistoryRefiner 强制使用 search/replace 工具
     NO_HISTORY_REFINER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
     }
     NO_HISTORY_REFINER_PROMPT_PATH = 'prompts/no_history_refiner.md'
     # WithHistoryRefiner 可以使用 subagent
     WITH_HISTORY_REFINER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [RESEARCH_SUBAGENT_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
     }
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/summarizer.md'
 
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
-    VERIFIER_SCALING_FACTOR = 5
+    VERIFIER_SCALING_FACTOR = 6
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 
@@ -222,5 +240,5 @@ class AlphaSolveConfig:
 
     ## 
     MAX_LEMMA_NUM = 30
-    MAX_VERIFY_AND_REFINE_ROUND = 10
+    MAX_VERIFY_AND_REFINE_ROUND = 4
     REFINER_MAX_RETRY = 3
