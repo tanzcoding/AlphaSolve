@@ -67,7 +67,7 @@ VOLCANO_CONFIG = {
     'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
     'api_key': lambda: os.getenv('ARK_API_KEY'),
     'model': 'deepseek-v3-2-251201',
-    'timeout': 3600,
+    'timeout': 120,
     'max_tokens': 64000,
     # 火山引擎：通过 extra_body.thinking = enabled 开启深度思考
     'params': {
@@ -85,7 +85,7 @@ VOLCANO_CODING_CONFIG = {
     'api_key': lambda: os.getenv('ARK_API_KEY'),
     'model': 'ark-code-latest',
     'timeout': 3600,
-    'max_tokens': 32000,
+    'max_tokens': 65536,
     'params': {
         'extra_body': {
             'thinking': {
@@ -210,7 +210,7 @@ class AlphaSolveConfig:
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
-    VERIFIER_SCALING_FACTOR = 6
+    VERIFIER_SCALING_FACTOR = 15
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 
@@ -242,3 +242,9 @@ class AlphaSolveConfig:
     MAX_LEMMA_NUM = 30
     MAX_VERIFY_AND_REFINE_ROUND = 4
     REFINER_MAX_RETRY = 3
+    CHECK_IS_THEOREM_TIMES = 5
+
+    # LLM API retry policy
+    # - Used by llms/utils.py to automatically retry when the streamed response
+    #   is interrupted (e.g. finish_reason == "length") to avoid the workflow hanging.
+    MAX_API_RETRY = 8

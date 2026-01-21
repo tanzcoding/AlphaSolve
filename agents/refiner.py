@@ -205,7 +205,7 @@ class Refiner(Node):
         )
         lines.append("")
         for i, lemma_id in enumerate(ctx_ids):
-            lines.append(f" ** Lemma-{i} **")
+            lines.append(f" ** Lemma-{lemma_id} **")
             lines.append(f" {lemmas[lemma_id].get('statement')}")
         return "\n".join(lines)
 

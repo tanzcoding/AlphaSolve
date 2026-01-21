@@ -37,7 +37,7 @@ class Solver(Node):
         prompt = self.__build_solver_prompt(
             prompt_template=self.prompt_template,
             problem=shared["problem"],
-            verified_lemmas=[l for l in (shared["lemmas"] or []) if l.get("status") == "verified"],
+            lemmas=shared["lemmas"],
             remaining_lemma_quota=AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"]),
             hint=shared["hint"],
         )
@@ -93,15 +93,13 @@ class Solver(Node):
                 f"event=check_theorem step=post",
                 module="solver",
             )
-            check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it answers the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
-            response,_,_ = self.llm.get_result(messages=[{"role": "user", "content": check_message}],tools=[],shared=shared)
-            answer = response.strip().lower()
-            if answer == 'yes':
-                lemma['is_theorem'] = True
+            is_theorem = self._check_is_theorem(shared, lemma)
+            if is_theorem:
                 self.logger.log_print(
-                    f"event=lemma_marked_as_theorem step=post",
+                    f"event=theorem_confirmed step=post",
                     module="solver",
                 )
+                lemma['is_theorem'] = is_theorem
 
         shared["lemmas"].append(lemma)
         lemma_id = len(shared["lemmas"]) - 1
@@ -120,13 +118,13 @@ class Solver(Node):
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
-    def __build_solver_prompt(self, *, prompt_template, problem, verified_lemmas, remaining_lemma_quota, hint=None):
+    def __build_solver_prompt(self, *, prompt_template, problem, lemmas, remaining_lemma_quota, hint=None):
 
         tmp = prompt_template.replace('{problem_content}', problem)
         tmp = tmp.replace('{remaining_lemma_quota}', str(remaining_lemma_quota))
 
         # Only include VERIFIED lemmas in solver context.
-        if verified_lemmas:
+        if lemmas:
             lines = []
             lines.append("## Context and History Explorations")
             lines.append("")
@@ -136,9 +134,10 @@ class Solver(Node):
                 "You can also use the 'read_lemma' tool to read the proof of a lemma. By doing so, you can learn from the previous proof(s) and extend them to help you construct new conjectures and proofs."
             )
             lines.append("")
-            for i, l in enumerate(verified_lemmas):
-                lines.append(f" ** Lemma-{i} **")
-                lines.append(f" {l.get('statement')}")
+            for i, lemma in enumerate(lemmas):
+                if lemma.get("status") == "verified":
+                    lines.append(f" ** Lemma-{i} **")
+                    lines.append(f" {lemma.get('statement')}")
             tmp = tmp + "\n\n" + "\n".join(lines)
 
         if hint:
@@ -205,6 +204,19 @@ class Solver(Node):
         if not exec_res or len(exec_res) == 0:
             self.logger.log_print('illegal exec_res with length: ', len(exec_res) if exec_res else 0, level="ERROR")
             return False
+        return True
+    
+    def _check_is_theorem(self, shared, lemma):
+        for _ in range(AlphaSolveConfig.CHECK_IS_THEOREM_TIMES):
+            self.logger.log_print(
+                f"event=check_theorem step=post",
+                module="solver",
+            )
+            check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it answers the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
+            response,_,_ = self.llm.get_result(messages=[{"role": "user", "content": check_message}],tools=[],shared=shared)
+            answer = response.strip().lower()
+            if answer == 'No':
+                return False
         return True
 
 def create_solver_agent(prompt_file_path,logger):

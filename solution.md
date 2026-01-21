@@ -1,60 +1,136 @@
 # Problem
 
 ```
-Find all $\alpha\in\mathbb{R}$ such that the equation $-\alpha U(y)+\left[(1+\alpha)y+U(y)\right] \partial_y U(y) = 0$ has a solution in $\{U\in C^\infty (\mathbb{R}):U(0)=0\}$ other than $U(y) = -y$ and $U(y)=0$.
+Let $v$ be a compactly supported smooth vector field on $\mathbb{R}^n$. Suppose that all $n$ eigenvalues of the Jacobian matrix $\nabla v$ of $v$ vanish everywhere on $\mathbb{R}^n$. Prove that $v$ also vanishes everywhere.
 ```
 
 # Solution
 
 The research pipeline verified the following lemmas:
 
-### Lemma 0
+### Lemma 14
 
 **Statement**
-For all real numbers α > 0, the differential equation -α U(y) + [(1 + α)y + U(y)] ∂_y U(y) = 0 has no smooth solutions U ∈ C^∞(ℝ) with U(0) = 0 other than U(y) = 0 and U(y) = -y.
+[Vanishing of the $L^{2}$ inner products of the components]
+Let $v\colon\mathbb{R}^{n}\to\mathbb{R}^{n}$ be a compactly supported smooth vector field such that at every point $x\in\mathbb{R}^{n}$ all eigenvalues of the Jacobian matrix $\nabla v(x)$ are zero. Then for every pair of indices $i,j\in\{1,\dots ,n\}$
+\[
+\int_{\mathbb{R}^{n}} v_i(x)\,v_j(x)\,dx =0 .
+\]
 
 **Proof**
-To establish the conjecture, we analyze the first-order ODE and its solutions under α > 0 and U(0) = 0.
+Since all eigenvalues of $\nabla v(x)$ are zero, the characteristic polynomial of $\nabla v(x)$ is $\lambda^{n}$. By the Cayley–Hamilton theorem, $(\nabla v(x))^{n}=0$. In particular, for any integer $k\ge 1$ the trace of $(\nabla v(x))^{k}$ vanishes; hence
+\[
+\operatorname{tr}\!\bigl(\nabla v(x)\bigr)=0,\qquad 
+\operatorname{tr}\!\bigl((\nabla v(x))^{2}\bigr)=0\qquad\text{for all }x\in\mathbb{R}^{n}.
+\tag{1}
+\]
+The first equality is $\operatorname{div}v(x)=0$.
 
-### Step 1: Rewrite the ODE
-The given ODE can be rewritten as:
-\[ \partial_y U = \frac{\alpha U}{(1 + \alpha)y + U} \]
+Fix two indices $j,k\in\{1,\dots ,n\}$ and consider the integral
+\[
+I_{jk}:=\int_{\mathbb{R}^{n}}\operatorname{tr}\!\bigl((\nabla v(x))^{2}\bigr)\,x_j x_k\,dx .
+\]
+Because $\operatorname{tr}\!\bigl((\nabla v)^{2}\bigr)$ vanishes pointwise, $I_{jk}=0$.
 
-### Step 2: Derive the General Solution
-Using the substitution \( v = \frac{U}{y} \) (valid for \( y \neq 0 \)), we have \( U = vy \) and \( \partial_y U = v + y \partial_y v \). Substituting into the ODE:
-\[ v + y \partial_y v = \frac{\alpha vy}{(1 + \alpha)y + vy} = \frac{\alpha v}{(1 + \alpha) + v} \]
-Rearranging gives the separable equation:
-\[ y \partial_y v = -\frac{v(1 + v)}{(1 + \alpha) + v} \]
-Separating variables and integrating:
-\[ \int \frac{(1 + \alpha) + v}{v(1 + v)} \, dv = -\int \frac{dy}{y} \]
+Expand the trace:
+\[
+\operatorname{tr}\!\bigl((\nabla v)^{2}\bigr)=\sum_{a,b=1}^{n}(\partial_{a}v_{b})(\partial_{b}v_{a}).
+\]
+Thus
+\[
+0=I_{jk}= \sum_{a,b}\int_{\mathbb{R}^{n}}(\partial_{a}v_{b})(\partial_{b}v_{a})\,x_j x_k\,dx .
+\tag{2}
+\]
 
-#### Partial Fraction Decomposition:
-We decompose the integrand on the left using partial fractions:
-\[ \frac{(1 + \alpha) + v}{v(1 + v)} = \frac{A}{v} + \frac{B}{1 + v} \]
-Multiplying both sides by \( v(1 + v) \):
-\[ (1 + \alpha) + v = A(1 + v) + Bv \]
-Setting \( v = 0 \): \( 1 + \alpha = A \). Setting \( v = -1 \): \( \alpha = -B \). Thus, \( A = 1 + \alpha \), \( B = -\alpha \), so:
-\[ \frac{(1 + \alpha) + v}{v(1 + v)} = \frac{1 + \alpha}{v} - \frac{\alpha}{1 + v} \]
+Integrate by parts with respect to the variable $x_{a}$; the boundary terms disappear because $v$ is compactly supported.  For each term we obtain
+\[
+\int_{\mathbb{R}^{n}}(\partial_{a}v_{b})(\partial_{b}v_{a})\,x_j x_k\,dx
+ =-\int_{\mathbb{R}^{n}}v_{b}\;\partial_{a}\!\bigl((\partial_{b}v_{a})\,x_j x_k\bigr)\,dx .
+\]
+Now
+\[
+\partial_{a}\!\bigl((\partial_{b}v_{a})\,x_j x_k\bigr)
+ =(\partial_{a}\partial_{b}v_{a})\,x_j x_k+(\partial_{b}v_{a})\,\partial_{a}(x_j x_k),
+\]
+and $\partial_{a}(x_j x_k)=\delta_{aj}x_k+\delta_{ak}x_j$.  Substituting this into (2) gives
+\[
+0=-\sum_{a,b}\int_{\mathbb{R}^{n}}v_{b}
+   \Bigl[(\partial_{a}\partial_{b}v_{a})\,x_j x_k
+        +(\partial_{b}v_{a})(\delta_{aj}x_k+\delta_{ak}x_j)\Bigr]dx .
+\tag{3}
+\]
 
-#### Integrating:
-Integrating term-by-term:
-\[ \int \left( \frac{1 + \alpha}{v} - \frac{\alpha}{1 + v} \right) dv = -\int \frac{dy}{y} \]
-\[ (1 + \alpha)\ln|v| - \alpha \ln|1 + v| = -\ln|y| + C \]
-Exponentiating both sides:
-\[ |v|^{1 + \alpha} |1 + v|^{-\alpha} = e^C / |y| \]
-Substituting \( v = U/y \) and simplifying:
-\[ U^{1 + \alpha} = K (U + y)^\alpha \]
-where \( K = e^C \) is a constant.
+The first sum in (3) can be rewritten using the commutativity of partial derivatives and the divergence‑free condition:
+\[
+\sum_{a,b}\int_{\mathbb{R}^{n}}v_{b}(\partial_{a}\partial_{b}v_{a})\,x_j x_k\,dx
+ =\sum_{a,b}\int_{\mathbb{R}^{n}}v_{b}\partial_{b}(\partial_{a}v_{a})\,x_j x_k\,dx
+ =\sum_{b}\int_{\mathbb{R}^{n}}v_{b}\partial_{b}(\operatorname{div}v)\,x_j x_k\,dx=0,
+\]
+because $\operatorname{div}v\equiv0$.  Consequently (3) reduces to
+\[
+0=-\sum_{a,b}\int_{\mathbb{R}^{n}}v_{b}(\partial_{b}v_{a})(\delta_{aj}x_k+\delta_{ak}x_j)\,dx .
+\]
+Performing the summation over $a$ yields
+\[
+0=-\sum_{b}\int_{\mathbb{R}^{n}}v_{b}(\partial_{b}v_{j})\,x_k\,dx
+    -\sum_{b}\int_{\mathbb{R}^{n}}v_{b}(\partial_{b}v_{k})\,x_j\,dx .
+\tag{4}
+\]
 
-### Step 3: Analyze Solutions with U(0) = 0
-- **Trivial Solution U = 0**: Substituting \( U = 0 \) into the ODE gives \( 0 = 0 \), so it is valid. In the general solution, \( 0 = K y^\alpha \) implies \( K = 0 \), confirming consistency.
-  
-- **Non-Trivial Solution U = -y**: For \( U = -y \), substitute into the ODE:
-  \[ -\alpha(-y) + [(1 + \alpha)y - y](-1) = \alpha y - \alpha y = 0 \]
-  Thus, \( U = -y \) is a solution. This corresponds to the constant solution \( v = -1 \) (from \( v = U/y \)), satisfying the separated equation as \( v = -1 \) makes the right-hand side zero.
+Define for any indices $\ell,m$
+\[
+A_{\ell,m}:=\sum_{b}\int_{\mathbb{R}^{n}}v_{b}(\partial_{b}v_{\ell})\,x_m\,dx .
+\]
+Equation (4) is $A_{j,k}+A_{k,j}=0$.
 
-### Step 4: No Other Smooth Solutions
-For \( K \neq 0 \), the general solution \( U^{1 + \alpha} = K (U + y)^\alpha \) implies \( U \sim a y + o(y) \) near \( y = 0 \). Substituting, \( a^{1 + \alpha} y^{1 + \alpha} = K y^\alpha \), which is impossible unless \( a = 0 \) (yielding \( U = 0 \)). Thus, no non-trivial solutions exist for \( K \neq 0 \).
+To evaluate $A_{\ell,m}$, use the identity
+\[
+v_{b}(\partial_{b}v_{\ell})=\partial_{b}(v_{b}v_{\ell})-(\partial_{b}v_{b})v_{\ell}.
+\]
+Integrating against $x_m$ gives
+\[
+\int_{\mathbb{R}^{n}}v_{b}(\partial_{b}v_{\ell})x_m\,dx
+ =\int_{\mathbb{R}^{n}}\partial_{b}(v_{b}v_{\ell})x_m\,dx
+   -\int_{\mathbb{R}^{n}}(\partial_{b}v_{b})v_{\ell}x_m\,dx .
+\]
+The first term is integrated by parts:
+\[
+\int_{\mathbb{R}^{n}}\partial_{b}(v_{b}v_{\ell})x_m\,dx
+ =-\int_{\mathbb{R}^{n}}v_{b}v_{\ell}\,\partial_{b}x_m\,dx
+ =-\delta_{bm}\int_{\mathbb{R}^{n}}v_{b}v_{\ell}\,dx .
+\]
+Hence
+\[
+\int_{\mathbb{R}^{n}}v_{b}(\partial_{b}v_{\ell})x_m\,dx
+ =-\delta_{bm}\int_{\mathbb{R}^{n}}v_{b}v_{\ell}\,dx
+   -\int_{\mathbb{R}^{n}}(\partial_{b}v_{b})v_{\ell}x_m\,dx .
+\]
+Summation over $b$ yields
+\[
+A_{\ell,m}= -\sum_{b}\delta_{bm}\int_{\mathbb{R}^{n}}v_{b}v_{\ell}\,dx
+            -\sum_{b}\int_{\mathbb{R}^{n}}(\partial_{b}v_{b})v_{\ell}x_m\,dx .
+\]
+The first sum is $-\int_{\mathbb{R}^{n}}v_{m}v_{\ell}\,dx$.  In the second sum the factor $v_{\ell}x_m$ does not depend on $b$, therefore
+\[
+\sum_{b}\int_{\mathbb{R}^{n}}(\partial_{b}v_{b})v_{\ell}x_m\,dx
+ =\int_{\mathbb{R}^{n}}\Bigl(\sum_{b}\partial_{b}v_{b}\Bigr)v_{\ell}x_m\,dx
+ =\int_{\mathbb{R}^{n}}(\operatorname{div}v)\,v_{\ell}x_m\,dx .
+\]
+Since $\operatorname{div}v\equiv0$, this integral vanishes.  Consequently
+\[
+A_{\ell,m}= -\int_{\mathbb{R}^{n}}v_{m}v_{\ell}\,dx .
+\tag{5}
+\]
 
-### Conclusion
-The only smooth solutions with \( U(0) = 0 \) are \( U = 0 \) and \( U = -y \).
+Now insert (5) into the relation $A_{j,k}+A_{k,j}=0$:
+\[
+0 = -\int_{\mathbb{R}^{n}}v_{k}v_{j}\,dx -\int_{\mathbb{R}^{n}}v_{j}v_{k}\,dx
+   = -2\int_{\mathbb{R}^{n}}v_{j}v_{k}\,dx .
+\]
+Thus
+\[
+\int_{\mathbb{R}^{n}}v_{j}(x)v_{k}(x)\,dx =0\qquad\text{for all }j,k.
+\tag{6}
+\]
+
+In particular, taking $j=k$ gives $\int_{\mathbb{R}^{n}}|v_{j}(x)|^{2}dx=0$.  Since $v_{j}$ is continuous, this forces $v_{j}\equiv0$ on $\mathbb{R}^{n}$.  As $j$ is arbitrary, we conclude $v\equiv0$.

@@ -58,24 +58,29 @@ class LLMClient:
     ) -> Tuple[str, str, List[Dict]]:
         """
         统一的获取 LLM 回复方法，始终使用流式输出
-        
+
+        NOTE: 为避免流式输出在达到最大输出长度/中断时卡住工作流，
+        这里增加了“整次重新生成”的重试机制（不续写上一次内容）。
+
         Args:
             messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
             tools: 工具列表（可选）。如果为None，使用self.tools；如果明确传入[]，则不使用工具
-            
+
         Returns:
             Tuple[str, str, List[Dict]]: (answer_content, reasoning_content, updated_messages)
         """
+        from config.agent_config import AlphaSolveConfig
+
         b = time.time()
         # 确定使用的工具列表
         if tools is None:
             tools = self.tools if self.tools else []
-        
+
         logger = self.logger
-        reasoning_content = ""
-        answer_content = ""
-        messages = deepcopy(messages)
-        
+
+        # IMPORTANT: retry must restart from the same input messages (no continuation).
+        base_messages = deepcopy(messages)
+
         # 初始化工具执行环境
         tool_context = self._init_tool_context(tools) if tools else {}
 
@@ -84,77 +89,120 @@ class LLMClient:
         if tool_context is not None:
             tool_context['shared'] = shared
 
-        if len(shared['lemmas']) <= 1:
+        if shared is not None and len(shared['lemmas']) <= 1:
             tools = [t for t in tools if t.get('function', {}).get('name') != 'read_lemma']
-        
+
+        max_api_retry = getattr(AlphaSolveConfig, 'MAX_API_RETRY', 8)
+
         # 多轮对话直至没有工具调用
         max_iterations = 100
-        try:
-            for _ in range(max_iterations):
-                # 获取一次响应
-                message = self._get_one_response(messages, tools)
-                
-                # 将message添加到messages
-                messages.append(message)
-                
-                # 累积reasoning_content和content
-                if message.get('reasoning_content'):
-                    reasoning_content += message['reasoning_content']
-                if message.get('content'):
-                    answer_content += message['content']
-                
-                # 如果没有工具调用则结束
-                tool_calls = message.get('tool_calls', [])
-                if not tool_calls:
-                    break
-                
-                # 处理工具调用
-                logger.log_print("\n" + "-" * 10 + "思维链中工具调用" + "-" * 10)
-                
-                for tc in tool_calls:
-                    name = tc['function']['name']
-                    raw_args = tc['function'].get('arguments') or '{}'
-                    args, parse_error = self._parse_tool_arguments(raw_args, shared)
-                    if args is None:
-                        warning_msg = (
-                            f"event=tool_args_parse_error name={name} error={parse_error}"
-                        )
-                        logger.log_print(warning_msg, module=self.module, level="ERROR")
-                        error_payload = json.dumps({'error': parse_error}, ensure_ascii=False)
-                        reasoning_content += (warning_msg + "\n")
-                        messages.append({
-                            'role': 'tool',
-                            'tool_call_id': tc.get('id'),
-                            'name': name,
-                            'content': error_payload,
-                        })
-                        continue
+        attempt = 0
+        last_exc: Optional[Exception] = None
 
-                    # 执行工具
-                    tool_content, log_parts = self._execute_tool(name, args, tool_context)
-                    
-                    # 追加工具结果到reasoning_content
-                    reasoning_content += ("\n".join(log_parts) + "\n")
-                    
-                    # 追加tool结果到消息列表
-                    messages.append({
-                        'role': 'tool',
-                        'tool_call_id': tc.get('id'),
-                        'name': name,
-                        'content': tool_content,
-                    })
-        
+        try:
+            while attempt < max_api_retry:
+                attempt += 1
+
+                reasoning_content = ""
+                answer_content = ""
+                # Restart the whole conversation for this call.
+                messages = deepcopy(base_messages)
+
+                try:
+                    for _ in range(max_iterations):
+                        # 获取一次响应
+                        message = self._get_one_response(messages, tools)
+
+                        # 将message添加到messages
+                        messages.append(message)
+
+                        # 累积reasoning_content和content
+                        if message.get('reasoning_content'):
+                            reasoning_content += message['reasoning_content']
+                        if message.get('content'):
+                            answer_content += message['content']
+
+                        # 如果没有工具调用则结束
+                        tool_calls = message.get('tool_calls', [])
+                        if not tool_calls:
+                            last_exc = None
+                            break
+
+                        # 处理工具调用
+                        logger.log_print("\n" + "-" * 10 + "思维链中工具调用" + "-" * 10)
+
+                        for tc in tool_calls:
+                            name = tc['function']['name']
+                            raw_args = tc['function'].get('arguments') or '{}'
+                            args, parse_error = self._parse_tool_arguments(raw_args, shared)
+                            if args is None:
+                                warning_msg = (
+                                    f"event=tool_args_parse_error name={name} error={parse_error}"
+                                )
+                                logger.log_print(warning_msg, module=self.module, level="ERROR")
+                                error_payload = json.dumps({'error': parse_error}, ensure_ascii=False)
+                                reasoning_content += (warning_msg + "\n")
+                                messages.append({
+                                    'role': 'tool',
+                                    'tool_call_id': tc.get('id'),
+                                    'name': name,
+                                    'content': error_payload,
+                                })
+                                continue
+
+                            # 执行工具
+                            tool_content, log_parts = self._execute_tool(name, args, tool_context)
+
+                            # 追加工具结果到reasoning_content
+                            reasoning_content += ("\n".join(log_parts) + "\n")
+
+                            # 追加tool结果到消息列表
+                            messages.append({
+                                'role': 'tool',
+                                'tool_call_id': tc.get('id'),
+                                'name': name,
+                                'content': tool_content,
+                            })
+
+                    # If we exited the loop without exception and last_exc is None, we are done.
+                    if last_exc is None:
+                        logger.log_print(
+                            f"\nevent=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer_content)} cot_len={len(reasoning_content)} retries_used={attempt-1}",
+                            module=self.module,
+                        )
+                        return answer_content, reasoning_content, messages
+
+                except LLMServiceException as exc:
+                    last_exc = exc
+                    logger.log_print(
+                        f"\nevent=llm_retry attempt={attempt}/{max_api_retry} status={getattr(exc, 'status', None)} error={exc}",
+                        module=self.module,
+                        level="ERROR",
+                    )
+                    if attempt >= max_api_retry:
+                        raise
+                    continue
+                except Exception as exc:
+                    # Unknown exception: still retry because stream can fail in various ways.
+                    last_exc = exc
+                    logger.log_print(
+                        f"\nevent=llm_retry attempt={attempt}/{max_api_retry} status=unknown_exception error={exc}",
+                        module=self.module,
+                        level="ERROR",
+                    )
+                    if attempt >= max_api_retry:
+                        raise
+                    continue
+
+            # Should be unreachable
+            if last_exc is not None:
+                raise last_exc
+            return "", "", deepcopy(base_messages)
+
         finally:
             # 清理工具上下文
             if tool_context:
                 self._cleanup_tool_context(tool_context)
-
-        logger.log_print(
-            f"\nevent=llm_done step=exec elapsed_s={time.time() - b:.1f} answer_len={len(answer_content)} cot_len={len(reasoning_content)}",
-            module=self.module,
-        )
-
-        return answer_content, reasoning_content, messages
         
     def _parse_tool_arguments(
         self,
@@ -707,6 +755,8 @@ class LLMClient:
                         f"## Proof\n\n"
                         f"{proof}"
                     )
+                    if lemma.get('status') != 'verified':
+                        tool_content += "\n\n**WARNING: This lemma is not yet verified and its proof may contain critical errors!!!**\n"
                     log_parts.append(f"lemma_id={lemma_id}")
                     log_parts.append(f"[result]\n(len={len(tool_content)})")
                 except Exception as exc:
