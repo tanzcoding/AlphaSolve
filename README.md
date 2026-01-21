@@ -1,40 +1,49 @@
 # AlphaSolve
 
-An AI-powered mathematical research system designed to accelerate mathematical problem-solving and theorem discovery.
+An AI-powered mathematical research system that iterates in a **solve -> verify -> refine** loop to accelerate mathematical problem-solving and theorem discovery.
 
 ## Workflow Architecture
 
+AlphaSolve is implemented as a PocketFlow graph. The core nodes are:
+
+1. **Solver** proposes a new lemma (a "conjecture" + proof + dependencies) or a final theorem.
+2. **Verifier** stress-tests the proof using **test-time scaling** (multiple independent verification attempts).
+3. **Refiner** patches the conjecture/proof using the verifier’s review when verification fails.
+4. **Summarizer** emits the final report when a verified theorem is reached (or the system exhausts its budget).
+
+### State machine (as implemented)
+
 ```mermaid
 flowchart TD
-    Start([开始]) --> Solver
+    Start([Start]) --> Solver
 
-    Solver["<b>Solver</b><br/>───────────────<br/>• 生成新的猜想(conjecture)或最终证明<br/>• 使用LLM分析问题和已验证的引理<br/>• 提取猜想内容、证明和依赖关系<br/>• 可生成中间引理或定理的最终证明<br/>• 轮次限制: TOTAL_SOLVER_ROUND"]
-    
-    Verifier["<b>Verifier</b><br/>───────────────<br/>• 验证Solver生成的猜想证明是否正确<br/>• 使用测试时扩展(test-time scaling)<br/>• 多次验证以提高准确性<br/>• 检查证明逻辑和推理路径<br/>• 生成详细的review反馈"]
-    
-    Refiner["<b>Refiner</b><br/>───────────────<br/>• 根据Verifier的反馈改进猜想<br/>• 修正证明中的错误<br/>• 判断猜想是否根本性错误<br/>• 生成改进后的猜想和证明<br/>• 保持猜想的依赖关系"]
-    
-    Summarizer["<b>Summarizer</b><br/>───────────────<br/>• 总结整个求解过程<br/>• 汇总所有已验证的引理<br/>• 生成最终报告"]
-    
-    End([结束])
+    Solver["<b>Solver</b><br/>───────────────<br/>• Generates a new lemma (conjecture+proof+dependencies) or a final theorem<br/>• Only VERIFIED lemmas are used as context for proposing the next lemma<br/>• Budget: MAX_LEMMA_NUM"]
 
-    %% Solver的出口
-    Solver -->|"生成猜想<br/>(CONJECTURE_GENERATED)"| Verifier
-    Solver -->|"执行错误<br/>(EXIT_ON_ERROR)<br/>重试"| Solver
-    Solver -->|"轮次耗尽<br/>(EXIT_ON_EXAUSTED)"| Summarizer
-    
-    %% Verifier的出口
-    Verifier -->|"发现错误<br/>(CONJECTURE_UNVERIFIED)<br/>需要改进"| Refiner
-    Verifier -->|"引理正确<br/>(CONJECTURE_VERIFIED)<br/>继续探索"| Solver
-    Verifier -->|"定理完成<br/>(DONE)<br/>问题已解决"| Summarizer
-    Verifier -->|"verify-refine轮次耗尽<br/>(EXIT_ON_EXAUSTED)"| Solver
-    
-    %% Refiner的出口
-    Refiner -->|"改进成功<br/>(REFINE_SUCCESS)<br/>重新验证"| Verifier
-    Refiner -->|"猜想根本性错误<br/>(CONJECTURE_WRONG)<br/>重新生成"| Solver
-    Refiner -->|"执行错误<br/>(EXIT_ON_ERROR)<br/>重试"| Refiner
-    
-    %% 结束
+    Verifier["<b>Verifier</b><br/>───────────────<br/>• Verifies the latest lemma's proof<br/>• Test-time scaling: VERIFIER_SCALING_FACTOR attempts<br/>• Uses transitive VERIFIED dependencies as context"]
+
+    Refiner["<b>Refiner</b><br/>───────────────<br/>• Repairs the lemma based on verifier review<br/>• Stops after MAX_VERIFY_AND_REFINE_ROUND verify/refine rounds for the same lemma<br/>• Retries invalid-format model outputs up to REFINER_MAX_RETRY"]
+
+    Summarizer["<b>Summarizer</b><br/>───────────────<br/>• Outputs all lemmas on the final reasoning path (dependencies + final theorem)<br/>•"]
+
+    End([End])
+
+    %% Solver exits
+    Solver -->|"conjecture_generated"| Verifier
+    Solver -->|"exit_on_error"| Solver
+    Solver -->|"exit_on_exausted"| Summarizer
+
+    %% Verifier exits
+    Verifier -->|"conjecture_unverified"| Refiner
+    Verifier -->|"conjecture_verified"| Solver
+    Verifier -->|"done"| Summarizer
+
+    %% Refiner exits
+    Refiner -->|"refined_success"| Verifier
+    Refiner -->|"exit_on_exausted"| Solver
+    Refiner -->|"conjecture_wrong"| Solver
+    Refiner -->|"exit_on_error"| Refiner
+
+    %% End
     Summarizer --> End
 
     style Solver fill:#e1f5ff,stroke:#01579b,stroke-width:2px
@@ -45,62 +54,109 @@ flowchart TD
     style End fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
-### Usage
+## Setup
 
-1. Set up your API keys in the environment variables:
+### 1) Install dependencies
+
+This repo expects an OpenAI-compatible client (via `openai`) and optionally Wolfram Engine.
+
 ```bash
-export DEEPSEEK_API_KEY="your_deepseek_api_key"
-# or alternatively for other providers
-export MOONSHOT_API_KEY="your_moonshot_api_key"
-export ARK_API_KEY="your_ark_api_key"
-export DASHSCOPE_API_KEY="your_dashscope_api_key"
-export OPENROUTER_API_KEY="your_openrouter_api_key"
+pip install -r requirements.txt
 ```
-2. Set up your Wolfram Engine path in the environment variables. For windows:
+
+If you do not have a `requirements.txt` yet, install at least:
+
 ```bash
-export WOLFRAM_KERNEL="your_wolfram_engine_path/WolframKernel.exe"
+pip install openai wolframclient
 ```
-2. Place your mathematical problem in the [`problem.md`](problem.md) file
-3. Run the main solver:
+
+### 2) Configure API keys
+
+Set the environment variable for the provider you use (examples):
+
+```bash
+# DeepSeek
+export DEEPSEEK_API_KEY="your_key"
+
+# Volcano (ByteDance Ark)
+export ARK_API_KEY="your_key"
+
+# Moonshot
+export MOONSHOT_API_KEY="your_key"
+
+# DashScope
+export DASHSCOPE_API_KEY="your_key"
+
+# OpenRouter
+export OPENROUTER_API_KEY="your_key"
+
+# LongCat
+export LONGCAT_API_KEY="your_key"
+```
+
+### 3) (Optional) Configure Wolfram Engine
+
+If you enable Wolfram tool usage and did not install the Wolfram kernel under the default installation path, set `WOLFRAM_KERNEL` to your `WolframKernel` executable.
+
+Windows example:
+
+```bash
+setx WOLFRAM_KERNEL "C:\\Program Files\\Wolfram Research\\Wolfram Engine\\14.0\\WolframKernel.exe"
+```
+
+## Usage
+
+1. Put your problem markdown in [`problems/problem_1.md`](problems/problem_1.md:1) (or update the path in [`main.py`](main.py:1)).
+2. (Optional) Put hints in [`hint.md`](hint.md:1) and load them in [`main.py`](main.py:1).
+3. Run:
+
 ```bash
 python main.py
 ```
 
-### Configuration
+Output:
 
-AlphaSolve supports multiple LLM providers. You can configure which provider to use by modifying the [`config/agent_config.py`](config/agent_config.py) file:
+- Prints the final summary to console
+- Writes `solution.md` (overwrites) in the project root
 
-```python
-class AlphaSolveConfig:
-    # Available configurations: DEEPSEEK_CONFIG, MOONSHOT_CONFIG, VOLCANO_CONFIG,
-    # DASHSCOPE_CONFIG, OPENROUTER_CONFIG, CUSTOM_LLM_CONFIG
-    
-    # Configure LLM providers for each agent
-    REFINER_CONFIG = VOLCANO_CONFIG
-    SOLVER_CONFIG = VOLCANO_CONFIG
-    VERIFIER_CONFIG = VOLCANO_CONFIG
-    SUMMARIZER_CONFIG = VOLCANO_CONFIG
-```
+## Configuration
 
-Each agent (Solver, Verifier, Refiner, Summarizer) can be configured with a different LLM provider based on your needs.
+### Provider / model selection
+
+Switch the model/provider by editing [`config/agent_config.py`](config/agent_config.py:1).
+
+The active runtime config is embedded into each agent’s config:
+
+- `AlphaSolveConfig.SOLVER_CONFIG`
+- `AlphaSolveConfig.VERIFIER_CONFIG`
+- `AlphaSolveConfig.REFINER_CONFIG`
+- `AlphaSolveConfig.SUMMARIZER_CONFIG`
+
+### Key workflow knobs
+
+Defined in [`config/agent_config.py`](config/agent_config.py:158):
+
+- `MAX_LEMMA_NUM`: maximum number of lemmas Solver may generate
+- `VERIFIER_SCALING_FACTOR`: how many independent verification attempts Verifier runs per lemma
+- `MAX_VERIFY_AND_REFINE_ROUND`: max verify/refine cycles for a single lemma before it is rejected
+- `REFINER_MAX_RETRY`: retries for invalid-format refiner responses
+- `MAX_API_RETRY`: full-call retry count when streaming responses are interrupted
 
 ## Benchmark
 
-### Running Benchmarks
+AlphaSolve includes a lightweight benchmark loop.
 
-To evaluate AlphaSolve's performance:
+### Running
 
-1. Place the standard solution in the [`standard_solution.md`](standard_solution.md) file
-2. Run the benchmark script:
+1. Put the reference solution in [`standard_solution.md`](standard_solution.md:1)
+2. Run:
+
 ```bash
 python benchmark.py
 ```
 
-### How Benchmarking Works
+### How it works
 
-The benchmark system executes AlphaSolve **10 times** on the same problem to calculate accuracy. For each run:
+The benchmark runs AlphaSolve multiple times on the same problem and scores each run by comparing the produced answer against the reference solution.
 
-1. AlphaSolve generates a solution using its solve-verify-refine workflow
-2. An LLM evaluator compares AlphaSolve's answer against the standard solution
-3. The evaluator determines whether the solution is correct or incorrect
-4. Results are aggregated to calculate the overall accuracy rate
+See [`benchmark.py`](benchmark.py:1) for the exact evaluation logic and repetition count.
