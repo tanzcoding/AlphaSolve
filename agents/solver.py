@@ -207,17 +207,20 @@ class Solver(Node):
         return True
     
     def _check_is_theorem(self, shared, lemma):
+        is_theorem_num = 0
         for _ in range(AlphaSolveConfig.CHECK_IS_THEOREM_TIMES):
             self.logger.log_print(
                 f"event=check_theorem step=post",
                 module="solver",
             )
-            check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it answers the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
+            check_message = f"Check if the following statement **fully addresses the problem** (do NOT check if the statement is mathematically correct - only check if it fully resolves the problem). Output ONLY 'Yes' or 'No' without any explanation.\n\nProblem: {shared['problem']}\n\nStatement: {lemma['statement']}"
             response,_,_ = self.llm.get_result(messages=[{"role": "user", "content": check_message}],tools=[],shared=shared)
             answer = response.strip().lower()
-            if answer == 'No':
-                return False
-        return True
+            if answer == 'Yes':
+                is_theorem_num += 1
+        if is_theorem_num >= AlphaSolveConfig.CHECK_IS_THEOREM_TIMES:
+            return True
+        return False
 
 def create_solver_agent(prompt_file_path,logger):
     
