@@ -745,20 +745,23 @@ class LLMClient:
                         raise IndexError(f"lemma_id out of range: {lemma_id}")
 
                     lemma = lemmas[lemma_id]
-                    statement = lemma.get('statement', '')
-                    proof = lemma.get('proof', '')
-
-                    # IMPORTANT: return plain text (NOT JSON) to preserve backslashes (LaTeX).
-                    tool_content = (
-                        f"## Lemma-{lemma_id}\n\n"
-                        f"{statement}\n\n"
-                        f"## Proof\n\n"
-                        f"{proof}"
-                    )
-                    if lemma.get('status') != 'verified':
-                        tool_content += "\n\n**WARNING: This lemma is not yet verified and its proof may contain critical errors!!!**\n"
                     log_parts.append(f"lemma_id={lemma_id}")
-                    log_parts.append(f"[result]\n(len={len(tool_content)})")
+
+                    if lemma['status'] != 'verified':
+                        tool_content = "[read_lemma warning] This lemma has been rejected previously, Reading this lemma is prohibited."
+                        verified_lemma_ids = [i for i, l in enumerate(lemmas) if l.get('status') == 'verified']
+                        if verified_lemma_ids:
+                            tool_content += f" Verified lemma IDs: {verified_lemma_ids}"
+                    else:
+                        statement = lemma.get('statement', '')
+                        proof = lemma.get('proof', '')
+                        tool_content = (
+                            f"## Lemma-{lemma_id}\n\n"
+                            f"{statement}\n\n"
+                            f"## Proof\n\n"
+                            f"{proof}"
+                        )
+                    log_parts.append(tool_content)
                 except Exception as exc:
                     tool_content = f"[read_lemma error] {exc}"
                     log_parts.append(f"[error]\n{tool_content}")
