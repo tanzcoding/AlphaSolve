@@ -403,6 +403,8 @@ class LLMClient:
         # 流式读取并拼接
         finish_reason = None
         for chunk in stream:
+            if not chunk.choices:
+                continue
             choice = chunk.choices[0]
             delta = choice.delta
             if getattr(choice, 'finish_reason', None):

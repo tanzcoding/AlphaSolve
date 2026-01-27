@@ -19,7 +19,7 @@ Across all future explorations, you have a remaining budget of **{remaining_lemm
   - Then, give the pure mathematical statement which must be well written in LaTeX.
   - Do **NOT** include any numbering or prefixes inside the tag (e.g., “Lemma 1.”, “Proposition”, “Conjecture”, “Theorem”)
 2. Use `\begin{proof}` and `\end{proof}` to wrap the proof of the conjecture.
-3. Use `\begin{dependency}` and `\end{dependency}` to wrap the JSON list of lemma that your conjecture is built upon. Use an empty array `[]` when the conjecture does not depend on other lemmas.
+3. Use `\begin{dependency}` and `\end{dependency}` to wrap the JSON list of lemma that you used in your proof. Use an empty array `[]` when the conjecture does not depend on other lemmas. All lemmas listed in the dependency must be used in the proof; likewise, all lemmas used in the proof must be listed here.
 
 ### Example Output
 

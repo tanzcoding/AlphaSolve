@@ -110,6 +110,24 @@ DASHSCOPE_CONFIG = {
     }
 }
 
+# 小米 MIMO
+MIMO_CONFIG = {
+    'base_url': 'https://api.xiaomimimo.com/v1',
+    'api_key': lambda: os.getenv('MIMO_API_KEY'),
+    'model': 'mimo-v2-flash',
+    'timeout': 3600,
+    'temperature': 1.0,
+    'top_p': 0.95,
+    # 阿里云百炼：通过 extra_body.enable_thinking 开启深度思考
+    'params': {
+        'extra_body': {
+            'thinking': {
+                'type': 'enabled'
+            }
+        }
+    }
+}
+
 # OpenRouter 官方
 OPENROUTER_GPT_5_CONFIG = {
     'base_url': 'https://openrouter.ai/api/v1',
@@ -166,22 +184,22 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent，也可以阅读已有 lemma 的证明
     SOLVER_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': [READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
+        **MIMO_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent，可以再读一遍当前猜想及其证明，也可以阅读已有 lemma 的证明
     VERIFIER_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
+        **MIMO_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REFINER_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
+        **MIMO_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
 
@@ -199,7 +217,7 @@ class AlphaSolveConfig:
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **MIMO_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/summarizer.md'
