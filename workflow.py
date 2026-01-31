@@ -18,17 +18,25 @@ class AlphaSolve:
     ## 首先, AIM 其实没什么东西可以复用的,整体上目前大部分Math Aget 都可以总结成, solve(explorer)-verify(reviewer)-refine 的模式
     ## 但是具体做看实验了, 因此 AlphaSolve 的主类仅封装: (1) solve(explorer)-verify(reviewer)-refine 的模式 (2) solve & verify & refine 的历史 trace
 
-    def __init__(self, problem, hint, print_to_console = False):
+    def __init__(self, problem, hint, print_to_console = False, shared_context = None):
         self.problem = problem
-        self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH,print_to_console=print_to_console)
+        self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH, print_to_console=print_to_console)
         self.hint = hint
 
-        # shared is a single SharedContext(dict) instance.
-        # All nodes read only in prep and write only in post.
-        self.shared = new_shared_context(
-            problem=self.problem,
-            hint=self.hint,
-        )
+        if not shared_context: ## 没传递 shared_context, 那就是非并行的场景, 每个 AlphaSolve 自己生成
+
+            self.logger.log_print('AlphaSolve Init Context in serial-mode, shared by its own', module='AlphaSolve')
+
+            shared_context = new_shared_context(
+                problem=self.problem,
+                hint=self.hint,
+                manager = self.manager
+            )
+
+        else:
+            self.logger.log_print('AlphaSolve Using Context in parallel-mode, shared by all process', module='AlphaSolve')
+
+        self.shared = shared_context
 
 
     def __create_research_flow(self):  ## 主类入口
@@ -111,6 +119,5 @@ class AlphaSolve:
         except KeyError:
             self.logger.log_print('error execute on AlphaSolve, no summary', module='AlphaSolve', level='ERROR')
             return None
-
 
 

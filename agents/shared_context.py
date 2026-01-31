@@ -17,7 +17,7 @@ expansion for verifiers via :func:`build_reasoning_path`.
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, TypedDict, Literal
 from openai.types.chat import ChatCompletionMessageParam
-
+from multiprocessing import Manager
 
 LemmaStatus = Literal["pending", "verified", "rejected"]
 
@@ -107,15 +107,27 @@ def build_reasoning_path(
     return out
 
 
-def new_shared_context(*, problem: str, hint: Optional[str] = None) -> SharedContext:
+def new_shared_context(*, problem: str, hint: Optional[str] = None, manager: Optional[Manager] = None) -> SharedContext:
     """Factory that pre-populates required shared keys."""
 
-    return {
-        "problem": problem,
-        "hint": hint,
-        "lemmas": [],
-        "current_lemma_id": None,
-        "result_summary": None,
+    if manager:
+        dd = manager.dict({
+            "problem": problem,
+            "hint": hint,
+            "lemmas": [],
+            "current_lemma_id": None,
+            "result_summary": None,
+        })
+
+        return dict(dd)
+
+    else:
+        return {
+            "problem": problem,
+            "hint": hint,
+            "lemmas": [],
+            "current_lemma_id": None,
+            "result_summary": None,
     }
 
 

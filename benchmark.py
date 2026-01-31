@@ -3,6 +3,7 @@ import time
 import json
 import argparse
 import threading
+import traceback
 import multiprocessing as mp
 
 from datetime import datetime
@@ -12,7 +13,9 @@ from config.agent_config import AlphaSolveConfig
 from llms.utils import LLMClient
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
-
+from multiprocessing import Manager
+from agents.shared_context import new_shared_context
+from agents.shared_context import SharedContext
 
 EVAL_TAG_CORRECT = "[[VERDICT:CORRECT]]"
 EVAL_TAG_INCORRECT = "[[VERDICT:INCORRECT]]"
@@ -36,7 +39,7 @@ Important rules:
 - Consider mathematical equivalence, not formatting.
 - If sets/expressions are equivalent up to re-indexing or simple algebra, it is CORRECT.
 - If the candidate is empty, undefined, or clearly mismatched, it is INCORRECT.
-- Output ONLY one of the following tokens as the last line: {EVAL_TAG_CORRECT} or {EVAL_TAG_INCORRECT}.
+- Output ONzzLY one of the following tokens as the last line: {EVAL_TAG_CORRECT} or {EVAL_TAG_INCORRECT}.
 - Do not add any extra text after the token.
 
 Problem:
@@ -61,18 +64,33 @@ def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     is_correct = EVAL_TAG_CORRECT in text and EVAL_TAG_INCORRECT not in text
     return is_correct, text
 
-def call_alpha_solve(print_to_console: bool):
-    alpha = AlphaSolve(print_to_console)
+def call_alpha_solve(problem, hint,  print_to_console: bool, shared_context: SharedContext):
+
+    alpha = AlphaSolve(problem, hint, print_to_console, shared_context)
     solution_text = alpha.do_research()
     return solution_text
 
+
+def init_shared_context(problem, hint,  print_to_console, manager):
+
+    if manager:
+        shared_context = new_shared_context(
+            problem = problem,
+            hint = hint,
+            manager = manager
+        )
+
+        return shared_context
+
+    return None
+           
 
 def _console_log(*args, print_enabled: bool = False):
     if print_enabled:
         print(*args, flush=True)
 
 
-def run_once(problem_text: str, gold_text: str, console_lock):
+def run_once(problem_text: str, gold_text: str, console_lock: bool, shared_context: SharedContext):
     """
     运行一次 AlphaSolve 流程
     
@@ -100,9 +118,12 @@ def run_once(problem_text: str, gold_text: str, console_lock):
 
         # 执行 AlphaSolve，传入打印权限
         # 注意：由于工具调用可能耗时很长，我们在 AlphaSolve 内部不会一直持有锁
-        solution_text = call_alpha_solve(has_print_permission)
+        solution_text = call_alpha_solve(problem_text, console_lock, has_print_permission, shared_context)
+
     except Exception as e:
         error = f"AlphaSolve error: {e}"
+        traceback.print_exc()
+
     finally:
         # 释放打印权限
         if has_print_permission:
@@ -144,7 +165,7 @@ def run_once(problem_text: str, gold_text: str, console_lock):
 def main():
 
     parser = argparse.ArgumentParser(description="Run AlphaSolve benchmark.")
-    parser.add_argument("-n", "--runs", type=int, default=10, help="Number of runs (default: 10)")
+    parser.add_argument("-n", "--runs", type=int, default=1, help="Number of runs (default: 10)")
     parser.add_argument("--sleep", type=float, default=0.0, help="Sleep seconds between runs (default: 0)")
     parser.add_argument("--out", type=str, default=None, help="Output JSON file (default: auto name)")
     args = parser.parse_args()
@@ -171,13 +192,13 @@ def main():
     manager = mp.Manager()
     console_lock = manager.Lock()
 
+    shared_context = init_shared_context(problem_text, None, console_lock, manager)
     executor = ProcessPoolExecutor(max_workers=max_worker_num, mp_context=mp.get_context("spawn"))
-
 
     for i in range(1, args.runs + 1):
         print(f"[benchmark] run {i}/{args.runs}", flush=True)
 
-        future = executor.submit(run_once, problem_text, gold_text, console_lock)
+        future = executor.submit(run_once, problem_text, gold_text, console_lock, shared_context)
         futures.append(future)
 
         if args.sleep > 0:
@@ -202,6 +223,8 @@ def main():
                 "evaluator_raw": str(exc),
             })
             print(f"[benchmark] exception from worker: {exc}", flush=True)
+
+            traceback.print_exc()
 
     executor.shutdown(wait=True)
     try:
