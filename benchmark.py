@@ -55,6 +55,7 @@ Now decide and output exactly one final token on the last line.
 """.strip()
 
 def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
+
     """Use an LLM to judge if pred matches gold. Returns (is_correct, raw_reply)."""
     client = LLMClient(AlphaSolveConfig.VERIFIER_CONFIG, print_to_console=False)
     prompt = build_eval_prompt(problem, gold, pred)
@@ -62,11 +63,12 @@ def evaluate_with_llm(problem: str, gold: str, pred: str) -> tuple[bool, str]:
     answer, _cot = client.get_result(messages)
     text = (answer or "").strip()
     is_correct = EVAL_TAG_CORRECT in text and EVAL_TAG_INCORRECT not in text
+
     return is_correct, text
 
-def call_alpha_solve(problem, hint,  print_to_console: bool, shared_context: SharedContext):
+def call_alpha_solve(problem, hint,  print_to_console: bool, lemma_pool: list):
 
-    alpha = AlphaSolve(problem, hint, print_to_console, shared_context)
+    alpha = AlphaSolve(problem, hint, print_to_console, lemma_pool)
     solution_text = alpha.do_research()
     return solution_text
 
@@ -90,7 +92,7 @@ def _console_log(*args, print_enabled: bool = False):
         print(*args, flush=True)
 
 
-def run_once(problem_text: str, gold_text: str, console_lock: bool, shared_context: SharedContext):
+def run_once(problem_text: str, gold_text: str, console_lock: bool, lemma_pool: list):
     """
     运行一次 AlphaSolve 流程
     
@@ -118,7 +120,7 @@ def run_once(problem_text: str, gold_text: str, console_lock: bool, shared_conte
 
         # 执行 AlphaSolve，传入打印权限
         # 注意：由于工具调用可能耗时很长，我们在 AlphaSolve 内部不会一直持有锁
-        solution_text = call_alpha_solve(problem_text, console_lock, has_print_permission, shared_context)
+        solution_text = call_alpha_solve(problem_text, console_lock, has_print_permission, lemma_pool)
 
     except Exception as e:
         error = f"AlphaSolve error: {e}"
@@ -189,16 +191,17 @@ def main():
 
     # 跨进程共享的 console lock：确保同一时刻只有一个 AlphaSolve 能打印。
     # 使用 Manager().Lock()，可在 Windows spawn 模式下安全传递给子进程。
+
     manager = mp.Manager()
     console_lock = manager.Lock()
 
-    shared_context = init_shared_context(problem_text, None, console_lock, manager)
+    lemma_pool = manager.list()
     executor = ProcessPoolExecutor(max_workers=max_worker_num, mp_context=mp.get_context("spawn"))
 
     for i in range(1, args.runs + 1):
         print(f"[benchmark] run {i}/{args.runs}", flush=True)
 
-        future = executor.submit(run_once, problem_text, gold_text, console_lock, shared_context)
+        future = executor.submit(run_once, problem_text, gold_text, console_lock, lemma_pool)
         futures.append(future)
 
         if args.sleep > 0:

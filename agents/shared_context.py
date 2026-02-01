@@ -49,15 +49,16 @@ class Lemma(TypedDict):
     verify_round: int
 
 
-class SharedContext(TypedDict):
-    """Schema for the single dict passed between PocketFlow nodes."""
-
+class SharedContext(TypedDict):  
+    
+    ## 这部分信息全局共享（所有的进程) 
     problem: str
-    hint: Optional[str]
     lemmas: List[Lemma]
+
+    ##  这部分信息在某一个 alphasolve 里使用, 用来同步 solver/verifier/refiner 之间的信息
+    hint: Optional[str]
     current_lemma_id: Optional[int]
     result_summary: Optional[str]
-
 
 def build_reasoning_path(
     lemmas: List[Lemma],
@@ -107,27 +108,22 @@ def build_reasoning_path(
     return out
 
 
-def new_shared_context(*, problem: str, hint: Optional[str] = None, manager: Optional[Manager] = None) -> SharedContext:
+def new_shared_context(*, problem: str, hint: Optional[str] = None, lemma_pool: Optional[List] = None) -> SharedContext:
     """Factory that pre-populates required shared keys."""
+ 
+    ## 在实现的时候, 这个 lemma_pool 会用 manager.list(), 用来确保可以在多个进程之间共享
+    ## 剩下的字段一半来说, 每个进程的 working memory, 不管
 
-    if manager:
-        dd = manager.dict({
-            "problem": problem,
-            "hint": hint,
-            "lemmas": [],
-            "current_lemma_id": None,
-            "result_summary": None,
-        })
-
-        return dict(dd)
-
-    else:
-        return {
-            "problem": problem,
-            "hint": hint,
-            "lemmas": [],
-            "current_lemma_id": None,
-            "result_summary": None,
+    lemmas = lemma_pool
+    if not lemma_pool:
+        lemmas = [ ] 
+    
+    return {
+        "problem": problem,
+        "hint": hint,
+        "lemmas": lemmas,
+        "current_lemma_id": None,
+        "result_summary": None,
     }
 
 

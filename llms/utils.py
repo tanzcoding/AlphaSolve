@@ -396,6 +396,8 @@ class LLMClient:
             tools=tools,
             tool_choice='auto' if tools else None,
             stream=True,
+            ## logprobs=True,     
+            ## top_logprobs=5,
             **model_params,
             **({"extra_body": extra_body} if extra_body else {})
         )
