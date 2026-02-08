@@ -153,10 +153,9 @@ class AlphaSolve:
 
                 try:
                     data = fut.result()
-                    if not data:  ## 已经有结果了, 直接返回
+                    if data and len(data) > 0:  ## 已经有结果了, 直接返回
                         return data
 
-                    results.append(data)
                     self.logger.log_print('finished num ', finished, module='AlphaSolve')
 
                 except Exception as exc:
