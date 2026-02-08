@@ -282,3 +282,6 @@ class AlphaSolveConfig:
 
     PROBLEM_PATH = 'problems/problem_1.md'
     STANDARD_SOLUTION_PATH = 'standard_solution.md'
+
+    SHARED_BY_ALL = 'shared_by_all'
+    SHARED_BY_ITERATION = 'shared_by_iteration'

@@ -47,6 +47,9 @@ class Lemma(TypedDict):
     history_messages: List[ChatCompletionMessageParam]
     verify_round: int
 
+    ## 在第几轮被生成出来, 作用是用来做版本控制
+    iteration_round: int
+
 
 class SharedContext(TypedDict):  
     
@@ -107,7 +110,7 @@ def build_reasoning_path(
     return out
 
 
-def new_shared_context(*, problem: str, hint: Optional[str] = None, lemma_pool: Optional[List] = None) -> SharedContext:
+def new_shared_context(*, problem: str, hint: Optional[str] = None, lemma_pool: Optional[List] = None, iteration: Optional[int] = 0, mode: Optional[str] = None) -> SharedContext:
     """Factory that pre-populates required shared keys."""
  
     ## 在实现的时候, 这个 lemma_pool 会用 manager.list(), 用来确保可以在多个进程之间共享
@@ -123,6 +126,8 @@ def new_shared_context(*, problem: str, hint: Optional[str] = None, lemma_pool: 
         "lemmas": lemmas,
         "current_lemma_id": None,
         "result_summary": None,
+        "iteration": iteration, 
+        "mode": mode
     }
 
 

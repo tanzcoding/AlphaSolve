@@ -19,7 +19,7 @@ import random
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def _do_research(problem, hint, lemma_pool, print_to_console):
+def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, mode):
 
     ## init logger for every process
     process_id = str(os.getpid())
@@ -30,7 +30,9 @@ def _do_research(problem, hint, lemma_pool, print_to_console):
     shared_context = new_shared_context(
         problem = problem,
         hint = hint,
-        lemma_pool = lemma_pool
+        lemma_pool = lemma_pool,
+        iteration = iteration_round,
+        mode = mode
     )
 
     flow = _create_research_flow(problem, hint, lemma_pool, logger)
@@ -109,7 +111,7 @@ class AlphaSolve:
     ## 首先, AIM 其实没什么东西可以复用的,整体上目前大部分Math Aget 都可以总结成, solve(explorer)-verify(reviewer)-refine 的模式
     ## 但是具体做看实验了, 因此 AlphaSolve 的主类仅封装: (1) solve(explorer)-verify(reviewer)-refine 的模式 (2) solve & verify & refine 的历史 trace
 
-    def __init__(self, problem, max_worker_num, print_to_console = True):
+    def __init__(self, problem, max_worker_num, print_to_console = True, mode = AlphaSolveConfig.SHARED_BY_ALL):
 
         self.problem = problem
         self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH, name = 'main', print_to_console=print_to_console)
@@ -123,6 +125,8 @@ class AlphaSolve:
             lemma_pool = self.lemma_pool, 
             logger = self.logger
         )
+
+        self.mode = mode
        
 
     def do_research(self, batch_size, iteration_num = 1):
@@ -140,7 +144,7 @@ class AlphaSolve:
                 self.logger.log_print('alphasolve run for batch ', (i + 1), module='AlphaSolve')
                 problem_text, hint = self.generate_problem_and_hint()
 
-                future = self.executor.submit(_do_research, problem_text, hint, self.lemma_pool, i == index)
+                future = self.executor.submit(_do_research, problem_text, hint, self.lemma_pool, i == index, k, self.mode)
                 futures.append(future)
 
             finished = 0
@@ -149,13 +153,21 @@ class AlphaSolve:
 
                 try:
                     data = fut.result()
+                    if not data:  ## 已经有结果了, 直接返回
+                        return data
+
                     results.append(data)
-                    finished += 1
-                    print(f"[benchmark] finished {finished}/{len(futures)}", flush=True)
+                    self.logger.log_print('finished num ', finished, module='AlphaSolve')
 
                 except Exception as exc:
-                    finished += 1
                     traceback.print_exc()
+
+                finished += 1
+
+
+        ## 全部跑完了, 没有结果, 返回 None 
+        return None
+
 
     def do_close(self):
 

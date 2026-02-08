@@ -39,6 +39,8 @@ class Solver(Node):
             problem=shared["problem"],
             lemmas=shared["lemmas"],
             remaining_lemma_quota=AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"]),
+            iteration_round = shared["iteration"],
+            mode = shared["mode"],
             hint=shared["hint"],
         )
 
@@ -118,7 +120,7 @@ class Solver(Node):
         return AlphaSolveConfig.CONJECTURE_GENERATED
 
 
-    def __build_solver_prompt(self, *, prompt_template, problem, lemmas, remaining_lemma_quota, hint=None):
+    def __build_solver_prompt(self, *, prompt_template, problem, lemmas, remaining_lemma_quota, iteration_round, mode, hint = None):
 
         tmp = prompt_template.replace('{problem_content}', problem)
         tmp = tmp.replace('{remaining_lemma_quota}', str(remaining_lemma_quota))
@@ -134,11 +136,17 @@ class Solver(Node):
                 "You can also use the 'read_lemma' tool to read the proof of a lemma. By doing so, you can learn from the previous proof(s) and extend them to help you construct new conjectures and proofs."
             )
             lines.append("")
+
             for i, lemma in enumerate(lemmas):
+
+                if mode == AlphaSolveConfig.SHARED_BY_ITERATION and lemma.get("iteration_round") >= iteration_round: ## 一种配置, 只能看到之前轮次生成的 lemma
+                    continue
+
                 if lemma.get("status") == "verified":
                     lines.append(f" ** Lemma-{i} **")
                     lines.append(f" {lemma.get('statement')}")
             tmp = tmp + "\n\n" + "\n".join(lines)
+
 
         if hint:
             tmp = tmp + "\n\n" + "## Hint and Suggestions" + "\n\n" + str(hint)
