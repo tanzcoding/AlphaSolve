@@ -29,7 +29,7 @@ class Logger:
         self.log_dir = log_dir
         self.print_to_console_default = print_to_console
         self.timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        self.log_filename = os.path.join(self.log_dir, f"{self.timestamp}.log")
+        self.log_filename = os.path.join(self.log_dir, f"{self.name}_" + f"{self.timestamp}.log")
         self._streaming_open = False
 
         os.makedirs(self.log_dir, exist_ok=True)

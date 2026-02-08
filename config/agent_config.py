@@ -184,21 +184,24 @@ class AlphaSolveConfig:
     
     # Solver 可以使用 subagent，也可以阅读已有 lemma 的证明
     SOLVER_CONFIG = {
-        **MIMO_CONFIG,
+        #**MIMO_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
     }
     SOLVER_PROMPT_PATH='prompts/solver.md'
 
     # Verifier 可以使用 subagent，可以再读一遍当前猜想及其证明，也可以阅读已有 lemma 的证明
     VERIFIER_CONFIG = {
-        **MIMO_CONFIG,
+        ## **MIMO_CONFIG,
+        **VOLCANO_CONFIG, 
         'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
     # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REFINER_CONFIG = {
-        **MIMO_CONFIG,
+        ## **MIMO_CONFIG,
+        **VOLCANO_CONFIG, 
         'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
     }
     REFINER_PROMPT_PATH='prompts/refiner.md'
@@ -227,6 +230,16 @@ class AlphaSolveConfig:
         **VOLCANO_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
+
+    ORCHESTRATOR_CONFIG = {
+        #**MIMO_CONFIG,
+        **VOLCANO_CONFIG,
+        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
+    }
+    ORCHESTRATOR_PROMPT_PATH=''
+
+
+
 
     VERIFIER_SCALING_FACTOR = 15
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
@@ -266,3 +279,6 @@ class AlphaSolveConfig:
     # - Used by llms/utils.py to automatically retry when the streamed response
     #   is interrupted (e.g. finish_reason == "length") to avoid the workflow hanging.
     MAX_API_RETRY = 8
+
+    PROBLEM_PATH = 'problems/problem_1.md'
+    STANDARD_SOLUTION_PATH = 'standard_solution.md'

@@ -21,7 +21,6 @@ from multiprocessing import Manager
 
 LemmaStatus = Literal["pending", "verified", "rejected"]
 
-
 class Lemma(TypedDict):
     """Lemma schema stored in `shared['lemmas']`.
 
@@ -252,4 +251,6 @@ def save_snapshot(shared: SharedContext, node_name: str, status: str = "normal")
     }
     
     with open(progress_file, 'w', encoding='utf-8') as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+        json.dump(output, f, indent=3, ensure_ascii=False)
+
+
