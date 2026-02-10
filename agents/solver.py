@@ -2,7 +2,7 @@ import json
 from agents.shared_context import SharedContext, save_snapshot
 from typing import Optional
 from utils.utils import extract_substring, load_prompt_from_file
-from llms.utils import LLMClient
+from llms.utils import LLMClient, ParallelLLMClient
 from config.agent_config import AlphaSolveConfig
 from .shared_context import *
 from utils.logger import Logger
@@ -35,13 +35,13 @@ class Solver(Node):
             return AlphaSolveConfig.SOLVER_EXAUSTED, None
 
         prompt = self.__build_solver_prompt(
-            prompt_template=self.prompt_template,
-            problem=shared["problem"],
-            lemmas=shared["lemmas"],
-            remaining_lemma_quota=AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"]),
+            prompt_template = self.prompt_template,
+            problem = shared["problem"],
+            lemmas = shared["lemmas"],
+            remaining_lemma_quota = AlphaSolveConfig.MAX_LEMMA_NUM - len(shared["lemmas"]),
             iteration_round = shared["iteration"],
             mode = shared["mode"],
-            hint=shared["hint"],
+            hint = shared["hint"],
         )
 
         messages_to_send = [{"role": "system", "content": "You are an expert mathematician. You will be given a problem and a list of Lemmas (if any) we have established. Try to propose a new conjecture that can help solve the problem at hand. If your conjecture is verified by the user, it will be added to our list of Lemmas. "},
@@ -152,6 +152,7 @@ class Solver(Node):
             tmp = tmp + "\n\n" + "## Hint and Suggestions" + "\n\n" + str(hint)
 
         self.logger.log_print("event=prompt_built step=prep", module="solver")
+        
         return tmp
 
 
@@ -230,7 +231,16 @@ class Solver(Node):
             return True
         return False
 
-def create_solver_agent(prompt_file_path,logger):
+
+def create_solver_agent(prompt_file_path, logger, tool_executor = None):
     
-    llm = LLMClient(module='solver', config=AlphaSolveConfig.SOLVER_CONFIG, logger=logger)
+    if not tool_executor:
+        llm = LLMClient(module='solver', config=AlphaSolveConfig.SOLVER_CONFIG, logger=logger)
+    else:
+        logger.log_print('using parallel llm client for solver...', module='solver')
+        llm = ParallelLLMClient(module='solver', config=AlphaSolveConfig.SOLVER_CONFIG, logger=logger, tool_executor = tool_executor)
+        
     return Solver(llm, prompt_file_path, logger=logger)
+
+
+

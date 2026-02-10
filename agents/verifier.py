@@ -3,7 +3,7 @@ from .shared_context import SharedContext, build_reasoning_path, save_snapshot
 from utils.utils import load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
-from llms.utils import LLMClient
+from llms.utils import LLMClient, ParallelLLMClient
 from utils.logger import Logger
 
 from pocketflow import Node
@@ -211,7 +211,11 @@ class Verifier(Node):
 
 
 
-def create_verifier_agent(prompt_file_path, logger):
+def create_verifier_agent(prompt_file_path, logger, tool_executor = None):
 
-    llm = LLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
+    if not tool_executor: 
+        llm = LLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
+    else:
+        llm = ParallelLLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger, tool_executor = tool_executor)
+  
     return Verifier(llm, prompt_file_path, logger)

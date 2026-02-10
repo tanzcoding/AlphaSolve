@@ -14,6 +14,8 @@ if __name__== "__main__" :
     parser.add_argument("--iteration", type=int, default=1, help="Number of iteration (default: 1)")
     parser.add_argument("--batch_size", type=int, default=default_max_worker_num, help="Number of parallel evolution process (default: num of cpu - 2)")
     parser.add_argument("--mode", type=str, default= AlphaSolveConfig.SHARED_BY_ALL, help="Output JSON file (default: auto name)")
+    parser.add_argument("--tool_executor_size", type=int, default= 3, help="用来执行wolfram|python的进程池数量")
+    
     args = parser.parse_args()
 
     problem = load_prompt_from_file('problems/problem_1.md')
@@ -22,7 +24,8 @@ if __name__== "__main__" :
 
 
     ## 现在是 batch_size 多少就多少个进程, 不过暂时分开, 不确定需不需要分开
-    alpha = AlphaSolve(problem=problem, max_worker_num = args.batch_size)
+    
+    alpha = AlphaSolve(problem=problem, max_worker_num = 2, tool_executor_size = args.tool_executor_size)
     
     try:
         solution = alpha.do_research(batch_size = args.batch_size, iteration_num = args.iteration)

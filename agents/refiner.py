@@ -2,7 +2,7 @@ from .shared_context import build_reasoning_path, Lemma, new_lemma, save_snapsho
 from utils.utils import extract_substring, load_prompt_from_file
 
 from config.agent_config import AlphaSolveConfig
-from llms.utils import LLMClient
+from llms.utils import LLMClient, ParallelLLMClient
 from utils.logger import Logger
 
 from pocketflow import Node
@@ -210,7 +210,12 @@ class Refiner(Node):
         return "\n".join(lines)
 
 
-def create_refiner_agent(prompt_file_path, logger:Logger):
+def create_refiner_agent(prompt_file_path, logger, tool_executor = None):
+
+    if not tool_executor:
+        llm = LLMClient(module='refiner', config=AlphaSolveConfig.REFINER_CONFIG, logger=logger)
+    else:
+        llm = ParallelLLMClient(module='refiner', config=AlphaSolveConfig.REFINER_CONFIG, logger=logger, tool_executor = tool_executor)
+  
  
-    llm = LLMClient(module='refiner', config=AlphaSolveConfig.REFINER_CONFIG, logger=logger)
     return Refiner(llm, prompt_file_path, logger=logger)

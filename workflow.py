@@ -16,16 +16,24 @@ import traceback
 import multiprocessing as mp
 import os
 import random
+import threading
+from datetime import datetime
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
-def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, mode):
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
+
+
+def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, mode, t_suffix, tool_executor):
 
     ## init logger for every process
-    process_id = str(os.getpid())
-    name = 'AlphaSolve' + '_' + process_id
+    tid = str(threading.get_ident())
+    name = 'alpha_solve' + '_' + tid
 
-    logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH, name = name, print_to_console=print_to_console)
+    dir_path = AlphaSolveConfig.LOG_PATH + '/alpha_solve_iteration_'  + str(iteration_round) +  '_' + t_suffix
+
+    print('create logger for ', name, 'with dir ', dir_path)
+
+    logger = Logger(log_dir = dir_path, name = name, print_to_console = print_to_console)
 
     shared_context = new_shared_context(
         problem = problem,
@@ -35,7 +43,7 @@ def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, m
         mode = mode
     )
 
-    flow = _create_research_flow(problem, hint, lemma_pool, logger)
+    flow = _create_research_flow(problem, hint, lemma_pool, logger, tool_executor)
     flow.run(shared_context)
 
     try:
@@ -52,25 +60,38 @@ def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, m
         return None
 
 
-def _create_research_flow(problem, hint, lemma_pool, logger):  ## 主入口, 移出来了, 因为 self.xxx 多进程无法调用
+def _create_research_flow(problem, hint, lemma_pool, logger, tool_executor):  
 
     logger.log_print('create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH, module='AlphaSolve',)
 
     solver = create_solver_agent(
         prompt_file_path = AlphaSolveConfig.SOLVER_PROMPT_PATH,
-        logger = logger)
+        logger = logger,
+        tool_executor = tool_executor
+
+    )
 
     logger.log_print('create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH, module = 'AlphaSolve',)
 
     verifier = create_verifier_agent(
         prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH,
-        logger=logger)
+        logger=logger,
+        tool_executor = tool_executor
+    )
 
     logger.log_print('create refiner node, using model ',  AlphaSolveConfig.REFINER_CONFIG['model'],  ' and prompt path ', AlphaSolveConfig.REFINER_PROMPT_PATH, module='AlphaSolve',)
 
-    refiner = create_refiner_agent(prompt_file_path=AlphaSolveConfig.REFINER_PROMPT_PATH, logger = logger)
+    refiner = create_refiner_agent(
+        prompt_file_path = AlphaSolveConfig.REFINER_PROMPT_PATH, 
+        logger = logger,
+        tool_executor = tool_executor
+    )
 
-    summarizer = create_summarizer_agent(problem=problem, prompt_file_path = AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, logger = logger)
+    summarizer = create_summarizer_agent(
+        problem =problem, 
+        prompt_file_path = AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, 
+        logger = logger
+    )
 
     
     ## 成功生成 lemma, 下一站去 verifier
@@ -108,18 +129,17 @@ def _create_research_flow(problem, hint, lemma_pool, logger):  ## 主入口, 移
 
 class AlphaSolve:
 
-    ## 首先, AIM 其实没什么东西可以复用的,整体上目前大部分Math Aget 都可以总结成, solve(explorer)-verify(reviewer)-refine 的模式
-    ## 但是具体做看实验了, 因此 AlphaSolve 的主类仅封装: (1) solve(explorer)-verify(reviewer)-refine 的模式 (2) solve & verify & refine 的历史 trace
-
-    def __init__(self, problem, max_worker_num, print_to_console = True, mode = AlphaSolveConfig.SHARED_BY_ALL):
+    def __init__(self, problem, max_worker_num, print_to_console = True, mode = AlphaSolveConfig.SHARED_BY_ALL, 
+        tool_executor_size = 2):
 
         self.problem = problem
         self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH, name = 'main', print_to_console=print_to_console)
 
-        self.manager = mp.Manager()
-        self.executor = ProcessPoolExecutor(max_workers=max_worker_num, mp_context=mp.get_context("spawn"))
-
-        self.lemma_pool = self.manager.list() 
+        self.executor = ThreadPoolExecutor(max_workers = max_worker_num)
+        self.tool_executor = ProcessPoolExecutor(max_workers = tool_executor_size)
+        self.t_suffix = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        
+        self.lemma_pool = [ ]
         self.orchestrator = create_orchestrator_agent(problem = self.problem, 
             prompt_file_path = AlphaSolveConfig.ORCHESTRATOR_PROMPT_PATH,
             lemma_pool = self.lemma_pool, 
@@ -127,13 +147,16 @@ class AlphaSolve:
         )
 
         self.mode = mode
+        self.tool_executor_size = tool_executor_size
        
 
     def do_research(self, batch_size, iteration_num = 1):
 
         for k in range(iteration_num):
 
-            self.logger.log_print('alphasolve run for iteration ', (k + 1), module='AlphaSolve') 
+            self.logger.log_print('alphasolve run for iteration ', k, module='AlphaSolve') 
+
+            self.prepare_lemma_pool
             futures = [ ] 
 
             ## 随机选择一个进程打印到 console
@@ -141,10 +164,10 @@ class AlphaSolve:
             self.logger.log_print('choose index for log printing ', index, module='AlphaSolve')
 
             for i in range(batch_size):
-                self.logger.log_print('alphasolve run for batch ', (i + 1), module='AlphaSolve')
+                self.logger.log_print('alphasolve run for batch ', i, module='AlphaSolve')
                 problem_text, hint = self.generate_problem_and_hint()
 
-                future = self.executor.submit(_do_research, problem_text, hint, self.lemma_pool, i == index, k, self.mode)
+                future = self.executor.submit(_do_research, problem_text, hint, self.lemma_pool, i == index, k, self.mode, self.t_suffix, self.tool_executor)
                 futures.append(future)
 
             finished = 0
@@ -163,14 +186,14 @@ class AlphaSolve:
 
                 finished += 1
 
-
         ## 全部跑完了, 没有结果, 返回 None 
         return None
 
 
-    def do_close(self):
+    def do_close(self): ## 关闭掉整个 AlphaSolve
 
-        self.executor.shutdown(wait=True)
+        self.executor.shutdown(wait = True)
+
         try:
             self.manager.shutdown()
         except Exception:
@@ -178,6 +201,10 @@ class AlphaSolve:
 
     def generate_problem_and_hint(self): ## 给orchestrator留的口子, 后续可以肆意生成 problem 和 hint
         return self.orchestrator.generate_problem_and_hint()
+
+    
+    def prepare_lemma_pool(self): ## 给orchestrator留的口子, 后续可以在两个 iteration 中间更新/修正/处理 lemma pool, 比如扔掉一些重复的 lemma, 很飞的 lemma
+        pass
 
 
 if __name__== "__main__" :

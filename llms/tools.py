@@ -16,7 +16,6 @@ from agents.shared_context import Lemma
 from utils.utils import extract_substring, apply_unified_diff, search_and_replace
 from agents.shared_context import SharedContext
 
-
 # NOTE:
 # We intentionally block importing matplotlib (and pylab) inside `run_python()`.
 # This is both to prevent plotting side-effects and to avoid heavy GUI/backends.
@@ -250,7 +249,7 @@ def run_wolfram(code: str, session=None, timeout_seconds: int = 300):
         return "", payload
 
 
-def run_subagent(task_description: str, logger: Logger, shared: SharedContext) -> Tuple[str, Optional[str]]:
+def run_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
     """
     数学研究子代理执行器
     
@@ -265,18 +264,13 @@ def run_subagent(task_description: str, logger: Logger, shared: SharedContext) -
     """
     result = ""
     err = None
-    
+
+    print('entering subagent...')
+
+
     logger.log_print('entering subagent...', module='subagent')
     
-    try:
-        # 动态导入以避免循环依赖
-        from .utils import LLMClient
-        from config.agent_config import AlphaSolveConfig
-        
-        # 使用 SUBAGENT_CONFIG 作为子代理配置
-        config = AlphaSolveConfig.SUBAGENT_CONFIG
-        client = LLMClient(module='subagent', config=config, logger=logger)
-        
+    try:    
         # 构建子代理的系统提示（回答会进入主 agent 上下文：尽量省 token，但数学推导必须完整展开）
         system_prompt = """You are a mathematical research sub-agent. Solve the given subtask correctly (compute/verify/derive).
 Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified. 

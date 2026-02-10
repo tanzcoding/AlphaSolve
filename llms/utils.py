@@ -5,9 +5,12 @@ import re
 from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
 from .exceptions import LLMServiceException
-from .tools import *
 from agents.shared_context import Lemma, SharedContext
 from copy import deepcopy
+import multiprocessing as mp
+from concurrent.futures import ProcessPoolExecutor, TimeoutError
+from .tools import *
+import traceback
 
 class LLMClient:
     def __init__(self, module: str, config: Dict, logger: Logger):
@@ -60,7 +63,7 @@ class LLMClient:
         统一的获取 LLM 回复方法，始终使用流式输出
 
         NOTE: 为避免流式输出在达到最大输出长度/中断时卡住工作流，
-        这里增加了“整次重新生成”的重试机制（不续写上一次内容）。
+        这里增加了"整次重新生成"的重试机制（不续写上一次内容）。
 
         Args:
             messages: 消息列表，格式为 [{"role": "user", "content": "..."}]
@@ -151,6 +154,8 @@ class LLMClient:
                                 continue
 
                             # 执行工具
+                            print('execute tool before calling _execute_tool ' + name)
+                            
                             tool_content, log_parts = self._execute_tool(name, args, tool_context)
 
                             # 追加工具结果到reasoning_content
@@ -174,6 +179,9 @@ class LLMClient:
 
                 except LLMServiceException as exc:
                     last_exc = exc
+
+                    traceback.print_exc()
+
                     logger.log_print(
                         f"\nevent=llm_retry attempt={attempt}/{max_api_retry} status={getattr(exc, 'status', None)} error={exc}",
                         module=self.module,
@@ -510,38 +518,7 @@ class LLMClient:
         return context
 
     def _start_wolfram_session(self) -> Optional[WolframLanguageSession]:
-        if self.logger.print_to_console_default:
-            print("[正在启动 Wolfram Language Session...]\n", end="")
-
-        # Prefer the default startup mechanism first. If it fails, fall back to
-        # an explicit kernel path specified via environment variable WOLFRAM_KERNEL.
-        try:
-            session = WolframLanguageSession()
-            if self.logger.print_to_console_default:
-                print("[Wolfram Language Session 已启动]\n", end="")
-            return session
-        except Exception as exc_default:
-            kernel_path = os.environ.get("WOLFRAM_KERNEL")
-            if kernel_path:
-                try:
-                    session = WolframLanguageSession(kernel_path)
-                    if self.logger.print_to_console_default:
-                        print("[Wolfram Language Session 已启动 (via WOLFRAM_KERNEL)]\n", end="")
-                    return session
-                except Exception as exc_env:
-                    if self.logger.print_to_console_default:
-                        print(
-                            f"[警告] Wolfram session 启动失败: default={exc_default}; WOLFRAM_KERNEL={kernel_path!r} error={exc_env}\n",
-                            end="",
-                        )
-                    return None
-
-            if self.logger.print_to_console_default:
-                print(
-                    f"[警告] Wolfram session 启动失败: default={exc_default}; env WOLFRAM_KERNEL not set\n",
-                    end="",
-                )
-            return None
+        return _start_wolfram_session(self.logger.print_to_console_default)
     
     def _cleanup_tool_context(self, context: Dict):
         """清理工具执行上下文"""
@@ -553,20 +530,27 @@ class LLMClient:
             except Exception as e:
                 if self.logger.print_to_console_default:
                     print(f"\n[Warning] Error terminating Wolfram session: {e}", end="")
+
+    def _create_client_for_subagent(self):  # 使用 SUBAGENT_CONFIG 作为子代理配置
+        
+        from config.agent_config import AlphaSolveConfig
+
+        config = AlphaSolveConfig.SUBAGENT_CONFIG
+        client = LLMClient(module='subagent', config=config, logger=self.logger)
+
+        return client
+    
     
     def _execute_tool(self, name: str, args: Dict, context: Dict) -> Tuple[str, List[str]]:
-        """
-        执行工具调用
-        
-        Returns:
-            Tuple[str, List[str]]: (tool_content_json, log_parts)
-        """
+
         log_parts = [f"\n[Tool Call] {name}"]
         
-        if name == 'run_python':
+        print('motherfucker in old method')
+
+        if name == 'run_python': 
             code = args.get('code', '')
             if self.logger.print_to_console_default:
-                print(f"[Tool Call] run_python\nCode:\n{code}")
+                 print(f"[Tool Call] run_python\nCode:\n{code}")
             
             log_parts.append(f"Code:\n{code}")
             stdout, error = run_python(code, context['python_env'], timeout_seconds=300)
@@ -621,13 +605,22 @@ class LLMClient:
                 log_parts.append(f"[error]\n{error}")
         
         elif name == 'math_research_subagent':
+
             task_description = args.get('task_description', '')
             shared = context.get('shared')
             if self.logger.print_to_console_default:
                 print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}")
             
             log_parts.append(f"Task:\n{task_description}")
-            result, error = run_subagent(task_description, self.logger, shared)
+
+
+            print('entering subagent...111')
+
+            llm_client = self._create_client_for_subagent()
+
+            print('entering subagent...222')
+
+            result, error = run_subagent(task_description, self.logger, shared, llm_client)
             
             if self.logger.print_to_console_default:
                 if result:
@@ -863,3 +856,166 @@ class LLMClient:
 
         return tool_content, log_parts
 
+    
+
+
+class ParallelLLMClient(LLMClient):
+
+    def __init__(self, module: str, config: Dict, logger: Logger, tool_executor: ProcessPoolExecutor):
+
+        print('init  ParallelLLMClient')
+        super(ParallelLLMClient, self).__init__(module, config, logger)
+        self.manager = mp.Manager()
+        if  not tool_executor:
+            self.executor = ProcessPoolExecutor(
+                max_workers = 2, 
+                mp_context = mp.get_context("spawn")
+            )
+        else:
+            self.executor = tool_executor
+        # 用于在多进程间共享Python环境状态, 不过目前没用到, 因为查询发现 python_env 和性能有关, 就先保留了
+        self.python_env_dict = self.manager.dict()
+        # 用于在多进程间共享Wolfram会话状态
+        self.wolfram_session_dict = self.manager.dict()
+
+    def _create_client_for_subagent(self):
+                # 使用 SUBAGENT_CONFIG 作为子代理配置
+
+        from config.agent_config import AlphaSolveConfig
+            
+        config = AlphaSolveConfig.SUBAGENT_CONFIG
+        client = ParallelLLMClient(module='subagent', config=config, logger=self.logger, tool_executor=self.executor)
+        return client
+
+
+    def _execute_tool(self, name: str, args: Dict, context: Dict) -> Tuple[str, List[str]]:
+
+        print('niubi _execute_tool with new method')
+
+        log_parts = [f"\n[Tool Call] {name}"]
+
+        if name == 'run_python': ## 运行 python 代码比较简单, 直接给过去就行
+            code = args.get('code', '')
+            future =  self.executor.submit(_run_python, code, self.logger.print_to_console_default, log_parts)
+        elif name == 'run_wolfram': ## 运行 wolfram 代码, 需要管理好 wolfram session
+            code = args.get('code', '')
+            future =  self.executor.submit(_run_wolfram, code, self.wolfram_session_dict, self.logger.print_to_console_default, log_parts)
+        else: # 其他工具仍然使用父类的实现
+            return super(ParallelLLMClient, self)._execute_tool(name, args, context)
+
+        try:
+            data = future.result(timeout = 300)
+        except TimeoutError:
+            data = None
+
+        if not data: ## 第一个参数是 tool_result, 第二个参数是 tool_logs
+            return '', []
+        else: # 有结果, 正常返回
+            return data
+
+def _run_python(code: str, print_to_console: bool, log_parts: List[str]):
+
+    if print_to_console:
+        print(f"[Tool Call] run_python\nCode:\n{code}")
+            
+    log_parts.append(f"Code:\n{code}")
+
+    ## 这里没有设置 python_env, 后续可能是一个可以优化的点
+    stdout, error = run_python(code, {}, timeout_seconds=300)
+            
+    if print_to_console:
+        if stdout:
+            print(f"[stdout]\n{stdout}")
+        if error:
+            print(f"[error]\n{error}")
+            
+    tool_content = ''
+
+    if stdout:
+        tool_content = tool_content + f"[stdout]\n{stdout}"
+        log_parts.append(f"[stdout]\n{stdout}")
+    if error:
+        tool_content = tool_content + f"[error]\n{error}"
+        log_parts.append(f"[error]\n{error}")
+
+    return tool_content, log_parts
+
+    
+    
+def _run_wolfram(code: str, context: Dict, print_to_console: bool, log_parts: List[str]):
+                
+    if print_to_console:
+        print(f"[Tool Call] run_wolfram\nCode:\n{code}")
+            
+    log_parts.append(f"Code:\n{code}")
+
+    key = str(os.getpid()) + '_wolfram_session'
+    try:
+        session = context[key]
+    except KeyError:
+        session = None
+
+    if session is None:
+        session = _start_wolfram_session(print_to_console)
+        context[key] = session
+
+    if session is None:
+        error = 'Wolfram session not available'
+        output = ''
+    else:
+        output, error = run_wolfram(code, session)
+
+    if isinstance(error, str) and error.startswith('timeout'):
+        context['wolfram_session'] = _start_wolfram_session(print_to_console)
+
+    if print_to_console:
+        if output:
+            print(f"[output]\n{output}")
+        if error:
+            print(f"[error]\n{error}")
+            
+    tool_content = ''
+    
+    if output:
+        tool_content = tool_content + f"[output]\n{output}"
+        log_parts.append(f"[output]\n{output}")
+    if error:
+        tool_content = tool_content + f"[error]\n{error}"
+        log_parts.append(f"[error]\n{error}")
+
+    return tool_content, log_parts
+
+def _start_wolfram_session(print_to_console: bool) -> Optional[WolframLanguageSession]:
+        
+    if print_to_console:
+        print("[正在启动 Wolfram Language Session...]\n", end="")
+
+    try:
+        session = WolframLanguageSession()
+        if print_to_console:
+            print("[Wolfram Language Session 已启动]\n", end="")
+        return session
+    except Exception as exc_default:
+        kernel_path = os.environ.get("WOLFRAM_KERNEL")
+        if kernel_path:
+            try:
+                session = WolframLanguageSession(kernel_path)
+                if print_to_console:
+                    print("[Wolfram Language Session 已启动 (via WOLFRAM_KERNEL)]\n", end="")
+                return session
+            except Exception as exc_env:
+                if print_to_console:
+                    print(
+                        f"[警告] Wolfram session 启动失败: default={exc_default}; WOLFRAM_KERNEL={kernel_path!r} error={exc_env}\n",
+                         end="",
+                    )
+                return None
+
+        if print_to_console:
+             print(
+                f"[警告] Wolfram session 启动失败: default={exc_default}; env WOLFRAM_KERNEL not set\n",
+                end="",
+            )
+        return None
+
+        

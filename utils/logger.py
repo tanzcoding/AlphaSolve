@@ -34,7 +34,7 @@ class Logger:
 
         os.makedirs(self.log_dir, exist_ok=True)
 
-        logger_name = f"{name}_{self.timestamp}"
+        logger_name = f"tid_{name}_timestamp_{self.timestamp}"
         self._logger = logging.getLogger(logger_name)
         self._logger.setLevel(logging.DEBUG)
         if self._logger.handlers:
