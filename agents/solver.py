@@ -138,10 +138,6 @@ class Solver(Node):
             lines.append("")
 
             for i, lemma in enumerate(lemmas):
-
-                if mode == AlphaSolveConfig.SHARED_BY_ITERATION and lemma.get("iteration_round") >= iteration_round: ## 一种配置, 只能看到之前轮次生成的 lemma
-                    continue
-
                 if lemma.get("status") == "verified":
                     lines.append(f" ** Lemma-{i} **")
                     lines.append(f" {lemma.get('statement')}")
