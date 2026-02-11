@@ -136,6 +136,7 @@ class AlphaSolve:
         self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH, name = 'main', print_to_console=print_to_console)
 
         self.executor = ThreadPoolExecutor(max_workers = max_worker_num)
+        self.max_worker_num = max_worker_num
         self.tool_executor = ProcessPoolExecutor(max_workers = tool_executor_size)
         self.t_suffix = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         
@@ -150,7 +151,7 @@ class AlphaSolve:
         self.tool_executor_size = tool_executor_size
        
 
-    def do_research(self, batch_size, iteration_num = 1):
+    def do_research(self, iteration_num = 1):
 
         for k in range(iteration_num):
 
@@ -160,10 +161,10 @@ class AlphaSolve:
             futures = [ ] 
 
             ## 随机选择一个进程打印到 console
-            index = random.randint(0, batch_size) 
+            index = random.randint(0, self.max_worker_num) 
             self.logger.log_print('choose index for log printing ', index, module='AlphaSolve')
 
-            for i in range(batch_size):
+            for i in range(self.max_worker_num):
                 self.logger.log_print('alphasolve run for batch ', i, module='AlphaSolve')
                 problem_text, hint = self.generate_problem_and_hint()
 

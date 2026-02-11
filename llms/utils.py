@@ -545,8 +545,6 @@ class LLMClient:
 
         log_parts = [f"\n[Tool Call] {name}"]
         
-        print('motherfucker in old method')
-
         if name == 'run_python': 
             code = args.get('code', '')
             if self.logger.print_to_console_default:
@@ -889,8 +887,6 @@ class ParallelLLMClient(LLMClient):
 
 
     def _execute_tool(self, name: str, args: Dict, context: Dict) -> Tuple[str, List[str]]:
-
-        print('niubi _execute_tool with new method')
 
         log_parts = [f"\n[Tool Call] {name}"]
 
