@@ -153,9 +153,7 @@ class LLMClient:
                                 })
                                 continue
 
-                            # 执行工具
-                            print('execute tool before calling _execute_tool ' + name)
-                            
+                            # 执行工具                            
                             tool_content, log_parts = self._execute_tool(name, args, tool_context)
 
                             # 追加工具结果到reasoning_content
@@ -903,6 +901,10 @@ class ParallelLLMClient(LLMClient):
             data = future.result(timeout = 300)
         except TimeoutError:
             data = None
+            try: ## 无论如何都 cancel 一下
+                future.cancel()
+            except:
+                pass
 
         if not data: ## 第一个参数是 tool_result, 第二个参数是 tool_logs
             return '', []
