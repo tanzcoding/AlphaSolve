@@ -17,7 +17,11 @@ import multiprocessing as mp
 import os
 import random
 import threading
+import time
+import threading
+import schedule
 from datetime import datetime
+
 
 
 from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
@@ -43,7 +47,7 @@ def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, m
         mode = mode
     )
 
-    flow = _create_research_flow(problem, hint, lemma_pool, logger, tool_executor)
+    flow = _create_research_flow(problem, hint, logger, tool_executor)
     flow.run(shared_context)
 
     try:
@@ -60,7 +64,7 @@ def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, m
         return None
 
 
-def _create_research_flow(problem, hint, lemma_pool, logger, tool_executor):  
+def _create_research_flow(problem, hint, logger, tool_executor):  
 
     logger.log_print('create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH, module='AlphaSolve',)
 
@@ -149,6 +153,45 @@ class AlphaSolve:
 
         self.mode = mode
         self.tool_executor_size = tool_executor_size
+
+
+        def _monitor():
+
+            while True:
+                self._check_lemma_pool()
+                time.sleep(60)
+
+        self.monitor = threading.Thread(target = _monitor).start()
+
+
+    def _check_lemma_pool(self):
+
+        self.logger.log_print('lemma pool checking thread started ...', module='AlphaSolve')
+
+        if len(self.lemma_pool) > 0:
+            self.logger.log_print('lemma pool with length ', len(self.lemma_pool), module='AlphaSolve')
+            for i in range(self.lemma_pool):
+                lemma = self.lemma_pool[i]
+                try:
+                    statement = lemma['statement']
+                    status = lemma['status']
+                    verify_round = lemma['verify_round']
+                    is_theorem = lemma['is_theorem']
+  
+                    self.logger.log_print('============ begin with lemma index ', i,  module='AlphaSolve')
+                    self.logger.log_print('lemma statement ', statement,  module='AlphaSolve')
+                    self.logger.log_print('lemma status ', status,  module='AlphaSolve')
+                    self.logger.log_print('lemma status ', verify_round,  module='AlphaSolve')
+                    self.logger.log_print('lemma status ', is_theorem,  module='AlphaSolve')
+                    self.logger.log_print('============= end with lemma index ', i,  module='AlphaSolve')
+                except KeyError as ke:
+                    traceback.print_exc()
+
+        else: ## 还没有产生 lemma
+            self.logger.log_print('lemma pool is empty', module='AlphaSolve')
+
+
+        self.logger.log_print('lemma pool checking thread done, sleep ...', module='AlphaSolve')
        
 
     def do_research(self, iteration_num = 1):
@@ -157,7 +200,7 @@ class AlphaSolve:
 
             self.logger.log_print('alphasolve run for iteration ', k, module='AlphaSolve') 
 
-            self.prepare_lemma_pool
+            self.prepare_lemma_pool()
             futures = [ ] 
 
             ## 随机选择一个进程打印到 console
@@ -199,6 +242,8 @@ class AlphaSolve:
             self.manager.shutdown()
         except Exception:
             pass
+
+        self.monitor.join()
 
     def generate_problem_and_hint(self): ## 给orchestrator留的口子, 后续可以肆意生成 problem 和 hint
         return self.orchestrator.generate_problem_and_hint()

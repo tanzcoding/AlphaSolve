@@ -113,11 +113,9 @@ def build_reasoning_path(
 def new_shared_context(*, problem: str, hint: Optional[str] = None, lemma_pool: Optional[List] = None, iteration: Optional[int] = 0, mode: Optional[str] = None) -> SharedContext:
     """Factory that pre-populates required shared keys."""
  
-    ## 在实现的时候, 这个 lemma_pool 会用 manager.list(), 用来确保可以在多个进程之间共享
-    ## 剩下的字段一半来说, 每个进程的 working memory, 不管
-
     lemmas = lemma_pool
-    if not lemma_pool:
+    if lemma_pool is None:
+        print('No lemma pool provided, create new ... ')
         lemmas = [ ] 
     
     return {
