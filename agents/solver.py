@@ -63,9 +63,11 @@ class Solver(Node):
 
         messages = prep_res[1]
         shared = prep_res[2]
-        _, _, updated_messages = self.llm.get_result(messages,shared=shared)
-
-        lemma = self.__build_lemma(updated_messages)
+        for attempt in range(AlphaSolveConfig.SOLVER_MAX_RETRY):
+            _, _, updated_messages = self.llm.get_result(messages,shared=shared)
+            lemma = self.__build_lemma(updated_messages)
+            if lemma:
+                break
 
         return AlphaSolveConfig.CONJECTURE_GENERATED, lemma, updated_messages
 

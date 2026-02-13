@@ -220,20 +220,20 @@ class AlphaSolveConfig:
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **MIMO_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/summarizer.md'
 
     # Subagent 可以使用 Python 和 Wolfram
     SUBAGENT_CONFIG = {
-        **VOLCANO_CONFIG,
+        **LONGCAT_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
     ORCHESTRATOR_CONFIG = {
         #**MIMO_CONFIG,
-        **VOLCANO_CONFIG,
+        **LONGCAT_CONFIG,
         'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
     }
     ORCHESTRATOR_PROMPT_PATH=''
@@ -272,6 +272,7 @@ class AlphaSolveConfig:
     ## 
     MAX_LEMMA_NUM = 30
     MAX_VERIFY_AND_REFINE_ROUND = 5
+    SOLVER_MAX_RETRY = 3
     REFINER_MAX_RETRY = 3
     CHECK_IS_THEOREM_TIMES = 5
 
