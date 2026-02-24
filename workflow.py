@@ -26,6 +26,19 @@ class AlphaSolve:
         self.tool_executor = ProcessPoolExecutor(max_workers=max(1, int(tool_executor_size)))
         self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH)
         self.logger = self.log_session.main_logger(print_to_console=print_to_console)
+        
+        # 记录各个子代理使用的模型信息
+        self._log_model_configs()
+
+    def _log_model_configs(self):
+        self.logger.log_section("AlphaSolve 各子代理模型配置", width=60)
+        self.logger.log_print(f"Generator:         {AlphaSolveConfig.GENERATOR_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Verifier:          {AlphaSolveConfig.VERIFIER_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Revisor:           {AlphaSolveConfig.REVISOR_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Proof Subagent:    {AlphaSolveConfig.PROOF_SUBAGENT_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Compute Subagent:  {AlphaSolveConfig.COMPUTE_SUBAGENT_CONFIG.get('model', 'N/A')}")
+        self.logger.log_separator('section', width=60)
+        self.logger.log_print("")
 
     def do_research(self, iteration_num: int = 1):
         last_summary = None

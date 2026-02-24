@@ -8,7 +8,6 @@ import argparse
 
 if __name__== "__main__" :
 
-
     default_max_worker_num = max(1, (os.cpu_count() or 1) - 2)
 
     parser = argparse.ArgumentParser(description="Run AlphaSolve.")

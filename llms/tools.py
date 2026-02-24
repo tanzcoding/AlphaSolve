@@ -248,12 +248,12 @@ def run_wolfram(code: str, session=None, timeout_seconds: int = 300):
         return "", payload
 
 
-def run_proof_assistant(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
+def run_proof_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
     """Proof-only subagent executor (no Python/Wolfram)."""
     result = ""
     err = None
 
-    logger.log_print('entering proof_assistant...', module='subagent')
+    logger.log_print('entering proof_subagent...', module='subagent')
 
     try:
         system_prompt = """You are a mathematical proof assistant. Solve the given proof task rigorously.
@@ -279,12 +279,12 @@ Keep arguments formal and explicit. You may decompose into one bounded sub-claim
     return result, err
 
 
-def run_compute_assistant(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
+def run_compute_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
     """Compute-capable subagent executor (Python/Wolfram allowed)."""
     result = ""
     err = None
 
-    logger.log_print('entering compute_assistant...', module='subagent')
+    logger.log_print('entering compute_subagent...', module='subagent')
 
     try:
         system_prompt = """You are a mathematical compute assistant. Solve the given task correctly (compute/verify/derive).

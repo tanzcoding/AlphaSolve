@@ -514,8 +514,8 @@ class LLMClient:
         context = {
             'python_env': {},
             'wolfram_session': None,
-            'proof_assistant_depth': 0,
-            'proof_assistant_max_depth': getattr(AlphaSolveConfig, 'PROOF_ASSISTANT_MAX_DEPTH', 3),
+            'proof_subagent_depth': 0,
+            'proof_subagent_max_depth': getattr(AlphaSolveConfig, 'PROOF_SUBAGENT_MAX_DEPTH', 3),
         }
 
         # 检查是否需要Wolfram session
@@ -605,36 +605,36 @@ class LLMClient:
                 tool_content = tool_content + f"[error]\n{error}"
                 log_parts.append(f"[error]\n{error}")
         
-        elif name in ('proof_assistant', 'compute_assistant'):
+        elif name in ('proof_subagent', 'compute_subagent'):
 
             task_description = args.get('task_description', '')
             shared = context.get('shared')
             log_parts.append(f"Task:\n{task_description}")
 
-            if name == 'proof_assistant':
-                current_depth = int(context.get('proof_assistant_depth', 0) or 0)
-                max_depth = int(context.get('proof_assistant_max_depth', 3) or 3)
+            if name == 'proof_subagent':
+                current_depth = int(context.get('proof_subagent_depth', 0) or 0)
+                max_depth = int(context.get('proof_subagent_max_depth', 3) or 3)
                 nested_depth = current_depth + 1
 
                 if nested_depth >= max_depth:
                     nested_tools: List[Dict] = []
                 else:
-                    nested_tools = [PROOF_ASSISTANT_TOOL]
+                    nested_tools = [PROOF_SUBAGENT_TOOL]
 
                 nested_client = self._create_client_for_subagent(
-                    config_key='PROOF_ASSISTANT_CONFIG',
+                    config_key='PROOF_SUBAGENT_CONFIG',
                     tools_override=nested_tools,
                 )
 
-                parent_depth = context.get('proof_assistant_depth', 0)
-                context['proof_assistant_depth'] = nested_depth
+                parent_depth = context.get('proof_subagent_depth', 0)
+                context['proof_subagent_depth'] = nested_depth
                 try:
-                    result, error = run_proof_assistant(task_description, self.logger, shared, nested_client)
+                    result, error = run_proof_subagent(task_description, self.logger, shared, nested_client)
                 finally:
-                    context['proof_assistant_depth'] = parent_depth
+                    context['proof_subagent_depth'] = parent_depth
             else:
-                llm_client = self._create_client_for_subagent(config_key='COMPUTE_ASSISTANT_CONFIG')
-                result, error = run_compute_assistant(task_description, self.logger, shared, llm_client)
+                llm_client = self._create_client_for_subagent(config_key='COMPUTE_SUBAGENT_CONFIG')
+                result, error = run_compute_subagent(task_description, self.logger, shared, llm_client)
             
             tool_content = ''
             if result:
