@@ -605,13 +605,13 @@ class LLMClient:
                 tool_content = tool_content + f"[error]\n{error}"
                 log_parts.append(f"[error]\n{error}")
         
-        elif name in ('proof_subagent', 'compute_subagent'):
+        elif name in ('proof_subagent', 'compute_subagent', 'call_proof_subagent', 'call_compute_subagent'):
 
             task_description = args.get('task_description', '')
             shared = context.get('shared')
             log_parts.append(f"Task:\n{task_description}")
 
-            if name == 'proof_subagent':
+            if name in ('proof_subagent', 'call_proof_subagent'):
                 current_depth = int(context.get('proof_subagent_depth', 0) or 0)
                 max_depth = int(context.get('proof_subagent_max_depth', 3) or 3)
                 nested_depth = current_depth + 1

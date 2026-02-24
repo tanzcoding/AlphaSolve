@@ -141,6 +141,8 @@ class Generator:
             response, _, _ = self.llm.get_result(messages=[{"role": "user", "content": check_message}], tools=[], shared=shared)
             if response.strip().lower() == 'yes':
                 is_theorem_num += 1
+            else:
+                return False
         return is_theorem_num >= AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
 
 
