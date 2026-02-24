@@ -237,7 +237,7 @@ class AlphaSolveConfig:
 
 
 
-    VERIFIER_SCALING_FACTOR = 15
+    VERIFIER_SCALING_FACTOR = 4
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 

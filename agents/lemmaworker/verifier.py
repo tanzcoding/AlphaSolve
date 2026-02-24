@@ -73,7 +73,18 @@ class Verifier:
         if reasoning_ctx:
             prompt = prompt + '\n' + reasoning_ctx
 
-        messages_to_send = [{"role": "user", "content": prompt}]
+        messages_to_send = [
+            {"role": "system", "content": """You are an expert mathematical verifier. Your task is to carefully verify the correctness of mathematical conjectures and proofs.
+
+IMPORTANT: You SHOULD break DOWN the verification into steps, sections, or even sentences, and verify each part separately. DO NOT just give a final verdict without detailed reasoning.
+
+**call_compute_subagent**: Use this EARLY and OFTEN for any calculation, symbolic verification, counterexample finding, or edge-case checking. If you catch yourself "working it out manually, STOP and delegate to this subagent instead. Although this subagent is called "compute_subagent", it can also be used for symbolic verification tasks, such as checking the validity of a logical inference step, verifying the correctness of a mathematical manipulation, or finding counterexamples to a conjecture. Always use this subagent to handle any detailed verification work, and use its results to inform your overall verification process.
+
+How to use subagents:
+- Break down the verification into smaller parts, such as individual steps or even a single sentence in the proof, specific claims within a conjecture, or even sentences in the proof text.
+- For each part, call the subagent to verify its correctness. """},
+            {"role": "user", "content": prompt}
+        ]
         answer, cot, _ = self.llm.get_result(messages_to_send, tools=AlphaSolveConfig.VERIFIER_CONFIG['tools'], shared=shared)
         return (VERIFY_RESULT_VALID in answer), answer, cot
 

@@ -139,6 +139,11 @@ class LLMClient:
                             name = tc['function']['name']
                             raw_args = tc['function'].get('arguments') or '{}'
                             args, parse_error = self._parse_tool_arguments(raw_args, shared)
+                            
+                            # 打印工具调用信息
+                            logger.log_print(f"\n🔧 调用工具: {name}")
+                            logger.log_print(f"📝 输入参数: {raw_args}")
+                            
                             if args is None:
                                 warning_msg = (
                                     f"event=tool_args_parse_error name={name} error={parse_error}"
@@ -154,8 +159,11 @@ class LLMClient:
                                 })
                                 continue
 
-                            # 执行工具                            
+                            # 执行工具
                             tool_content, log_parts = self._execute_tool(name, args, tool_context)
+                            
+                            # 打印工具结果
+                            logger.log_print(f"✅ 工具执行结果:\n{tool_content}")
 
                             # 追加工具结果到reasoning_content
                             reasoning_content += ("\n".join(log_parts) + "\n")
@@ -834,7 +842,14 @@ class LLMClient:
         # Always write tool call + outputs to the log file as a single entry.
         # This keeps the log readable and avoids the "divider appears early" issue
         # caused by mixing per-fragment streaming logs with later buffered logs.
-        self.logger.log_print("[工具调用详情]\n" + "\n".join(log_parts).lstrip("\n"))
+        # 简化输出，避免太长的内容
+        simplified_log = "[工具调用详情]\n"
+        for part in log_parts:
+            if len(part) > 500:  # 如果内容太长，只显示前2000字符
+                simplified_log += part[:2000] + " ... (内容过长已截断)\n"
+            else:
+                simplified_log += part + "\n"
+        self.logger.log_print(simplified_log.lstrip("\n"))
 
         return tool_content, log_parts
 
