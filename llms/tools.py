@@ -14,7 +14,6 @@ from wolframclient.language import wlexpr
 from utils.logger import Logger
 from agents.shared_context import Lemma
 from utils.utils import extract_substring, apply_unified_diff, search_and_replace
-from agents.shared_context import SharedContext
 
 # NOTE:
 # We intentionally block importing matplotlib (and pylab) inside `run_python()`.
@@ -249,56 +248,71 @@ def run_wolfram(code: str, session=None, timeout_seconds: int = 300):
         return "", payload
 
 
-def run_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
-    """
-    数学研究子代理执行器
-    
-    独立执行小到中等规模的数学研究任务，使用 ReAct 风格工作流。
-    可自主调用 Python 和 Wolfram Language 工具进行符号计算、数值分析等。
-    
-    Args:
-        task_description: 清晰简洁的数学研究任务描述
-    
-    Returns:
-        (result: str, error: str | None)
-    """
+def run_proof_assistant(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
+    """Proof-only subagent executor (no Python/Wolfram)."""
     result = ""
     err = None
 
-    print('entering subagent...')
+    logger.log_print('entering proof_assistant...', module='subagent')
 
-
-    logger.log_print('entering subagent...', module='subagent')
-    
-    try:    
-        # 构建子代理的系统提示（回答会进入主 agent 上下文：尽量省 token，但数学推导必须完整展开）
-        system_prompt = """You are a mathematical research sub-agent. Solve the given subtask correctly (compute/verify/derive).
-Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified. 
-Ask for clarifications if the task is ambiguous. Tell the main agent if the task is not self-contained or too large for you to handle.
-Tools available: run_python (SymPy/NumPy/SciPy), run_wolfram (Wolfram Language).
+    try:
+        system_prompt = """You are a mathematical proof assistant. Solve the given proof task rigorously.
+Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified.
+Ask for clarifications if the task is ambiguous. Tell the user if the task is not self-contained or too large for you to handle.
+You do NOT have Python/Wolfram tools in this role.
 OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
-WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something. If the task is not suited for using python/Wolfram, please compute/derive it manually and provide detailed reasoning steps.
-If the subtask is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
+If the task is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
         experience = """<experiences>
-Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one try. Always include assumptions (domains/parameters).
+Keep arguments formal and explicit. You may decompose into one bounded sub-claim if needed.
 </experiences>"""
-        
+
         messages = [
-            {"role": "system", "content": system_prompt+"\n\n"+experience},
+            {"role": "system", "content": system_prompt + "\n\n" + experience},
             {"role": "user", "content": "<task_description>\n" + task_description + "\n</task_description>"},
         ]
-        
-        # 调用 get_result 执行子代理任务（工具已在配置中设置）
-        result, reasoning,_ = client.get_result(messages=messages, shared=shared)
-        
+
+        from config.agent_config import AlphaSolveConfig
+        result, _, _ = client.get_result(messages=messages, tools=AlphaSolveConfig.PROOF_SUBAGENT_CONFIG['tools'], shared=shared)
     except Exception:
         err = traceback.format_exc().strip()
-    
+
     return result, err
 
 
-# ===== Solver 格式提醒工具（面向 LLM function-calling） =====
-# 来自 prompts/solver.md 的关键约束：
+def run_compute_assistant(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
+    """Compute-capable subagent executor (Python/Wolfram allowed)."""
+    result = ""
+    err = None
+
+    logger.log_print('entering compute_assistant...', module='subagent')
+
+    try:
+        system_prompt = """You are a mathematical compute assistant. Solve the given task correctly (compute/verify/derive).
+Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified.
+Ask for clarifications if the task is ambiguous. Tell the user if the task is not self-contained or too large for you to handle.
+Tools available: run_python (SymPy/NumPy/SciPy), run_wolfram (Wolfram Language).
+OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
+WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something. If the task is not suited for using python/Wolfram, compute/derive manually with details.
+If the task is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
+        experience = """<experiences>
+Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one try. Always include assumptions (domains/parameters).
+</experiences>"""
+
+        messages = [
+            {"role": "system", "content": system_prompt + "\n\n" + experience},
+            {"role": "user", "content": "<task_description>\n" + task_description + "\n</task_description>"},
+        ]
+
+        from config.agent_config import AlphaSolveConfig
+        result, _, _ = client.get_result(messages=messages, tools=AlphaSolveConfig.COMPUTE_SUBAGENT_CONFIG['tools'], shared=shared)
+    except Exception:
+        err = traceback.format_exc().strip()
+
+    return result, err
+
+
+# ===== Generator 格式提醒工具（面向 LLM function-calling） =====
+# 来自 prompts/generator.md 的关键约束：
 # - 输出必须以 \begin{conjecture} 起手，不能有任何其他前置内容
 # - 用 \begin{conjecture} 和 \end{conjecture} 包裹猜想内容
 # - 用 \begin{proof} 和 \end{proof} 包裹证明内容
@@ -306,10 +320,10 @@ Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one
 # - 整体结构为：conjecture + proof + dependency（建议无额外尾随内容）
 # - dependency 环境格式为 \begin{dependency}[...]\end{dependency}，其中 [...] 是 JSON array
 
-def solver_response_format_reminder() -> Tuple[str, Optional[str]]:
+def generator_response_format_reminder() -> Tuple[str, Optional[str]]:
     """`response_format_reminder` tool implementation.
 
-    Per `SOLVER_FORMAT_GUARD_TOOL` description:
+    Per `GENERATOR_FORMAT_GUARD_TOOL` description:
     - NO parameters.
     - Returns plain-text format requirements.
     """
@@ -331,10 +345,10 @@ def solver_response_format_reminder() -> Tuple[str, Optional[str]]:
     except Exception:
         return "", traceback.format_exc().strip()
     
-def refiner_response_format_reminder() -> Tuple[str, Optional[str]]:
+def revisor_response_format_reminder() -> Tuple[str, Optional[str]]:
     """`response_format_reminder` tool implementation.
 
-    Per `SOLVER_FORMAT_GUARD_TOOL` description:
+    Per `GENERATOR_FORMAT_GUARD_TOOL` description:
     - NO parameters.
     - Returns plain-text format requirements.
     """
@@ -366,7 +380,10 @@ def apply_new_statement_to_lemma(lemma: Lemma, new_statement: str) -> str:
             "statement": new_statement,
         })
 
-        return "Conjecture statement updated successfully:\n" + f"<conjecture>\n{lemma.get("statement", "")}</conjecture>"
+        return (
+            "Conjecture statement updated successfully:\n"
+            + f"<conjecture>\n{lemma.get('statement', '')}</conjecture>"
+        )
     except Exception as exc:
         return "[error]\n" + str(exc)
 
@@ -401,7 +418,11 @@ def apply_proof_anchor_edit(
             "apply_diff_error": None,
         })
 
-        return "Updated successfully:\n" + f"<conjecture>\n{lemma.get("statement", "")}</conjecture>\n<proof>{lemma.get("proof", "")}</proof>"
+        return (
+            "Updated successfully:\n"
+            + f"<conjecture>\n{lemma.get('statement', '')}</conjecture>\n"
+            + f"<proof>{lemma.get('proof', '')}</proof>"
+        )
     except Exception as exc:
         return "[error]\n" + str(exc)
 
@@ -441,9 +462,21 @@ WOLFRAM_TOOL = {
         }
     }
 }
-RESEARCH_SUBAGENT_DESCRIPTION = """Autonomous sub-agent for concrete math computations/verifications (symbolic or numeric) using tools like Python/Wolfram.
+PROOF_SUBAGENT_DESCRIPTION = """Subagent for proving/disproving bounded mathematical claims.
 
-**CRITICAL:** Each call spawns a NEW sub-agent with NO memory of previous calls. Provide a self-contained task description every time.
+**CRITICAL:** This subagent has no access to Python/Wolfram tools.
+
+**CRITICAL:** Each call spawns a NEW subagent with NO memory of previous calls. Provide a self-contained task description every time.
+
+**Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded proof obligation.
+
+Good requests: prove a local lemma under explicit assumptions; validate a derivation step; identify a gap and provide a corrected formal argument; construct a contradiction/counterexample argument.
+Bad requests: "solve the whole problem", "find the entire approach", dumping the full prompt.
+"""
+
+COMPUTE_SUBAGENT_DESCRIPTION = """Subagent for concrete math computations/verifications (symbolic or numeric) using tools like Python/Wolfram.
+
+**CRITICAL:** Each call spawns a NEW subagent with NO memory of previous calls. Provide a self-contained task description every time.
 
 **Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded task (one computation/check/derivation).
 
@@ -451,23 +484,23 @@ RESEARCH_SUBAGENT_DESCRIPTION = """Autonomous sub-agent for concrete math comput
 
 **CRITICAL (when to use): Call subagent EARLY and very OFTEN.** If you are about to do any nontrivial calculation/verification (multi-line algebra, symbolic simplification, case splits, solving equations/ODEs, checking edge cases, numeric experiments), you MUST call the sub-agent instead of doing it manually. If you catch yourself “working it out”, STOP and delegate that concrete subtask.
 
-**Reliability:** The sub-agent can be wrong—keep tasks verifiable and cross-check results by delegating the same or similar task to a second sub-agent if needed.
+**Reliability:** The subagent can be wrong—keep tasks verifiable and cross-check results by delegating the same or similar task to a second sub-agent if needed.
 
-Good requests (small + concrete): simplify under assumptions; compute/verify an integral/limit/series; solve an equation/ODE with parameter cases; compute a Groebner basis / eliminate variables / check ideal membership; compute a fundamental group / homology in a toy case; check whether a map is continuous/smooth from explicit formulas; verify a coordinate chart transition; compute curvature/Christoffel symbols for a given metric; numeric testing/counterexamples; edge-case checks.
+Good requests (small + concrete): simplify under assumptions; compute/verify an integral/limit/series; solve an equation/ODE with parameter cases; compute a Groebner basis / eliminate variables / check ideal membership; numeric testing/counterexamples; edge-case checks.
 Bad requests: "solve the whole problem", "find the entire approach", dumping the full prompt.
 """
 
-RESEARCH_SUBAGENT_TOOL = {
+PROOF_SUBAGENT_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'math_research_subagent',
-        'description': RESEARCH_SUBAGENT_DESCRIPTION,
+        'name': 'call_proof_subagent',
+        'description': PROOF_SUBAGENT_DESCRIPTION,
         'parameters': {
             'type': 'object',
             'properties': {
                 'task_description': {
                     'type': 'string',
-                    'description': 'A clear, complete and **self-contained** description of the mathematical research task to be solved by the sub-agent.'
+                    'description': 'A clear, complete and self-contained proof task for the proof subagent.'
                 }
             },
             'required': ['task_description']
@@ -475,10 +508,28 @@ RESEARCH_SUBAGENT_TOOL = {
     }
 }
 
-SOLVER_RESPONSE_FORMAT_REMINDER = {
+COMPUTE_SUBAGENT_TOOL = {
     'type': 'function',
     'function': {
-        'name': 'solver_response_format_reminder',
+        'name': 'call_compute_subagent',
+        'description': COMPUTE_SUBAGENT_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'task_description': {
+                    'type': 'string',
+                    'description': 'A clear, complete and self-contained computation/verification task for the compute subagent.'
+                }
+            },
+            'required': ['task_description']
+        }
+    }
+}
+
+GENERATOR_RESPONSE_FORMAT_REMINDER = {
+    'type': 'function',
+    'function': {
+        'name': 'generator_response_format_reminder',
         'description': (
             "When you are about to output the conjecture and the proof, call this tool to get a format reminder. "
         ),
@@ -490,10 +541,10 @@ SOLVER_RESPONSE_FORMAT_REMINDER = {
     }
 }
 
-REFINER_RESPONSE_FORMAT_REMINDER = {
+REVISOR_RESPONSE_FORMAT_REMINDER = {
     'type': 'function',
     'function': {
-        'name': 'refiner_response_format_reminder',
+        'name': 'revisor_response_format_reminder',
         'description': (
             "When you are about to output the refined conjecture and the proof, call this tool to get a format reminder. "
         ),

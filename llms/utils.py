@@ -2,6 +2,7 @@ from typing import Dict, List, Tuple, Optional, Any
 import os
 import json
 import re
+import time
 from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
 from .exceptions import LLMServiceException
@@ -187,6 +188,7 @@ class LLMClient:
                     )
                     if attempt >= max_api_retry:
                         raise
+                    time.sleep(min(2 ** attempt, 120))  # Exponential backoff with a max delay
                     continue
                 except Exception as exc:
                     # Unknown exception: still retry because stream can fail in various ways.
@@ -198,6 +200,7 @@ class LLMClient:
                     )
                     if attempt >= max_api_retry:
                         raise
+                    time.sleep(min(2 ** attempt, 120))  # Exponential backoff with a max delay
                     continue
 
             # Should be unreachable
@@ -378,12 +381,14 @@ class LLMClient:
         content_parts = []
         tool_calls_acc = []
         is_answering = False
+        reasoning_started = False
+        content_started = False
 
         # For audit/debug: record the exact messages sent to LLM.
-        logger.log_print(
+        """logger.log_print(
             "event=llm_messages\n" + json.dumps(messages, ensure_ascii=False, indent=2),
             module=self.module,
-        )
+        )"""
 
         # 判断是第一次调用还是继续思考
         # 如果messages最后一条是tool角色，说明是继续思考
@@ -402,7 +407,7 @@ class LLMClient:
             tools=tools,
             tool_choice='auto' if tools else None,
             stream=True,
-            ## logprobs=True,     
+            ## logprobs=True,
             ## top_logprobs=5,
             **model_params,
             **({"extra_body": extra_body} if extra_body else {})
@@ -421,16 +426,17 @@ class LLMClient:
             # 处理 reasoning_content
             rc_part = getattr(delta, 'reasoning_content', None)
             if rc_part:
-                if not is_answering:
-                    logger.log_print(rc_part, end="")
+                if not reasoning_started and rc_part.strip():
+                    reasoning_started = True
+                logger.log_print(rc_part, end="")
                 reasoning_parts.append(rc_part)
 
             # 处理 content
             ct_part = getattr(delta, 'content', None)
             if ct_part:
-                if not is_answering:
+                if not content_started and ct_part.strip():
                     logger.log_print("\n" + "=" * 20 + "最终回答" + "=" * 20)
-                    is_answering = True
+                    content_started = True
                 logger.log_print(ct_part, end="")
                 content_parts.append(ct_part)
 
@@ -503,9 +509,13 @@ class LLMClient:
 
     def _init_tool_context(self, tools: List[Dict]) -> Dict:
         """初始化工具执行上下文"""
+        from config.agent_config import AlphaSolveConfig
+
         context = {
             'python_env': {},
             'wolfram_session': None,
+            'proof_assistant_depth': 0,
+            'proof_assistant_max_depth': getattr(AlphaSolveConfig, 'PROOF_ASSISTANT_MAX_DEPTH', 3),
         }
 
         # 检查是否需要Wolfram session
@@ -523,17 +533,29 @@ class LLMClient:
         if context.get('wolfram_session'):
             try:
                 context['wolfram_session'].terminate()
-                if self.logger.print_to_console_default:
-                    print("\n[Wolfram Language Session Terminated]", end="")
+                self.logger.log_print(
+                    "\n[Wolfram Language Session Terminated]",
+                    end="",
+                    module=self.module,
+                    print_to_console=self.logger.print_to_console_default,
+                )
             except Exception as e:
-                if self.logger.print_to_console_default:
-                    print(f"\n[Warning] Error terminating Wolfram session: {e}", end="")
+                self.logger.log_print(
+                    f"\n[Warning] Error terminating Wolfram session: {e}",
+                    end="",
+                    module=self.module,
+                    level="WARNING",
+                    print_to_console=self.logger.print_to_console_default,
+                )
 
-    def _create_client_for_subagent(self):  # 使用 SUBAGENT_CONFIG 作为子代理配置
+    def _create_client_for_subagent(self, *, config_key: str, tools_override: Optional[List[Dict]] = None):
         
         from config.agent_config import AlphaSolveConfig
 
-        config = AlphaSolveConfig.SUBAGENT_CONFIG
+        base = getattr(AlphaSolveConfig, config_key)
+        config = dict(base)
+        if tools_override is not None:
+            config['tools'] = tools_override
         client = LLMClient(module='subagent', config=config, logger=self.logger)
 
         return client
@@ -545,17 +567,8 @@ class LLMClient:
         
         if name == 'run_python': 
             code = args.get('code', '')
-            if self.logger.print_to_console_default:
-                 print(f"[Tool Call] run_python\nCode:\n{code}")
-            
             log_parts.append(f"Code:\n{code}")
             stdout, error = run_python(code, context['python_env'], timeout_seconds=300)
-            
-            if self.logger.print_to_console_default:
-                if stdout:
-                    print(f"[stdout]\n{stdout}")
-                if error:
-                    print(f"[error]\n{error}")
             
             tool_content = ""
             if stdout:
@@ -567,9 +580,6 @@ class LLMClient:
         
         elif name == 'run_wolfram':
             code = args.get('code', '')
-            if self.logger.print_to_console_default:
-                print(f"[Tool Call] run_wolfram\nCode:\n{code}")
-            
             log_parts.append(f"Code:\n{code}")
 
             session = context.get('wolfram_session')
@@ -586,11 +596,6 @@ class LLMClient:
             if isinstance(error, str) and error.startswith('timeout'):
                 context['wolfram_session'] = self._start_wolfram_session()
 
-            if self.logger.print_to_console_default:
-                if output:
-                    print(f"[output]\n{output}")
-                if error:
-                    print(f"[error]\n{error}")
             
             tool_content = ""
             if output:
@@ -600,29 +605,36 @@ class LLMClient:
                 tool_content = tool_content + f"[error]\n{error}"
                 log_parts.append(f"[error]\n{error}")
         
-        elif name == 'math_research_subagent':
+        elif name in ('proof_assistant', 'compute_assistant'):
 
             task_description = args.get('task_description', '')
             shared = context.get('shared')
-            if self.logger.print_to_console_default:
-                print(f"[Tool Call] math_research_subagent\nTask:\n{task_description}")
-            
             log_parts.append(f"Task:\n{task_description}")
 
+            if name == 'proof_assistant':
+                current_depth = int(context.get('proof_assistant_depth', 0) or 0)
+                max_depth = int(context.get('proof_assistant_max_depth', 3) or 3)
+                nested_depth = current_depth + 1
 
-            print('entering subagent...111')
+                if nested_depth >= max_depth:
+                    nested_tools: List[Dict] = []
+                else:
+                    nested_tools = [PROOF_ASSISTANT_TOOL]
 
-            llm_client = self._create_client_for_subagent()
+                nested_client = self._create_client_for_subagent(
+                    config_key='PROOF_ASSISTANT_CONFIG',
+                    tools_override=nested_tools,
+                )
 
-            print('entering subagent...222')
-
-            result, error = run_subagent(task_description, self.logger, shared, llm_client)
-            
-            if self.logger.print_to_console_default:
-                if result:
-                    print(f"[result]\n{result}")
-                if error:
-                    print(f"[error]\n{error}")
+                parent_depth = context.get('proof_assistant_depth', 0)
+                context['proof_assistant_depth'] = nested_depth
+                try:
+                    result, error = run_proof_assistant(task_description, self.logger, shared, nested_client)
+                finally:
+                    context['proof_assistant_depth'] = parent_depth
+            else:
+                llm_client = self._create_client_for_subagent(config_key='COMPUTE_ASSISTANT_CONFIG')
+                result, error = run_compute_assistant(task_description, self.logger, shared, llm_client)
             
             tool_content = ''
             if result:
@@ -632,17 +644,8 @@ class LLMClient:
                 log_parts.append(f"[error]\n{error}")
                 tool_content = tool_content + f"[error]\n{error}"
         
-        elif name == 'solver_response_format_reminder':
-            if self.logger.print_to_console_default:
-                print("[Tool Call] solver_response_format_reminder")
-
-            result, error = solver_response_format_reminder()
-
-            if self.logger.print_to_console_default:
-                if result:
-                    print(f"[result]\n{result}")
-                if error:
-                    print(f"[error]\n{error}")
+        elif name == 'generator_response_format_reminder':
+            result, error = generator_response_format_reminder()
 
             if result:
                 log_parts.append(f"[result]\n{result}")
@@ -651,16 +654,8 @@ class LLMClient:
 
             tool_content = result if result else ""
         
-        elif name == 'refiner_response_format_reminder':
-            if self.logger.print_to_console_default:
-                print("[Tool Call] refiner_response_format_reminder")
-
-            result, error = refiner_response_format_reminder()
-            if self.logger.print_to_console_default:
-                if result:
-                    print(f"[result]\n{result}")
-                if error:
-                    print(f"[error]\n{error}")
+        elif name == 'revisor_response_format_reminder':
+            result, error = revisor_response_format_reminder()
 
             if result:
                 log_parts.append(f"[result]\n{result}")
@@ -680,9 +675,6 @@ class LLMClient:
                 log_parts.append(f"[error]\n{error}")
                 tool_content = json.dumps({'error': error}, ensure_ascii=False)
             else:
-                if self.logger.print_to_console_default:
-                    print("[Tool Call] modify_statement\nNew statement preview:\n"
-                          f"{new_statement[:200]}...")
                 log_parts.append(f"New statement length: {len(new_statement)}")
                 result = apply_new_statement_to_lemma(lemma, new_statement)
                 log_parts.append(f"[result]\n{result}")
@@ -699,10 +691,6 @@ class LLMClient:
                 log_parts.append(f"[error]\n{error}")
                 tool_content = json.dumps({'error': error}, ensure_ascii=False)
             else:
-                if self.logger.print_to_console_default:
-                    print("[Tool Call] modify_proof\n"
-                          f"begin_marker={begin_marker[:100]}\nend_marker={end_marker[:100]}\n"
-                          f"first 200 replacement={proof_replacement[:200]}...")
                 log_parts.append(
                     "Proof anchors lengths: begin={} end={} replacement={}".format(
                         len(begin_marker),
@@ -840,8 +828,6 @@ class LLMClient:
                     log_parts.append(f"[error]\n{tool_content}")
         
         else:
-            if self.logger.print_to_console_default:
-                print(f"[Tool Call] {name} (not implemented)")
             log_parts.append("(not implemented)")
             tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
 
@@ -859,7 +845,12 @@ class ParallelLLMClient(LLMClient):
 
     def __init__(self, module: str, config: Dict, logger: Logger, tool_executor: ProcessPoolExecutor):
 
-        print('init  ParallelLLMClient')
+        logger.log_print(
+            "event=parallel_llm_client_init",
+            module=module,
+            level="DEBUG",
+            print_to_console=False,
+        )
         super(ParallelLLMClient, self).__init__(module, config, logger)
         self.manager = mp.Manager()
         if  not tool_executor:
@@ -874,12 +865,14 @@ class ParallelLLMClient(LLMClient):
         # 用于在多进程间共享Wolfram会话状态
         self.wolfram_session_dict = self.manager.dict()
 
-    def _create_client_for_subagent(self):
-                # 使用 SUBAGENT_CONFIG 作为子代理配置
+    def _create_client_for_subagent(self, *, config_key: str, tools_override: Optional[List[Dict]] = None):
 
         from config.agent_config import AlphaSolveConfig
-            
-        config = AlphaSolveConfig.SUBAGENT_CONFIG
+
+        base = getattr(AlphaSolveConfig, config_key)
+        config = dict(base)
+        if tools_override is not None:
+            config['tools'] = tools_override
         client = ParallelLLMClient(module='subagent', config=config, logger=self.logger, tool_executor=self.executor)
         return client
 
@@ -913,19 +906,10 @@ class ParallelLLMClient(LLMClient):
 
 def _run_python(code: str, print_to_console: bool, log_parts: List[str]):
 
-    if print_to_console:
-        print(f"[Tool Call] run_python\nCode:\n{code}")
-            
     log_parts.append(f"Code:\n{code}")
 
     ## 这里没有设置 python_env, 后续可能是一个可以优化的点
     stdout, error = run_python(code, {}, timeout_seconds=300)
-            
-    if print_to_console:
-        if stdout:
-            print(f"[stdout]\n{stdout}")
-        if error:
-            print(f"[error]\n{error}")
             
     tool_content = ''
 
@@ -941,10 +925,7 @@ def _run_python(code: str, print_to_console: bool, log_parts: List[str]):
     
     
 def _run_wolfram(code: str, context: Dict, print_to_console: bool, log_parts: List[str]):
-                
-    if print_to_console:
-        print(f"[Tool Call] run_wolfram\nCode:\n{code}")
-            
+
     log_parts.append(f"Code:\n{code}")
 
     key = str(os.getpid()) + '_wolfram_session'
@@ -966,12 +947,6 @@ def _run_wolfram(code: str, context: Dict, print_to_console: bool, log_parts: Li
     if isinstance(error, str) and error.startswith('timeout'):
         context['wolfram_session'] = _start_wolfram_session(print_to_console)
 
-    if print_to_console:
-        if output:
-            print(f"[output]\n{output}")
-        if error:
-            print(f"[error]\n{error}")
-            
     tool_content = ''
     
     if output:
@@ -984,36 +959,18 @@ def _run_wolfram(code: str, context: Dict, print_to_console: bool, log_parts: Li
     return tool_content, log_parts
 
 def _start_wolfram_session(print_to_console: bool) -> Optional[WolframLanguageSession]:
-        
-    if print_to_console:
-        print("[正在启动 Wolfram Language Session...]\n", end="")
 
     try:
         session = WolframLanguageSession()
-        if print_to_console:
-            print("[Wolfram Language Session 已启动]\n", end="")
         return session
     except Exception as exc_default:
         kernel_path = os.environ.get("WOLFRAM_KERNEL")
         if kernel_path:
             try:
                 session = WolframLanguageSession(kernel_path)
-                if print_to_console:
-                    print("[Wolfram Language Session 已启动 (via WOLFRAM_KERNEL)]\n", end="")
                 return session
             except Exception as exc_env:
-                if print_to_console:
-                    print(
-                        f"[警告] Wolfram session 启动失败: default={exc_default}; WOLFRAM_KERNEL={kernel_path!r} error={exc_env}\n",
-                         end="",
-                    )
                 return None
-
-        if print_to_console:
-             print(
-                f"[警告] Wolfram session 启动失败: default={exc_default}; env WOLFRAM_KERNEL not set\n",
-                end="",
-            )
         return None
 
         

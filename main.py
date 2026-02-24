@@ -1,6 +1,7 @@
 from workflow import AlphaSolve
 from utils.utils import load_prompt_from_file
 from config.agent_config import AlphaSolveConfig
+from utils.log_session import LogSession
 
 import os
 import argparse
@@ -30,7 +31,13 @@ if __name__== "__main__" :
     hint= None
     #hint = load_prompt_from_file('hint.md')
     
-    alpha = AlphaSolve(problem=problem, max_worker_num = args.batch_size, tool_executor_size = args.tool_executor_size)
+    log_session = LogSession(run_root=AlphaSolveConfig.LOG_PATH)
+    alpha = AlphaSolve(
+        problem=problem,
+        max_worker_num=args.batch_size,
+        tool_executor_size=args.tool_executor_size,
+        log_session=log_session,
+    )
     
     try:
         solution = alpha.do_research(iteration_num = args.iteration)

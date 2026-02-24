@@ -6,49 +6,49 @@ An AI-powered mathematical research system that iterates in a **solve -> verify 
 
 AlphaSolve is implemented as a PocketFlow graph. The core nodes are:
 
-1. **Solver** proposes a new lemma (a "conjecture" + proof + dependencies) or a final theorem.
+1. **Generator** proposes a new lemma (a "conjecture" + proof + dependencies) or a final theorem.
 2. **Verifier** stress-tests the proof using **test-time scaling** (multiple independent verification attempts).
-3. **Refiner** patches the conjecture/proof using the verifier’s review when verification fails.
+3. **Revisor** patches the conjecture/proof using the verifier’s review when verification fails.
 4. **Summarizer** emits the final report when a verified theorem is reached (or the system exhausts its budget).
 
 ### State machine (as implemented)
 
 ```mermaid
 flowchart TD
-    Start([Start]) --> Solver
+    Start([Start]) --> Generator
 
-    Solver["<b>Solver</b><br/>───────────────<br/>• Generates a new lemma (conjecture+proof+dependencies) or a final theorem<br/>• Only VERIFIED lemmas are used as context for proposing the next lemma<br/>• Budget: MAX_LEMMA_NUM"]
+    Generator["<b>Generator</b><br/>───────────────<br/>�?Generates a new lemma (conjecture+proof+dependencies) or a final theorem<br/>�?Only VERIFIED lemmas are used as context for proposing the next lemma<br/>�?Budget: MAX_LEMMA_NUM"]
 
-    Verifier["<b>Verifier</b><br/>───────────────<br/>• Verifies the latest lemma's proof<br/>• Test-time scaling: VERIFIER_SCALING_FACTOR attempts<br/>• Uses transitive VERIFIED dependencies as context"]
+    Verifier["<b>Verifier</b><br/>───────────────<br/>�?Verifies the latest lemma's proof<br/>�?Test-time scaling: VERIFIER_SCALING_FACTOR attempts<br/>�?Uses transitive VERIFIED dependencies as context"]
 
-    Refiner["<b>Refiner</b><br/>───────────────<br/>• Repairs the lemma based on verifier review<br/>• Stops after MAX_VERIFY_AND_REFINE_ROUND verify/refine rounds for the same lemma<br/>• Retries invalid-format model outputs up to REFINER_MAX_RETRY"]
+    Revisor["<b>Revisor</b><br/>───────────────<br/>�?Repairs the lemma based on verifier review<br/>�?Stops after MAX_VERIFY_AND_REFINE_ROUND verify/refine rounds for the same lemma<br/>�?Retries invalid-format model outputs up to REVISOR_MAX_RETRY"]
 
-    Summarizer["<b>Summarizer</b><br/>───────────────<br/>• Outputs all lemmas on the final reasoning path (dependencies + final theorem)<br/>•"]
+    Summarizer["<b>Summarizer</b><br/>───────────────<br/>�?Outputs all lemmas on the final reasoning path (dependencies + final theorem)<br/>�?]
 
     End([End])
 
-    %% Solver exits
-    Solver -->|"conjecture_generated"| Verifier
-    Solver -->|"exit_on_error"| Solver
-    Solver -->|"exit_on_exausted"| Summarizer
+    %% Generator exits
+    Generator -->|"conjecture_generated"| Verifier
+    Generator -->|"exit_on_error"| Generator
+    Generator -->|"exit_on_exausted"| Summarizer
 
     %% Verifier exits
-    Verifier -->|"conjecture_unverified"| Refiner
-    Verifier -->|"conjecture_verified"| Solver
+    Verifier -->|"conjecture_unverified"| Revisor
+    Verifier -->|"conjecture_verified"| Generator
     Verifier -->|"done"| Summarizer
 
-    %% Refiner exits
-    Refiner -->|"refined_success"| Verifier
-    Refiner -->|"exit_on_exausted"| Solver
-    Refiner -->|"conjecture_wrong"| Solver
-    Refiner -->|"exit_on_error"| Refiner
+    %% Revisor exits
+    Revisor -->|"refined_success"| Verifier
+    Revisor -->|"exit_on_exausted"| Generator
+    Revisor -->|"conjecture_wrong"| Generator
+    Revisor -->|"exit_on_error"| Revisor
 
     %% End
     Summarizer --> End
 
-    style Solver fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    style Generator fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style Verifier fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style Refiner fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style Revisor fill:#fff3e0,stroke:#e65100,stroke-width:2px
     style Summarizer fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style Start fill:#fce4ec,stroke:#880e4f,stroke-width:2px
     style End fill:#fce4ec,stroke:#880e4f,stroke-width:2px
@@ -127,19 +127,19 @@ Switch the model/provider by editing [`config/agent_config.py`](config/agent_con
 
 The active runtime config is embedded into each agent’s config:
 
-- `AlphaSolveConfig.SOLVER_CONFIG`
+- `AlphaSolveConfig.GENERATOR_CONFIG`
 - `AlphaSolveConfig.VERIFIER_CONFIG`
-- `AlphaSolveConfig.REFINER_CONFIG`
+- `AlphaSolveConfig.REVISOR_CONFIG`
 - `AlphaSolveConfig.SUMMARIZER_CONFIG`
 
 ### Key workflow knobs
 
 Defined in [`config/agent_config.py`](config/agent_config.py:158):
 
-- `MAX_LEMMA_NUM`: maximum number of lemmas Solver may generate
+- `MAX_LEMMA_NUM`: maximum number of lemmas Generator may generate
 - `VERIFIER_SCALING_FACTOR`: how many independent verification attempts Verifier runs per lemma
 - `MAX_VERIFY_AND_REFINE_ROUND`: max verify/refine cycles for a single lemma before it is rejected
-- `REFINER_MAX_RETRY`: retries for invalid-format refiner responses
+- `REVISOR_MAX_RETRY`: retries for invalid-format revisor responses
 - `MAX_API_RETRY`: full-call retry count when streaming responses are interrupted
 
 ## Benchmark
