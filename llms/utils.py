@@ -867,18 +867,13 @@ class ParallelLLMClient(LLMClient):
             print_to_console=False,
         )
         super(ParallelLLMClient, self).__init__(module, config, logger)
-        self.manager = mp.Manager()
         if  not tool_executor:
             self.executor = ProcessPoolExecutor(
-                max_workers = 2, 
+                max_workers = 2,
                 mp_context = mp.get_context("spawn")
             )
         else:
             self.executor = tool_executor
-        # 用于在多进程间共享Python环境状态, 不过目前没用到, 因为查询发现 python_env 和性能有关, 就先保留了
-        self.python_env_dict = self.manager.dict()
-        # 用于在多进程间共享Wolfram会话状态
-        self.wolfram_session_dict = self.manager.dict()
 
     def _create_client_for_subagent(self, *, config_key: str, tools_override: Optional[List[Dict]] = None):
 
@@ -898,10 +893,12 @@ class ParallelLLMClient(LLMClient):
 
         if name == 'run_python': ## 运行 python 代码比较简单, 直接给过去就行
             code = args.get('code', '')
-            future =  self.executor.submit(_run_python, code, self.logger.print_to_console_default, log_parts)
+            log_parts.append(f"Code:\n{code}")
+            future = self.executor.submit(_run_python, code)
         elif name == 'run_wolfram': ## 运行 wolfram 代码, 需要管理好 wolfram session
             code = args.get('code', '')
-            future =  self.executor.submit(_run_wolfram, code, self.wolfram_session_dict, self.logger.print_to_console_default, log_parts)
+            log_parts.append(f"Code:\n{code}")
+            future = self.executor.submit(_run_wolfram, code)
         else: # 其他工具仍然使用父类的实现
             return super(ParallelLLMClient, self)._execute_tool(name, args, context)
 
@@ -917,63 +914,57 @@ class ParallelLLMClient(LLMClient):
         if not data: ## 第一个参数是 tool_result, 第二个参数是 tool_logs
             return '', []
         else: # 有结果, 正常返回
-            return data
+            tool_content, output_logs = data
+            log_parts.extend(output_logs)
+            return tool_content, log_parts
 
-def _run_python(code: str, print_to_console: bool, log_parts: List[str]):
-
-    log_parts.append(f"Code:\n{code}")
-
+def _run_python(code: str):
     ## 这里没有设置 python_env, 后续可能是一个可以优化的点
     stdout, error = run_python(code, {}, timeout_seconds=300)
             
     tool_content = ''
+    output_logs = []
 
     if stdout:
         tool_content = tool_content + f"[stdout]\n{stdout}"
-        log_parts.append(f"[stdout]\n{stdout}")
+        output_logs.append(f"[stdout]\n{stdout}")
     if error:
         tool_content = tool_content + f"[error]\n{error}"
-        log_parts.append(f"[error]\n{error}")
+        output_logs.append(f"[error]\n{error}")
 
-    return tool_content, log_parts
+    return tool_content, output_logs
 
     
     
-def _run_wolfram(code: str, context: Dict, print_to_console: bool, log_parts: List[str]):
-
-    log_parts.append(f"Code:\n{code}")
-
-    key = str(os.getpid()) + '_wolfram_session'
-    try:
-        session = context[key]
-    except KeyError:
-        session = None
-
-    if session is None:
-        session = _start_wolfram_session(print_to_console)
-        context[key] = session
+def _run_wolfram(code: str):
+    # 每个子进程有自己的 Wolfram session，不跨进程共享
+    session = _start_wolfram_session()
 
     if session is None:
         error = 'Wolfram session not available'
         output = ''
     else:
-        output, error = run_wolfram(code, session)
-
-    if isinstance(error, str) and error.startswith('timeout'):
-        context['wolfram_session'] = _start_wolfram_session(print_to_console)
+        try:
+            output, error = run_wolfram(code, session)
+        finally:
+            try:
+                session.terminate()
+            except:
+                pass
 
     tool_content = ''
+    output_logs = []
     
     if output:
         tool_content = tool_content + f"[output]\n{output}"
-        log_parts.append(f"[output]\n{output}")
+        output_logs.append(f"[output]\n{output}")
     if error:
         tool_content = tool_content + f"[error]\n{error}"
-        log_parts.append(f"[error]\n{error}")
+        output_logs.append(f"[error]\n{error}")
 
-    return tool_content, log_parts
+    return tool_content, output_logs
 
-def _start_wolfram_session(print_to_console: bool) -> Optional[WolframLanguageSession]:
+def _start_wolfram_session(print_to_console: bool = False) -> Optional[WolframLanguageSession]:
 
     try:
         session = WolframLanguageSession()
