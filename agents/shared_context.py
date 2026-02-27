@@ -57,7 +57,7 @@ class SharedContext(TypedDict):
     problem: str
     lemmas: List[Lemma]
 
-    ##  这部分信息在某一个 alphasolve 里使用, 用来同步 generator/verifier/revisor 之间的信息
+    ##  这部分信息在某一个 alphasolve 里使用, 用来同步 generator/verifier/reviser 之间的信息
     hint: Optional[str]
     current_lemma_id: Optional[int]
     result_summary: Optional[str]

@@ -65,7 +65,7 @@ class Verifier:
             valid=bool(is_valid),
             review=review,
             cot=cot,
-            done=bool(is_valid and input.candidate_lemma.get("is_theorem")),
+            done=False,
         )
 
     def _verify_once(self, lemma: Lemma, reasoning_ctx: str, shared: dict):

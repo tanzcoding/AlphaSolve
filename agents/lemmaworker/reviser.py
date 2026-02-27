@@ -30,7 +30,7 @@ class ReviseOutput:
     rejected: bool
 
 
-class Revisor:
+class Reviser:
     def __init__(self, llm: LLMClient, prompt_file_path: str, logger: Logger):
         self.llm = llm
         self.prompt_template = load_prompt_from_file(prompt_file_path)
@@ -41,7 +41,7 @@ class Revisor:
             return ReviseOutput(new_statement=None, new_proof=None, rejected=True)
 
         ctx_text = self._render_context(input.verified_context)
-        prompt = self._build_revisor_prompt(input.candidate_lemma, ctx_text)
+        prompt = self._build_reviser_prompt(input.candidate_lemma, ctx_text)
         if not prompt:
             return ReviseOutput(new_statement=None, new_proof=None, rejected=True)
 
@@ -71,17 +71,17 @@ How to use subagents:
         }
 
         response = ""
-        for _ in range(AlphaSolveConfig.REVISOR_MAX_RETRY):
-            response, _, _ = self.llm.get_result(messages=messages_to_send, tools=AlphaSolveConfig.REVISOR_CONFIG['tools'], shared=shared)
+        for _ in range(AlphaSolveConfig.REVISER_MAX_RETRY):
+            response, _, _ = self.llm.get_result(messages=messages_to_send, tools=AlphaSolveConfig.REVISER_CONFIG['tools'], shared=shared)
             if self._validate_response(response):
                 break
 
-        new_statement = extract_substring(response, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="revisor")
-        new_proof = extract_substring(response, PROOF_BEGIN, PROOF_END, logger=self.logger, module="revisor")
+        new_statement = extract_substring(response, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="reviser")
+        new_proof = extract_substring(response, PROOF_BEGIN, PROOF_END, logger=self.logger, module="reviser")
         rejected = not bool((new_statement and len(new_statement) > 5) or (new_proof and len(new_proof) > 5))
         return ReviseOutput(new_statement=new_statement, new_proof=new_proof, rejected=rejected)
 
-    def _build_revisor_prompt(self, lemma: Lemma, reasoning_ctx: str) -> Optional[str]:
+    def _build_reviser_prompt(self, lemma: Lemma, reasoning_ctx: str) -> Optional[str]:
         if not lemma.get("statement") or not lemma.get("proof"):
             return None
         tmp = self.prompt_template.replace('{conjecture_content}', lemma.get("statement", "")).replace('{proof_content}', lemma.get("proof", ""))
@@ -118,10 +118,9 @@ How to use subagents:
         return "\n".join(lines)
 
 
-def create_revisor_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Revisor:
+def create_reviser_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Reviser:
     if not tool_executor:
-        llm = LLMClient(module='revisor', config=AlphaSolveConfig.REVISOR_CONFIG, logger=logger)
+        llm = LLMClient(module='reviser', config=AlphaSolveConfig.REVISER_CONFIG, logger=logger)
     else:
-        llm = ParallelLLMClient(module='revisor', config=AlphaSolveConfig.REVISOR_CONFIG, logger=logger, tool_executor=tool_executor)
-    return Revisor(llm=llm, prompt_file_path=prompt_file_path, logger=logger)
-
+        llm = ParallelLLMClient(module='reviser', config=AlphaSolveConfig.REVISER_CONFIG, logger=logger, tool_executor=tool_executor)
+    return Reviser(llm=llm, prompt_file_path=prompt_file_path, logger=logger)

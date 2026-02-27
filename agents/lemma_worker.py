@@ -11,7 +11,7 @@ from agents.lemmaworker import (
     ReviseInput,
     create_generator_component,
     create_verifier_component,
-    create_revisor_component,
+    create_reviser_component,
 )
 from config.agent_config import AlphaSolveConfig
 from utils.logger import Logger
@@ -41,8 +41,8 @@ class LemmaWorker:
             logger=self.logger,
             tool_executor=self.tool_executor,
         )
-        self.revisor = create_revisor_component(
-            prompt_file_path=AlphaSolveConfig.REVISOR_PROMPT_PATH,
+        self.reviser = create_reviser_component(
+            prompt_file_path=AlphaSolveConfig.REVISER_PROMPT_PATH,
             logger=self.logger,
             tool_executor=self.tool_executor,
         )
@@ -93,15 +93,15 @@ class LemmaWorker:
 
             if verify_out.valid:
                 lemma["status"] = "verified"
-                lemma["is_theorem"] = bool(lemma.get("is_theorem"))
+                lemma["is_theorem"] = False
                 self.logger.log_print(
-                    f"event=lemma_worker_done worker_id={ctx.worker_id} status=verified is_theorem={lemma['is_theorem']}",
+                    f"event=lemma_worker_done worker_id={ctx.worker_id} status=verified is_theorem=False",
                     module="lemma_worker",
                 )
                 return LemmaWorkerResult(
                     lemma=lemma,
                     status="verified",
-                    is_theorem=bool(lemma.get("is_theorem")),
+                    is_theorem=False,
                     dependencies=list(lemma.get("dependencies", [])),
                 )
 
@@ -119,7 +119,7 @@ class LemmaWorker:
                     dependencies=list(lemma.get("dependencies", [])),
                 )
 
-            revise_out = self.revisor.revise(
+            revise_out = self.reviser.revise(
                 ReviseInput(
                     problem=ctx.problem,
                     verified_context=ctx.verified_snapshot,
@@ -130,7 +130,7 @@ class LemmaWorker:
             if revise_out.rejected:
                 lemma["status"] = "rejected"
                 self.logger.log_print(
-                    f"event=lemma_worker_done worker_id={ctx.worker_id} status=rejected reason=revisor_rejected",
+                    f"event=lemma_worker_done worker_id={ctx.worker_id} status=rejected reason=reviser_rejected",
                     module="lemma_worker",
                     level="WARNING",
                 )

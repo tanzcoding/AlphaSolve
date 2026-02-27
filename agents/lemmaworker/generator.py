@@ -93,9 +93,8 @@ How to use subagents:
         if not lemma:
             return GenerateOutput(lemma=None, done=False)
 
-        is_theorem = self._check_is_theorem(problem=input.problem, statement=lemma["statement"], shared=shared)
-        lemma["is_theorem"] = is_theorem
-        return GenerateOutput(lemma=lemma, done=is_theorem)
+        lemma["is_theorem"] = False
+        return GenerateOutput(lemma=lemma, done=False)
 
     def _build_generator_prompt(self, *, prompt_template, problem, lemmas, remaining_lemma_quota, iteration_round, mode, hint=None):
         tmp = prompt_template.replace('{problem_content}', problem)
@@ -142,22 +141,6 @@ How to use subagents:
                 verify_round=0,
             )
         return None
-
-    def _check_is_theorem(self, *, problem: str, statement: str, shared: dict) -> bool:
-        is_theorem_num = 0
-        for _ in range(AlphaSolveConfig.CHECK_IS_THEOREM_TIMES):
-            check_message = (
-                "Check if the following statement fully addresses the problem "
-                "(do NOT check if the statement is mathematically correct - only check if it fully resolves the problem). "
-                "Output ONLY 'Yes' or 'No' without any explanation.\n\n"
-                f"Problem: {problem}\n\nStatement: {statement}"
-            )
-            response, _, _ = self.llm.get_result(messages=[{"role": "user", "content": check_message}], tools=[], shared=shared)
-            if response.strip().lower() == 'yes':
-                is_theorem_num += 1
-            else:
-                return False
-        return is_theorem_num >= AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
 
 
 def create_generator_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Generator:

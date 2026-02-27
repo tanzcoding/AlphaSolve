@@ -662,8 +662,8 @@ class LLMClient:
 
             tool_content = result if result else ""
         
-        elif name == 'revisor_response_format_reminder':
-            result, error = revisor_response_format_reminder()
+        elif name == 'reviser_response_format_reminder':
+            result, error = reviser_response_format_reminder()
 
             if result:
                 log_parts.append(f"[result]\n{result}")

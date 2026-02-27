@@ -39,11 +39,11 @@ flowchart TD
     Generator["<b>Generator</b><br/>───────────────<br/>• 基于已验证引理和问题描述<br/>• 生成新的猜想（conjecture）<br/>• 生成完整证明和依赖关系<br/>• 使用子代理辅助探索"] -->|生成猜想| Verifier
     
     Verifier["<b>Verifier</b><br/>───────────────<br/>• 对证明进行严格审查<br/>• 测试时扩展：多次独立验证<br/>• 输出 verdict<br/>• 使用计算工具辅助验证"] -->|验证通过| LemmaPool
-    Verifier -->|验证失败<br/>未达最大轮数| Revisor
+    Verifier -->|验证失败<br/>未达最大轮数| Reviser
     Verifier -->|验证失败<br/>已达最大轮数| Reject[拒绝该猜想]
     
-    Revisor["<b>Revisor</b><br/>───────────────<br/>• 根据评审意见修正<br/>• 可弱化/否定猜想<br/>• 可提取技术难点为新猜想<br/>• 使用子代理辅助修正"] -->|修正完成| Verifier
-    Revisor -->|修正失败| Reject
+    Reviser["<b>Reviser</b><br/>───────────────<br/>• 根据评审意见修正<br/>• 可弱化/否定猜想<br/>• 可提取技术难点为新猜想<br/>• 使用子代理辅助修正"] -->|修正完成| Verifier
+    Reviser -->|修正失败| Reject
     
     LemmaPool[("<b>LemmaPool</b><br/>───────────────<br/>• 保存已验证引理<br/>• 供其他线程引用<br/>• 判断是否解决原问题")]
     
@@ -52,7 +52,7 @@ flowchart TD
     
     style Generator fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style Verifier fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style Revisor fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style Reviser fill:#fff3e0,stroke:#e65100,stroke-width:2px
     style LemmaPool fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
     style Solved fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
     style Reject fill:#ffcdd2,stroke:#c62828,stroke-width:2px
@@ -62,7 +62,7 @@ flowchart TD
 ### 核心组件说明
 
 1. **LemmaWorker（工作线程）**
-   - 每个工作线程独立运行，包含 Generator、Verifier、Revisor 三个组件
+   - 每个工作线程独立运行，包含 Generator、Verifier、Reviser 三个组件
    - 从 LemmaPool 获取当前已验证的引理作为上下文
    - 生成新的引理并经过验证-修正循环，直到验证通过或达到最大尝试次数
 
@@ -83,7 +83,7 @@ flowchart TD
    - 检查证明的正确性、完整性和严谨性
    - 输出 $\boxed{valid}$ 或 $\boxed{invalid}$ 和verdict
 
-5. **Revisor（修正器）**
+5. **Reviser（修正器）**
    - 根据验证器的反馈修正猜想或证明
    - 支持弱化猜想、否定猜想、提取技术难点为新的子猜想
    - 最多 `MAX_VERIFY_AND_REFINE_ROUND` 次修正尝试
@@ -149,9 +149,9 @@ VERIFIER_CONFIG = {
     'tools': [COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
 }
 
-REVISOR_CONFIG = {
-    **VOLCANO_CONFIG, 
-    'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISOR_RESPONSE_FORMAT_REMINDER]
+REVISER_CONFIG = {
+    **VOLCANO_CONFIG,
+    'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
 }
 ```
 
@@ -206,7 +206,7 @@ python main.py --iteration 2 --batch_size 4 --tool_executor_size 2
 | `VERIFIER_SCALING_FACTOR` | 15 | 验证器的独立验证尝试次数 |
 | `MAX_VERIFY_AND_REFINE_ROUND` | 5 | 单个引理的最大验证-修正轮数 |
 | `GENERATOR_MAX_RETRY` | 3 | 生成器解析失败时的重试次数 |
-| `REVISOR_MAX_RETRY` | 3 | 修正器解析失败时的重试次数 |
+| `REVISER_MAX_RETRY` | 3 | 修正器解析失败时的重试次数 |
 | `CHECK_IS_THEOREM_TIMES` | 5 | 判断是否为最终定理的验证次数 |
 | `MAX_API_RETRY` | 8 | LLM API 调用失败时的重试次数 |
 | `PROOF_SUBAGENT_MAX_DEPTH` | 3 | 证明子代理的最大递归深度 |

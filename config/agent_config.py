@@ -3,7 +3,7 @@ from llms.tools import (
     PROOF_SUBAGENT_TOOL,
     COMPUTE_SUBAGENT_TOOL,
     GENERATOR_RESPONSE_FORMAT_REMINDER,
-    REVISOR_RESPONSE_FORMAT_REMINDER,
+    REVISER_RESPONSE_FORMAT_REMINDER,
     PYTHON_TOOL,
     WOLFRAM_TOOL,
     MODIFY_STATEMENT_TOOL,
@@ -178,7 +178,7 @@ class AlphaSolveConfig:
 
     GENERATOR = 'generator'
     VERIFIER = 'verifier'
-    REVISOR = 'revisor'
+    REVISER = 'reviser'
 
     ## 在这里设置 AlphaSolve 使用的 LLM 配置
     
@@ -193,29 +193,29 @@ class AlphaSolveConfig:
     # Verifier 可以使用 subagent，可以再读一遍当前猜想及其证明，也可以阅读已有 lemma 的证明
     VERIFIER_CONFIG = {
         ## **MIMO_CONFIG,
-        **VOLCANO_CONFIG, 
+        **DEEPSEEK_CONFIG, 
         'tools': [COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    # Revisor 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
-    REVISOR_CONFIG = {
+    # Reviser 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
+    REVISER_CONFIG = {
         ## **MIMO_CONFIG,
-        **VOLCANO_CONFIG, 
-        'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISOR_RESPONSE_FORMAT_REMINDER]
+        **VOLCANO_CONFIG,
+        'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
     }
-    REVISOR_PROMPT_PATH='prompts/revisor.md'
+    REVISER_PROMPT_PATH='prompts/reviser.md'
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/summarizer.md'
 
     # Compute subagent 可以使用 Python 和 Wolfram
     COMPUTE_SUBAGENT_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
@@ -225,7 +225,7 @@ class AlphaSolveConfig:
         'tools': [PROOF_SUBAGENT_TOOL]
     }
 
-    PROOF_SUBAGENT_MAX_DEPTH = 3
+    PROOF_SUBAGENT_MAX_DEPTH = 5
 
     ORCHESTRATOR_CONFIG = {
         #**MIMO_CONFIG,
@@ -249,7 +249,7 @@ class AlphaSolveConfig:
     CONJECTURE_VERIFIED  = 'conjecture_verified'
     DONE = 'done'
 
-    ## used by revisor
+    ## used by reviser
     REFINE_SUCCESS = 'refined_success'
     CONJECTURE_WRONG = 'conjecture_wrong'
 
@@ -268,8 +268,9 @@ class AlphaSolveConfig:
     ## 
     MAX_LEMMA_NUM = 30
     MAX_VERIFY_AND_REFINE_ROUND = 5
+    MAX_WORKER_NUM = 4
     GENERATOR_MAX_RETRY = 3
-    REVISOR_MAX_RETRY = 3
+    REVISER_MAX_RETRY = 3
     CHECK_IS_THEOREM_TIMES = 5
 
     # LLM API retry policy
@@ -279,6 +280,3 @@ class AlphaSolveConfig:
 
     PROBLEM_PATH = 'problems/problem_1.md'
     STANDARD_SOLUTION_PATH = 'standard_solution.md'
-
-    SHARED_BY_ALL = 'shared_by_all'
-    SHARED_BY_ITERATION = 'shared_by_iteration'

@@ -7,6 +7,8 @@ from typing import Optional
 from agents.lemma_pool import LemmaPool
 from agents.lemma_worker import LemmaWorker
 from agents.lemmaworker import LemmaWorkerContext
+from config.agent_config import AlphaSolveConfig
+from llms.utils import LLMClient, ParallelLLMClient
 from utils.log_session import LogSession
 from utils.logger import Logger
 
@@ -38,6 +40,12 @@ class LemmaPoolOrchestrator:
         self.parallelism_limit = max(1, int(parallelism_limit))
         self._next_worker_id = 0
         self._console_owner: Optional[int] = None
+        
+        # Initialize LLM client for is_theorem checking
+        if not tool_executor:
+            self.llm = LLMClient(module='orchestrator', config=AlphaSolveConfig.ORCHESTRATOR_CONFIG, logger=logger)
+        else:
+            self.llm = ParallelLLMClient(module='orchestrator', config=AlphaSolveConfig.ORCHESTRATOR_CONFIG, logger=logger, tool_executor=tool_executor)
 
     def run(self) -> PoolRunResult:
         self.logger.log_print(
@@ -82,6 +90,16 @@ class LemmaPoolOrchestrator:
                         )
                         continue
 
+                    # Check if this lemma is a theorem (only if it's verified)
+                    if result.status == "verified":
+                        is_theorem = self._check_is_theorem(statement=result.lemma.get("statement", ""))
+                        result.is_theorem = is_theorem
+                        result.lemma["is_theorem"] = is_theorem
+                        self.logger.log_print(
+                            f"event=orchestrator_check_is_theorem worker_id={worker_id} is_theorem={is_theorem}",
+                            module="pool_orchestrator",
+                        )
+
                     decision = self.pool.commit(result)
                     self.logger.log_print(
                         f"event=worker_finished worker_id={worker_id} status={decision.status} solved={decision.solved}",
@@ -109,4 +127,29 @@ class LemmaPoolOrchestrator:
             worker_id=worker_id,
         )
         return worker.run(ctx)
+
+    def _check_is_theorem(self, *, statement: str) -> bool:
+        """Check if a lemma statement fully addresses the original problem."""
+        shared = {
+            "problem": self.problem,
+            "hint": self.hint,
+            "lemmas": self.pool.snapshot_verified(),
+            "current_lemma_id": None,
+            "result_summary": None,
+        }
+        
+        is_theorem_num = 0
+        for _ in range(AlphaSolveConfig.CHECK_IS_THEOREM_TIMES):
+            check_message = (
+                "Check if the following statement fully addresses the problem "
+                "(do NOT check if the statement is mathematically correct - only check if it fully resolves the problem). "
+                "Output ONLY 'Yes' or 'No' without any explanation.\n\n"
+                f"Problem: {self.problem}\n\nStatement: {statement}"
+            )
+            response, _, _ = self.llm.get_result(messages=[{"role": "user", "content": check_message}], tools=[], shared=shared)
+            if response.strip().lower() == 'yes':
+                is_theorem_num += 1
+            else:
+                return False
+        return is_theorem_num >= AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
 

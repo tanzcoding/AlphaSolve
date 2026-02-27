@@ -345,7 +345,7 @@ def generator_response_format_reminder() -> Tuple[str, Optional[str]]:
     except Exception:
         return "", traceback.format_exc().strip()
     
-def revisor_response_format_reminder() -> Tuple[str, Optional[str]]:
+def reviser_response_format_reminder() -> Tuple[str, Optional[str]]:
     """`response_format_reminder` tool implementation.
 
     Per `GENERATOR_FORMAT_GUARD_TOOL` description:
@@ -541,10 +541,10 @@ GENERATOR_RESPONSE_FORMAT_REMINDER = {
     }
 }
 
-REVISOR_RESPONSE_FORMAT_REMINDER = {
+REVISER_RESPONSE_FORMAT_REMINDER = {
     'type': 'function',
     'function': {
-        'name': 'revisor_response_format_reminder',
+        'name': 'reviser_response_format_reminder',
         'description': (
             "When you are about to output the refined conjecture and the proof, call this tool to get a format reminder. "
         ),

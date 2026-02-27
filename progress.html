@@ -629,7 +629,7 @@
                 // Manual mode for file://
                 if (window.location.protocol === 'file:') {
                     if (!selectedJsonFile) {
-                        showStatus('Opened via file://. Click “Load JSON” and select progress/shared_state.json (manual load, no localhost needed for data).');
+                        showStatus('Opened via file://. Click “Load JSON” and select logs/(run id)/lemma_pool_id/state.json (manual load, no localhost needed for data).');
                         return;
                     }
                     const data = await readJsonFromSelectedFile();
@@ -637,16 +637,28 @@
                     renderData(data);
                     // Best-effort: run math render again across the whole page.
                     renderMath(document.body);
+                    const lemmasCount = (data.all_lemmas?.length || data.verified_lemmas?.length || 0);
                     const libsMsg = (lastLibsStatus.autoRender ? 'katex:ok' : 'katex:missing') + ',' + (lastLibsStatus.marked ? 'marked:ok' : 'marked:missing');
-                    showStatus(`Loaded ${data.snapshots?.length || 0} snapshots from local file. Last updated: ${data.last_updated || 'unknown'}. (${libsMsg})`);
+                    showStatus(`Loaded ${lemmasCount} lemmas from local file. Last updated: ${data.last_updated || 'unknown'}. Solved: ${data.solved ? 'Yes' : 'No'}. (${libsMsg})`);
                     return;
                 }
 
-                // Server mode (http/https): auto-refresh via fetch
-                const response = await fetch('./progress/shared_state.json', { cache: 'no-store' });
-                if (!response.ok) {
-                    showStatus(`progress/shared_state.json not available yet (HTTP ${response.status}). Run AlphaSolve to generate snapshots, then refresh.`);
-                    return;
+                // Server mode (http/https): auto-refresh via fetch - try multiple paths
+                let response;
+                let dataPath;
+                try {
+                    dataPath = './logs/latest/lemma_pool_00/state.json';
+                    response = await fetch(dataPath, { cache: 'no-store' });
+                    if (!response.ok) throw new Error('Not found');
+                } catch (e) {
+                    try {
+                        dataPath = './state.json';
+                        response = await fetch(dataPath, { cache: 'no-store' });
+                        if (!response.ok) throw new Error('Not found');
+                    } catch (e2) {
+                        showStatus(`state.json not available yet. Run AlphaSolve to generate state, then refresh.`);
+                        return;
+                    }
                 }
 
                 const data = await response.json();
@@ -654,34 +666,56 @@
                 renderData(data);
                 // Best-effort: run math render again across the whole page.
                 renderMath(document.body);
+                const lemmasCount = (data.all_lemmas?.length || data.verified_lemmas?.length || 0);
                 const libsMsg = (lastLibsStatus.autoRender ? 'katex:ok' : 'katex:missing') + ',' + (lastLibsStatus.marked ? 'marked:ok' : 'marked:missing');
-                showStatus(`Loaded ${data.snapshots?.length || 0} snapshots. Last updated: ${data.last_updated || 'unknown'}. (${libsMsg})`);
+                showStatus(`Loaded ${lemmasCount} lemmas. Last updated: ${data.last_updated || 'unknown'}. Solved: ${data.solved ? 'Yes' : 'No'}. (${libsMsg})`);
             } catch (error) {
                 console.error('Error loading data:', error);
                 if (window.location.protocol === 'file:') {
-                    showStatus('Failed to load local JSON. Please ensure you selected a valid progress/shared_state.json.');
+                    showStatus('Failed to load local JSON. Please ensure you selected a valid state.json from logs/(run id)/lemma_pool_id/.');
                 } else {
-                    showStatus('Failed to fetch progress/shared_state.json. Run: python -m http.server 8000, then open http://localhost:8000/progress.html');
+                    showStatus('Failed to fetch state.json. Run: python -m http.server 8000, then open http://localhost:8000/progress.html');
                 }
             }
         }
 
         function renderData(data) {
-            if (!data || !data.snapshots || data.snapshots.length === 0) {
+            if (!data) {
                 return;
             }
 
-            // Get latest snapshot
-            const latest = data.snapshots[data.snapshots.length - 1];
+            // Get lemmas - use all_lemmas if available, otherwise verified_lemmas
+            const lemmas = data.all_lemmas || data.verified_lemmas || [];
             
-            // Render problem
+            // Render problem content
             const problemEl = document.getElementById('problemContent');
-            problemEl.innerHTML = mdToHtmlBlock(latest.problem || 'No problem defined');
+            if (lemmas.length > 0) {
+                // Use first lemma's history to extract problem statement if available
+                let problemText = 'Problem: Find all α∈ℝ such that the equation -α U(y) + [(1+α)y + U(y)] ∂_y U(y) = 0 has a solution in {U∈C^∞(ℝ):U(0)=0} other than U(y) = -y and U(y)=0.';
+                if (lemmas[0].history_messages && lemmas[0].history_messages.length > 0) {
+                    const userMsg = lemmas[0].history_messages.find(m => m.role === 'user');
+                    if (userMsg && userMsg.content) {
+                        const problemMatch = userMsg.content.match(/## Problem Statement[\s\S]*?\\begin{problem}([\s\S]*?)\\end{problem}/);
+                        if (problemMatch) {
+                            problemText = problemMatch[1].trim();
+                        }
+                    }
+                }
+                problemEl.innerHTML = mdToHtmlBlock(problemText);
+            } else {
+                problemEl.innerHTML = mdToHtmlBlock('No problem defined yet.');
+            }
             renderMath(problemEl);
 
             // Render lemmas list + details
-            const lemmas = latest.lemmas || [];
-            renderLemmas(lemmas, latest.current_lemma_id);
+            // Map lemmas to have id field (use uid if available)
+            const mappedLemmas = lemmas.map((lemma, index) => ({
+                ...lemma,
+                id: lemma.uid !== undefined ? lemma.uid : index
+            }));
+            
+            const currentLemmaId = mappedLemmas.length > 0 ? mappedLemmas[mappedLemmas.length - 1].id : null;
+            renderLemmas(mappedLemmas, currentLemmaId);
         }
 
         function renderLemmas(lemmas, currentLemmaId) {

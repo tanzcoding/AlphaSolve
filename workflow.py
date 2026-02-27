@@ -16,13 +16,11 @@ class AlphaSolve:
         problem: str,
         max_worker_num: int,
         print_to_console: bool = True,
-        mode: str = AlphaSolveConfig.SHARED_BY_ALL,
         tool_executor_size: int = 2,
         log_session: Optional[LogSession] = None,
     ):
         self.problem = problem
-        self.mode = mode
-        self.max_worker_num = max(1, int(max_worker_num))
+        self.max_worker_num = max(AlphaSolveConfig.MAX_WORKER_NUM, 1)
         self.tool_executor = ProcessPoolExecutor(max_workers=max(1, int(tool_executor_size)))
         self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH)
         self.logger = self.log_session.main_logger(print_to_console=print_to_console)
@@ -34,43 +32,42 @@ class AlphaSolve:
         self.logger.log_section("AlphaSolve 各子代理模型配置", width=60)
         self.logger.log_print(f"Generator:         {AlphaSolveConfig.GENERATOR_CONFIG.get('model', 'N/A')}")
         self.logger.log_print(f"Verifier:          {AlphaSolveConfig.VERIFIER_CONFIG.get('model', 'N/A')}")
-        self.logger.log_print(f"Revisor:           {AlphaSolveConfig.REVISOR_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Reviser:           {AlphaSolveConfig.REVISER_CONFIG.get('model', 'N/A')}")
         self.logger.log_print(f"Proof Subagent:    {AlphaSolveConfig.PROOF_SUBAGENT_CONFIG.get('model', 'N/A')}")
         self.logger.log_print(f"Compute Subagent:  {AlphaSolveConfig.COMPUTE_SUBAGENT_CONFIG.get('model', 'N/A')}")
         self.logger.log_separator('section', width=60)
         self.logger.log_print("")
 
-    def do_research(self, iteration_num: int = 1):
+    def do_research(self):
         last_summary = None
 
-        for k in range(max(1, int(iteration_num))):
-            self.logger.log_print(f"event=alphasolve_iteration_start iteration={k}", module="AlphaSolve")
+        self.logger.log_print(f"event=alphasolve_start", module="AlphaSolve")
 
-            pool = LemmaPool(
-                capacity_verified=AlphaSolveConfig.MAX_LEMMA_NUM,
-                logger=self.logger,
-                snapshot_path=self.log_session.pool_state_path(pool_id=0),
-            )
-            problem_text, hint = self.generate_problem_and_hint()
+        pool = LemmaPool(
+            capacity_verified=AlphaSolveConfig.MAX_LEMMA_NUM,
+            logger=self.logger,
+            snapshot_path=self.log_session.pool_state_path(pool_id=0),
+        )
+        problem_text, hint = self.generate_problem_and_hint()
 
-            orchestrator = LemmaPoolOrchestrator(
-                pool=pool,
-                logger=self.logger,
-                log_session=self.log_session,
-                problem=problem_text,
-                hint=hint,
-                tool_executor=self.tool_executor,
-                parallelism_limit=self.max_worker_num,
-            )
-            run_result = orchestrator.run()
+        orchestrator = LemmaPoolOrchestrator(
+            pool=pool,
+            logger=self.logger,
+            log_session=self.log_session,
+            problem=problem_text,
+            hint=hint,
+            tool_executor=self.tool_executor,
+            parallelism_limit=self.max_worker_num,
+        )
+        run_result = orchestrator.run()
 
-            if run_result.solved:
-                summary = self._summarize_solution(problem_text, pool)
-                if summary:
-                    return summary
-                last_summary = summary
-            else:
-                self.logger.log_print("event=pool_not_solved", module="AlphaSolve", level="WARNING")
+        if run_result.solved:
+            summary = self._summarize_solution(problem_text, pool)
+            if summary:
+                return summary
+            last_summary = summary
+        else:
+            self.logger.log_print("event=pool_not_solved", module="AlphaSolve", level="WARNING")
 
         return last_summary
 
@@ -114,6 +111,6 @@ class AlphaSolve:
 
 
 if __name__ == "__main__":
-    alpha = AlphaSolve("", 2)
+    alpha = AlphaSolve("", AlphaSolveConfig.MAX_WORKER_NUM)
     alpha.do_research(1)
 
