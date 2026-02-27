@@ -9,9 +9,11 @@ from agents.lemmaworker import (
     GenerateInput,
     VerifyInput,
     ReviseInput,
+    CitationInput,
     create_generator_component,
     create_verifier_component,
     create_reviser_component,
+    create_citation_agent,
 )
 from config.agent_config import AlphaSolveConfig
 from utils.logger import Logger
@@ -36,6 +38,7 @@ class LemmaWorker:
             logger=self.logger,
             tool_executor=self.tool_executor,
         )
+        self.citation_agent = create_citation_agent(logger=self.logger)
         self.verifier = create_verifier_component(
             prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH,
             logger=self.logger,
@@ -77,6 +80,15 @@ class LemmaWorker:
             return LemmaWorkerResult(lemma=rejected, status="rejected", is_theorem=False, dependencies=[])
 
         lemma = gen_out.lemma
+
+        # 使用 citation_agent 从证明中提取依赖关系
+        citation_out = self.citation_agent.cite(
+            CitationInput(
+                candidate_lemma=lemma,
+                verified_context=ctx.verified_snapshot,
+            )
+        )
+        lemma["dependencies"] = citation_out.dependencies
 
         while True:
             verify_out = self.verifier.verify(
@@ -145,4 +157,12 @@ class LemmaWorker:
                 lemma["statement"] = revise_out.new_statement
             if revise_out.new_proof and len(revise_out.new_proof) > 5:
                 lemma["proof"] = revise_out.new_proof
+                # 当证明被修改后，重新提取依赖关系
+                citation_out = self.citation_agent.cite(
+                    CitationInput(
+                        candidate_lemma=lemma,
+                        verified_context=ctx.verified_snapshot,
+                    )
+                )
+                lemma["dependencies"] = citation_out.dependencies
 

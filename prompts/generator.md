@@ -14,24 +14,22 @@ Across all future explorations, you have a remaining budget of **{remaining_lemm
 
 ## Output Format
 
-1. Use `\begin{conjecture}` and `\end{conjecture}` to wrap your conjecture statement. 
+1. Use `\begin{conjecture}` and `\end{conjecture}` to wrap your conjecture statement.
   - At the beginning, use `[]` to wrap a brief description of the conjecture.
   - Then, give the pure mathematical statement which must be well written in LaTeX.
-  - Do **NOT** include any numbering or prefixes inside the tag (e.g., “Lemma 1.”, “Proposition”, “Conjecture”, “Theorem”)
+  - Do **NOT** include any numbering or prefixes inside the tag (e.g., "Lemma 1.", "Proposition", "Conjecture", "Theorem")
 2. Use `\begin{proof}` and `\end{proof}` to wrap the proof of the conjecture.
-3. Use `\begin{dependency}` and `\end{dependency}` to wrap the JSON list of lemma that you used in your proof. Use an empty array `[]` when the conjecture does not depend on other lemmas. All lemmas listed in the dependency must be used in the proof; likewise, all lemmas used in the proof must be listed here.
+  - When referencing other lemmas in your proof, use the format "Lemma X" or "Lemma-X" where X is the lemma number (e.g., "Lemma 1", "Lemma-35").
 
 ### Example Output
 
 \begin{conjecture}
-[Anisotropic hypocoercive H^k a priori estimate for resistive MHD around a constant magnetic field] Pure mathematical statement well written in LaTeX. 
+[Anisotropic hypocoercive H^k a priori estimate for resistive MHD around a constant magnetic field] Pure mathematical statement well written in LaTeX.
 \end{conjecture}
 
 \begin{proof}
-A rigorous and detailed proof.
+A rigorous and detailed proof. We will use Lemma 1 and Lemma-3 to establish our result.
 \end{proof}
-
-\begin{dependency}[1,3,4]\end{dependency}
 
 
 ## Content Requirements

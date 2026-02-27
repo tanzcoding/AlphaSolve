@@ -15,8 +15,6 @@ CONJECTURE_BEGIN = r'\begin{conjecture}'
 CONJECTURE_END = r'\end{conjecture}'
 PROOF_BEGIN = r'\begin{proof}'
 PROOF_END = r'\end{proof}'
-DEPENDENCY_BEGIN = r'\begin{dependency}'
-DEPENDENCY_END = r'\end{dependency}'
 
 
 @dataclass
@@ -116,31 +114,23 @@ How to use subagents:
             tmp = tmp + "\n\n" + "## Hint and Suggestions" + "\n\n" + str(hint)
 
         return tmp
+def _build_lemma(self, messages) -> Optional[Lemma]:
+    resp_from_llm = messages[-1]["content"]
+    statement = extract_substring(resp_from_llm, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="generator")
+    proof = extract_substring(resp_from_llm, PROOF_BEGIN, PROOF_END, logger=self.logger, module="generator")
 
-    def _build_lemma(self, messages) -> Optional[Lemma]:
-        resp_from_llm = messages[-1]["content"]
-        statement = extract_substring(resp_from_llm, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="generator")
-        proof = extract_substring(resp_from_llm, PROOF_BEGIN, PROOF_END, logger=self.logger, module="generator")
-        dependencies = extract_substring(resp_from_llm, DEPENDENCY_BEGIN, DEPENDENCY_END, logger=self.logger, module="generator")
+    if statement and proof:
+        return new_lemma(
+            statement=statement,
+            proof=proof,
+            dependencies=[],  # 初始化为空列表，后续由 citation_agent 填充
+            is_theorem=False,
+            status="pending",
+            history_messages=messages,
+            verify_round=0,
+        )
+    return None
 
-        deps = []
-        if dependencies:
-            try:
-                deps = json.loads(dependencies)
-            except Exception:
-                deps = []
-
-        if statement and proof:
-            return new_lemma(
-                statement=statement,
-                proof=proof,
-                dependencies=deps,
-                is_theorem=False,
-                status="pending",
-                history_messages=messages,
-                verify_round=0,
-            )
-        return None
 
 
 def create_generator_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Generator:

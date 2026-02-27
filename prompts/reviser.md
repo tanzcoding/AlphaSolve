@@ -28,6 +28,7 @@ Complete and detailed proof.
 - Address every issue raised in the review, while still producing a **complete** proof of the conjecture.
 - If the statement is unchanged, repeat it inside the conjecture statement.
 - If you change the statement, make it **self-contained**, clear, and precise, and prove it.
+- When referencing other lemmas in your proof, use the format "Lemma X" or "Lemma-X" where X is the lemma number (e.g., "Lemma 1", "Lemma-35").
 
 ### When to Modify the Conjecture Statement
 
