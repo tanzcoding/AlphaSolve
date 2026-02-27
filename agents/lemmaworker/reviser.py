@@ -67,6 +67,7 @@ How to use subagents:
             "hint": None,
             "lemmas": input.verified_context,
             "current_lemma_id": None,
+            "current_lemma": input.candidate_lemma,
             "result_summary": None,
         }
 

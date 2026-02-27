@@ -766,19 +766,7 @@ class LLMClient:
                 log_parts.append(f"[error]\n{tool_content}")
             else:
                 try:
-                    lemma_id = shared['current_lemma_id']
-                    if lemma_id is None:
-                        raise ValueError("current_lemma_id is not set")
-                    if not isinstance(lemma_id, int):
-                        raise TypeError("current_lemma_id must be an integer")
-
-                    lemmas = shared['lemmas']
-                    if lemmas is None:
-                        raise ValueError("Currently no lemmas in shared context")
-                    if lemma_id < 0 or lemma_id >= len(lemmas):
-                        raise IndexError(f"current_lemma_id out of range: {lemma_id}")
-
-                    lemma = lemmas[lemma_id]
+                    lemma = shared.get('current_lemma')
                     statement = lemma.get('statement', '')
                     proof = lemma.get('proof', '')
                     content = (
@@ -808,19 +796,7 @@ class LLMClient:
                 log_parts.append(f"[error]\n{tool_content}")
             else:
                 try:
-                    lemma_id = shared['current_lemma_id']
-                    if lemma_id is None:
-                        raise ValueError("current_lemma_id is not set")
-                    if not isinstance(lemma_id, int):
-                        raise TypeError("current_lemma_id must be an integer")
-
-                    lemmas = shared['lemmas']
-                    if lemmas is None:
-                        raise ValueError("Currently no lemmas in shared context")
-                    if lemma_id < 0 or lemma_id >= len(lemmas):
-                        raise IndexError(f"current_lemma_id out of range: {lemma_id}")
-
-                    lemma = lemmas[lemma_id]
+                    lemma = shared.get('current_lemma')
                     statement = lemma.get('review', '')
                     content = (
                         r"\begin{review}\n"
