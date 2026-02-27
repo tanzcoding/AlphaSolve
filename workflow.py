@@ -14,7 +14,6 @@ class AlphaSolve:
     def __init__(
         self,
         problem: str,
-        max_worker_num: int,
         print_to_console: bool = True,
         tool_executor_size: int = 2,
         log_session: Optional[LogSession] = None,

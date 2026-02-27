@@ -114,22 +114,23 @@ How to use subagents:
             tmp = tmp + "\n\n" + "## Hint and Suggestions" + "\n\n" + str(hint)
 
         return tmp
-def _build_lemma(self, messages) -> Optional[Lemma]:
-    resp_from_llm = messages[-1]["content"]
-    statement = extract_substring(resp_from_llm, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="generator")
-    proof = extract_substring(resp_from_llm, PROOF_BEGIN, PROOF_END, logger=self.logger, module="generator")
 
-    if statement and proof:
-        return new_lemma(
-            statement=statement,
-            proof=proof,
-            dependencies=[],  # 初始化为空列表，后续由 citation_agent 填充
-            is_theorem=False,
-            status="pending",
-            history_messages=messages,
-            verify_round=0,
-        )
-    return None
+    def _build_lemma(self, messages) -> Optional[Lemma]:
+        resp_from_llm = messages[-1]["content"]
+        statement = extract_substring(resp_from_llm, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="generator")
+        proof = extract_substring(resp_from_llm, PROOF_BEGIN, PROOF_END, logger=self.logger, module="generator")
+
+        if statement and proof:
+            return new_lemma(
+                statement=statement,
+                proof=proof,
+                dependencies=[],  # 初始化为空列表，后续由 citation_agent 填充
+                is_theorem=False,
+                status="pending",
+                history_messages=messages,
+                verify_round=0,
+            )
+        return None
 
 
 

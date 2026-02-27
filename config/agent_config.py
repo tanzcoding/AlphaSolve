@@ -215,7 +215,7 @@ class AlphaSolveConfig:
 
     # Compute subagent 可以使用 Python 和 Wolfram
     COMPUTE_SUBAGENT_CONFIG = {
-        **DEEPSEEK_CONFIG,
+        **VOLCANO_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
 
