@@ -206,6 +206,13 @@ class AlphaSolveConfig:
     }
     REVISER_PROMPT_PATH='prompts/reviser.md'
 
+    EXTRACTOR_CONFIG = {
+        ## **MIMO_CONFIG,
+        **VOLCANO_CONFIG,
+        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
+    }
+    EXTRACTOR_PROMPT_PATH='prompts/extractor.md'
+
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
         **DEEPSEEK_CONFIG,

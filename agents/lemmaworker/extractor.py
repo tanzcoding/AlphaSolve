@@ -17,44 +17,30 @@ PROOF_END = r'\end{proof}'
 
 
 @dataclass
-class ReviseInput:
+class ExtractInput:
     problem: str
     verified_context: List[Lemma]
     candidate_lemma: Lemma
 
 
 @dataclass
-class ReviseOutput:
+class ExtractOutput:
     new_statement: Optional[str]
     new_proof: Optional[str]
     rejected: bool
 
 
-class Reviser:
+class Extractor:
     def __init__(self, llm: LLMClient, prompt_file_path: str, logger: Logger):
         self.llm = llm
         self.prompt_template = load_prompt_from_file(prompt_file_path)
         self.logger = logger
 
-    def revise(self, input: ReviseInput) -> ReviseOutput:
+    def extract(self, input: ExtractInput) -> ExtractOutput:
         ctx_text = self._render_context(input.verified_context)
-        prompt = self._build_reviser_prompt(input.candidate_lemma, ctx_text)
+        prompt = self._build_extractor_prompt(input.candidate_lemma, ctx_text)
 
         messages_to_send = [
-            {"role": "system", "content": """You are an expert mathematical reviser. Your task is to fix errors in conjectures and proofs or even write a new conjecture and proof based on review comments.
-
-IMPORTANT: You SHOULD do the high level planning, and use the available subagent tools to do concrete works during your revision:
-
-1. **call_proof_subagent**: Use this whenever you need to prove or verify a bounded mathematical proposition/claim/statement when revising the proof. Delegate small, self-contained proof tasks to this subagent.
-
-2. **call_compute_subagent**: Use this EARLY and OFTEN for any calculation, symbolic simplification, equation solving, numeric testing, counterexample finding, or edge-case checking when revising. If you catch yourself "working it out manually, STOP and delegate to this subagent instead.
-
-How to use subagents:
-- Think about what methods could help you revise the proof effectively, but DO NOT get bogged down in the details yourself
-- Decompose your revision into small, concrete subtasks
-- Call the appropriate subagent for each subtask
-- Use the subagent results to inform your revision
-- You may call multiple subagents in sequence as needed"""},
             {"role": "user", "content": prompt}
         ]
         shared = {
@@ -72,12 +58,12 @@ How to use subagents:
             if self._validate_response(response):
                 break
 
-        new_statement = extract_substring(response, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="reviser")
-        new_proof = extract_substring(response, PROOF_BEGIN, PROOF_END, logger=self.logger, module="reviser")
+        new_statement = extract_substring(response, CONJECTURE_BEGIN, CONJECTURE_END, logger=self.logger, module="extractor")
+        new_proof = extract_substring(response, PROOF_BEGIN, PROOF_END, logger=self.logger, module="extractor")
         rejected = not bool((new_statement and len(new_statement) > 5) or (new_proof and len(new_proof) > 5))
-        return ReviseOutput(new_statement=new_statement, new_proof=new_proof, rejected=rejected)
+        return ExtractOutput(new_statement=new_statement, new_proof=new_proof, rejected=rejected)
 
-    def _build_reviser_prompt(self, lemma: Lemma, reasoning_ctx: str) -> Optional[str]:
+    def _build_extractor_prompt(self, lemma: Lemma, reasoning_ctx: str) -> Optional[str]:
         if not lemma.get("statement") or not lemma.get("proof"):
             return None
         tmp = self.prompt_template.replace('{conjecture_content}', lemma.get("statement", "")).replace('{proof_content}', lemma.get("proof", ""))
@@ -114,9 +100,9 @@ How to use subagents:
         return "\n".join(lines)
 
 
-def create_reviser_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Reviser:
+def create_extractor_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Extractor:
     if not tool_executor:
-        llm = LLMClient(module='reviser', config=AlphaSolveConfig.REVISER_CONFIG, logger=logger)
+        llm = LLMClient(module='extractor', config=AlphaSolveConfig.EXTRACTOR_CONFIG, logger=logger)
     else:
-        llm = ParallelLLMClient(module='reviser', config=AlphaSolveConfig.REVISER_CONFIG, logger=logger, tool_executor=tool_executor)
-    return Reviser(llm=llm, prompt_file_path=prompt_file_path, logger=logger)
+        llm = ParallelLLMClient(module='extractor', config=AlphaSolveConfig.EXTRACTOR_CONFIG, logger=logger, tool_executor=tool_executor)
+    return Extractor(llm=llm, prompt_file_path=prompt_file_path, logger=logger)

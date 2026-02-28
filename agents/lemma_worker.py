@@ -9,10 +9,12 @@ from agents.lemmaworker import (
     GenerateInput,
     VerifyInput,
     ReviseInput,
+    ExtractInput,
     CitationInput,
     create_generator_component,
     create_verifier_component,
     create_reviser_component,
+    create_extractor_component,
     create_citation_agent,
 )
 from config.agent_config import AlphaSolveConfig
@@ -46,6 +48,11 @@ class LemmaWorker:
         )
         self.reviser = create_reviser_component(
             prompt_file_path=AlphaSolveConfig.REVISER_PROMPT_PATH,
+            logger=self.logger,
+            tool_executor=self.tool_executor,
+        )
+        self.extractor = create_extractor_component(
+            prompt_file_path=AlphaSolveConfig.EXTRACTOR_PROMPT_PATH,
             logger=self.logger,
             tool_executor=self.tool_executor,
         )
@@ -131,38 +138,50 @@ class LemmaWorker:
                     dependencies=list(lemma.get("dependencies", [])),
                 )
 
-            revise_out = self.reviser.revise(
-                ReviseInput(
-                    problem=ctx.problem,
-                    verified_context=ctx.verified_snapshot,
-                    candidate_lemma=lemma,
-                )
-            )
-
-            if revise_out.rejected:
-                lemma["status"] = "rejected"
-                self.logger.log_print(
-                    f"event=lemma_worker_done worker_id={ctx.worker_id} status=rejected reason=reviser_rejected",
-                    module="lemma_worker",
-                    level="WARNING",
-                )
-                return LemmaWorkerResult(
-                    lemma=lemma,
-                    status="rejected",
-                    is_theorem=False,
-                    dependencies=list(lemma.get("dependencies", [])),
-                )
-
-            if revise_out.new_statement and len(revise_out.new_statement) > 5:
-                lemma["statement"] = revise_out.new_statement
-            if revise_out.new_proof and len(revise_out.new_proof) > 5:
-                lemma["proof"] = revise_out.new_proof
-                # 当证明被修改后，重新提取依赖关系
-                citation_out = self.citation_agent.cite(
-                    CitationInput(
-                        candidate_lemma=lemma,
+            # 交替使用 Reviser 和 Extractor：奇数轮用 Reviser，偶数轮用 Extractor
+            current_round = lemma.get("verify_round", 0)
+            if current_round % 2 == 1:
+                # 奇数轮：使用 Reviser 修复
+                revise_out = self.reviser.revise(
+                    ReviseInput(
+                        problem=ctx.problem,
                         verified_context=ctx.verified_snapshot,
+                        candidate_lemma=lemma,
                     )
                 )
-                lemma["dependencies"] = citation_out.dependencies
+
+                if revise_out.new_statement and len(revise_out.new_statement) > 5:
+                    lemma["statement"] = revise_out.new_statement
+                if revise_out.new_proof and len(revise_out.new_proof) > 5:
+                    lemma["proof"] = revise_out.new_proof
+                    # 当证明被修改后，重新提取依赖关系
+                    citation_out = self.citation_agent.cite(
+                        CitationInput(
+                            candidate_lemma=lemma,
+                            verified_context=ctx.verified_snapshot,
+                        )
+                    )
+                    lemma["dependencies"] = citation_out.dependencies
+            else:
+                # 偶数轮：使用 Extractor 抽取正确部分
+                extract_out = self.extractor.extract(
+                    ExtractInput(
+                        problem=ctx.problem,
+                        verified_context=ctx.verified_snapshot,
+                        candidate_lemma=lemma,
+                    )
+                )
+
+                if extract_out.new_statement and len(extract_out.new_statement) > 5:
+                    lemma["statement"] = extract_out.new_statement
+                if extract_out.new_proof and len(extract_out.new_proof) > 5:
+                    lemma["proof"] = extract_out.new_proof
+                    # 当证明被修改后，重新提取依赖关系
+                    citation_out = self.citation_agent.cite(
+                        CitationInput(
+                            candidate_lemma=lemma,
+                            verified_context=ctx.verified_snapshot,
+                        )
+                    )
+                    lemma["dependencies"] = citation_out.dependencies
 
