@@ -316,9 +316,7 @@ Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one
 # - 输出必须以 \begin{conjecture} 起手，不能有任何其他前置内容
 # - 用 \begin{conjecture} 和 \end{conjecture} 包裹猜想内容
 # - 用 \begin{proof} 和 \end{proof} 包裹证明内容
-# - 输出必须包含 \begin{dependency} 环境
-# - 整体结构为：conjecture + proof + dependency（建议无额外尾随内容）
-# - dependency 环境格式为 \begin{dependency}[...]\end{dependency}，其中 [...] 是 JSON array
+# - 整体结构为：conjecture + proof（建议无额外尾随内容）
 
 def generator_response_format_reminder() -> Tuple[str, Optional[str]]:
     """`response_format_reminder` tool implementation.
@@ -338,8 +336,6 @@ def generator_response_format_reminder() -> Tuple[str, Optional[str]]:
             "\\begin{proof}\n"
             "Rigorous and detailed proof\n"
             "\\end{proof}\n"
-            "\\begin{dependency}[...]\\end{dependency}\n"
-            "Inside \\begin{dependency}[...]\\end{dependency} you must place a JSON array like [] or [0, 3, 4]."
         )
         return expected_format, None
     except Exception:
