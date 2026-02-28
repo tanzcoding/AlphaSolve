@@ -6,6 +6,7 @@ AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明
 
 - **并行探索**：多个工作线程同时独立探索问题，每个线程构建自己的引理链
 - **引理池（Lemma Pool）**：已验证的引理被存入共享池，供所有工作线程引用和复用
+- **Agentic 验证器**：智能验证器将证明分解为多个步骤，使用计算子代理和符号计算工具进行验证
 - **测试时扩展验证**：验证器通过多次独立尝试来提高验证可靠性
 - **工具调用支持**：内置 Python、Wolfram 语言执行器和子代理系统
 - **多 LLM 提供商支持**：支持 DeepSeek、火山引擎、Moonshot、DashScope、OpenRouter 等
@@ -45,7 +46,7 @@ flowchart TD
     Reviser["<b>Reviser</b><br/>───────────────<br/>• 根据评审意见修正<br/>• 可弱化/否定猜想<br/>• 可提取技术难点为新猜想<br/>• 使用子代理辅助修正"] -->|修正完成| Verifier
     Reviser -->|修正失败| Reject
     
-    LemmaPool[("<b>LemmaPool</b><br/>───────────────<br/>• 保存已验证引理<br/>• 供其他线程引用<br/>• 判断是否解决原问题")]
+    LemmaPool["<b>LemmaPool</b><br/>───────────────<br/>• 保存已验证引理<br/>• 供其他线程引用<br/>• 判断是否解决原问题"]
     
     LemmaPool -->|某个引理解决了问题| Solved([问题解决])
     LemmaPool -->|引理池容量未满且没有引理解决问题| Generator
@@ -78,10 +79,12 @@ flowchart TD
    - 判断当前引理是否已解决原问题（is_theorem）
 
 4. **Verifier（验证器）**
-   - 对生成的证明进行严格审查
-   - 使用 `VERIFIER_SCALING_FACTOR` 次独立验证（测试时扩展）
-   - 检查证明的正确性、完整性和严谨性
-   - 输出 $\boxed{valid}$ 或 $\boxed{invalid}$ 和verdict
+    - **Agentic 验证**：将证明分解为多个步骤或句子，使用计算子代理逐个验证
+    - 对生成的证明进行尽量严格的审查
+    - 使用 `VERIFIER_SCALING_FACTOR` 次独立验证（测试时扩展）
+    - 检查证明的正确性、完整性和严谨性
+    - 使用 `call_compute_subagent` 进行符号计算和反例查找
+    - 输出 $\boxed{valid}$ 或 $\boxed{invalid}$ 和verdict
 
 5. **Reviser（修正器）**
    - 根据验证器的反馈修正猜想或证明
