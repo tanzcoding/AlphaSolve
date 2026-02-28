@@ -870,7 +870,7 @@ class ParallelLLMClient(LLMClient):
         if name == 'run_python': ## 运行 python 代码比较简单, 直接给过去就行
             code = args.get('code', '')
             log_parts.append(f"Code:\n{code}")
-            future = self.executor.submit(_run_python, code)
+            future = self.executor.submit(_run_python, code, context)
         elif name == 'run_wolfram': ## 运行 wolfram 代码, 需要管理好 wolfram session
             code = args.get('code', '')
             log_parts.append(f"Code:\n{code}")
@@ -894,9 +894,8 @@ class ParallelLLMClient(LLMClient):
             log_parts.extend(output_logs)
             return tool_content, log_parts
 
-def _run_python(code: str):
-    ## 这里没有设置 python_env, 后续可能是一个可以优化的点
-    stdout, error = run_python(code, {}, timeout_seconds=300)
+def _run_python(code: str, context: Dict):
+    stdout, error = run_python(code, context, timeout_seconds=300)
             
     tool_content = ''
     output_logs = []
