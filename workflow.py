@@ -9,6 +9,8 @@ from agents.summarizer import create_summarizer_agent
 from config.agent_config import AlphaSolveConfig
 from utils.log_session import LogSession
 
+from multiprocessing import Manager
+
 
 class AlphaSolve:
     def __init__(
@@ -50,13 +52,14 @@ class AlphaSolve:
         problem_text, hint = self.generate_problem_and_hint()
 
         orchestrator = LemmaPoolOrchestrator(
-            pool=pool,
-            logger=self.logger,
-            log_session=self.log_session,
-            problem=problem_text,
-            hint=hint,
-            tool_executor=self.tool_executor,
-            parallelism_limit=self.max_worker_num,
+            pool = pool,
+            logger = self.logger,
+            log_session = self.log_session,
+            problem = problem_text,
+            hint = hint,
+            tool_executor = self.tool_executor,
+            parallelism_limit = self.max_worker_num,
+            
         )
         run_result = orchestrator.run()
 

@@ -118,11 +118,16 @@ class LemmaPoolOrchestrator:
             tool_executor=self.tool_executor,
             print_to_console=print_to_console,
         )
+
+        ## 用临时变量存一下
+        verified_lemmas = self.pool.snapshot_verified()
+        remaining_capacity = self.pool.remaining_verified_capacity()
+
         ctx = LemmaWorkerContext(
             problem=self.problem,
             hint=self.hint,
-            verified_snapshot=self.pool.snapshot_verified(),
-            remaining_capacity=self.pool.remaining_verified_capacity(),
+            verified_snapshot=verified_lemmas, 
+            remaining_capacity=remaining_capacity,
             run_id=self.log_session.run_id,
             worker_id=worker_id,
         )
@@ -130,10 +135,14 @@ class LemmaPoolOrchestrator:
 
     def _check_is_theorem(self, *, statement: str) -> bool:
         """Check if a lemma statement fully addresses the original problem."""
+
+        ## 用临时变量存一下
+        verified_lemmas = self.pool.snapshot_verified()
+
         shared = {
             "problem": self.problem,
             "hint": self.hint,
-            "lemmas": self.pool.snapshot_verified(),
+            "lemmas": verified_lemmas,
             "current_lemma_id": None,
             "result_summary": None,
         }

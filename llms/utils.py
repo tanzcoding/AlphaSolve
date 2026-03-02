@@ -829,8 +829,6 @@ class LLMClient:
 
         return tool_content, log_parts
 
-    
-
 
 class ParallelLLMClient(LLMClient):
 
@@ -843,13 +841,15 @@ class ParallelLLMClient(LLMClient):
             print_to_console=False,
         )
         super(ParallelLLMClient, self).__init__(module, config, logger)
-        if  not tool_executor:
+        if not tool_executor:
             self.executor = ProcessPoolExecutor(
                 max_workers = 2,
                 mp_context = mp.get_context("spawn")
             )
         else:
             self.executor = tool_executor
+
+        self.manager = mp.Manager()
 
     def _create_client_for_subagent(self, *, config_key: str, tools_override: Optional[List[Dict]] = None):
 
@@ -863,6 +863,26 @@ class ParallelLLMClient(LLMClient):
         return client
 
 
+    def _init_tool_context(self, tools: List[Dict]) -> Dict: 
+        # 和原方法不同的地方在于, (1) 去掉了对 wolfram 的初始化(子进程干了); (2) 用 manager.dict(), 来保证进程安全
+        """初始化工具执行上下文"""
+        from config.agent_config import AlphaSolveConfig
+
+        context = {}
+        
+        # self.manager.dict()
+        
+        context['python_env'] = { }
+        # context['wolfram_session'] = None
+        context['proof_subagent_depth'] = 0
+        context['proof_subagent_max_depth'] = getattr(AlphaSolveConfig, 'PROOF_SUBAGENT_MAX_DEPTH', 3)
+
+        return context
+
+    def _cleanup_tool_context(self, context: Dict):
+        """清理工具执行上下文"""
+        pass
+
     def _execute_tool(self, name: str, args: Dict, context: Dict) -> Tuple[str, List[str]]:
 
         log_parts = [f"\n[Tool Call] {name}"]
@@ -870,6 +890,9 @@ class ParallelLLMClient(LLMClient):
         if name == 'run_python': ## 运行 python 代码比较简单, 直接给过去就行
             code = args.get('code', '')
             log_parts.append(f"Code:\n{code}")
+
+            print(context.keys())
+
             future = self.executor.submit(_run_python, code, context)
         elif name == 'run_wolfram': ## 运行 wolfram 代码, 需要管理好 wolfram session
             code = args.get('code', '')
