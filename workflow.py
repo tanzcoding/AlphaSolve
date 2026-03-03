@@ -1,258 +1,118 @@
-import os, time, threading, random
+from __future__ import annotations
 
-from config.agent_config import AlphaSolveConfig
-from agents.shared_context import new_shared_context
+from concurrent.futures import ProcessPoolExecutor
+from typing import Optional
 
-from agents.solver import create_solver_agent
-from agents.verifier import create_verifier_agent
-from agents.refiner import create_refiner_agent
-from agents.no_history_refiner import create_no_history_refiner_agent
-from agents.orchestrator import create_orchestrator_agent
+from agents.lemma_pool import LemmaPool
+from agents.pool_orchestrator import LemmaPoolOrchestrator
 from agents.summarizer import create_summarizer_agent
-from pocketflow import Flow
-from utils.logger import Logger
+from config.agent_config import AlphaSolveConfig
+from utils.log_session import LogSession
 
-import traceback
-import multiprocessing as mp
-import os
-import random
-import threading
-import time
-import threading
-import schedule
-from datetime import datetime
-
-
-
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-
-
-def _do_research(problem, hint, lemma_pool, print_to_console, iteration_round, mode, t_suffix, tool_executor):
-
-    ## init logger for every process
-    tid = str(threading.get_ident())
-    name = 'alpha_solve' + '_' + tid
-
-    dir_path = AlphaSolveConfig.LOG_PATH + '/alpha_solve_iteration_'  + str(iteration_round) +  '_' + t_suffix
-
-    print('create logger for ', name, 'with dir ', dir_path)
-
-    logger = Logger(log_dir = dir_path, name = name, print_to_console = print_to_console)
-
-    shared_context = new_shared_context(
-        problem = problem,
-        hint = hint,
-        lemma_pool = lemma_pool,
-        iteration = iteration_round,
-        mode = mode
-    )
-
-    flow = _create_research_flow(problem, hint, logger, tool_executor)
-    flow.run(shared_context)
-
-    try:
-        # New schema: result is stored directly on shared.
-        result = shared_context["result_summary"]
-
-        logger.log_print('AlphaSolve result is: ', result, module='AlphaSolve')
-
-        return result
-
-    except KeyError:
-       
-        logger.log_print('error execute on AlphaSolve, no summary', module='AlphaSolve', level='ERROR')
-        return None
-
-
-def _create_research_flow(problem, hint, logger, tool_executor):  
-
-    logger.log_print('create solver node, using model ', AlphaSolveConfig.SOLVER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.SOLVER_PROMPT_PATH, module='AlphaSolve',)
-
-    solver = create_solver_agent(
-        prompt_file_path = AlphaSolveConfig.SOLVER_PROMPT_PATH,
-        logger = logger,
-        tool_executor = tool_executor
-
-    )
-
-    logger.log_print('create verifier node, using model ', AlphaSolveConfig.VERIFIER_CONFIG['model'], ' and prompt path ', AlphaSolveConfig.VERIFIER_PROMPT_PATH, module = 'AlphaSolve',)
-
-    verifier = create_verifier_agent(
-        prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH,
-        logger=logger,
-        tool_executor = tool_executor
-    )
-
-    logger.log_print('create refiner node, using model ',  AlphaSolveConfig.REFINER_CONFIG['model'],  ' and prompt path ', AlphaSolveConfig.REFINER_PROMPT_PATH, module='AlphaSolve',)
-
-    refiner = create_refiner_agent(
-        prompt_file_path = AlphaSolveConfig.REFINER_PROMPT_PATH, 
-        logger = logger,
-        tool_executor = tool_executor
-    )
-
-    summarizer = create_summarizer_agent(
-        problem =problem, 
-        prompt_file_path = AlphaSolveConfig.SUMMARIZER_PROMPT_PATH, 
-        logger = logger
-    )
-
-    
-    ## 成功生成 lemma, 下一站去 verifier
-    solver - AlphaSolveConfig.CONJECTURE_GENERATED >> verifier
-     
-    ## 错误, 回到 solver 重试
-    solver - AlphaSolveConfig.EXIT_ON_ERROR >> solver
-    
-    ## 轮次打满, 给 summarizer 总结, 退出
-    solver - AlphaSolveConfig.EXIT_ON_EXAUSTED >> summarizer
-        
-    ## 发现错误, 去改
-    verifier - AlphaSolveConfig.CONJECTURE_UNVERIFIED >> refiner
-    
-    ## 正确, 给到 solver
-    verifier - AlphaSolveConfig.CONJECTURE_VERIFIED >> solver
-    
-    ## 完成 theorem, 给 summarizer 总结, 退出
-    verifier - AlphaSolveConfig.DONE >> summarizer
-
-    ## verifier-refine 打满, 给 solver
-    refiner - AlphaSolveConfig.EXIT_ON_EXAUSTED >> solver
-    
-    ## 改了, 回到 verifier
-    refiner - AlphaSolveConfig.REFINE_SUCCESS >> verifier
-    
-    ## conj 是错的, 直接到 solver
-    refiner - AlphaSolveConfig.CONJECTURE_WRONG >> solver
-    
-    ## 容错, 重新尝试
-    refiner - AlphaSolveConfig.EXIT_ON_ERROR >> refiner
-
-    return Flow(start = solver)
+from multiprocessing import Manager
 
 
 class AlphaSolve:
-
-    def __init__(self, problem, max_worker_num, print_to_console = True, mode = AlphaSolveConfig.SHARED_BY_ALL, 
-        tool_executor_size = 2):
-
+    def __init__(
+        self,
+        problem: str,
+        print_to_console: bool = True,
+        tool_executor_size: int = 2,
+        log_session: Optional[LogSession] = None,
+    ):
         self.problem = problem
-        self.logger = Logger(log_dir=AlphaSolveConfig.LOG_PATH, name = 'main', print_to_console=print_to_console)
-
-        self.executor = ThreadPoolExecutor(max_workers = max_worker_num)
-        self.max_worker_num = max_worker_num
-        self.tool_executor = ProcessPoolExecutor(max_workers = tool_executor_size)
-        self.t_suffix = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        self.max_worker_num = max(AlphaSolveConfig.MAX_WORKER_NUM, 1)
+        self.tool_executor = ProcessPoolExecutor(max_workers=max(1, int(tool_executor_size)))
+        self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH)
+        self.logger = self.log_session.main_logger(print_to_console=print_to_console)
         
-        self.lemma_pool = [ ]
-        self.orchestrator = create_orchestrator_agent(problem = self.problem, 
-            prompt_file_path = AlphaSolveConfig.ORCHESTRATOR_PROMPT_PATH,
-            lemma_pool = self.lemma_pool, 
-            logger = self.logger
+        # 记录各个子代理使用的模型信息
+        self._log_model_configs()
+
+    def _log_model_configs(self):
+        self.logger.log_section("AlphaSolve 各子代理模型配置", width=60)
+        self.logger.log_print(f"Generator:         {AlphaSolveConfig.GENERATOR_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Verifier:          {AlphaSolveConfig.VERIFIER_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Reviser:           {AlphaSolveConfig.REVISER_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Proof Subagent:    {AlphaSolveConfig.PROOF_SUBAGENT_CONFIG.get('model', 'N/A')}")
+        self.logger.log_print(f"Compute Subagent:  {AlphaSolveConfig.COMPUTE_SUBAGENT_CONFIG.get('model', 'N/A')}")
+        self.logger.log_separator('section', width=60)
+        self.logger.log_print("")
+
+    def do_research(self):
+        last_summary = None
+
+        self.logger.log_print(f"event=alphasolve_start", module="AlphaSolve")
+
+        pool = LemmaPool(
+            capacity_verified=AlphaSolveConfig.MAX_LEMMA_NUM,
+            logger=self.logger,
+            snapshot_path=self.log_session.pool_state_path(pool_id=0),
         )
+        problem_text, hint = self.generate_problem_and_hint()
 
-        self.mode = mode
-        self.tool_executor_size = tool_executor_size
+        orchestrator = LemmaPoolOrchestrator(
+            pool = pool,
+            logger = self.logger,
+            log_session = self.log_session,
+            problem = problem_text,
+            hint = hint,
+            tool_executor = self.tool_executor,
+            parallelism_limit = self.max_worker_num,
+            
+        )
+        run_result = orchestrator.run()
 
+        if run_result.solved:
+            summary = self._summarize_solution(problem_text, pool)
+            if summary:
+                return summary
+            last_summary = summary
+        else:
+            self.logger.log_print("event=pool_not_solved", module="AlphaSolve", level="WARNING")
 
-        def _monitor():
+        return last_summary
 
-            while True:
-                self._check_lemma_pool()
-                time.sleep(60)
+    def _summarize_solution(self, problem: str, pool: LemmaPool):
+        lemmas = pool.snapshot_all()
+        theorem_id = None
+        for i, lemma in enumerate(lemmas):
+            if lemma.get("status") == "verified" and lemma.get("is_theorem"):
+                theorem_id = i
 
-        self.monitor = threading.Thread(target = _monitor).start()
+        if theorem_id is None:
+            return None
 
+        shared_context = {
+            "problem": problem,
+            "hint": None,
+            "lemmas": lemmas,
+            "current_lemma_id": theorem_id,
+            "result_summary": None,
+        }
 
-    def _check_lemma_pool(self):
+        summarizer = create_summarizer_agent(
+            problem=problem,
+            prompt_file_path=AlphaSolveConfig.SUMMARIZER_PROMPT_PATH,
+            logger=self.logger,
+        )
+        prep_res = summarizer.prep(shared_context)
+        exec_res = summarizer.exec(prep_res)
+        summarizer.post(shared_context, prep_res, exec_res)
+        return shared_context.get("result_summary")
 
-        self.logger.log_print('lemma pool checking thread started ...', module='AlphaSolve')
-
-        if len(self.lemma_pool) > 0:
-            self.logger.log_print('lemma pool with length ', len(self.lemma_pool), module='AlphaSolve')
-            for i in range(self.lemma_pool):
-                lemma = self.lemma_pool[i]
-                try:
-                    statement = lemma['statement']
-                    status = lemma['status']
-                    verify_round = lemma['verify_round']
-                    is_theorem = lemma['is_theorem']
-  
-                    self.logger.log_print('============ begin with lemma index ', i,  module='AlphaSolve')
-                    self.logger.log_print('lemma statement ', statement,  module='AlphaSolve')
-                    self.logger.log_print('lemma status ', status,  module='AlphaSolve')
-                    self.logger.log_print('lemma status ', verify_round,  module='AlphaSolve')
-                    self.logger.log_print('lemma status ', is_theorem,  module='AlphaSolve')
-                    self.logger.log_print('============= end with lemma index ', i,  module='AlphaSolve')
-                except KeyError as ke:
-                    traceback.print_exc()
-
-        else: ## 还没有产生 lemma
-            self.logger.log_print('lemma pool is empty', module='AlphaSolve')
-
-
-        self.logger.log_print('lemma pool checking thread done, sleep ...', module='AlphaSolve')
-       
-
-    def do_research(self, iteration_num = 1):
-
-        for k in range(iteration_num):
-
-            self.logger.log_print('alphasolve run for iteration ', k, module='AlphaSolve') 
-
-            self.prepare_lemma_pool()
-            futures = [ ] 
-
-            ## 随机选择一个进程打印到 console
-            index = random.randint(0, self.max_worker_num) 
-            self.logger.log_print('choose index for log printing ', index, module='AlphaSolve')
-
-            for i in range(self.max_worker_num):
-                self.logger.log_print('alphasolve run for batch ', i, module='AlphaSolve')
-                problem_text, hint = self.generate_problem_and_hint()
-
-                future = self.executor.submit(_do_research, problem_text, hint, self.lemma_pool, i == index, k, self.mode, self.t_suffix, self.tool_executor)
-                futures.append(future)
-
-            finished = 0
-
-            for fut in as_completed(futures): 
-
-                try:
-                    data = fut.result()
-                    if data and len(data) > 0:  ## 已经有结果了, 直接返回
-                        return data
-
-                    self.logger.log_print('finished num ', finished, module='AlphaSolve')
-
-                except Exception as exc:
-                    traceback.print_exc()
-
-                finished += 1
-
-        ## 全部跑完了, 没有结果, 返回 None 
-        return None
-
-
-    def do_close(self): ## 关闭掉整个 AlphaSolve
-
-        self.executor.shutdown(wait = True)
-
+    def do_close(self):
         try:
-            self.manager.shutdown()
+            if self.tool_executor is not None:
+                self.tool_executor.shutdown(wait=True)
         except Exception:
             pass
 
-        self.monitor.join()
-
-    def generate_problem_and_hint(self): ## 给orchestrator留的口子, 后续可以肆意生成 problem 和 hint
-        return self.orchestrator.generate_problem_and_hint()
-
-    
-    def prepare_lemma_pool(self): ## 给orchestrator留的口子, 后续可以在两个 iteration 中间更新/修正/处理 lemma pool, 比如扔掉一些重复的 lemma, 很飞的 lemma
-        pass
+    def generate_problem_and_hint(self):
+        return self.problem, None
 
 
-if __name__== "__main__" :
-    alpha = AlphaSolve('', 2)
-    alpha.do_research(2, 1)
+if __name__ == "__main__":
+    alpha = AlphaSolve("", AlphaSolveConfig.MAX_WORKER_NUM)
+    alpha.do_research(1)
+

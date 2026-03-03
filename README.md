@@ -1,162 +1,232 @@
 # AlphaSolve
 
-An AI-powered mathematical research system that iterates in a **solve -> verify -> refine** loop to accelerate mathematical problem-solving and theorem discovery.
+AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明与数学问题求解系统。它采用**生成-验证-修正**的迭代循环，通过多线程并行探索来逐步构建完整的数学证明。
 
-## Workflow Architecture
+## 核心特性
 
-AlphaSolve is implemented as a PocketFlow graph. The core nodes are:
+- **并行探索**：多个工作线程同时独立探索问题，每个线程构建自己的引理链
+- **引理池（Lemma Pool）**：已验证的引理被存入共享池，供所有工作线程引用和复用
+- **Agentic 验证器**：智能验证器将证明分解为多个步骤，使用计算子代理和符号计算工具进行验证
+- **测试时扩展验证**：验证器通过多次独立尝试来提高验证可靠性
+- **工具调用支持**：内置 Python、Wolfram 语言执行器和子代理系统
+- **多 LLM 提供商支持**：支持 DeepSeek、火山引擎、Moonshot、DashScope、OpenRouter 等
 
-1. **Solver** proposes a new lemma (a "conjecture" + proof + dependencies) or a final theorem.
-2. **Verifier** stress-tests the proof using **test-time scaling** (multiple independent verification attempts).
-3. **Refiner** patches the conjecture/proof using the verifier’s review when verification fails.
-4. **Summarizer** emits the final report when a verified theorem is reached (or the system exhausts its budget).
+## 系统架构
 
-### State machine (as implemented)
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         AlphaSolve                              │
+├─────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────┐ │
+│  │   LemmaWorker   │    │   LemmaWorker   │... │LemmaWorker  │ │
+│  │   (线程 1)       │    │   (线程 2)       │    │  (线程 N)    │ │
+│  └────────┬────────┘    └────────┬────────┘    └──────┬──────┘ │
+│           │                      │                     │        │
+│           └──────────────────────┼─────────────────────┘        │
+│                                  ▼                              │
+│                        ┌─────────────────┐                      │
+│                        │    LemmaPool    │                      │
+│                        │  (已验证引理池)  │                      │
+│                        └─────────────────┘                      │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 工作流程
 
 ```mermaid
 flowchart TD
-    Start([Start]) --> Solver
-
-    Solver["<b>Solver</b><br/>───────────────<br/>• Generates a new lemma (conjecture+proof+dependencies) or a final theorem<br/>• Only VERIFIED lemmas are used as context for proposing the next lemma<br/>• Budget: MAX_LEMMA_NUM"]
-
-    Verifier["<b>Verifier</b><br/>───────────────<br/>• Verifies the latest lemma's proof<br/>• Test-time scaling: VERIFIER_SCALING_FACTOR attempts<br/>• Uses transitive VERIFIED dependencies as context"]
-
-    Refiner["<b>Refiner</b><br/>───────────────<br/>• Repairs the lemma based on verifier review<br/>• Stops after MAX_VERIFY_AND_REFINE_ROUND verify/refine rounds for the same lemma<br/>• Retries invalid-format model outputs up to REFINER_MAX_RETRY"]
-
-    Summarizer["<b>Summarizer</b><br/>───────────────<br/>• Outputs all lemmas on the final reasoning path (dependencies + final theorem)<br/>•"]
-
-    End([End])
-
-    %% Solver exits
-    Solver -->|"conjecture_generated"| Verifier
-    Solver -->|"exit_on_error"| Solver
-    Solver -->|"exit_on_exausted"| Summarizer
-
-    %% Verifier exits
-    Verifier -->|"conjecture_unverified"| Refiner
-    Verifier -->|"conjecture_verified"| Solver
-    Verifier -->|"done"| Summarizer
-
-    %% Refiner exits
-    Refiner -->|"refined_success"| Verifier
-    Refiner -->|"exit_on_exausted"| Solver
-    Refiner -->|"conjecture_wrong"| Solver
-    Refiner -->|"exit_on_error"| Refiner
-
-    %% End
-    Summarizer --> End
-
-    style Solver fill:#e1f5ff,stroke:#01579b,stroke-width:2px
+    Start([开始]) --> Generator
+    
+    Generator["<b>Generator</b><br/>───────────────<br/>• 基于已验证引理和问题描述<br/>• 生成新的猜想（conjecture）<br/>• 生成完整证明和依赖关系<br/>• 使用子代理辅助探索"] -->|生成猜想| Verifier
+    
+    Verifier["<b>Verifier</b><br/>───────────────<br/>• 对证明进行严格审查<br/>• 测试时扩展：多次独立验证<br/>• 输出 verdict<br/>• 使用计算工具辅助验证"] -->|验证通过| LemmaPool
+    Verifier -->|验证失败<br/>未达最大轮数| Reviser
+    Verifier -->|验证失败<br/>已达最大轮数| Reject[拒绝该猜想]
+    
+    Reviser["<b>Reviser</b><br/>───────────────<br/>• 根据评审意见修正<br/>• 可弱化/否定猜想<br/>• 可提取技术难点为新猜想<br/>• 使用子代理辅助修正"] -->|修正完成| Verifier
+    Reviser -->|修正失败| Reject
+    
+    LemmaPool["<b>LemmaPool</b><br/>───────────────<br/>• 保存已验证引理<br/>• 供其他线程引用<br/>• 判断是否解决原问题"]
+    
+    LemmaPool -->|某个引理解决了问题| Solved([问题解决])
+    LemmaPool -->|引理池容量未满且没有引理解决问题| Generator
+    
+    style Generator fill:#e1f5ff,stroke:#01579b,stroke-width:2px
     style Verifier fill:#f3e5f5,stroke:#4a148c,stroke-width:2px
-    style Refiner fill:#fff3e0,stroke:#e65100,stroke-width:2px
-    style Summarizer fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style Reviser fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style LemmaPool fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px
+    style Solved fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style Reject fill:#ffcdd2,stroke:#c62828,stroke-width:2px
     style Start fill:#fce4ec,stroke:#880e4f,stroke-width:2px
-    style End fill:#fce4ec,stroke:#880e4f,stroke-width:2px
 ```
 
-## Setup
+### 核心组件说明
 
-### 1) Install dependencies
+1. **LemmaWorker（工作线程）**
+   - 每个工作线程独立运行，包含 Generator、Verifier、Reviser 三个组件
+   - 从 LemmaPool 获取当前已验证的引理作为上下文
+   - 生成新的引理并经过验证-修正循环，直到验证通过或达到最大尝试次数
 
-This repo expects an OpenAI-compatible client (via `openai`) and optionally Wolfram Engine.
+2. **LemmaPool（引理池）**
+   - 线程安全的共享存储，保存所有已验证的引理
+   - 自动去重（基于引理陈述文本）
+   - 持久化存储运行状态
 
-```bash
-pip install -r requirements.txt
-```
+3. **Generator（生成器）**
+   - 基于当前已验证引理和问题描述，提出新的猜想（conjecture）
+   - 生成完整的证明和依赖关系
+   - 使用子代理（proof_subagent、compute_subagent）辅助探索
+   - 判断当前引理是否已解决原问题（is_theorem）
 
-If you do not have a `requirements.txt` yet, install at least:
+4. **Verifier（验证器）**
+    - **Agentic 验证**：将证明分解为多个步骤或句子，使用计算子代理逐个验证
+    - 对生成的证明进行尽量严格的审查
+    - 使用 `VERIFIER_SCALING_FACTOR` 次独立验证（测试时扩展）
+    - 检查证明的正确性、完整性和严谨性
+    - 使用 `call_compute_subagent` 进行符号计算和反例查找
+    - 输出 $\boxed{valid}$ 或 $\boxed{invalid}$ 和verdict
+
+5. **Reviser（修正器）**
+   - 根据验证器的反馈修正猜想或证明
+   - 支持弱化猜想、否定猜想、提取技术难点为新的子猜想
+   - 最多 `MAX_VERIFY_AND_REFINE_ROUND` 次修正尝试
+
+6. **Summarizer（总结器）**
+   - 当问题解决时，整理所有依赖的引理和最终定理
+   - 生成可读的解决方案报告
+
+
+## 安装与配置
+
+### 1. 安装依赖
 
 ```bash
 pip install openai wolframclient
 ```
 
-### 2) Configure API keys
+### 2. 配置 API 密钥
 
-Set the environment variable for the provider you use (examples):
+设置环境变量（根据你使用的 LLM 提供商）：
 
 ```bash
 # DeepSeek
-export DEEPSEEK_API_KEY="your_key"
+set DEEPSEEK_API_KEY=your_key
 
-# Volcano (ByteDance Ark)
-export ARK_API_KEY="your_key"
+# 火山引擎（字节跳动）
+set ARK_API_KEY=your_key
 
 # Moonshot
-export MOONSHOT_API_KEY="your_key"
+set MOONSHOT_API_KEY=your_key
 
-# DashScope
-export DASHSCOPE_API_KEY="your_key"
+# DashScope（阿里云）
+set DASHSCOPE_API_KEY=your_key
 
 # OpenRouter
-export OPENROUTER_API_KEY="your_key"
+set OPENROUTER_API_KEY=your_key
 
 # LongCat
-export LONGCAT_API_KEY="your_key"
+set LONGCAT_API_KEY=your_key
 ```
 
-### 3) (Optional) Configure Wolfram Engine
+### 3. 配置 Wolfram Engine（可选）
 
-If you enable Wolfram tool usage and did not install the Wolfram kernel under the default installation path, set `WOLFRAM_KERNEL` to your `WolframKernel` executable.
-
-Windows example:
+如果启用 Wolfram 工具且未使用默认安装路径，设置环境变量：
 
 ```bash
-setx WOLFRAM_KERNEL "C:\\Program Files\\Wolfram Research\\Wolfram Engine\\14.0\\WolframKernel.exe"
+set WOLFRAM_KERNEL=C:\Program Files\Wolfram Research\Wolfram Engine\14.0\WolframKernel.exe
 ```
 
-## Usage
+### 4. 选择 LLM 模型
 
-1. Put your problem markdown in [`problems/problem_1.md`](problems/problem_1.md:1) (or update the path in [`main.py`](main.py:1)).
-2. (Optional) Put hints in [`hint.md`](hint.md:1) and load them in [`main.py`](main.py:1).
-3. Run:
+编辑 `config/agent_config.py`，配置各组件使用的模型：
+
+```python
+# 示例：使用火山引擎的 DeepSeek-V3.2
+GENERATOR_CONFIG = {
+    **VOLCANO_CONFIG,
+    'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, GENERATOR_RESPONSE_FORMAT_REMINDER]
+}
+
+VERIFIER_CONFIG = {
+    **VOLCANO_CONFIG, 
+    'tools': [COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
+}
+
+REVISER_CONFIG = {
+    **VOLCANO_CONFIG,
+    'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
+}
+```
+
+支持的预置配置：
+- `DEEPSEEK_CONFIG` - DeepSeek 官方 API
+- `VOLCANO_CONFIG` - 字节跳动火山引擎
+- `MOONSHOT_CONFIG` - Moonshot/Kimi
+- `DASHSCOPE_CONFIG` - 阿里云 DashScope
+- `LONGCAT_CONFIG` - LongCat
+- `OPENROUTER_GPT_5_CONFIG` - OpenRouter GPT-5
+- `MIMO_CONFIG` - 小米 MIMO
+
+## 使用方法
+
+### 1. 定义问题
+
+编辑 `problems/problem_1.md`，写入你的数学问题（LaTeX 格式支持）。
+
+### 2. 可选：添加提示
+
+编辑 `hint.md` 添加解题提示或背景知识，在 `main.py` 中取消注释 `hint = load_prompt_from_file('hint.md')` 启用。
+
+### 3. 运行
 
 ```bash
+# 基本运行（默认 2 个并行线程，1 轮迭代）
 python main.py
+
+# 指定参数
+python main.py --iteration 2 --batch_size 4 --tool_executor_size 2
 ```
 
-Output:
+参数说明：
+- `--iteration`：迭代轮数，每轮之间会清理和合并引理池
+- `--batch_size`：并行工作线程数（默认为 CPU 核心数 - 2）
+- `--tool_executor_size`：工具执行器（Python/Wolfram）的进程池大小
+- `--mode`：运行模式，`shared_by_all`（默认）或 `shared_by_iteration`
 
-- Prints the final summary to console
-- Writes `solution.md` (overwrites) in the project root
+### 4. 查看结果
 
-## Configuration
+- 控制台会输出最终解决方案
+- `solution.md` 文件保存完整结果
+- `logs/` 目录包含详细运行日志
 
-### Provider / model selection
+## 关键配置参数
 
-Switch the model/provider by editing [`config/agent_config.py`](config/agent_config.py:1).
+在 `config/agent_config.py` 的 `AlphaSolveConfig` 类中可调整以下参数：
 
-The active runtime config is embedded into each agent’s config:
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `MAX_LEMMA_NUM` | 30 | 最大引理数量限制 |
+| `VERIFIER_SCALING_FACTOR` | 15 | 验证器的独立验证尝试次数 |
+| `MAX_VERIFY_AND_REFINE_ROUND` | 5 | 单个引理的最大验证-修正轮数 |
+| `GENERATOR_MAX_RETRY` | 3 | 生成器解析失败时的重试次数 |
+| `REVISER_MAX_RETRY` | 3 | 修正器解析失败时的重试次数 |
+| `CHECK_IS_THEOREM_TIMES` | 5 | 判断是否为最终定理的验证次数 |
+| `MAX_API_RETRY` | 8 | LLM API 调用失败时的重试次数 |
+| `PROOF_SUBAGENT_MAX_DEPTH` | 3 | 证明子代理的最大递归深度 |
 
-- `AlphaSolveConfig.SOLVER_CONFIG`
-- `AlphaSolveConfig.VERIFIER_CONFIG`
-- `AlphaSolveConfig.REFINER_CONFIG`
-- `AlphaSolveConfig.SUMMARIZER_CONFIG`
+## 工具系统
 
-### Key workflow knobs
+AlphaSolve 为 LLM 提供了多种工具：
 
-Defined in [`config/agent_config.py`](config/agent_config.py:158):
+### 1. 计算工具
+- **`run_python`**：在持久化环境中执行 Python 代码（支持 SymPy、NumPy、SciPy）
+- **`run_wolfram`**：执行 Wolfram 语言代码（符号计算、微分方程等）
 
-- `MAX_LEMMA_NUM`: maximum number of lemmas Solver may generate
-- `VERIFIER_SCALING_FACTOR`: how many independent verification attempts Verifier runs per lemma
-- `MAX_VERIFY_AND_REFINE_ROUND`: max verify/refine cycles for a single lemma before it is rejected
-- `REFINER_MAX_RETRY`: retries for invalid-format refiner responses
-- `MAX_API_RETRY`: full-call retry count when streaming responses are interrupted
+### 2. 子代理工具
+- **`call_proof_subagent`**：纯数学证明子代理（无计算工具）
+- **`call_compute_subagent`**：计算子代理（可使用 Python/Wolfram）
 
-## Benchmark
-
-AlphaSolve includes a lightweight benchmark loop.
-
-### Running
-
-1. Put the reference solution in [`standard_solution.md`](standard_solution.md:1)
-2. Run:
-
-```bash
-python benchmark.py
-```
-
-### How it works
-
-The benchmark runs AlphaSolve multiple times on the same problem and scores each run by comparing the produced answer against the reference solution.
-
-See [`benchmark.py`](benchmark.py:1) for the exact evaluation logic and repetition count.
+### 3. 辅助工具
+- **`read_lemma`**：读取已验证引理的完整证明
+- **`read_current_conjecture_again`**：重新读取当前猜想
+- **`read_review_again`**：重新读取验证器的评审意见

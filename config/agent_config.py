@@ -1,8 +1,9 @@
 import os
 from llms.tools import (
-    RESEARCH_SUBAGENT_TOOL,
-    SOLVER_RESPONSE_FORMAT_REMINDER,
-    REFINER_RESPONSE_FORMAT_REMINDER,
+    PROOF_SUBAGENT_TOOL,
+    COMPUTE_SUBAGENT_TOOL,
+    GENERATOR_RESPONSE_FORMAT_REMINDER,
+    REVISER_RESPONSE_FORMAT_REMINDER,
     PYTHON_TOOL,
     WOLFRAM_TOOL,
     MODIFY_STATEMENT_TOOL,
@@ -66,9 +67,8 @@ MOONSHOT_CONFIG = {
 VOLCANO_CONFIG = {
     'base_url': 'https://ark.cn-beijing.volces.com/api/v3',
     'api_key': lambda: os.getenv('ARK_API_KEY'),
-    'model': 'deepseek-v3-2-251201',
-    'timeout': 120,
-    'max_tokens': 64000,
+    'model': 'doubao-seed-2-0-pro-260215',
+    'timeout': 180,
     # 火山引擎：通过 extra_body.thinking = enabled 开启深度思考
     'params': {
         'extra_body': {
@@ -176,72 +176,75 @@ CUSTOM_LLM_CONFIG_1 = {
 class AlphaSolveConfig:
     LOG_PATH = 'logs'
 
-    SOLVER = 'solver'
+    GENERATOR = 'generator'
     VERIFIER = 'verifier'
-    REFINER = 'refiner'
+    REVISER = 'reviser'
 
     ## 在这里设置 AlphaSolve 使用的 LLM 配置
     
-    # Solver 可以使用 subagent，也可以阅读已有 lemma 的证明
-    SOLVER_CONFIG = {
+    # Generator 可以使用 subagent，也可以阅读已有 lemma 的证明
+    GENERATOR_CONFIG = {
         #**MIMO_CONFIG,
         **VOLCANO_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
+        'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, GENERATOR_RESPONSE_FORMAT_REMINDER]
     }
-    SOLVER_PROMPT_PATH='prompts/solver.md'
+    GENERATOR_PROMPT_PATH='prompts/generator.md'
 
     # Verifier 可以使用 subagent，可以再读一遍当前猜想及其证明，也可以阅读已有 lemma 的证明
     VERIFIER_CONFIG = {
         ## **MIMO_CONFIG,
-        **VOLCANO_CONFIG, 
-        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
+        **DEEPSEEK_CONFIG, 
+        'tools': [COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL]
     }
     VERIFIER_PROMPT_PATH = 'prompts/verifier.md'
 
-    # Refiner 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
-    REFINER_CONFIG = {
+    # Reviser 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
+    REVISER_CONFIG = {
         ## **MIMO_CONFIG,
-        **VOLCANO_CONFIG, 
-        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REFINER_RESPONSE_FORMAT_REMINDER]
+        **VOLCANO_CONFIG,
+        'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
     }
-    REFINER_PROMPT_PATH='prompts/refiner.md'
+    REVISER_PROMPT_PATH='prompts/reviser.md'
 
-    # NoHistoryRefiner 强制使用 search/replace 工具
-    NO_HISTORY_REFINER_CONFIG = {
+    EXTRACTOR_CONFIG = {
+        ## **MIMO_CONFIG,
         **VOLCANO_CONFIG,
-        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
+        'tools': [READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
     }
-    NO_HISTORY_REFINER_PROMPT_PATH = 'prompts/no_history_refiner.md'
-    # WithHistoryRefiner 可以使用 subagent
-    WITH_HISTORY_REFINER_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, MODIFY_STATEMENT_TOOL, MODIFY_PROOF_TOOL]
-    }
+    EXTRACTOR_PROMPT_PATH='prompts/extractor.md'
 
     # Summarizer 不使用工具
     SUMMARIZER_CONFIG = {
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
         'tools': None
     }
     SUMMARIZER_PROMPT_PATH = 'prompts/summarizer.md'
 
-    # Subagent 可以使用 Python 和 Wolfram
-    SUBAGENT_CONFIG = {
-        **LONGCAT_CONFIG,
+    # Compute subagent 可以使用 Python 和 Wolfram
+    COMPUTE_SUBAGENT_CONFIG = {
+        **VOLCANO_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
     }
+
+    # Proof subagent 默认只允许递归调用 proof_subagent
+    PROOF_SUBAGENT_CONFIG = {
+        **VOLCANO_CONFIG,
+        'tools': [PROOF_SUBAGENT_TOOL]
+    }
+
+    PROOF_SUBAGENT_MAX_DEPTH = 5
 
     ORCHESTRATOR_CONFIG = {
         #**MIMO_CONFIG,
         **LONGCAT_CONFIG,
-        'tools': [RESEARCH_SUBAGENT_TOOL, READ_LEMMA_TOOL, SOLVER_RESPONSE_FORMAT_REMINDER]
+        'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, GENERATOR_RESPONSE_FORMAT_REMINDER]
     }
     ORCHESTRATOR_PROMPT_PATH=''
 
 
 
 
-    VERIFIER_SCALING_FACTOR = 15
+    VERIFIER_SCALING_FACTOR = 4
     # NOTE: shared schema keys are defined by SharedContext (single dict-like object).
     # Do NOT add shared-key constants here.
 
@@ -253,7 +256,7 @@ class AlphaSolveConfig:
     CONJECTURE_VERIFIED  = 'conjecture_verified'
     DONE = 'done'
 
-    ## used by refiner
+    ## used by reviser
     REFINE_SUCCESS = 'refined_success'
     CONJECTURE_WRONG = 'conjecture_wrong'
 
@@ -267,13 +270,14 @@ class AlphaSolveConfig:
     ## 内部状态
     NORMAL = 'normal'
     VERIFIER_EXAUSTED = 'verifier_exausted'
-    SOLVER_EXAUSTED = 'solver_exausted'
+    GENERATOR_EXAUSTED = 'generator_exausted'
 
     ## 
     MAX_LEMMA_NUM = 30
     MAX_VERIFY_AND_REFINE_ROUND = 5
-    SOLVER_MAX_RETRY = 3
-    REFINER_MAX_RETRY = 3
+    MAX_WORKER_NUM = 4
+    GENERATOR_MAX_RETRY = 3
+    REVISER_MAX_RETRY = 3
     CHECK_IS_THEOREM_TIMES = 5
 
     # LLM API retry policy
@@ -283,6 +287,3 @@ class AlphaSolveConfig:
 
     PROBLEM_PATH = 'problems/problem_1.md'
     STANDARD_SOLUTION_PATH = 'standard_solution.md'
-
-    SHARED_BY_ALL = 'shared_by_all'
-    SHARED_BY_ITERATION = 'shared_by_iteration'

@@ -24,12 +24,13 @@ class Logger:
         log_dir: str = "logs",
         print_to_console: bool = True,
         timestamp: Optional[str] = None,
+        log_filename: Optional[str] = None,
     ) -> None:
         self.name = name
         self.log_dir = log_dir
         self.print_to_console_default = print_to_console
         self.timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-        self.log_filename = os.path.join(self.log_dir, f"{self.name}_" + f"{self.timestamp}.log")
+        self.log_filename = log_filename or os.path.join(self.log_dir, f"{self.name}_" + f"{self.timestamp}.log")
         self._streaming_open = False
 
         os.makedirs(self.log_dir, exist_ok=True)

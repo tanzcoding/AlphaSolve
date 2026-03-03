@@ -2,13 +2,11 @@ import time
 import json
 
 from utils.utils import extract_substring
-from .shared_context import build_reasoning_path, save_snapshot
+from .shared_context import build_reasoning_path
 from config.agent_config import AlphaSolveConfig
 
 from llms.utils import LLMClient
 from utils.logger import Logger
-
-from pocketflow import Node
 
 ## 一旦出现这条标签, 说明 lemma 是错的
 INVALID_TAG = '\\boxed{false}'
@@ -42,10 +40,9 @@ def _format_lemmas_as_markdown(bundle):
 
     return "\n".join(lines).strip()
 
-class Summarizer(Node):
+class Summarizer:
 
     def __init__(self, problem, llm, prompt_file_path, logger): ## reasoning path 是依赖的, 状态=solved 的引理, 作为上下文
-        super(Summarizer, self).__init__()
         self.logger = logger
 
     def prep(self,shared): 
@@ -93,11 +90,9 @@ class Summarizer(Node):
         # WRITE ONLY to shared.
         if not exec_res or len(exec_res) < 2:
             self.logger.log_print('exiting summarizer...', module='summarizer')
-            save_snapshot(shared, "summarizer", "exit")
             return
         if exec_res[0] != AlphaSolveConfig.NORMAL:
             self.logger.log_print('exiting summarizer...', module='summarizer')
-            save_snapshot(shared, "summarizer", "exit")
             return
 
         shared["result_summary"] = exec_res[1]
@@ -106,7 +101,6 @@ class Summarizer(Node):
             module="summarizer",
         )
         self.logger.log_print('exiting summarizer...', module='summarizer')
-        save_snapshot(shared, "summarizer", "completed")
 
 
 def create_summarizer_agent(problem, prompt_file_path, logger: Logger):
