@@ -30,29 +30,29 @@ class LemmaPool:
         self.capacity_verified = max(1, int(capacity_verified))
         self.logger = logger
         self.snapshot_path = snapshot_path
-        # self._lock = threading.Lock()
+        self._lock = threading.Lock()
         self.all_lemmas: list[dict] = []
         self.verified_lemmas: list[dict] = []
         self._solved = False
 
     def snapshot_verified(self) -> list[dict]:
-        # with self._lock:
-        return [dict(l) for l in self.verified_lemmas]
+        with self._lock:
+            return [dict(l) for l in self.verified_lemmas]
 
     def snapshot_all(self) -> list[dict]:
-        # with self._lock:
-        return [dict(l) for l in self.all_lemmas]
+        with self._lock:
+            return [dict(l) for l in self.all_lemmas]
 
     def remaining_verified_capacity(self) -> int:
-        # with self._lock:
-        return self.capacity_verified - len(self.verified_lemmas)
+        with self._lock:
+            return self.capacity_verified - len(self.verified_lemmas)
 
     def is_full(self) -> bool:
         return self.remaining_verified_capacity() <= 0
 
     def is_solved(self) -> bool:
-        #with self._lock:
-        return self._solved
+        with self._lock:
+            return self._solved
 
     def find_duplicate(self, lemma: dict) -> Optional[int]:
         statement = (lemma.get("statement") or "").strip().lower()
@@ -64,7 +64,7 @@ class LemmaPool:
         return None
 
     def commit(self, result: LemmaWorkerResult) -> CommitDecision:
-        #with self._lock:
+        with self._lock:
             lemma = dict(result.lemma)
             lemma["uid"] = len(self.all_lemmas)
 
