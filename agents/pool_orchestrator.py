@@ -100,7 +100,10 @@ class LemmaPoolOrchestrator:
                             module="pool_orchestrator",
                         )
 
+                    ## 一旦调用 commit, 我们就必须更新 current_version 了, 确保下一次 load 能读到最新的
                     decision = self.pool.commit(result)
+                    self.log_session.update_version()
+
                     self.logger.log_print(
                         f"event=worker_finished worker_id={worker_id} status={decision.status} solved={decision.solved}",
                         module="pool_orchestrator",

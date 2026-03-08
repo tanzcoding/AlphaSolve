@@ -12,20 +12,22 @@ if __name__== "__main__" :
 
     parser = argparse.ArgumentParser(description="Run AlphaSolve.")
      
-    ## 第三个参数: 工具执行器的大小, 默认为 cpu - 2, 后续我们会把 tool 执行和 llm client 分开
     parser.add_argument("--tool_executor_size", type=int, default = default_max_worker_num, help="用来执行wolfram|python的进程池数量")
-    
+    parser.add_argument("--init_from_previous", type=bool, default = True, help="是否从上一个的版本的lemma pool开始")
+
     args = parser.parse_args()
 
     problem = load_prompt_from_file('problems/problem_1.md')
     hint= None
     #hint = load_prompt_from_file('hint.md')
-    
-    log_session = LogSession(run_root=AlphaSolveConfig.LOG_PATH)
+
+    log_session = LogSession(run_root=AlphaSolveConfig.LOG_PATH, progress_path = AlphaSolveConfig.PROGRESS_PATH)
+
     alpha = AlphaSolve(
         problem=problem,
         tool_executor_size=args.tool_executor_size,
         log_session=log_session,
+        init_from_previous = args.init_from_previous, 
     )
     
     try:

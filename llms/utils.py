@@ -890,9 +890,6 @@ class ParallelLLMClient(LLMClient):
         if name == 'run_python': ## 运行 python 代码比较简单, 直接给过去就行
             code = args.get('code', '')
             log_parts.append(f"Code:\n{code}")
-
-            print(context.keys())
-
             future = self.executor.submit(_run_python, code, context)
         elif name == 'run_wolfram': ## 运行 wolfram 代码, 需要管理好 wolfram session
             code = args.get('code', '')
