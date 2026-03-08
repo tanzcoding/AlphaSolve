@@ -19,13 +19,14 @@ class AlphaSolve:
         print_to_console: bool = True,
         tool_executor_size: int = 2,
         log_session: Optional[LogSession] = None,
+        init_from_previous: bool = True, 
     ):
         self.problem = problem
         self.max_worker_num = max(AlphaSolveConfig.MAX_WORKER_NUM, 1)
         self.tool_executor = ProcessPoolExecutor(max_workers=max(1, int(tool_executor_size)))
-        self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH)
+        self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH, progress_path = AlphaSolveConfig.PROGRESS_PATH)
         self.logger = self.log_session.main_logger(print_to_console=print_to_console)
-        
+        self.init_from_previous = init_from_previous
         # 记录各个子代理使用的模型信息
         self._log_model_configs()
 
@@ -42,13 +43,18 @@ class AlphaSolve:
     def do_research(self):
         last_summary = None
 
-        self.logger.log_print(f"event=alphasolve_start", module="AlphaSolve")
+        version = self.log_session.previous_state_path()
+
+        self.logger.log_print(f"event=alphasolve_start with version: {version}", module="AlphaSolve")
 
         pool = LemmaPool(
-            capacity_verified=AlphaSolveConfig.MAX_LEMMA_NUM,
-            logger=self.logger,
-            snapshot_path=self.log_session.pool_state_path(pool_id=0),
+            capacity_verified = AlphaSolveConfig.MAX_LEMMA_NUM,
+            logger = self.logger,
+            snapshot_path = self.log_session.pool_state_path(pool_id=0),
+            previous_snapshot_path = version,
+            init_from_previous = self.init_from_previous,
         )
+
         problem_text, hint = self.generate_problem_and_hint()
 
         orchestrator = LemmaPoolOrchestrator(

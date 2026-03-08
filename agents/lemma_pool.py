@@ -26,14 +26,29 @@ class LemmaPool:
         capacity_verified: int,
         logger: Logger,
         snapshot_path: Optional[str] = None,
+        previous_snapshot_path: Optional[str] = None,
+        init_from_previous: bool = True,
     ):
         self.capacity_verified = max(1, int(capacity_verified))
         self.logger = logger
-        self.snapshot_path = snapshot_path
+        self.snapshot_path = snapshot_path ## 写到哪里
+        self.previous_snapshot_path = previous_snapshot_path ## 从哪里读
         self._lock = threading.Lock()
         self.all_lemmas: list[dict] = []
         self.verified_lemmas: list[dict] = []
         self._solved = False
+        self.init_from_previous = init_from_previous
+
+        self.logger.log_print(f"previous_snapshot_path  {self.previous_snapshot_path} current_snapshot_path {self.snapshot_path}",
+            module="lemma_pool",
+        )
+
+        if self.init_from_previous:
+            try:
+                self.init_from_snapshot()
+            except Exception: ## 绝对不抛异常
+                self.logger.log_print("event=lemma_pool_init_from_snapshot_failed", module="lemma_pool")
+
 
     def snapshot_verified(self) -> list[dict]:
         with self._lock:
@@ -63,7 +78,7 @@ class LemmaPool:
                 return idx
         return None
 
-    def commit(self, result: LemmaWorkerResult) -> CommitDecision:
+    def commit(self, result: LemmaWorkerResult) -> CommitDecision: 
         with self._lock:
             lemma = dict(result.lemma)
             lemma["uid"] = len(self.all_lemmas)
@@ -123,3 +138,23 @@ class LemmaPool:
         with open(self.snapshot_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
 
+    def init_from_snapshot(self) -> None:
+        if not self.previous_snapshot_path or not os.path.exists(self.previous_snapshot_path):
+            self.logger.log_print(
+                 f"previous_snapshot_path empty or not exists {self.previous_snapshot_path}",
+                 module="lemma_pool",
+            )
+            return
+
+        with open(self.previous_snapshot_path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+
+        with self._lock: 
+            self.verified_lemmas = payload.get("verified_lemmas", [])
+            self.all_lemmas = payload.get("all_lemmas", [])
+            # self._solved = payload.get("solved", False)
+
+        self.logger.log_print(
+            f"event=lemma_pool_init_from_snapshot verified={len(self.verified_lemmas)} all={len(self.all_lemmas)} solved={self._solved}",
+            module="lemma_pool",
+        )
