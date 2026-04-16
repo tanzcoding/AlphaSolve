@@ -248,69 +248,6 @@ def run_wolfram(code: str, session=None, timeout_seconds: int = 300):
         return "", payload
 
 
-def run_proof_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
-    """Proof-only subagent executor (no Python/Wolfram)."""
-    result = ""
-    err = None
-
-    logger.log_print('entering proof_subagent...', module='subagent')
-
-    try:
-        system_prompt = """You are a mathematical proof assistant. Solve the given proof task rigorously.
-Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified.
-Ask for clarifications if the task is ambiguous. Tell the user if the task is not self-contained or too large for you to handle.
-You do NOT have Python/Wolfram tools in this role.
-OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
-If the task is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
-        experience = """<experiences>
-Keep arguments formal and explicit. You may decompose into one bounded sub-claim if needed.
-</experiences>"""
-
-        messages = [
-            {"role": "system", "content": system_prompt + "\n\n" + experience},
-            {"role": "user", "content": "<task_description>\n" + task_description + "\n</task_description>"},
-        ]
-
-        from config.agent_config import AlphaSolveConfig
-        result, _, _ = client.get_result(messages=messages, tools=AlphaSolveConfig.PROOF_SUBAGENT_CONFIG['tools'], shared=shared)
-    except Exception:
-        err = traceback.format_exc().strip()
-
-    return result, err
-
-
-def run_compute_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
-    """Compute-capable subagent executor (Python/Wolfram allowed)."""
-    result = ""
-    err = None
-
-    logger.log_print('entering compute_subagent...', module='subagent')
-
-    try:
-        system_prompt = """You are a mathematical compute assistant. Solve the given task correctly (compute/verify/derive).
-Correctness is mandatory: clearly state assumptions; every result you provide must be mathematically sound and rigorously verified.
-Ask for clarifications if the task is ambiguous. Tell the user if the task is not self-contained or too large for you to handle.
-Tools available: run_python (SymPy/NumPy/SciPy), run_wolfram (Wolfram Language).
-OUTPUT RULES (token-efficient): plain text only (do NOT use markdown). Minimize blank lines, indentation, and extra spaces, but do NOT omit mathematical steps: fully expand derivations (no 'obvious', 'routine', 'it is easy'). Prefer compact dense formatting (e.g., short paragraphs; equations inline; optional section labels like Result/Assumptions/Proof/Checks).
-WARNING: numerical results do not count as proofs. Always provide mathematical justifications if your task is to prove something. If the task is not suited for using python/Wolfram, compute/derive manually with details.
-If the task is too large: do NOT attempt to solve it beyond your capacity; state what you verified/failed + suggest a smaller, more manageable subtask that you can complete for the next step."""
-        experience = """<experiences>
-Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one try. Always include assumptions (domains/parameters).
-</experiences>"""
-
-        messages = [
-            {"role": "system", "content": system_prompt + "\n\n" + experience},
-            {"role": "user", "content": "<task_description>\n" + task_description + "\n</task_description>"},
-        ]
-
-        from config.agent_config import AlphaSolveConfig
-        result, _, _ = client.get_result(messages=messages, tools=AlphaSolveConfig.COMPUTE_SUBAGENT_CONFIG['tools'], shared=shared)
-    except Exception:
-        err = traceback.format_exc().strip()
-
-    return result, err
-
-
 # ===== Generator 格式提醒工具（面向 LLM function-calling） =====
 # 来自 prompts/generator.md 的关键约束：
 # - 输出必须以 \begin{conjecture} 起手，不能有任何其他前置内容
@@ -458,15 +395,19 @@ WOLFRAM_TOOL = {
         }
     }
 }
-PROOF_SUBAGENT_DESCRIPTION = """Subagent for proving/disproving bounded mathematical claims.
+PROOF_SUBAGENT_DESCRIPTION = """Subagent for analytically validating bounded mathematical claims. It may prove the claim, refute it, or report that the task is inconclusive or too broad.
 
 **CRITICAL:** This subagent has no access to Python/Wolfram tools.
 
 **CRITICAL:** Each call spawns a NEW subagent with NO memory of previous calls. Provide a self-contained task description every time.
 
-**Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded proof obligation.
+**Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded proof or verification obligation.
 
-Good requests: prove a local lemma under explicit assumptions; validate a derivation step; identify a gap and provide a corrected formal argument; construct a contradiction/counterexample argument.
+**Claim discipline:** Treat the claim in the task description as fixed unless the caller explicitly asks for a reformulation. Do NOT silently weaken, strengthen, or change quantifiers, domains, regularity assumptions, or conclusion type. If only a weaker statement can be justified, report that weaker statement under `Strongest justified conclusion` and use `INCONCLUSIVE` rather than pretending the original claim was proved.
+
+**Negative-conclusion gate:** If the subagent concludes that something does not exist, is impossible, or that only trivial cases hold, it must explicitly report `Checked scope`, `Unchecked scope`, and `Strongest justified conclusion`. Do not treat a negative result as universal unless the checked scope actually covers all relevant branches.
+
+Good requests: validate whether a local lemma is true; prove a local lemma under explicit assumptions; disprove a bounded claim via contradiction or counterexample; identify the earliest failing step in a candidate proof and state the strongest salvageable conclusion.
 Bad requests: "solve the whole problem", "find the entire approach", dumping the full prompt.
 """
 
@@ -482,7 +423,32 @@ COMPUTE_SUBAGENT_DESCRIPTION = """Subagent for concrete math computations/verifi
 
 **Reliability:** The subagent can be wrong—keep tasks verifiable and cross-check results by delegating the same or similar task to a second sub-agent if needed.
 
+**Negative-conclusion gate:** If the subagent concludes that something does not exist, is impossible, or that only trivial cases hold, it must explicitly report three fields: `Checked scope`, `Unchecked scope`, and `Strongest justified conclusion`. Do not treat a negative result as universal unless the checked scope actually covers all relevant branches.
+
 Good requests (small + concrete): simplify under assumptions; compute/verify an integral/limit/series; solve an equation/ODE with parameter cases; compute a Groebner basis / eliminate variables / check ideal membership; numeric testing/counterexamples; edge-case checks.
+Bad requests: "solve the whole problem", "find the entire approach", dumping the full prompt.
+"""
+
+
+NUMERICAL_EXPERIMENT_SUBAGENT_DESCRIPTION = """Subagent for explore-first mathematical discovery and bounded verification, using Python/Wolfram only when they are actually helpful.
+
+**CRITICAL:** Each call spawns a NEW subagent with NO memory of previous calls. Provide a self-contained task description every time.
+
+**Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded exploration/check/derivation task.
+
+**Division of labor:** You do high-level strategy (plan, choose what method to use, decide what branch or claim to explore, and integrate results); the sub-agent performs the bounded exploration and any supporting computation.
+
+**Explore-first behavior:** The subagent should NOT default to Python-first. It should first analyze the structure of the task, identify branches/cases/regimes, and decide what actually needs computation. Use Python/Wolfram as tools in service of exploration, not as the identity of the subagent.
+
+**CRITICAL (when to use): Call subagent EARLY and very OFTEN.** If you are about to do any nontrivial exploration/verification (multi-line algebra, symbolic simplification, case splits, solving equations/ODEs, checking edge cases, local-vs-global analysis, counterexample search, pattern discovery), you MUST call the sub-agent instead of doing it manually. If you catch yourself “working it out”, STOP and delegate that concrete subtask.
+
+**Required output discipline:** The subagent should clearly separate: assumptions; branches/cases explored; what is rigorously established; what is only heuristic/formal/numerically suggested; unresolved points; and what should be checked next.
+
+**Reliability:** The subagent can be wrong—keep tasks verifiable and cross-check results by delegating the same or similar task to a second sub-agent if needed.
+
+**Negative-conclusion gate:** If the subagent concludes that something does not exist, is impossible, or that only trivial cases hold, it must explicitly report three fields: `Checked scope`, `Unchecked scope`, and `Strongest justified conclusion`. Do not treat a negative result as universal unless the checked scope actually covers all relevant branches.
+
+Good requests (small + concrete): identify branches in a local expansion; test whether evidence supports only a local/formal claim or a global one; simplify under assumptions; compute/verify an integral/limit/series; solve an equation/ODE with parameter cases; numeric testing/counterexamples; edge-case checks.
 Bad requests: "solve the whole problem", "find the entire approach", dumping the full prompt.
 """
 
@@ -515,6 +481,24 @@ COMPUTE_SUBAGENT_TOOL = {
                 'task_description': {
                     'type': 'string',
                     'description': 'A clear, complete and self-contained computation/verification task for the compute subagent.'
+                }
+            },
+            'required': ['task_description']
+        }
+    }
+}
+
+NUMERICAL_EXPERIMENT_SUBAGENT_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'call_numerical_experiment_subagent',
+        'description': NUMERICAL_EXPERIMENT_SUBAGENT_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'task_description': {
+                    'type': 'string',
+                    'description': 'A clear, complete and self-contained verification/mathematical-discovering task for the numerical experiment subagent.'
                 }
             },
             'required': ['task_description']
@@ -692,3 +676,23 @@ READ_REVIEW_AGAIN_TOOL = {
         }
     }
 }
+
+
+COT_PROBE_DESCRIPTION = """Interrupted the thinking process and save current state of  thinking trajectory for later use.
+Use this tool when you believe you've made some progress, which could be some guess, observation, insight that drives to the target, or a partial result. NO parameter is needed.
+"""
+
+COT_PROBE_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'probe_cot',
+        'description': COT_PROBE_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+            },
+            'required': []
+        }
+    }
+}
+

@@ -11,6 +11,7 @@ from copy import deepcopy
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from .tools import *
+from .subagents import *
 import traceback
 
 class LLMClient:
@@ -42,6 +43,55 @@ class LLMClient:
             api_key=self.api_key,
             base_url=self.base_url,
             timeout=self.timeout
+        )
+
+    def _contains_negative_conclusion(self, text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        negative_markers = [
+            "does not exist",
+            "do not exist",
+            "nonexistent",
+            "non-existence",
+            "impossible",
+            "only trivial",
+            "only the trivial",
+            "no nontrivial",
+            "no non-trivial",
+            "no other solution",
+            "no other solutions",
+            "unique solution",
+            "uniqueness",
+            "excluded",
+            "cannot occur",
+            "cannot happen",
+        ]
+        return any(marker in lowered for marker in negative_markers)
+
+    def _has_negative_conclusion_gate_fields(self, text: str) -> bool:
+        if not text:
+            return False
+        lowered = text.lower()
+        required_fields = [
+            "checked scope:",
+            "unchecked scope:",
+            "strongest justified conclusion:",
+        ]
+        return all(field in lowered for field in required_fields)
+
+    def _enforce_negative_conclusion_gate(self, tool_name: str, result: str) -> str:
+        if not result or not self._contains_negative_conclusion(result):
+            return result
+        if self._has_negative_conclusion_gate_fields(result):
+            return result
+        return (
+            "[subagent negative-conclusion gate failure]\n"
+            f"The result returned by `{tool_name}` appears to contain a negative/exclusion/uniqueness-style conclusion, "
+            "but it is missing one or more mandatory fields: `Checked scope:`, `Unchecked scope:`, `Strongest justified conclusion:`.\n"
+            "Do NOT trust or propagate the negative conclusion yet. Re-run a bounded subtask and require the subagent to report those three fields explicitly.\n\n"
+            "[original subagent result]\n"
+            f"{result}"
         )
     
     def _get_model_params(self) -> Dict:
@@ -410,6 +460,9 @@ class LLMClient:
                 logger.log_print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n")
 
         # 创建流式请求
+
+        print(messages)
+
         stream = self.client.chat.completions.create(
             messages=messages,
             tools=tools,
@@ -613,7 +666,8 @@ class LLMClient:
                 tool_content = tool_content + f"[error]\n{error}"
                 log_parts.append(f"[error]\n{error}")
         
-        elif name in ('proof_subagent', 'compute_subagent', 'call_proof_subagent', 'call_compute_subagent'):
+        elif name in ('proof_subagent', 'compute_subagent', 'call_proof_subagent', 'call_compute_subagent', 
+            'call_numerical_experiment_subagent'):
 
             task_description = args.get('task_description', '')
             shared = context.get('shared')
@@ -640,9 +694,16 @@ class LLMClient:
                     result, error = run_proof_subagent(task_description, self.logger, shared, nested_client)
                 finally:
                     context['proof_subagent_depth'] = parent_depth
+
+            elif name in ('call_numerical_experiment_subagent'):
+                llm_client = self._create_client_for_subagent(config_key='COMPUTE_SUBAGENT_CONFIG')
+                result, error = run_numerical_experiment_subagent(task_description, self.logger, shared, llm_client)
+                
             else:
                 llm_client = self._create_client_for_subagent(config_key='COMPUTE_SUBAGENT_CONFIG')
                 result, error = run_compute_subagent(task_description, self.logger, shared, llm_client)
+
+            ## result = self._enforce_negative_conclusion_gate(name, result)
             
             tool_content = ''
             if result:
@@ -810,7 +871,8 @@ class LLMClient:
                 except Exception as exc:
                     tool_content = f"[{name} error] {exc}"
                     log_parts.append(f"[error]\n{tool_content}")
-        
+        elif name == 'prob_cot':
+            print('prob_cot called ... ')        
         else:
             log_parts.append("(not implemented)")
             tool_content = json.dumps({'error': f'tool {name} not implemented in client'}, ensure_ascii=False)
@@ -906,7 +968,7 @@ class ParallelLLMClient(LLMClient):
                 future.cancel()
             except:
                 pass
-
+                
         if not data: ## 第一个参数是 tool_result, 第二个参数是 tool_logs
             return '', []
         else: # 有结果, 正常返回

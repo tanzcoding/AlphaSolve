@@ -71,3 +71,11 @@ Your conjecture statement must be self-contained unless a term is already define
 \begin{proof}
 A rigorous and detailed proof. We will use Lemma 1 and Lemma-3 to establish our result.
 \end{proof}
+
+
+
+## Problem Statement
+
+\begin{problem}
+{problem_content}
+\end{problem}

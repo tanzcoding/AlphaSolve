@@ -11,6 +11,8 @@ from llms.tools import (
     READ_LEMMA_TOOL,
     READ_CURRENT_CONJECTURE_AGAIN_TOOL,
     READ_REVIEW_AGAIN_TOOL,
+    COT_PROBE_TOOL,
+    NUMERICAL_EXPERIMENT_SUBAGENT_TOOL,
 )
 
 # 统一的运行时 CONFIG（始终开启"思考/推理"能力，不考虑关闭）
@@ -176,6 +178,7 @@ CUSTOM_LLM_CONFIG_1 = {
 
 class AlphaSolveConfig:
     LOG_PATH = 'logs'
+    PROGRESS_PATH = 'progress'
 
     GENERATOR = 'generator'
     VERIFIER = 'verifier'
@@ -183,11 +186,13 @@ class AlphaSolveConfig:
 
     ## 在这里设置 AlphaSolve 使用的 LLM 配置
     
-    # Generator 可以使用 subagent，也可以阅读已有 lemma 的证明
+    # Generator 可以使用 subagent，也可以阅读已有 lemma 的证明, COMPUTE_SUBAGENT_TOOL 得后面加回去
     GENERATOR_CONFIG = {
         #**MIMO_CONFIG,
-        **VOLCANO_CONFIG,
-        'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, GENERATOR_RESPONSE_FORMAT_REMINDER]
+        #**VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
+        ## 'tools': [PROOF_SUBAGENT_TOOL, READ_LEMMA_TOOL, GENERATOR_RESPONSE_FORMAT_REMINDER, NUMERICAL_EXPERIMENT_SUBAGENT_TOOL]
+        'tools': [ NUMERICAL_EXPERIMENT_SUBAGENT_TOOL, PROOF_SUBAGENT_TOOL]
     }
     GENERATOR_PROMPT_PATH='prompts/generator.md'
 
@@ -202,7 +207,8 @@ class AlphaSolveConfig:
     # Reviser 可以使用 subagent，可以阅读已有 lemma 的证明，还可以再读一遍当前猜想及其证明
     REVISER_CONFIG = {
         ## **MIMO_CONFIG,
-        **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
+        ##**VOLCANO_CONFIG,
         'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, READ_CURRENT_CONJECTURE_AGAIN_TOOL, READ_REVIEW_AGAIN_TOOL, REVISER_RESPONSE_FORMAT_REMINDER]
     }
     REVISER_PROMPT_PATH='prompts/reviser.md'
@@ -216,17 +222,21 @@ class AlphaSolveConfig:
 
     # Compute subagent 可以使用 Python 和 Wolfram
     COMPUTE_SUBAGENT_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': [PYTHON_TOOL,WOLFRAM_TOOL]
+        ## **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
+        'tools': [PYTHON_TOOL,WOLFRAM_TOOL, COT_PROBE_TOOL]
     }
 
     # Proof subagent 默认只允许递归调用 proof_subagent
     PROOF_SUBAGENT_CONFIG = {
-        **VOLCANO_CONFIG,
-        'tools': [PROOF_SUBAGENT_TOOL]
+        ## **VOLCANO_CONFIG,
+        **DEEPSEEK_CONFIG,
+        ## 'tools': [PROOF_SUBAGENT_TOOL, COT_PROBE_TOOL]
+        'tools': [ COT_PROBE_TOOL]
+
     }
 
-    PROOF_SUBAGENT_MAX_DEPTH = 5
+    PROOF_SUBAGENT_MAX_DEPTH = 1
 
     ORCHESTRATOR_CONFIG = {
         #**MIMO_CONFIG,
@@ -234,8 +244,6 @@ class AlphaSolveConfig:
         'tools': [PROOF_SUBAGENT_TOOL, COMPUTE_SUBAGENT_TOOL, READ_LEMMA_TOOL, GENERATOR_RESPONSE_FORMAT_REMINDER]
     }
     ORCHESTRATOR_PROMPT_PATH=''
-
-
 
 
     VERIFIER_SCALING_FACTOR = 4
@@ -268,10 +276,10 @@ class AlphaSolveConfig:
 
     ## 
     MAX_LEMMA_NUM = 30
-    MAX_VERIFY_AND_REFINE_ROUND = 5
-    MAX_WORKER_NUM = 4
+    MAX_VERIFY_AND_REFINE_ROUND = 2
+    MAX_WORKER_NUM = 5
     GENERATOR_MAX_RETRY = 3
-    REVISER_MAX_RETRY = 3
+    REVISER_MAX_RETRY = 2
     CHECK_IS_THEOREM_TIMES = 5
 
     # LLM API retry policy
@@ -281,3 +289,6 @@ class AlphaSolveConfig:
 
     PROBLEM_PATH = 'problems/problem_1.md'
     STANDARD_SOLUTION_PATH = 'standard_solution.md'
+
+
+    
