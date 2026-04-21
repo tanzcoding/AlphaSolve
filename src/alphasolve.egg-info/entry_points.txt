@@ -1,0 +1,2 @@
+[console_scripts]
+alphasolve = alphasolve.cli:main

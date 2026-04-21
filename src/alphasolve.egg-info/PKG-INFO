@@ -1,3 +1,15 @@
+Metadata-Version: 2.4
+Name: alphasolve
+Version: 0.1.0
+Summary: Multi-agent collaborative system for proving mathematical theorems and solving mathematical problems
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: openai>=1.0
+Requires-Dist: wolframclient>=1.3
+Requires-Dist: rich>=13.0
+Dynamic: license-file
+
 # AlphaSolve
 
 AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明与数学问题求解系统。它采用**生成-验证-修正**的迭代循环，通过多线程并行探索来逐步构建完整的数学证明（类AlphaEvolve）。

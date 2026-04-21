@@ -1,0 +1,3 @@
+openai>=1.0
+wolframclient>=1.3
+rich>=13.0
