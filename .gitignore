@@ -1,5 +1,9 @@
 __pycache__/
 *.pyc
+*.egg-info/
+.venv/
+.uv-cache/
+.uv-python/
 benchmark_results*
 pocketflow/
 logs/
@@ -10,3 +14,4 @@ solution.md
 progress/
 hint.md
 problems/
+AGENTS.md

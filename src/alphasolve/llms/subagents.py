@@ -15,6 +15,28 @@ from alphasolve.utils.logger import Logger
 from alphasolve.agents.shared_context import Lemma
 from alphasolve.utils.utils import extract_substring, apply_unified_diff, search_and_replace
 
+
+def _client_has_tool(client, tool_name: str) -> bool:
+    tools = getattr(client, "tools", None)
+    if tools is None:
+        tools = getattr(client, "config", {}).get("tools", [])
+    return any(tool.get("function", {}).get("name") == tool_name for tool in (tools or []))
+
+
+def _compute_tool_prompt_parts(client) -> tuple[str, str]:
+    if _client_has_tool(client, "run_wolfram"):
+        return (
+            "- **run_python** - SymPy, NumPy, SciPy\n"
+            "- **run_wolfram** - Wolfram Language",
+            "Use SymPy first. If SymPy fails or struggles, switch to Wolfram for at least one attempt.",
+        )
+    return (
+        "- **run_python** - SymPy, NumPy, SciPy\n"
+        "- Wolfram Language is unavailable in this run.",
+        "Use SymPy/Python for computation. If it fails or struggles, state the limitation explicitly and continue analytically.",
+    )
+
+
 def run_proof_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
     
     logger.log_print('entering proof_subagent...', module='subagent')
@@ -62,8 +84,9 @@ def run_compute_subagent(task_description, logger, shared, client) -> Tuple[str,
     """Compute-capable subagent executor (Python/Wolfram allowed)."""
 
     logger.log_print('entering compute_subagent...', module='subagent')
+    tool_lines, tool_policy = _compute_tool_prompt_parts(client)
 
-    system_prompt = """You are a mathematical compute assistant. Your job is to solve computation and verification tasks correctly.
+    system_prompt = f"""You are a mathematical compute assistant. Your job is to solve computation and verification tasks correctly.
 
 ## 1. Your Role
 
@@ -79,6 +102,11 @@ You are a **compute specialist**. Your job is to:
 - **run_wolfram** — Wolfram Language
 
 Use SymPy first. If SymPy fails or struggles, switch to Wolfram for at least one attempt.
+
+Runtime tool availability for this run:
+{tool_lines}
+{tool_policy}
+Follow runtime tool availability over the generic tool description above.
 
 ## 3. Correctness Rules
 
@@ -122,8 +150,9 @@ Use SymPy first; if SymPy fails or struggles, switch to Wolfram for at least one
 def run_numerical_experiment_subagent(task_description, logger, shared, client) -> Tuple[str, Optional[str]]:
     
     logger.log_print('entering experiment_subagent...', module='subagent')
+    tool_lines, tool_policy = _compute_tool_prompt_parts(client)
 
-    system_prompt = """You are a mathematical exploration assistant. Your job is to discover structure, explore branches, and perform bounded verification; numerical tools are available but should be used only when they genuinely help.
+    system_prompt = f"""You are a mathematical exploration assistant. Your job is to discover structure, explore branches, and perform bounded verification; numerical tools are available but should be used only when they genuinely help.
 
 ## 1. Your Role
 
@@ -141,6 +170,11 @@ You are an **explore-first specialist**. Your job is to:
 - **run_wolfram** — Wolfram Language
 
 First decide what needs to be explored conceptually. Use SymPy when computation is appropriate. If SymPy fails or struggles, switch to Wolfram for at least one attempt.
+
+Runtime tool availability for this run:
+{tool_lines}
+{tool_policy}
+Follow runtime tool availability over the generic tool description above.
 
 ## 3. Correctness Rules
 

@@ -6,7 +6,7 @@ from typing import Optional, List
 
 from alphasolve.agents.shared_context import Lemma, new_lemma
 from alphasolve.config.agent_config import AlphaSolveConfig
-from alphasolve.llms.utils import LLMClient, ParallelLLMClient
+from alphasolve.llms.utils import LLMClient
 from alphasolve.utils.logger import Logger
 from alphasolve.utils.utils import extract_substring, load_prompt_from_file
 
@@ -129,9 +129,11 @@ class Generator:
 
 
 
-def create_generator_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Generator:
-    if not tool_executor:
-        llm = LLMClient(module='generator', config=AlphaSolveConfig.GENERATOR_CONFIG, logger=logger)
-    else:
-        llm = ParallelLLMClient(module='generator', config=AlphaSolveConfig.GENERATOR_CONFIG, logger=logger, tool_executor=tool_executor)
+def create_generator_component(prompt_file_path: str, logger: Logger, execution_gateway=None) -> Generator:
+    llm = LLMClient(
+        module='generator',
+        config=AlphaSolveConfig.GENERATOR_CONFIG,
+        logger=logger,
+        execution_gateway=execution_gateway,
+    )
     return Generator(llm=llm, prompt_file_path=prompt_file_path, logger=logger)

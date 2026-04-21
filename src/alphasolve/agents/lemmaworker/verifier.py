@@ -6,7 +6,7 @@ from typing import List
 
 from alphasolve.agents.shared_context import Lemma
 from alphasolve.config.agent_config import AlphaSolveConfig
-from alphasolve.llms.utils import LLMClient, ParallelLLMClient
+from alphasolve.llms.utils import LLMClient
 from alphasolve.utils.logger import Logger
 from alphasolve.utils.utils import load_prompt_from_file
 
@@ -104,10 +104,12 @@ How to use subagents:
         return "\n".join(lines)
 
 
-def create_verifier_component(prompt_file_path: str, logger: Logger, tool_executor=None) -> Verifier:
-    if not tool_executor:
-        llm = LLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger)
-    else:
-        llm = ParallelLLMClient(module='verifier', config=AlphaSolveConfig.VERIFIER_CONFIG, logger=logger, tool_executor=tool_executor)
+def create_verifier_component(prompt_file_path: str, logger: Logger, execution_gateway=None) -> Verifier:
+    llm = LLMClient(
+        module='verifier',
+        config=AlphaSolveConfig.VERIFIER_CONFIG,
+        logger=logger,
+        execution_gateway=execution_gateway,
+    )
     return Verifier(llm=llm, prompt_file_path=prompt_file_path, logger=logger)
 

@@ -229,6 +229,9 @@ class AlphaSolveConfig:
         **DEEPSEEK_CONFIG,
         'tools': [PYTHON_TOOL,WOLFRAM_TOOL, COT_PROBE_TOOL]
     }
+    WOLFRAM_AVAILABLE = True
+    WOLFRAM_STATUS = "not_checked"
+    _COMPUTE_SUBAGENT_TOOLS_WITH_WOLFRAM = [PYTHON_TOOL, WOLFRAM_TOOL, COT_PROBE_TOOL]
 
     # Proof subagent 默认只允许递归调用 proof_subagent
     PROOF_SUBAGENT_CONFIG = {
@@ -292,6 +295,29 @@ class AlphaSolveConfig:
 
     PROBLEM_PATH = 'problems/problem_1.md'
     STANDARD_SOLUTION_PATH = 'standard_solution.md'
+
+    @classmethod
+    def configure_wolfram_availability(cls, available: bool, reason: str = "") -> None:
+        cls.WOLFRAM_AVAILABLE = bool(available)
+        cls.WOLFRAM_STATUS = reason or ("available" if available else "unavailable")
+        if available:
+            cls.COMPUTE_SUBAGENT_CONFIG["tools"] = list(cls._COMPUTE_SUBAGENT_TOOLS_WITH_WOLFRAM)
+            return
+
+        for config in (
+            cls.COMPUTE_SUBAGENT_CONFIG,
+        ):
+            config["tools"] = cls._without_tool(config.get("tools"), "run_wolfram")
+
+    @staticmethod
+    def _without_tool(tools, tool_name: str):
+        if not tools:
+            return tools
+        return [
+            tool
+            for tool in tools
+            if tool.get("function", {}).get("name") != tool_name
+        ]
 
 
     

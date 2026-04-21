@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from typing import Literal
 
@@ -28,26 +29,26 @@ class LemmaWorkerResult:
 
 
 class LemmaWorker:
-    def __init__(self, *, logger: Logger, tool_executor=None, print_to_console: bool = False):
+    def __init__(self, *, logger: Logger, execution_gateway=None, print_to_console: bool = False):
         self.logger = logger
-        self.tool_executor = tool_executor
+        self.execution_gateway = execution_gateway
         self.print_to_console = print_to_console
 
         self.generator = create_generator_component(
             prompt_file_path=AlphaSolveConfig.GENERATOR_PROMPT_PATH,
             logger=self.logger,
-            tool_executor=self.tool_executor,
+            execution_gateway=self.execution_gateway,
         )
         self.citation_agent = create_citation_agent(logger=self.logger)
         self.verifier = create_verifier_component(
             prompt_file_path=AlphaSolveConfig.VERIFIER_PROMPT_PATH,
             logger=self.logger,
-            tool_executor=self.tool_executor,
+            execution_gateway=self.execution_gateway,
         )
         self.reviser = create_reviser_component(
             prompt_file_path=AlphaSolveConfig.REVISER_PROMPT_PATH,
             logger=self.logger,
-            tool_executor=self.tool_executor,
+            execution_gateway=self.execution_gateway,
         )
 
     def run(self, ctx: LemmaWorkerContext) -> LemmaWorkerResult:
@@ -149,3 +150,6 @@ class LemmaWorker:
                     )
                 )
                 lemma["dependencies"] = citation_out.dependencies
+
+    async def run_async(self, ctx: LemmaWorkerContext) -> LemmaWorkerResult:
+        return await asyncio.to_thread(self.run, ctx)

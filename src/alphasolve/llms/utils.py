@@ -3,6 +3,7 @@ import os
 import json
 import re
 import time
+import uuid
 from openai import OpenAI
 from wolframclient.evaluation import WolframLanguageSession
 from rich.live import Live
@@ -17,14 +18,19 @@ from alphasolve.utils.rich_renderer import (
     build_tool_used_text,
 )
 from copy import deepcopy
-import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from .tools import *
 from .subagents import *
 import traceback
 
 class LLMClient:
-    def __init__(self, module: str, config: Dict, logger: Logger):
+    def __init__(
+        self,
+        module: str,
+        config: Dict,
+        logger: Logger,
+        execution_gateway=None,
+        session_id: Optional[str] = None,
+    ):
         """
         初始化 LLM 客户端
         
@@ -35,6 +41,8 @@ class LLMClient:
         self.module = module
         self.config = config
         self.logger = logger
+        self.execution_gateway = execution_gateway
+        self.session_id = session_id or f"{module}-{uuid.uuid4().hex}"
 
         def _resolve(v):
             return v() if callable(v) else v
@@ -649,13 +657,15 @@ class LLMClient:
         context = {
             'python_env': {},
             'wolfram_session': None,
+            'execution_gateway': self.execution_gateway,
+            'session_id': self.session_id,
             'proof_subagent_depth': 0,
             'proof_subagent_max_depth': getattr(AlphaSolveConfig, 'PROOF_SUBAGENT_MAX_DEPTH', 3),
         }
 
         # 检查是否需要Wolfram session
         needs_wolfram = any(tool.get('function', {}).get('name') == 'run_wolfram' for tool in tools)
-        if needs_wolfram:
+        if needs_wolfram and self.execution_gateway is None:
             context['wolfram_session'] = self._start_wolfram_session()
 
         return context
@@ -691,7 +701,12 @@ class LLMClient:
         config = dict(base)
         if tools_override is not None:
             config['tools'] = tools_override
-        client = LLMClient(module='subagent', config=config, logger=self.logger)
+        client = LLMClient(
+            module='subagent',
+            config=config,
+            logger=self.logger,
+            execution_gateway=self.execution_gateway,
+        )
 
         return client
     
@@ -703,42 +718,61 @@ class LLMClient:
         if name == 'run_python': 
             code = args.get('code', '')
             log_parts.append(f"Code:\n{code}")
-            stdout, error = run_python(code, context['python_env'], timeout_seconds=300)
-            
-            tool_content = ""
-            if stdout:
-                tool_content = tool_content + f"[stdout]\n{stdout}"
-                log_parts.append(f"[stdout]\n{stdout}")
-            if error:
-                tool_content = tool_content + f"[error]\n{error}"
-                log_parts.append(f"[error]\n{error}")
+            gateway = context.get('execution_gateway')
+            if gateway is not None:
+                result = gateway.run_python(
+                    session_id=context.get('session_id') or self.session_id,
+                    code=code,
+                    timeout_seconds=300,
+                )
+                log_parts.extend(result.log_parts)
+                tool_content = result.tool_content
+            else:
+                stdout, error = run_python(code, context['python_env'], timeout_seconds=300)
+
+                tool_content = ""
+                if stdout:
+                    tool_content = tool_content + f"[stdout]\n{stdout}"
+                    log_parts.append(f"[stdout]\n{stdout}")
+                if error:
+                    tool_content = tool_content + f"[error]\n{error}"
+                    log_parts.append(f"[error]\n{error}")
         
         elif name == 'run_wolfram':
             code = args.get('code', '')
             log_parts.append(f"Code:\n{code}")
-
-            session = context.get('wolfram_session')
-            if session is None:
-                session = self._start_wolfram_session()
-                context['wolfram_session'] = session
-
-            if session is None:
-                error = "Wolfram session not available"
-                output = ""
+            gateway = context.get('execution_gateway')
+            if gateway is not None:
+                result = gateway.run_wolfram(
+                    session_id=context.get('session_id') or self.session_id,
+                    code=code,
+                    timeout_seconds=300,
+                )
+                log_parts.extend(result.log_parts)
+                tool_content = result.tool_content
             else:
-                output, error = run_wolfram(code, session)
 
-            if isinstance(error, str) and error.startswith('timeout'):
-                context['wolfram_session'] = self._start_wolfram_session()
+                session = context.get('wolfram_session')
+                if session is None:
+                    session = self._start_wolfram_session()
+                    context['wolfram_session'] = session
 
-            
-            tool_content = ""
-            if output:
-                tool_content = tool_content + f"[output]\n{output}"
-                log_parts.append(f"[output]\n{output}")
-            if error:
-                tool_content = tool_content + f"[error]\n{error}"
-                log_parts.append(f"[error]\n{error}")
+                if session is None:
+                    error = "Wolfram session not available"
+                    output = ""
+                else:
+                    output, error = run_wolfram(code, session)
+
+                if isinstance(error, str) and error.startswith('timeout'):
+                    context['wolfram_session'] = self._start_wolfram_session()
+
+                tool_content = ""
+                if output:
+                    tool_content = tool_content + f"[output]\n{output}"
+                    log_parts.append(f"[output]\n{output}")
+                if error:
+                    tool_content = tool_content + f"[error]\n{error}"
+                    log_parts.append(f"[error]\n{error}")
         
         elif name in ('proof_subagent', 'compute_subagent', 'call_proof_subagent', 'call_compute_subagent', 
             'call_numerical_experiment_subagent'):
@@ -965,135 +999,6 @@ class LLMClient:
 
         return tool_content, log_parts
 
-
-class ParallelLLMClient(LLMClient):
-
-    def __init__(self, module: str, config: Dict, logger: Logger, tool_executor: ProcessPoolExecutor):
-
-        logger.log_print(
-            "event=parallel_llm_client_init",
-            module=module,
-            level="DEBUG",
-            print_to_console=False,
-        )
-        super(ParallelLLMClient, self).__init__(module, config, logger)
-        if not tool_executor:
-            self.executor = ProcessPoolExecutor(
-                max_workers = 2,
-                mp_context = mp.get_context("spawn")
-            )
-        else:
-            self.executor = tool_executor
-
-        self.manager = mp.Manager()
-
-    def _create_client_for_subagent(self, *, config_key: str, tools_override: Optional[List[Dict]] = None):
-
-        from alphasolve.config.agent_config import AlphaSolveConfig
-
-        base = getattr(AlphaSolveConfig, config_key)
-        config = dict(base)
-        if tools_override is not None:
-            config['tools'] = tools_override
-        client = ParallelLLMClient(module='subagent', config=config, logger=self.logger, tool_executor=self.executor)
-        return client
-
-
-    def _init_tool_context(self, tools: List[Dict]) -> Dict: 
-        # 和原方法不同的地方在于, (1) 去掉了对 wolfram 的初始化(子进程干了); (2) 用 manager.dict(), 来保证进程安全
-        """初始化工具执行上下文"""
-        from alphasolve.config.agent_config import AlphaSolveConfig
-
-        context = {}
-        
-        # self.manager.dict()
-        
-        context['python_env'] = { }
-        # context['wolfram_session'] = None
-        context['proof_subagent_depth'] = 0
-        context['proof_subagent_max_depth'] = getattr(AlphaSolveConfig, 'PROOF_SUBAGENT_MAX_DEPTH', 3)
-
-        return context
-
-    def _cleanup_tool_context(self, context: Dict):
-        """清理工具执行上下文"""
-        pass
-
-    def _execute_tool(self, name: str, args: Dict, context: Dict) -> Tuple[str, List[str]]:
-
-        log_parts = [f"\n[Tool Call] {name}"]
-
-        if name == 'run_python': ## 运行 python 代码比较简单, 直接给过去就行
-            code = args.get('code', '')
-            log_parts.append(f"Code:\n{code}")
-            future = self.executor.submit(_run_python, code, context)
-        elif name == 'run_wolfram': ## 运行 wolfram 代码, 需要管理好 wolfram session
-            code = args.get('code', '')
-            log_parts.append(f"Code:\n{code}")
-            future = self.executor.submit(_run_wolfram, code)
-        else: # 其他工具仍然使用父类的实现
-            return super(ParallelLLMClient, self)._execute_tool(name, args, context)
-
-        try:
-            data = future.result(timeout = 300)
-        except TimeoutError:
-            data = None
-            try: ## 无论如何都 cancel 一下
-                future.cancel()
-            except:
-                pass
-                
-        if not data: ## 第一个参数是 tool_result, 第二个参数是 tool_logs
-            return '', []
-        else: # 有结果, 正常返回
-            tool_content, output_logs = data
-            log_parts.extend(output_logs)
-            return tool_content, log_parts
-
-def _run_python(code: str, context: Dict):
-    stdout, error = run_python(code, context, timeout_seconds=300)
-            
-    tool_content = ''
-    output_logs = []
-
-    if stdout:
-        tool_content = tool_content + f"[stdout]\n{stdout}"
-        output_logs.append(f"[stdout]\n{stdout}")
-    if error:
-        tool_content = tool_content + f"[error]\n{error}"
-        output_logs.append(f"[error]\n{error}")
-
-    return tool_content, output_logs
-
-    
-    
-def _run_wolfram(code: str):
-    # 每个子进程有自己的 Wolfram session，不跨进程共享
-    session = _start_wolfram_session()
-
-    if session is None:
-        error = 'Wolfram session not available'
-        output = ''
-    else:
-        try:
-            output, error = run_wolfram(code, session)
-        finally:
-            try:
-                session.terminate()
-            except:
-                pass
-
-    tool_content = ''
-    output_logs = []
-    
-    if output:
-        tool_content = tool_content + f"[output]\n{output}"
-        output_logs.append(f"[output]\n{output}")
-    if error:
-        tool_content = tool_content + f"[error]\n{error}"
-        output_logs.append(f"[error]\n{error}")
-
-    return tool_content, output_logs
 
 def _start_wolfram_session(print_to_console: bool = False) -> Optional[WolframLanguageSession]:
 

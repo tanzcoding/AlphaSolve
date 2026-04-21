@@ -15,6 +15,7 @@ from alphasolve.workflow import AlphaSolve
 from alphasolve.utils.utils import load_prompt_from_file
 from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.utils.log_session import LogSession
+from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
 
 
 def main():
@@ -37,7 +38,7 @@ def main():
         "--tool_executor_size",
         type=int,
         default=default_max_worker_num,
-        help="Number of process pools used to execute wolfram|python",
+        help="Number of Python execution worker processes",
     )
     parser.add_argument(
         "--init_from_previous",
@@ -60,11 +61,30 @@ def main():
         run_root=AlphaSolveConfig.LOG_PATH,
         progress_path=AlphaSolveConfig.PROGRESS_PATH,
     )
+    logger = log_session.main_logger(print_to_console=True)
+
+    wolfram_check = check_wolfram_kernel()
+    AlphaSolveConfig.configure_wolfram_availability(
+        wolfram_check.available,
+        wolfram_check.reason,
+    )
+    if wolfram_check.available:
+        logger.log_print(
+            f"event=wolfram_kernel_available reason={wolfram_check.reason} kernel_path={wolfram_check.kernel_path}",
+            module="startup",
+        )
+    else:
+        logger.log_print(
+            f"event=wolfram_kernel_unavailable reason={wolfram_check.reason}; run_wolfram tool disabled",
+            module="startup",
+            level="WARNING",
+        )
 
     alpha = AlphaSolve(
         problem=problem,
         tool_executor_size=args.tool_executor_size,
         log_session=log_session,
+        logger=logger,
         init_from_previous=args.init_from_previous,
     )
 

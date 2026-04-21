@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from concurrent.futures import ProcessPoolExecutor
+import asyncio
 from typing import Optional
 
 from alphasolve.agents.lemma_pool import LemmaPool
 from alphasolve.agents.pool_orchestrator import LemmaPoolOrchestrator
 from alphasolve.agents.summarizer import create_summarizer_agent
 from alphasolve.config.agent_config import AlphaSolveConfig
+from alphasolve.execution import ExecutionGateway
 from alphasolve.utils.log_session import LogSession
-
-from multiprocessing import Manager
+from alphasolve.utils.logger import Logger
 
 
 class AlphaSolve:
@@ -19,13 +19,18 @@ class AlphaSolve:
         print_to_console: bool = True,
         tool_executor_size: int = 2,
         log_session: Optional[LogSession] = None,
+        logger: Optional[Logger] = None,
         init_from_previous: bool = True, 
     ):
         self.problem = problem
         self.max_worker_num = max(AlphaSolveConfig.MAX_WORKER_NUM, 1)
-        self.tool_executor = ProcessPoolExecutor(max_workers=max(1, int(tool_executor_size)))
         self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH, progress_path = AlphaSolveConfig.PROGRESS_PATH)
-        self.logger = self.log_session.main_logger(print_to_console=print_to_console)
+        self.logger = logger or self.log_session.main_logger(print_to_console=print_to_console)
+        self.execution_gateway = ExecutionGateway(
+            python_workers=max(1, int(tool_executor_size)),
+            wolfram_enabled=AlphaSolveConfig.WOLFRAM_AVAILABLE,
+            logger=self.logger,
+        )
         self.init_from_previous = init_from_previous
         # 记录各个子代理使用的模型信息
         self._log_model_configs()
@@ -41,6 +46,9 @@ class AlphaSolve:
         self.logger.log_print("")
 
     def do_research(self):
+        return asyncio.run(self.do_research_async())
+
+    async def do_research_async(self):
         last_summary = None
 
         version = self.log_session.previous_state_path()
@@ -63,11 +71,11 @@ class AlphaSolve:
             log_session = self.log_session,
             problem = problem_text,
             hint = hint,
-            tool_executor = self.tool_executor,
+            execution_gateway = self.execution_gateway,
             parallelism_limit = self.max_worker_num,
             
         )
-        run_result = orchestrator.run()
+        run_result = await orchestrator.run_async()
 
         if run_result.solved:
             summary = self._summarize_solution(problem_text, pool)
@@ -109,8 +117,8 @@ class AlphaSolve:
 
     def do_close(self):
         try:
-            if self.tool_executor is not None:
-                self.tool_executor.shutdown(wait=True)
+            if self.execution_gateway is not None:
+                self.execution_gateway.close()
         except Exception:
             pass
 
