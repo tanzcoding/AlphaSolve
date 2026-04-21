@@ -506,6 +506,42 @@ NUMERICAL_EXPERIMENT_SUBAGENT_TOOL = {
     }
 }
 
+VERIFIER_SUBAGENT_DESCRIPTION = """The subagent's job is to *adversarially attack* your guess/hypothesis/conjectures by constructing an explicit counterexample.
+
+**CRITICAL:** Each call spawns a NEW subagent with NO memory of previous calls. Provide a self-contained task description every time.
+
+**Scope:** Do NOT delegate the whole problem. Decompose and delegate one bounded claim/guess to be double-checked.
+
+**Division of labor:** You produce the guess / claim and decide what is worth double-checking; the sub-agent adversarially attacks that single claim.
+
+**Role of this subagent:** It is an adversarial verifier. Its default stance is disbelief. It tries to refute the exact claim given by (a) proving the logical negation, (b) constructing an explicit counterexample with full verification inside the claim's hypotheses, (c) proof by contradiction, (d) reduction to a known false/impossible statement, or (e) showing that a necessary consequence of the claim fails. It does NOT try to positively prove the claim.
+
+**Claim discipline:** Treat the claim in the task description as fixed. Do NOT silently weaken, strengthen, or change quantifiers, domains, regularity assumptions, or conclusion type. Refuting a weaker/stronger variant does not count as refuting the original.
+
+**CRITICAL (when to use): Call this subagent whenever you have produced a nontrivial guess or conjecture. 
+
+Good requests (small + concrete): double-check a specific conjectured identity / inequality / extremizer / closed form; stress-test a candidate counterexample against all hypotheses; attack a specific step in a candidate proof; check whether a necessary consequence of the claim actually holds; search for counterexamples in the claim's exact domain.
+Bad requests: "verify the whole solution", "check everything", dumping the full prompt.
+"""
+
+VERIFIER_SUBAGENT_TOOL = {
+    'type': 'function',
+    'function': {
+        'name': 'call_verifier_subagent',
+        'description': VERIFIER_SUBAGENT_DESCRIPTION,
+        'parameters': {
+            'type': 'object',
+            'properties': {
+                'task_description': {
+                    'type': 'string',
+                    'description': 'A clear, complete and self-contained claim/guess to be adversarially double-checked by the verifier subagent. State the claim exactly as it should be attacked (quantifiers, domain, hypotheses, conclusion).'
+                }
+            },
+            'required': ['task_description']
+        }
+    }
+}
+
 GENERATOR_RESPONSE_FORMAT_REMINDER = {
     'type': 'function',
     'function': {

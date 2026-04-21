@@ -667,7 +667,7 @@ class LLMClient:
                 log_parts.append(f"[error]\n{error}")
         
         elif name in ('proof_subagent', 'compute_subagent', 'call_proof_subagent', 'call_compute_subagent', 
-            'call_numerical_experiment_subagent'):
+            'call_numerical_experiment_subagent', 'call_verifier_subagent'):
 
             task_description = args.get('task_description', '')
             shared = context.get('shared')
@@ -698,6 +698,10 @@ class LLMClient:
             elif name in ('call_numerical_experiment_subagent'):
                 llm_client = self._create_client_for_subagent(config_key='COMPUTE_SUBAGENT_CONFIG')
                 result, error = run_numerical_experiment_subagent(task_description, self.logger, shared, llm_client)
+
+            elif name in ('call_verifier_subagent'):
+                llm_client = self._create_client_for_subagent(config_key='COMPUTE_SUBAGENT_CONFIG')
+                result, error = run_verifier_subagent(task_description, self.logger, shared, llm_client)
                 
             else:
                 llm_client = self._create_client_for_subagent(config_key='COMPUTE_SUBAGENT_CONFIG')
