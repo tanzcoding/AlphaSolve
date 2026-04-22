@@ -38,7 +38,6 @@ _WORKER_PANEL_HEIGHT = _WORKER_CONTENT_LINES + 2
 _ORCHESTRATOR_LOG_LINES = 18
 _ORCHESTRATOR_MIN_WIDTH = 32
 _WORKER_MIN_WIDTH = 28
-_MAX_COMPLETED_WORKERS = 6
 _TERMINAL_STATUSES = {"verified", "rejected", "failed", "solved"}
 
 _TEAM_COLORS = (
@@ -179,7 +178,6 @@ class WorkerRenderState:
     last_tool_error: bool = False
     log_lines: list[str] = field(default_factory=list)
     result_summary: str = ""
-    completed_at: Optional[float] = None
 
 
 @dataclass
@@ -289,7 +287,6 @@ class LemmaTeamRenderer:
             state.remaining_capacity = remaining_capacity
             state.status = "running"
             state.phase = "spawned"
-            state.completed_at = None
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
@@ -298,8 +295,6 @@ class LemmaTeamRenderer:
             state = self._ensure_worker_locked(worker_id)
             state.phase = phase
             state.status = status
-            if status not in _TERMINAL_STATUSES:
-                state.completed_at = None
             state.updated_at = time.time()
             self._refresh_locked()
 
@@ -472,19 +467,15 @@ class LemmaTeamRenderer:
     ) -> None:
         with self._lock:
             state = self._ensure_worker_locked(worker_id)
-            was_completed = state.completed_at is not None
             state.status = "solved" if solved else status
             state.phase = "done"
             state.result_summary = summary
             state.active_tool = None
             state.thinking_text = ""
-            state.completed_at = time.time()
             state.updated_at = time.time()
-            if not was_completed:
-                self._worker_finished += 1
-            if not was_completed and state.status == "failed":
+            self._worker_finished += 1
+            if state.status == "failed":
                 self._failed += 1
-            self._prune_completed_locked()
             self._refresh_locked(force=True)
 
     def record_commit(
@@ -748,18 +739,6 @@ class LemmaTeamRenderer:
             prefix += f" {module}"
         clean = message.strip()
         return f"{prefix} {clean}" if clean else prefix
-
-    def _prune_completed_locked(self) -> None:
-        completed = [
-            state
-            for state in self._workers.values()
-            if state.completed_at is not None and state.status != "solved"
-        ]
-        overflow = len(completed) - _MAX_COMPLETED_WORKERS
-        if overflow <= 0:
-            return
-        for state in sorted(completed, key=lambda s: s.completed_at or 0)[:overflow]:
-            self._workers.pop(state.worker_id, None)
 
     def _refresh_locked(self, *, force: bool = False) -> None:
         if self._live is not None:

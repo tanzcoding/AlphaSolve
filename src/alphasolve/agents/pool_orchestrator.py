@@ -112,6 +112,7 @@ class LemmaPoolOrchestrator:
                     except Exception as exc:
                         if self._renderer is not None:
                             self._renderer.finish_worker(worker_id, status="failed", summary=str(exc))
+                            self._renderer.remove_worker(worker_id)
                         self.logger.log_print(
                             f"event=worker_failed worker_id={worker_id} error={exc}",
                             module="pool_orchestrator",
@@ -151,6 +152,7 @@ class LemmaPoolOrchestrator:
                             solved=decision.solved,
                             summary=self._format_worker_summary(result, decision),
                         )
+                        self._renderer.remove_worker(worker_id)
                     self.logger.log_print(
                         f"event=worker_finished worker_id={worker_id} status={decision.status} solved={decision.solved}",
                         module="pool_orchestrator",
