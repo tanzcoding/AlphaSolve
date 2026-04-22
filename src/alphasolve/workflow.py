@@ -24,6 +24,7 @@ class AlphaSolve:
     ):
         self.problem = problem
         self.max_worker_num = max(AlphaSolveConfig.MAX_WORKER_NUM, 1)
+        self.print_to_console = print_to_console
         self.log_session = log_session or LogSession(run_root=AlphaSolveConfig.LOG_PATH, progress_path = AlphaSolveConfig.PROGRESS_PATH)
         self.logger = logger or self.log_session.main_logger(print_to_console=print_to_console)
         self.execution_gateway = ExecutionGateway(
@@ -73,6 +74,7 @@ class AlphaSolve:
             hint = hint,
             execution_gateway = self.execution_gateway,
             parallelism_limit = self.max_worker_num,
+            print_to_console = self.print_to_console,
             
         )
         run_result = await orchestrator.run_async()

@@ -22,6 +22,51 @@ from .tools import *
 from .subagents import *
 import traceback
 
+
+_SOCKET_ABORT_WINERRORS = {995, 10053, 10054}
+_SOCKET_ABORT_MARKERS = (
+    "socket operation aborted",
+    "operation aborted",
+    "connection aborted",
+    "connection reset",
+    "wsaecancelblockingcall",
+    "wsa_operation_aborted",
+    "winerror 995",
+    "winerror 10053",
+    "winerror 10054",
+    "errno 995",
+    "errno 10053",
+    "errno 10054",
+)
+
+
+def _is_socket_operation_aborted(exc: BaseException) -> bool:
+    """Detect Windows/httpx/OpenAI transport aborts that are safe to retry."""
+    seen: set[int] = set()
+    current: Optional[BaseException] = exc
+
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        winerror = getattr(current, "winerror", None)
+        errno = getattr(current, "errno", None)
+        if winerror in _SOCKET_ABORT_WINERRORS or errno in _SOCKET_ABORT_WINERRORS:
+            return True
+
+        text = " ".join(str(part) for part in (type(current).__name__, current)).lower()
+        if any(marker in text for marker in _SOCKET_ABORT_MARKERS):
+            return True
+
+        current = current.__cause__ or current.__context__
+
+    return False
+
+
+def _as_retryable_transport_exception(exc: Exception) -> LLMServiceException:
+    if _is_socket_operation_aborted(exc):
+        return LLMServiceException(f"LLM stream transport aborted: {exc}", status="socket_operation_aborted")
+    return LLMServiceException(f"LLM transport error: {exc}", status="transport_error")
+
+
 class LLMClient:
     def __init__(
         self,
@@ -61,6 +106,20 @@ class LLMClient:
             base_url=self.base_url,
             timeout=self.timeout
         )
+
+    def close(self) -> None:
+        close_client = getattr(self.client, "close", None)
+        if callable(close_client):
+            try:
+                close_client()
+            except Exception:
+                pass
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _contains_negative_conclusion(self, text: str) -> bool:
         if not text:
@@ -148,7 +207,15 @@ class LLMClient:
             tools = self.tools if self.tools else []
 
         logger = self.logger
-        use_rich = self.logger.print_to_console_default
+        console_enabled = self.logger.print_to_console_default
+        team_renderer = getattr(self.logger, "console_renderer", None)
+        team_worker_id = getattr(self.logger, "console_worker_id", None)
+        use_dashboard_renderer = bool(console_enabled and team_renderer is not None)
+        use_worker_renderer = bool(use_dashboard_renderer and team_worker_id is not None)
+        use_orchestrator_renderer = bool(use_dashboard_renderer and team_worker_id is None)
+        use_standalone_rich = bool(console_enabled and team_renderer is None)
+        use_rich = use_dashboard_renderer or use_standalone_rich
+        section_print_to_console = not use_dashboard_renderer
 
         # IMPORTANT: retry must restart from the same input messages (no continuation).
         base_messages = deepcopy(messages)
@@ -211,13 +278,21 @@ class LLMClient:
                             
                             if use_rich:
                                 arg_preview = raw_args[:120] + "..." if len(raw_args) > 120 else raw_args
-                                using_renderable = build_tool_using_text(name, arg_preview)
-                                
-                                # 临时禁用 logger 的 console 输出，避免破坏 Live
-                                old_print_to_console = self.logger.print_to_console_default
-                                self.logger.print_to_console_default = False
-                                try:
-                                    with Live(using_renderable, console=RICH_CONSOLE, refresh_per_second=10, transient=False) as live:
+                                if use_dashboard_renderer:
+                                    if use_worker_renderer:
+                                        team_renderer.update_tool_start(
+                                            team_worker_id,
+                                            module=self.module,
+                                            name=name,
+                                            arg_preview=arg_preview,
+                                        )
+                                    else:
+                                        team_renderer.update_orchestrator_tool_start(
+                                            module=self.module,
+                                            name=name,
+                                            arg_preview=arg_preview,
+                                        )
+                                    try:
                                         if args is None:
                                             warning_msg = (
                                                 f"event=tool_args_parse_error name={name} error={parse_error}"
@@ -229,9 +304,39 @@ class LLMClient:
                                         else:
                                             tool_content, log_parts = self._execute_tool(name, args, tool_context)
                                             is_error = isinstance(tool_content, str) and "[error]" in tool_content
-                                        live.update(build_tool_used_text(name, arg_preview, is_error))
-                                finally:
-                                    self.logger.print_to_console_default = old_print_to_console
+                                    except Exception:
+                                        if use_worker_renderer:
+                                            team_renderer.update_tool_done(team_worker_id, name=name, is_error=True)
+                                        else:
+                                            team_renderer.update_orchestrator_tool_done(name=name, is_error=True)
+                                        raise
+                                    else:
+                                        if use_worker_renderer:
+                                            team_renderer.update_tool_done(team_worker_id, name=name, is_error=is_error)
+                                        else:
+                                            team_renderer.update_orchestrator_tool_done(name=name, is_error=is_error)
+                                else:
+                                    using_renderable = build_tool_using_text(name, arg_preview)
+
+                                    # 临时禁用 logger 的 console 输出，避免破坏 Live
+                                    old_print_to_console = self.logger.print_to_console_default
+                                    self.logger.print_to_console_default = False
+                                    try:
+                                        with Live(using_renderable, console=RICH_CONSOLE, refresh_per_second=10, transient=False) as live:
+                                            if args is None:
+                                                warning_msg = (
+                                                    f"event=tool_args_parse_error name={name} error={parse_error}"
+                                                )
+                                                logger.log_print(warning_msg, module=self.module, level="ERROR")
+                                                error_payload = json.dumps({'error': parse_error}, ensure_ascii=False)
+                                                tool_content = error_payload
+                                                is_error = True
+                                            else:
+                                                tool_content, log_parts = self._execute_tool(name, args, tool_context)
+                                                is_error = isinstance(tool_content, str) and "[error]" in tool_content
+                                            live.update(build_tool_used_text(name, arg_preview, is_error))
+                                    finally:
+                                        self.logger.print_to_console_default = old_print_to_console
                                 
                                 if args is None:
                                     reasoning_content += (warning_msg + "\n")
@@ -495,7 +600,15 @@ class LLMClient:
         model_params = self._get_model_params()
         extra_body = model_params.pop("extra_body", None)
         logger = self.logger
-        use_rich = self.logger.print_to_console_default
+        console_enabled = self.logger.print_to_console_default
+        team_renderer = getattr(self.logger, "console_renderer", None)
+        team_worker_id = getattr(self.logger, "console_worker_id", None)
+        use_dashboard_renderer = bool(console_enabled and team_renderer is not None)
+        use_worker_renderer = bool(use_dashboard_renderer and team_worker_id is not None)
+        use_orchestrator_renderer = bool(use_dashboard_renderer and team_worker_id is None)
+        use_standalone_rich = bool(console_enabled and team_renderer is None)
+        use_rich = use_dashboard_renderer or use_standalone_rich
+        section_print_to_console = not use_dashboard_renderer
 
         reasoning_parts = []
         content_parts = []
@@ -508,23 +621,35 @@ class LLMClient:
         is_continuation = len(messages) > 0 and messages[-1].get('role') == 'tool'
         
         if is_continuation:
-            logger.log_print("\n" + "-" * 10 + "继续思考" + "-" * 10)
+            logger.log_print(
+                "\n" + "-" * 10 + "继续思考" + "-" * 10,
+                print_to_console=section_print_to_console,
+            )
         else:
-            logger.log_print("\n" + "=" * 20 + "思维链内容" + "=" * 20)
+            logger.log_print(
+                "\n" + "=" * 20 + "思维链内容" + "=" * 20,
+                print_to_console=section_print_to_console,
+            )
             if 'gpt' in self.model or 'gemini' in self.model or 'claude' in self.model or 'o4' in self.model or 'grok' in self.model or 'o3' in self.model or 'o1' in self.model:
-                logger.log_print("此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n")
+                logger.log_print(
+                    "此模型不返回思维链内容，以下仅显示模型可能给出的 reasoning_content 与最终回答\n",
+                    print_to_console=section_print_to_console,
+                )
 
-        # 创建流式请求
-        stream = self.client.chat.completions.create(
-            messages=messages,
-            tools=tools,
-            tool_choice='auto' if tools else None,
-            stream=True,
-            ## logprobs=True,
-            ## top_logprobs=5,
-            **model_params,
-            **({"extra_body": extra_body} if extra_body else {})
-        )
+        stream = None
+        try:
+            stream = self.client.chat.completions.create(
+                messages=messages,
+                tools=tools,
+                tool_choice='auto' if tools else None,
+                stream=True,
+                ## logprobs=True,
+                ## top_logprobs=5,
+                **model_params,
+                **({"extra_body": extra_body} if extra_body else {})
+            )
+        except Exception as exc:
+            raise _as_retryable_transport_exception(exc) from exc
 
         # 流式读取并拼接
         live = None
@@ -532,57 +657,123 @@ class LLMClient:
         thinking_start_time = 0.0
         finish_reason = None
         try:
-            for chunk in stream:
-                if not chunk.choices:
-                    continue
-                choice = chunk.choices[0]
-                delta = choice.delta
-                if getattr(choice, 'finish_reason', None):
-                    finish_reason = choice.finish_reason
+            stream_iter = iter(stream)
+            while True:
+                try:
+                    chunk = next(stream_iter)
+                except StopIteration:
+                    break
+                except Exception as exc:
+                    raise _as_retryable_transport_exception(exc) from exc
+                else:
 
-                # 处理 reasoning_content
-                rc_part = getattr(delta, 'reasoning_content', None)
-                if rc_part:
-                    if not reasoning_started and rc_part.strip():
-                        reasoning_started = True
-                        thinking_start_time = time.time()
-                    reasoning_parts.append(rc_part)
-                    if use_rich:
-                        thinking_text += rc_part
-                        if live is None:
-                            live = Live(
-                                compose_thinking_live(thinking_text, 0.0),
-                                console=RICH_CONSOLE,
-                                refresh_per_second=10,
-                                transient=True,
+                    if not chunk.choices:
+                        continue
+                    choice = chunk.choices[0]
+                    delta = choice.delta
+                    if getattr(choice, 'finish_reason', None):
+                        finish_reason = choice.finish_reason
+
+                    # 处理 reasoning_content
+                    rc_part = getattr(delta, 'reasoning_content', None)
+                    if rc_part:
+                        if not reasoning_started and rc_part.strip():
+                            reasoning_started = True
+                            thinking_start_time = time.time()
+                        reasoning_parts.append(rc_part)
+                        if use_worker_renderer:
+                            thinking_text += rc_part
+                            elapsed = time.time() - thinking_start_time
+                            team_renderer.update_thinking(
+                                team_worker_id,
+                                module=self.module,
+                                thinking_text=thinking_text,
+                                elapsed=elapsed,
                             )
-                            live.start()
+                        elif use_orchestrator_renderer:
+                            thinking_text += rc_part
+                            elapsed = time.time() - thinking_start_time
+                            team_renderer.update_orchestrator_thinking(
+                                module=self.module,
+                                thinking_text=thinking_text,
+                                elapsed=elapsed,
+                            )
+                        elif use_rich:
+                            thinking_text += rc_part
+                            if live is None:
+                                live = Live(
+                                    compose_thinking_live(thinking_text, 0.0),
+                                    console=RICH_CONSOLE,
+                                    refresh_per_second=10,
+                                    transient=True,
+                                )
+                                live.start()
+                            else:
+                                elapsed = time.time() - thinking_start_time
+                                live.update(compose_thinking_live(thinking_text, elapsed))
                         else:
-                            elapsed = time.time() - thinking_start_time
-                            live.update(compose_thinking_live(thinking_text, elapsed))
-                    else:
-                        logger.log_print(rc_part, end="")
+                            logger.log_print(rc_part, end="")
 
-                # 处理 content
-                ct_part = getattr(delta, 'content', None)
-                if ct_part:
-                    if not content_started and ct_part.strip():
-                        content_started = True
-                        if live is not None:
-                            elapsed = time.time() - thinking_start_time
-                            live.stop()
-                            live = None
-                            RICH_CONSOLE.print(compose_thinking_final(elapsed, len(thinking_text)))
-                        logger.log_print("\n" + "=" * 20 + "最终回答" + "=" * 20)
-                    logger.log_print(ct_part, end="")
-                    content_parts.append(ct_part)
+                    # 处理 content
+                    ct_part = getattr(delta, 'content', None)
+                    if ct_part:
+                        if not content_started and ct_part.strip():
+                            content_started = True
+                            if use_worker_renderer and reasoning_started:
+                                elapsed = time.time() - thinking_start_time
+                                team_renderer.finish_thinking(
+                                    team_worker_id,
+                                    module=self.module,
+                                    elapsed=elapsed,
+                                    char_count=len(thinking_text),
+                                )
+                            elif use_orchestrator_renderer and reasoning_started:
+                                elapsed = time.time() - thinking_start_time
+                                team_renderer.finish_orchestrator_thinking(
+                                    module=self.module,
+                                    elapsed=elapsed,
+                                    char_count=len(thinking_text),
+                                )
+                            elif live is not None:
+                                elapsed = time.time() - thinking_start_time
+                                live.stop()
+                                live = None
+                                RICH_CONSOLE.print(compose_thinking_final(elapsed, len(thinking_text)))
+                            logger.log_print(
+                                "\n" + "=" * 20 + "最终回答" + "=" * 20,
+                                print_to_console=section_print_to_console,
+                            )
+                        logger.log_print(ct_part, end="")
+                        content_parts.append(ct_part)
 
-                # 处理 tool_calls
-                tc_delta = getattr(delta, 'tool_calls', None)
-                if tc_delta:
-                    self._process_tool_calls(tc_delta, tool_calls_acc)
+                    # 处理 tool_calls
+                    tc_delta = getattr(delta, 'tool_calls', None)
+                    if tc_delta:
+                        self._process_tool_calls(tc_delta, tool_calls_acc)
         finally:
-            if live is not None:
+            if stream is not None:
+                close_stream = getattr(stream, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception:
+                        pass
+            if use_worker_renderer and reasoning_started and thinking_text and not content_started:
+                elapsed = time.time() - thinking_start_time
+                team_renderer.finish_thinking(
+                    team_worker_id,
+                    module=self.module,
+                    elapsed=elapsed,
+                    char_count=len(thinking_text),
+                )
+            elif use_orchestrator_renderer and reasoning_started and thinking_text and not content_started:
+                elapsed = time.time() - thinking_start_time
+                team_renderer.finish_orchestrator_thinking(
+                    module=self.module,
+                    elapsed=elapsed,
+                    char_count=len(thinking_text),
+                )
+            elif live is not None:
                 if reasoning_started:
                     elapsed = time.time() - thinking_start_time
                     RICH_CONSOLE.print(compose_thinking_final(elapsed, len(thinking_text)))

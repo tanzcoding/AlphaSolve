@@ -23,21 +23,24 @@ class LogSession:
         os.makedirs(self.progress_path, exist_ok=True)
         self.version_file = os.path.join(self.progress_path, "current_version")
 
-    def main_logger(self, *, print_to_console: bool = True) -> Logger:
+    def main_logger(self, *, print_to_console: bool = True, console_renderer=None) -> Logger:
         return Logger(
             name="main",
             log_dir=self.run_dir,
             print_to_console=print_to_console,
             log_filename=os.path.join(self.run_dir, "main.log"),
+            console_renderer=console_renderer,
         )
 
-    def worker_logger(self, worker_id: int, *, print_to_console: bool = False) -> Logger:
+    def worker_logger(self, worker_id: int, *, print_to_console: bool = False, console_renderer=None) -> Logger:
         filename = os.path.join(self.workers_dir, f"worker_{worker_id:03d}.log")
         return Logger(
             name=f"worker_{worker_id:03d}",
             log_dir=self.workers_dir,
             print_to_console=print_to_console,
             log_filename=filename,
+            console_renderer=console_renderer,
+            console_worker_id=worker_id,
         )
 
     def pool_state_path(self, pool_id: int = 0) -> str:

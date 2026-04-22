@@ -51,12 +51,18 @@ class LemmaWorker:
             execution_gateway=self.execution_gateway,
         )
 
+    def _render_phase(self, ctx: LemmaWorkerContext, phase: str, *, status: str = "running") -> None:
+        renderer = getattr(self.logger, "console_renderer", None)
+        if renderer is not None and self.print_to_console:
+            renderer.update_phase(ctx.worker_id, phase, status=status)
+
     def run(self, ctx: LemmaWorkerContext) -> LemmaWorkerResult:
         self.logger.log_print(
             f"event=lemma_worker_start worker_id={ctx.worker_id} verified_ctx_size={len(ctx.verified_snapshot)} print_to_console={self.print_to_console}",
             module="lemma_worker",
         )
 
+        self._render_phase(ctx, "generator")
         gen_out = self.generator.generate(
             GenerateInput(
                 problem=ctx.problem,
@@ -78,10 +84,12 @@ class LemmaWorker:
                 "history_messages": [],
                 "verify_round": 0,
             }
+            self._render_phase(ctx, "done", status="rejected")
             return LemmaWorkerResult(lemma=rejected, status="rejected", is_theorem=False, dependencies=[])
 
         lemma = gen_out.lemma
 
+        self._render_phase(ctx, "citation")
         citation_out = self.citation_agent.cite(
             CitationInput(
                 candidate_lemma=lemma,
@@ -91,6 +99,7 @@ class LemmaWorker:
         lemma["dependencies"] = citation_out.dependencies
 
         while True:
+            self._render_phase(ctx, f"verifier round {lemma.get('verify_round', 0) + 1}")
             verify_out = self.verifier.verify(
                 VerifyInput(
                     problem=ctx.problem,
@@ -110,6 +119,7 @@ class LemmaWorker:
                     f"event=lemma_worker_done worker_id={ctx.worker_id} status=verified is_theorem=False",
                     module="lemma_worker",
                 )
+                self._render_phase(ctx, "done", status="verified")
                 return LemmaWorkerResult(
                     lemma=lemma,
                     status="verified",
@@ -124,6 +134,7 @@ class LemmaWorker:
                     module="lemma_worker",
                     level="WARNING",
                 )
+                self._render_phase(ctx, "done", status="rejected")
                 return LemmaWorkerResult(
                     lemma=lemma,
                     status="rejected",
@@ -131,6 +142,7 @@ class LemmaWorker:
                     dependencies=list(lemma.get("dependencies", [])),
                 )
 
+            self._render_phase(ctx, f"reviser round {lemma.get('verify_round', 0)}")
             revise_out = self.reviser.revise(
                 ReviseInput(
                     problem=ctx.problem,

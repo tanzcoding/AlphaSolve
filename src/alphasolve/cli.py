@@ -91,8 +91,8 @@ def main():
     try:
         solution = alpha.do_research()
 
-        print("Final Solution:")
-        print(solution)
+        logger.log_section("Final Solution", width=60)
+        logger.log_print(solution or "")
 
         output_file = "solution.md"
         with open(output_file, "w", encoding="utf-8") as f:
@@ -101,7 +101,7 @@ def main():
             f.write("# Solution\n\n")
             f.write(solution or "")
 
-        print(f"\nSolution has been saved to: {output_file}")
+        logger.log_print(f"event=solution_saved path={output_file}", module="startup", level="SUCCESS")
     finally:
         alpha.do_close()
 

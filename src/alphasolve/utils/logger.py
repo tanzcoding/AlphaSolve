@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 LEVEL_SYMBOLS = {
     'DEBUG': '🔍',
@@ -25,10 +25,14 @@ class Logger:
         print_to_console: bool = True,
         timestamp: Optional[str] = None,
         log_filename: Optional[str] = None,
+        console_renderer: Any = None,
+        console_worker_id: Optional[int] = None,
     ) -> None:
         self.name = name
         self.log_dir = log_dir
         self.print_to_console_default = print_to_console
+        self.console_renderer = console_renderer
+        self.console_worker_id = console_worker_id
         self.timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         self.log_filename = log_filename or os.path.join(self.log_dir, f"{self.name}_" + f"{self.timestamp}.log")
         self._streaming_open = False
@@ -75,7 +79,18 @@ class Logger:
 
         message = sep.join(str(arg) for arg in args)
 
-        if print_to_console:
+        if print_to_console and self.console_renderer is not None:
+            try:
+                self.console_renderer.log(
+                    self.console_worker_id,
+                    message,
+                    module=module,
+                    level=level,
+                    end=end,
+                )
+            except Exception:
+                print(message, end=end, flush=True)
+        elif print_to_console:
             print(message, end=end, flush=True)
 
         # Streaming mode: when caller uses end != "\n" (typically end=""), we treat it as
