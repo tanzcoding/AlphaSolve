@@ -10,3 +10,10 @@ agent:
     - search_files
     - grep
     - agent
+  tool_parameters:
+    agent:
+      type:
+        enum:
+          - compute_subagent
+          - numerical_experiment_subagent
+          - reasoning_subagent

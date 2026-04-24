@@ -454,9 +454,13 @@ class SubagentService:
                 name=config.name,
                 system_prompt=config.system_prompt,
                 tools=enabled_tools,
+                tool_parameters=config.tool_parameters,
                 max_turns=config.max_turns,
                 model_config=config.model_config,
                 skills=config.skills,
+                when_to_use=config.when_to_use,
+                system_prompt_template=config.system_prompt_template,
+                system_prompt_args=config.system_prompt_args,
                 metadata=config.metadata,
             )
         agent = GeneralPurposeAgent(

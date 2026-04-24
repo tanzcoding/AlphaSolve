@@ -87,7 +87,7 @@ class GeneralPurposeAgent:
         if extra_messages:
             messages.extend(extra_messages)
 
-        tools = self.tool_registry.openai_tools(self.config.tools)
+        tools = self.tool_registry.openai_tools(self.config.tools, self.config.tool_parameters)
         final_answer = ""
         trace: list[dict[str, Any]] = [
             {
@@ -95,6 +95,7 @@ class GeneralPurposeAgent:
                 "agent": self.config.name,
                 "task": task,
                 "enabled_tools": list(self.config.tools),
+                "tool_parameters": self.config.tool_parameters,
             }
         ]
         self.last_trace = trace
@@ -176,7 +177,12 @@ class GeneralPurposeAgent:
                 )
                 self._emit(trace[-1])
                 if should_execute:
-                    result = self.tool_registry.execute(name, parsed_args or {})
+                    result = self.tool_registry.execute(
+                        name,
+                        parsed_args or {},
+                        enabled=self.config.tools,
+                        tool_parameters=self.config.tool_parameters,
+                    )
                     result_content = result.content
                     is_error = result.is_error
                     stop_agent = result.stop_agent

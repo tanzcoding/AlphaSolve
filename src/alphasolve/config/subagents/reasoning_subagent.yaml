@@ -7,3 +7,8 @@ agent:
   when_to_use: Bounded proof and mathematical reasoning obligations.
   tools:
     - agent
+  tool_parameters:
+    agent:
+      type:
+        enum:
+          - reasoning_subagent

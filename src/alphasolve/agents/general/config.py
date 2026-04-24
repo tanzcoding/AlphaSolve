@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from string import Template
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -14,6 +15,7 @@ class GeneralAgentConfig:
     name: str
     system_prompt: str
     tools: list[str] = field(default_factory=list)
+    tool_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_turns: int = 80
     model_config: str | None = None
     skills: list[str] = field(default_factory=list)
@@ -171,6 +173,10 @@ def _resolve_agent_config(
 
     raw_tools_provided = "tools" in raw
     tools = _parse_tools(raw.get("tools")) if raw_tools_provided else list(base.tools if base else [])
+    tool_parameters = deepcopy(base.tool_parameters if base else {})
+    _merge_tool_parameters(tool_parameters, _parse_tool_parameters(raw.get("tools")))
+    for key in ("tool_parameters", "tool_args", "tool_argument_constraints"):
+        _merge_tool_parameters(tool_parameters, _parse_tool_parameters(raw.get(key)))
     allowed_tools = raw.get("allowed_tools")
     if allowed_tools is not None:
         allowed = set(str(item) for item in allowed_tools)
@@ -188,6 +194,7 @@ def _resolve_agent_config(
         name=name,
         system_prompt=prompt_text,
         tools=tools,
+        tool_parameters=tool_parameters,
         max_turns=int(raw.get("max_turns", base.max_turns if base else 80)),
         model_config=raw.get("model_config") or raw.get("model") or (base.model_config if base else None),
         skills=list(raw.get("skills", base.skills if base else [])),
@@ -204,3 +211,35 @@ def _parse_tools(raw_tools: Any) -> list[str]:
     if isinstance(raw_tools, Mapping):
         return list(raw_tools.get("allow") or [])
     return list(raw_tools or [])
+
+
+def _parse_tool_parameters(raw: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(raw, Mapping):
+        return {}
+    if "parameters" in raw and isinstance(raw.get("parameters"), Mapping):
+        raw = raw["parameters"]
+    elif "args" in raw and isinstance(raw.get("args"), Mapping):
+        raw = raw["args"]
+
+    parsed: dict[str, dict[str, Any]] = {}
+    for tool_name, raw_params in raw.items():
+        if not isinstance(raw_params, Mapping):
+            continue
+        params: dict[str, Any] = {}
+        for param_name, raw_constraint in raw_params.items():
+            if isinstance(raw_constraint, Mapping):
+                params[str(param_name)] = dict(raw_constraint)
+            elif isinstance(raw_constraint, list):
+                params[str(param_name)] = {"enum": list(raw_constraint)}
+        if params:
+            parsed[str(tool_name)] = params
+    return parsed
+
+
+def _merge_tool_parameters(target: dict[str, dict[str, Any]], incoming: dict[str, dict[str, Any]]) -> None:
+    for tool_name, params in incoming.items():
+        target_params = target.setdefault(tool_name, {})
+        for param_name, constraint in params.items():
+            base_constraint = dict(target_params.get(param_name) or {})
+            base_constraint.update(dict(constraint))
+            target_params[param_name] = base_constraint

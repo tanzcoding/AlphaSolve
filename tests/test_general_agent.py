@@ -168,6 +168,12 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
                     "    - read_file",
                     "    - write_file",
                     "    - agent",
+                    "  tool_parameters:",
+                    "    agent:",
+                    "      type:",
+                    "        enum:",
+                    "          - reasoning_subagent",
+                    "          - compute_subagent",
                 ]
             ),
             encoding="utf-8",
@@ -184,6 +190,11 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
                     "    ROLE: child",
                     "  exclude_tools:",
                     "    - write_file",
+                    "  tool_parameters:",
+                    "    agent:",
+                    "      type:",
+                    "        enum:",
+                    "          - reasoning_subagent",
                 ]
             ),
             encoding="utf-8",
@@ -196,6 +207,68 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
         assert config.model_config == "BASE_MODEL"
         assert config.max_turns == 9
         assert config.tools == ["read_file", "agent"]
+        assert config.tool_parameters["agent"]["type"]["enum"] == ["reasoning_subagent"]
+
+
+def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
+    class InvalidToolClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "blocked_tool",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": json.dumps({"path": "blocked.md", "content": "no"}),
+                            },
+                        }
+                    ],
+                }
+            if self.calls == 2:
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "bad_arg",
+                            "type": "function",
+                            "function": {
+                                "name": "list_dir",
+                                "arguments": json.dumps({"path": "forbidden"}),
+                            },
+                        }
+                    ],
+                }
+            return {"role": "assistant", "content": "done"}
+
+    with local_test_dir("tool_constraints") as tmp_path:
+        workspace = Workspace(tmp_path)
+        registry = build_default_tool_registry(workspace)
+        config = GeneralAgentConfig(
+            name="guarded",
+            system_prompt="You are a guarded agent.",
+            tools=["list_dir"],
+            tool_parameters={"list_dir": {"path": {"enum": ["."]}}},
+            max_turns=5,
+        )
+        agent = GeneralPurposeAgent(config=config, client=InvalidToolClient(), tool_registry=registry)
+
+        result = agent.run("Try invalid tools and arguments.")
+
+        tool_results = [item for item in result.trace if item["type"] == "tool_result"]
+        assert result.final_answer == "done"
+        assert tool_results[0]["is_error"]
+        assert "tool is not enabled" in tool_results[0]["content"]
+        assert tool_results[1]["is_error"]
+        assert "must be one of" in tool_results[1]["content"]
 
 
 def _run_as_script():

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -26,13 +28,16 @@ class RegisteredTool:
     parameters: dict[str, Any]
     handler: ToolHandler
 
-    def to_openai_tool(self) -> dict[str, Any]:
+    def to_openai_tool(self, parameter_constraints: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        parameters = deepcopy(self.parameters)
+        if parameter_constraints:
+            _apply_parameter_constraints(parameters, parameter_constraints)
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.description,
-                "parameters": self.parameters,
+                "parameters": parameters,
             },
         }
 
@@ -58,24 +63,120 @@ class ToolRegistry:
             handler=handler,
         )
 
-    def openai_tools(self, enabled: list[str] | None = None) -> list[dict[str, Any]]:
+    def openai_tools(
+        self,
+        enabled: list[str] | None = None,
+        tool_parameters: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> list[dict[str, Any]]:
         names = enabled if enabled is not None else list(self._tools)
         missing = [name for name in names if name not in self._tools]
         if missing:
             raise KeyError(f"unknown tools: {missing}")
-        return [self._tools[name].to_openai_tool() for name in names]
+        constraints = tool_parameters or {}
+        return [self._tools[name].to_openai_tool(constraints.get(name)) for name in names]
 
     def registered_tools(self) -> list[RegisteredTool]:
         return list(self._tools.values())
 
-    def execute(self, name: str, args: Mapping[str, Any]) -> ToolResult:
+    def execute(
+        self,
+        name: str,
+        args: Mapping[str, Any],
+        *,
+        enabled: list[str] | None = None,
+        tool_parameters: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> ToolResult:
+        if enabled is not None and name not in enabled:
+            return ToolResult(json.dumps({"error": f"tool is not enabled for this agent: {name}"}, ensure_ascii=False), is_error=True)
         tool = self._tools.get(name)
         if tool is None:
             return ToolResult(json.dumps({"error": f"unknown tool: {name}"}, ensure_ascii=False), is_error=True)
+        constraints = (tool_parameters or {}).get(name) or {}
+        error = _validate_tool_arguments(name, args, constraints)
+        if error:
+            return ToolResult(json.dumps({"error": error}, ensure_ascii=False), is_error=True)
         try:
             return tool.handler(dict(args))
         except Exception as exc:
             return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
+
+
+def _apply_parameter_constraints(parameters: dict[str, Any], constraints: Mapping[str, Any]) -> None:
+    properties = parameters.setdefault("properties", {})
+    if not isinstance(properties, dict):
+        return
+    for param_name, constraint in constraints.items():
+        if not isinstance(constraint, Mapping):
+            continue
+        prop = properties.setdefault(str(param_name), {})
+        if isinstance(prop, dict):
+            prop.update(dict(constraint))
+
+
+def _validate_tool_arguments(tool_name: str, args: Mapping[str, Any], constraints: Mapping[str, Any]) -> str | None:
+    for param_name, constraint in constraints.items():
+        if param_name not in args:
+            continue
+        if not isinstance(constraint, Mapping):
+            continue
+        error = _validate_value(args[param_name], constraint, path=f"{tool_name}.{param_name}")
+        if error:
+            return error
+    return None
+
+
+def _validate_value(value: Any, schema: Mapping[str, Any], *, path: str) -> str | None:
+    if "const" in schema and value != schema["const"]:
+        return f"{path} must be {schema['const']!r}"
+    if "enum" in schema and value not in schema["enum"]:
+        return f"{path} must be one of {list(schema['enum'])!r}"
+
+    schema_type = schema.get("type")
+    if schema_type:
+        allowed = schema_type if isinstance(schema_type, list) else [schema_type]
+        if not any(_matches_json_type(value, str(item)) for item in allowed):
+            return f"{path} must have type {allowed!r}"
+
+    for key, check in (
+        ("minimum", lambda current, bound: current >= bound),
+        ("maximum", lambda current, bound: current <= bound),
+        ("exclusiveMinimum", lambda current, bound: current > bound),
+        ("exclusiveMaximum", lambda current, bound: current < bound),
+    ):
+        if key in schema:
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                return f"{path} must be numeric to satisfy {key}"
+            if not check(value, schema[key]):
+                return f"{path} violates {key}={schema[key]!r}"
+
+    if "minLength" in schema:
+        if not isinstance(value, str) or len(value) < int(schema["minLength"]):
+            return f"{path} violates minLength={schema['minLength']!r}"
+    if "maxLength" in schema:
+        if not isinstance(value, str) or len(value) > int(schema["maxLength"]):
+            return f"{path} violates maxLength={schema['maxLength']!r}"
+    if "pattern" in schema:
+        if not isinstance(value, str) or re.search(str(schema["pattern"]), value) is None:
+            return f"{path} must match pattern {schema['pattern']!r}"
+    return None
+
+
+def _matches_json_type(value: Any, schema_type: str) -> bool:
+    if schema_type == "string":
+        return isinstance(value, str)
+    if schema_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if schema_type == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if schema_type == "boolean":
+        return isinstance(value, bool)
+    if schema_type == "object":
+        return isinstance(value, Mapping)
+    if schema_type == "array":
+        return isinstance(value, list)
+    if schema_type == "null":
+        return value is None
+    return True
 
 
 def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: int = 120) -> ToolRegistry:

@@ -13,3 +13,9 @@ agent:
     - search_files
     - grep
     - agent
+  tool_parameters:
+    agent:
+      type:
+        enum:
+          - compute_subagent
+          - reasoning_subagent

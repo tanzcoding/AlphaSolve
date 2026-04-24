@@ -42,6 +42,12 @@ def test_default_agent_suite_loads_yaml_roles():
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
     assert "spawn_worker" in suite.agents["orchestrator"].tools
     assert "agent" in suite.agents["generator"].tools
+    assert suite.agents["generator"].tool_parameters["agent"]["type"]["enum"] == [
+        "compute_subagent",
+        "numerical_experiment_subagent",
+        "reasoning_subagent",
+    ]
+    assert suite.subagents["reasoning_subagent"].tool_parameters["agent"]["type"]["enum"] == ["reasoning_subagent"]
     assert suite.subagents["reasoning_subagent"].when_to_use
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
@@ -424,8 +430,14 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         registry = service._build_subagent_registry(depth=0, session_id="pytest/session")
         python_result = registry.execute("run_python", {"code": "value = 6 * 7\nvalue"})
         denied = registry.execute("run_python", {"code": "open('leak.txt', 'w')"})
-        tools = registry.openai_tools(["agent"])
+        tools = registry.openai_tools(["agent"], suite.agents["generator"].tool_parameters)
         type_schema = tools[0]["function"]["parameters"]["properties"]["type"]
+        blocked = registry.execute(
+            "agent",
+            {"type": "knowledge_digest", "task": "This should not be callable from generator."},
+            enabled=["agent"],
+            tool_parameters=suite.agents["generator"].tool_parameters,
+        )
 
         assert "[stdout]" in python_result.content
         assert "42" in python_result.content
@@ -433,10 +445,11 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         assert "filesystem access is disabled" in denied.content
         assert type_schema["enum"] == [
             "compute_subagent",
-            "knowledge_digest",
             "numerical_experiment_subagent",
             "reasoning_subagent",
         ]
+        assert blocked.is_error
+        assert "must be one of" in blocked.content
 
         max_depth_registry = service._build_subagent_registry(depth=1, session_id="pytest/deep")
         assert "agent" not in [tool.name for tool in max_depth_registry.registered_tools()]

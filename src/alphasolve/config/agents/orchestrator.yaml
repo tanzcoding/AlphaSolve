@@ -11,3 +11,13 @@ agent:
     - read_file
     - spawn_worker
     - wait
+  tool_parameters:
+    spawn_worker:
+      hint:
+        type: string
+        maxLength: 4000
+    wait:
+      seconds:
+        type: number
+        minimum: 0
+        maximum: 3600

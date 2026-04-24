@@ -11,3 +11,10 @@ agent:
     - grep
     - write_file
     - agent
+  tool_parameters:
+    agent:
+      type:
+        enum:
+          - compute_subagent
+          - numerical_experiment_subagent
+          - reasoning_subagent
