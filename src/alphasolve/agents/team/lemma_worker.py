@@ -276,6 +276,12 @@ class LemmaWorker:
             "trace": result.trace,
             "final_answer": result.final_answer,
         })
+        if self.digest_queue is not None:
+            from .knowledge_digest import DigestTask
+            self.digest_queue.submit(DigestTask(
+                trace_segment=[{"role": "verifier", "content": result.final_answer}],
+                source_label=f"{self.worker_dir.name}/verifier-r{round_index}-a{attempt_index}-{config_name}",
+            ))
         return result.final_answer
 
     def _run_theorem_checks(self, verified_file: Path) -> tuple[bool, str]:

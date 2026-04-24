@@ -94,6 +94,16 @@ class KnowledgeDigestQueue:
                 "subagent_trace": task.trace_segment,
             }
         trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        is_verifier = "verifier" in task.source_label
+        if is_verifier:
+            extra = (
+                "This trace is from a verifier. In addition to normal knowledge updates, "
+                "append up to 3 bullet points to `knowledge/common-errors.md` summarizing "
+                "any proof errors or near-misses found. Each bullet must be one concise sentence. "
+                "Do not add bullets for issues that are already covered in that file."
+            )
+        else:
+            extra = "Do not modify `knowledge/common-errors.md`."
         task_prompt = (
             f"# New trace segment from: {task.source_label}\n\n"
             f"```json\n{trace_text}\n```\n\n"
@@ -102,6 +112,7 @@ class KnowledgeDigestQueue:
             "call plus metadata about the current subagent call; use it together with `subagent_trace`. "
             "Read `knowledge/index.md` first to understand existing entries. "
             "Create or update wiki-style entries. "
+            f"{extra} "
             "Append a one-line entry to `knowledge/log.md` when done."
         )
 
@@ -172,3 +183,6 @@ def init_knowledge_base(knowledge_dir: Path, problem_text: str) -> None:
     log = knowledge_dir / "log.md"
     if not log.exists():
         log.write_text("# Knowledge Log\n\n", encoding="utf-8")
+    errors = knowledge_dir / "common-errors.md"
+    if not errors.exists():
+        errors.write_text("# Common Proof Errors\n\n", encoding="utf-8")
