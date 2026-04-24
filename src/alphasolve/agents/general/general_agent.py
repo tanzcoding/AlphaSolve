@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
+import openai
 from openai import OpenAI
 
 from .config import GeneralAgentConfig
@@ -57,11 +59,20 @@ class OpenAIChatClient:
         if tools:
             request["tools"] = tools
 
-        response = self.client.chat.completions.create(**request)
-        message = response.choices[0].message
-        if hasattr(message, "model_dump"):
-            return message.model_dump(exclude_none=True)
-        return dict(message)
+        max_retries = 8
+        delay = 5.0
+        for attempt in range(max_retries + 1):
+            try:
+                response = self.client.chat.completions.create(**request)
+                message = response.choices[0].message
+                if hasattr(message, "model_dump"):
+                    return message.model_dump(exclude_none=True)
+                return dict(message)
+            except (openai.InternalServerError, openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError) as exc:
+                if attempt == max_retries:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 300.0)
 
 
 class GeneralPurposeAgent:

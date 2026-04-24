@@ -16,7 +16,7 @@ from alphasolve.agents.team.demo import make_demo_client_factory
 
 
 def main():
-    default_max_workers = max(1, (os.cpu_count() or 1) - 2)
+    default_max_workers = 4
 
     parser = argparse.ArgumentParser(description="Run AlphaSolve.")
     parser.add_argument("--problem", type=str, default="problem.md",

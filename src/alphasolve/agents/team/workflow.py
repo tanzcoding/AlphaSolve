@@ -35,6 +35,7 @@ class AlphaSolve:
         print_to_console: bool = True,
         tool_executor_size: int = 2,
         execution_gateway: ExecutionGateway | None = None,
+        max_orchestrator_restarts: int = 5,
     ) -> None:
         self.layout = ProjectLayout.create(project_dir, problem=problem, hint=hint)
         self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "config"
@@ -47,6 +48,7 @@ class AlphaSolve:
         self.print_to_console = print_to_console
         self.tool_executor_size = max(1, int(tool_executor_size))
         self.execution_gateway_override = execution_gateway
+        self.max_orchestrator_restarts = max(1, int(max_orchestrator_restarts))
 
     def run(self) -> OrchestratorRunResult:
         renderer = LemmaTeamRenderer(screen=False) if self.print_to_console else None
@@ -113,19 +115,30 @@ class AlphaSolve:
                 )
                 digest_queue.start()
 
-            orchestrator = Orchestrator(
-                layout=self.layout,
-                suite=suite,
-                client_factory=client_factory,
-                max_workers=self.max_workers,
-                max_verify_rounds=self.max_verify_rounds,
-                verifier_scaling_factor=verifier_scaling_factor,
-                subagent_max_depth=self.subagent_max_depth,
-                renderer=renderer,
-                execution_gateway=execution_gateway,
-                digest_queue=digest_queue,
-            )
-            result = orchestrator.run()
+            result = None
+            for restart_index in range(self.max_orchestrator_restarts):
+                if restart_index > 0 and renderer is not None:
+                    renderer.log(
+                        None,
+                        f"orchestrator stopped without solving — restarting (attempt {restart_index + 1}/{self.max_orchestrator_restarts})",
+                        module="ralph-loop",
+                        level="WARNING",
+                    )
+                orchestrator = Orchestrator(
+                    layout=self.layout,
+                    suite=suite,
+                    client_factory=client_factory,
+                    max_workers=self.max_workers,
+                    max_verify_rounds=self.max_verify_rounds,
+                    verifier_scaling_factor=verifier_scaling_factor,
+                    subagent_max_depth=self.subagent_max_depth,
+                    renderer=renderer,
+                    execution_gateway=execution_gateway,
+                    digest_queue=digest_queue,
+                )
+                result = orchestrator.run()
+                if result.solution_path is not None:
+                    break
         except Exception as exc:
             if renderer is not None:
                 renderer.update_orchestrator_phase("error", status="failed")
