@@ -109,21 +109,19 @@ class WorkerManager:
             "max_workers": self.max_workers,
         }
 
-    def wait(self, seconds: float) -> dict[str, Any]:
+    def wait(self) -> dict[str, Any]:
         self._collect_done()
         if not self.active:
             return {"completed": [], "active_workers": [], "message": "no active lemmaworkers"}
-        timeout = max(0.0, float(seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
-            timeout=timeout,
+            timeout=None,
             return_when=concurrent.futures.FIRST_COMPLETED,
         )
         completed = self._consume_done(done)
         payload = {
             "completed": completed,
             "active_workers": sorted(self.active.values()),
-            "wait_seconds": timeout,
         }
         if self.solved_result is not None:
             payload["solved"] = True
@@ -265,14 +263,8 @@ class Orchestrator:
         )
         registry.register(
             name="wait",
-            description="Wait for active lemmaworkers to finish, returning any lifecycle results produced during the wait.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "seconds": {"type": "number", "default": 600},
-                },
-                "required": [],
-            },
+            description="Wait until any one active lemmaworker finishes, returning its lifecycle result.",
+            parameters={"type": "object", "properties": {}, "required": []},
             handler=lambda args: self._wait_tool(manager, args),
         )
         return registry
@@ -286,7 +278,7 @@ class Orchestrator:
         )
 
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
-        payload = manager.wait(float(args.get("seconds", 600)))
+        payload = manager.wait()
         if manager.solved_result is not None:
             manager.close()
         return ToolResult(
@@ -302,9 +294,20 @@ class Orchestrator:
             self.layout.read_problem(),
             "# Project Workspace",
             (
-                "You are the orchestrator. You may inspect workspace files and spawn lemmaworkers, "
-                "but you must not solve or verify lemmas yourself. Use `spawn_worker` to create workers. "
-                "Use `wait` when the worker limit is reached or when you need worker results."
+                "You are the orchestrator. Your role is that of a research director: read existing lemmas "
+                "and the knowledge log to understand what has already been established, identify gaps or "
+                "promising directions, then spawn lemmaworkers with targeted hints that push the overall "
+                "proof forward. Do not solve or verify lemmas yourself.\n\n"
+                "Workflow:\n"
+                "1. Read `knowledge/log.md` and any relevant lemma files to survey current progress.\n"
+                "2. Identify what is missing or what would most advance the solution.\n"
+                "3. Spawn workers with specific, well-motivated hints based on your analysis.\n"
+                "4. Call `wait` to block until a worker finishes, then read its output and repeat.\n\n"
+                "Use `wait` only to receive worker results — it blocks until one worker's lifecycle ends. "
+                "Do not use it as a timer or polling mechanism.\n\n"
+                "You may issue multiple tool calls in a single turn: for example, read several lemma files "
+                "in parallel, or spawn multiple workers at once with distinct hints targeting different "
+                "sub-problems. Avoid spawning workers with redundant or near-identical hints."
             ),
             f"Maximum concurrent lemmaworkers: {self.max_workers}",
         ]
