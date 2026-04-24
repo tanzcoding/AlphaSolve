@@ -14,7 +14,9 @@ from .project import ProjectLayout
 from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_registry
 
 if TYPE_CHECKING:
+    from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.rich_renderer import LemmaTeamRenderer
+    from .knowledge_digest import KnowledgeDigestQueue
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,8 @@ class WorkerManager:
         max_verify_rounds: int,
         subagent_max_depth: int,
         renderer: LemmaTeamRenderer | None = None,
+        execution_gateway: ExecutionGateway | None = None,
+        digest_queue: KnowledgeDigestQueue | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -47,6 +51,8 @@ class WorkerManager:
         self.results: list[LemmaWorkerRunResult] = []
         self.next_worker_id = 0
         self.renderer = renderer
+        self.execution_gateway = execution_gateway
+        self.digest_queue = digest_queue
 
     def spawn(self, hint: str | None = None) -> dict[str, Any]:
         self._collect_done()
@@ -74,6 +80,8 @@ class WorkerManager:
             max_verify_rounds=self.max_verify_rounds,
             subagent_max_depth=self.subagent_max_depth,
             renderer=self.renderer,
+            execution_gateway=self.execution_gateway,
+            digest_queue=self.digest_queue,
         )
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
@@ -155,6 +163,8 @@ class FilesystemOrchestrator:
         max_verify_rounds: int,
         subagent_max_depth: int,
         renderer: LemmaTeamRenderer | None = None,
+        execution_gateway: ExecutionGateway | None = None,
+        digest_queue: KnowledgeDigestQueue | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -163,6 +173,8 @@ class FilesystemOrchestrator:
         self.max_verify_rounds = max_verify_rounds
         self.subagent_max_depth = subagent_max_depth
         self.renderer = renderer
+        self.execution_gateway = execution_gateway
+        self.digest_queue = digest_queue
 
     def run(self) -> OrchestratorRunResult:
         if self.renderer is not None:
@@ -176,6 +188,8 @@ class FilesystemOrchestrator:
             max_verify_rounds=self.max_verify_rounds,
             subagent_max_depth=self.subagent_max_depth,
             renderer=self.renderer,
+            execution_gateway=self.execution_gateway,
+            digest_queue=self.digest_queue,
         )
         result = None
         try:

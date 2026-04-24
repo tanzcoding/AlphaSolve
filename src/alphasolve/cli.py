@@ -46,19 +46,19 @@ def main():
         "--config",
         type=str,
         default=None,
-        help="Path to an agent YAML config for the filesystem workflow",
+        help="Path to an agent suite YAML file or a directory containing agents.yaml",
     )
     parser.add_argument(
         "--max_verify_rounds",
         type=int,
-        default=2,
-        help="Maximum verifier/reviser rounds per lemmaworker",
+        default=None,
+        help="Maximum verifier/reviser rounds per lemmaworker (default: from agents.yaml settings, fallback 2)",
     )
     parser.add_argument(
         "--subagent_max_depth",
         type=int,
-        default=2,
-        help="Maximum recursive depth for configured subagents",
+        default=None,
+        help="Maximum recursive depth for configured subagents (default: from agents.yaml settings, fallback 2)",
     )
     parser.add_argument(
         "--demo",
@@ -84,7 +84,7 @@ def main():
         "--tool_executor_size",
         type=int,
         default=default_max_worker_num,
-        help="Number of Python execution worker processes for the legacy workflow",
+        help="Number of Python execution worker processes for code execution tools",
     )
     parser.add_argument(
         "--init_from_previous",
@@ -96,17 +96,24 @@ def main():
     args = parser.parse_args()
 
     if not args.legacy:
+        from alphasolve.agents.general import load_agent_suite_config
+        from alphasolve.config.agent_config import PACKAGE_ROOT
+        config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
+        suite_settings = load_agent_suite_config(config_path).settings
+        max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
+        subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
         result = FilesystemAlphaSolve(
             project_dir=Path.cwd(),
             problem=args.problem,
             hint=args.hint,
             config_path=args.config,
             max_workers=args.lemmaworkers or default_max_worker_num,
-            max_verify_rounds=args.max_verify_rounds,
-            subagent_max_depth=args.subagent_max_depth,
+            max_verify_rounds=max_verify_rounds,
+            subagent_max_depth=subagent_max_depth,
             client_factory=make_demo_client_factory() if args.demo else None,
             prime_wolfram=not args.no_wolfram_prime,
             print_to_console=not args.no_dashboard,
+            tool_executor_size=args.tool_executor_size,
         ).run()
         print(result.final_answer or "")
         return

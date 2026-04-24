@@ -8,9 +8,11 @@ from typing import Any, Callable
 
 from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, OpenAIChatClient, load_agent_suite_config
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
+from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
 from alphasolve.utils.rich_renderer import LemmaTeamRenderer
 
+from .knowledge_digest import KnowledgeDigestQueue, init_knowledge_base
 from .orchestrator import FilesystemOrchestrator, OrchestratorRunResult
 from .project import ProjectLayout
 from .tools import ClientFactory
@@ -30,18 +32,25 @@ class FilesystemAlphaSolve:
         client_factory: ClientFactory | None = None,
         prime_wolfram: bool = True,
         print_to_console: bool = True,
+        tool_executor_size: int = 2,
+        execution_gateway: ExecutionGateway | None = None,
     ) -> None:
         self.layout = ProjectLayout.create(project_dir, problem=problem, hint=hint)
-        self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "config" / "agents.yaml"
+        self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "config"
         self.max_workers = max(1, int(max_workers))
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.client_factory_override = client_factory
         self.prime_wolfram = prime_wolfram
         self.print_to_console = print_to_console
+        self.tool_executor_size = max(1, int(tool_executor_size))
+        self.execution_gateway_override = execution_gateway
 
     def run(self) -> OrchestratorRunResult:
         renderer = LemmaTeamRenderer(screen=False) if self.print_to_console else None
+        execution_gateway: ExecutionGateway | None = None
+        owns_gateway = self.execution_gateway_override is None
+        digest_queue: KnowledgeDigestQueue | None = None
         if renderer is not None:
             renderer.start()
             renderer.update_orchestrator_phase("startup", status="running")
@@ -68,6 +77,14 @@ class FilesystemAlphaSolve:
                 if renderer is not None:
                     level = "INFO" if probe.available else "WARNING"
                     renderer.log(None, probe.reason, module="wolfram", level=level)
+            execution_gateway = self.execution_gateway_override or ExecutionGateway(
+                python_workers=self.tool_executor_size,
+                wolfram_enabled=AlphaSolveConfig.WOLFRAM_AVAILABLE,
+            )
+            startup["execution_gateway"] = {
+                "python_workers": self.tool_executor_size,
+                "wolfram_enabled": AlphaSolveConfig.WOLFRAM_AVAILABLE,
+            }
             self.layout.logs_dir.mkdir(parents=True, exist_ok=True)
             (self.layout.logs_dir / "startup.json").write_text(
                 json.dumps(startup, ensure_ascii=False, indent=2),
@@ -76,6 +93,18 @@ class FilesystemAlphaSolve:
 
             suite = load_agent_suite_config(self.config_path)
             client_factory = self.client_factory_override or make_openai_client_factory(suite)
+
+            if "knowledge_digest" in suite.subagents:
+                init_knowledge_base(self.layout.knowledge_dir, self.layout.read_problem())
+                digest_queue = KnowledgeDigestQueue(
+                    knowledge_dir=self.layout.knowledge_dir,
+                    workspace_dir=self.layout.workspace_dir,
+                    suite=suite,
+                    client_factory=client_factory,
+                    execution_gateway=execution_gateway,
+                )
+                digest_queue.start()
+
             orchestrator = FilesystemOrchestrator(
                 layout=self.layout,
                 suite=suite,
@@ -84,6 +113,8 @@ class FilesystemAlphaSolve:
                 max_verify_rounds=self.max_verify_rounds,
                 subagent_max_depth=self.subagent_max_depth,
                 renderer=renderer,
+                execution_gateway=execution_gateway,
+                digest_queue=digest_queue,
             )
             result = orchestrator.run()
         except Exception as exc:
@@ -93,6 +124,10 @@ class FilesystemAlphaSolve:
             self._write_error(exc)
             raise
         finally:
+            if digest_queue is not None:
+                digest_queue.stop()
+            if owns_gateway and execution_gateway is not None:
+                execution_gateway.close()
             if renderer is not None:
                 renderer.stop()
         (self.layout.logs_dir / "orchestrator_trace.json").write_text(
@@ -122,6 +157,7 @@ class FilesystemAlphaSolve:
 
 def run_filesystem_alphasolve(**kwargs) -> OrchestratorRunResult:
     return FilesystemAlphaSolve(**kwargs).run()
+
 
 
 def make_openai_client_factory(suite) -> ClientFactory:

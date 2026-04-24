@@ -19,8 +19,12 @@ env/
 .env
 *.env
 
-# Claude Code
+# AI coding tools
 .claude/
+.kiro/
+.cursor/
+.aider*
+.copilot/
 
 # IDE / editors
 .vscode/

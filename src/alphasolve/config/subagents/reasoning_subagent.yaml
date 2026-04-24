@@ -1,0 +1,9 @@
+version: 1
+agent:
+  name: reasoning_subagent
+  system_prompt_path: ../../prompts/reasoning_subagent.md
+  model_config: PROOF_SUBAGENT_CONFIG
+  max_turns: 40
+  when_to_use: Bounded proof and mathematical reasoning obligations.
+  tools:
+    - agent

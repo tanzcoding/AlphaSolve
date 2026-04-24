@@ -14,7 +14,9 @@ from .project import ProjectLayout
 from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry
 
 if TYPE_CHECKING:
+    from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.rich_renderer import LemmaTeamRenderer
+    from .knowledge_digest import KnowledgeDigestQueue
 
 
 @dataclass(frozen=True)
@@ -41,6 +43,8 @@ class FilesystemLemmaWorker:
         max_verify_rounds: int = 2,
         subagent_max_depth: int = 2,
         renderer: LemmaTeamRenderer | None = None,
+        execution_gateway: ExecutionGateway | None = None,
+        digest_queue: KnowledgeDigestQueue | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -54,6 +58,8 @@ class FilesystemLemmaWorker:
         self.worker_rel = self.worker_dir.relative_to(layout.workspace_dir).as_posix()
         self.trace: list[dict[str, Any]] = []
         self.renderer = renderer
+        self.execution_gateway = execution_gateway
+        self.digest_queue = digest_queue
 
     def run(self) -> LemmaWorkerRunResult:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
@@ -106,6 +112,9 @@ class FilesystemLemmaWorker:
             suite=self.suite,
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
+            execution_gateway=self.execution_gateway,
+            session_prefix=f"{self.worker_dir.name}/generator",
+            digest_queue=self.digest_queue,
         )
         agent = GeneralPurposeAgent(
             config=config,
@@ -133,12 +142,16 @@ class FilesystemLemmaWorker:
             suite=self.suite,
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
+            execution_gateway=self.execution_gateway,
+            session_prefix=f"{self.worker_dir.name}/verifier-r{round_index}",
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
                 deny_other_unverified=True,
+                read_root_rel=(verifier_workspace.relative_to(self.layout.workspace_dir).as_posix()),
                 write_root_rel=(verifier_workspace.relative_to(self.layout.workspace_dir).as_posix()),
             ),
+            digest_queue=self.digest_queue,
         )
         agent = GeneralPurposeAgent(
             config=config,
@@ -165,6 +178,9 @@ class FilesystemLemmaWorker:
             suite=self.suite,
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
+            execution_gateway=self.execution_gateway,
+            session_prefix=f"{self.worker_dir.name}/reviser-r{round_index}",
+            digest_queue=self.digest_queue,
         )
         agent = GeneralPurposeAgent(
             config=config,

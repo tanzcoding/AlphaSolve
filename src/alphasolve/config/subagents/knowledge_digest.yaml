@@ -1,0 +1,15 @@
+version: 1
+agent:
+  name: knowledge_digest
+  prompt_path: ../../prompts/knowledge_digest.md
+  model_config: GENERATOR_CONFIG
+  max_turns: 40
+  when_to_use: Incrementally update the knowledge wiki after each subagent trace.
+  tools:
+    - read_file
+    - write_file
+    - str_replace_file
+    - get_child_item
+    - search_files
+    - grep
+    - agent
