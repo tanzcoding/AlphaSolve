@@ -1,5 +1,4 @@
 from typing import List, Optional, Tuple
-from datetime import datetime
 
 def extract_substring(target_string, begin_str, end_str, *, logger=None, module="utils"):
     """Extract the substring between two markers from an LLM response."""

@@ -1,7 +1,7 @@
 version: 1
 agent:
   name: orchestrator
-  system_prompt_path: ../../prompts/orchestrator_filesystem.md
+  system_prompt_path: ../../prompts/orchestrator.md
   model_config: ORCHESTRATOR_CONFIG
   max_turns: 80
   tools:

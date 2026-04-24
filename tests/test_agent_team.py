@@ -40,7 +40,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
 
-def test_filesystem_workflow_demo_creates_workspace_and_verified_lemma():
+def test_agent_team_demo_creates_workspace_and_verified_lemma():
     with local_project_dir("demo") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
 

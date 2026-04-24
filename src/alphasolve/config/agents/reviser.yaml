@@ -1,7 +1,7 @@
 version: 1
 agent:
   name: reviser
-  system_prompt_path: ../../prompts/reviser_filesystem.md
+  system_prompt_path: ../../prompts/reviser.md
   model_config: REVISER_CONFIG
   max_turns: 80
   tools:

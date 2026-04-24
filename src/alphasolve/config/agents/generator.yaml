@@ -1,7 +1,7 @@
 version: 1
 agent:
   name: generator
-  system_prompt_path: ../../prompts/generator_filesystem.md
+  system_prompt_path: ../../prompts/generator.md
   model_config: GENERATOR_CONFIG
   max_turns: 80
   tools:

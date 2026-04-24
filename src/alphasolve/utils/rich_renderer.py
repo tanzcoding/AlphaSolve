@@ -12,7 +12,6 @@ from rich.columns import Columns
 from rich.live import Live
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.spinner import Spinner as _Spinner
 from rich.text import Text
 
 if TYPE_CHECKING:
@@ -24,10 +23,10 @@ _DISPLAY_CHAR_LIMIT = 16000
 _ORCHESTRATOR_LOG_LINES = 20
 _TERMINAL_STATUSES = {"verified", "rejected", "failed", "solved"}
 
-# Worker color palette (one per worker slot)
+# 每个 worker 槽位对应一个固定颜色。
 _TEAM_COLORS = ("cyan", "magenta", "green", "yellow", "blue", "bright_cyan", "bright_magenta", "bright_green")
 
-# Status → (symbol, style)
+# 状态名到展示符号和样式的映射。
 _STATUS_ICON: dict[str, tuple[str, str]] = {
     "queued":   ("○", "grey50"),
     "running":  ("●", "cyan"),
@@ -98,7 +97,7 @@ class WorkerRenderState:
     last_tool_error: bool = False
     log_lines: list[str] = field(default_factory=list)
     result_summary: str = ""
-    char_count: int = 0  # cumulative chars produced
+    char_count: int = 0  # 已累计输出的字符数
 
 
 @dataclass
@@ -412,14 +411,14 @@ class LemmaTeamRenderer:
 
         lines: list[Text] = []
 
-        # status line
+        # 状态行
         status_line = Text()
         status_line.append(f"{icon} ", icon_style)
         status_line.append(_truncate(state.phase, content_width - 12), "bold")
         status_line.append(f"  {_fmt_elapsed(elapsed)}", "grey50")
         lines.append(status_line)
 
-        # active / last tool
+        # 当前工具或最近一次工具调用
         if state.active_tool:
             tl = Text()
             tl.append(f"{_PLAY} ", "yellow")
@@ -435,7 +434,7 @@ class LemmaTeamRenderer:
             tl.append(state.last_tool, "blue")
             lines.append(tl)
 
-        # preview: thinking > output > log
+        # 预览优先级：thinking > output > log
         available = max(4, self.console.size.height - 6 - len(lines))
         preview_lines = self._orch_preview_lines(available, content_width)
         for pl in preview_lines:
@@ -460,11 +459,11 @@ class LemmaTeamRenderer:
         rows: list[Text] = []
         for state in states:
             rows.append(self._render_worker_row(state, width=width))
-            # second line: preview
+            # 第二行展示预览。
             preview = self._worker_preview(state, width=width - 4)
             if preview:
                 rows.append(preview)
-            rows.append(Text(""))  # blank separator
+            rows.append(Text(""))  # 空行分隔不同 worker
 
         return Group(*rows)
 
@@ -478,7 +477,7 @@ class LemmaTeamRenderer:
         t.append(f"worker-{state.worker_id:02d}", f"bold {color}")
         t.append(f"  {_truncate(state.phase, 14)}", "bold")
 
-        # activity indicator
+        # 活动状态指示
         if state.active_tool:
             t.append(f"  {_PLAY} ", "yellow")
             t.append(state.active_tool, "blue")
@@ -493,7 +492,7 @@ class LemmaTeamRenderer:
         elif state.result_summary:
             t.append(f"  {_truncate(state.result_summary, max(10, width - 40))}", "grey70")
 
-        # right-aligned: elapsed + char count
+        # 右侧展示耗时和字符数。
         suffix = f"  {_DIRECTION_UP}{_fmt_chars(state.char_count)}  {_fmt_elapsed(elapsed)}"
         t.append(suffix, "grey50")
 
@@ -563,67 +562,3 @@ def _stat(t: Text, label: str, value: str, value_style: str) -> None:
     t.append(f"{label} ", "grey50")
     t.append(value, value_style)
     t.append("  ", "")
-
-
-# ── Legacy helpers (used by llms/utils.py and other legacy modules) ────────
-
-_BULLET_FRAMES = (".  ", ".. ", "...", " ..", "  .", "   ")
-_BULLET_FRAME_INTERVAL = 0.13
-_THINKING_PREVIEW_LINES = 4
-
-
-def _bullet_frame_for(elapsed: float) -> str:
-    idx = int(elapsed / _BULLET_FRAME_INTERVAL) % len(_BULLET_FRAMES)
-    return _BULLET_FRAMES[idx]
-
-
-def _tail_lines_str(text: str, n: int) -> str:
-    if n <= 0:
-        return ""
-    pos = len(text)
-    for _ in range(n):
-        pos = text.rfind("\n", 0, pos)
-        if pos == -1:
-            return text
-    return text[pos + 1:]
-
-
-def compose_thinking_live(thinking_text: str, elapsed: float) -> "RenderableType":
-    frame = _bullet_frame_for(elapsed)
-    header = Text.assemble(
-        ("Thinking", "italic"),
-        (f" {frame}", "cyan"),
-        (f"  {elapsed:.1f}s", "grey50"),
-        (f" | {len(thinking_text)} chars", "grey50"),
-    )
-    spinner = _Spinner("dots", text=header)
-    if not thinking_text:
-        return spinner
-    preview = _tail_lines_str(thinking_text, _THINKING_PREVIEW_LINES)
-    return Group(spinner, Text(preview, style="grey50 italic"))
-
-
-def compose_thinking_final(elapsed: float, char_count: int) -> Text:
-    return Text(f"Thought for {elapsed:.1f}s | {char_count} chars", style="grey50 italic")
-
-
-def build_tool_using_text(name: str, arg_preview: str) -> _Spinner:
-    text = Text()
-    text.append("Using ", style="")
-    text.append(name, style="blue")
-    if arg_preview:
-        text.append(f" ({arg_preview})", style="grey50")
-    return _Spinner("dots", text=text)
-
-
-def build_tool_used_text(name: str, arg_preview: str, is_error: bool = False) -> Text:
-    bullet_style = "dark_red" if is_error else "green"
-    text = Text()
-    text.append("* ", style=bullet_style)
-    text.append("Used ", style="")
-    text.append(name, style="blue")
-    if arg_preview:
-        text.append(f" ({arg_preview})", style="grey50")
-    if is_error:
-        text.append(" error", style="dark_red")
-    return text

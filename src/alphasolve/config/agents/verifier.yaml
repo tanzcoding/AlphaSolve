@@ -1,7 +1,7 @@
 version: 1
 agent:
   name: verifier
-  system_prompt_path: ../../prompts/verifier_filesystem.md
+  system_prompt_path: ../../prompts/verifier.md
   model_config: VERIFIER_CONFIG
   max_turns: 80
   tools:
