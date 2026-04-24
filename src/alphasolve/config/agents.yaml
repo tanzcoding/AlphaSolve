@@ -2,10 +2,8 @@ settings:
   max_verify_rounds: 2
   verifier_scaling_factor: 4
   verifier_agents:
-    - verifier
+    - verifier_failure_modes
     - verifier_stepwise
-    - verifier_premise_chain
-    - verifier_adversarial
   subagent_max_depth: 2
 
 agents_dir: ./agents
