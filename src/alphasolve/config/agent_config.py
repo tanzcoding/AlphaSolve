@@ -78,6 +78,8 @@ class AlphaSolveConfig:
     PROOF_SUBAGENT_CONFIG = {**DEEPSEEK_CONFIG}
     ORCHESTRATOR_CONFIG = {**LONGCAT_CONFIG}
 
+    CHECK_IS_THEOREM_TIMES = 5
+
     @classmethod
     def configure_wolfram_availability(cls, available: bool, reason: str = "") -> None:
         cls.WOLFRAM_AVAILABLE = bool(available)

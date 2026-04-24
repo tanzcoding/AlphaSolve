@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
+import threading
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import GeneralPurposeAgent, Workspace
+from alphasolve.config.agent_config import AlphaSolveConfig
 
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
@@ -28,6 +31,8 @@ class LemmaWorkerRunResult:
     lemma_file: Path | None = None
     verified_file: Path | None = None
     review_file: Path | None = None
+    theorem_check_file: Path | None = None
+    solved_problem: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -45,6 +50,7 @@ class LemmaWorker:
         renderer: LemmaTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -60,25 +66,53 @@ class LemmaWorker:
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
+        self.stop_event = stop_event
 
     def run(self) -> LemmaWorkerRunResult:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
         self._set_phase("starting", status="running")
+        if self._should_stop():
+            return self._finish("cancelled", "lemmaworker cancelled because another worker solved the problem")
         if self.worker_hint:
             (self.worker_dir / "worker_hint.md").write_text(self.worker_hint, encoding="utf-8")
 
         try:
             lemma_file = self._run_generator()
+            if self._should_stop():
+                return self._finish(
+                    "cancelled",
+                    "lemmaworker cancelled because another worker solved the problem",
+                    lemma_file=lemma_file,
+                )
             if lemma_file is None:
                 return self._finish("rejected", "generator did not produce a lemma markdown file")
 
             review_file: Path | None = None
             for round_index in range(1, self.max_verify_rounds + 1):
+                if self._should_stop():
+                    return self._finish(
+                        "cancelled",
+                        "lemmaworker cancelled because another worker solved the problem",
+                        lemma_file=lemma_file,
+                        review_file=review_file,
+                    )
                 review_text = self._run_verifier(lemma_file, round_index=round_index)
                 review_file = self.worker_dir / "review.md"
                 review_file.write_text(review_text, encoding="utf-8")
                 if _is_pass_verdict(review_text):
+                    if self._should_stop():
+                        return self._finish(
+                            "cancelled",
+                            "lemmaworker cancelled because another worker solved the problem",
+                            lemma_file=lemma_file,
+                            review_file=review_file,
+                        )
                     verified = self._copy_to_verified(lemma_file)
+                    solved_problem, theorem_check_text = self._run_theorem_checks(verified)
+                    theorem_check_file = None
+                    if solved_problem:
+                        theorem_check_file = self.worker_dir / "theorem_check.md"
+                        theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
                     return self._finish(
                         "verified",
                         "成功产生一个引理，lemma statement 如下："
@@ -86,9 +120,18 @@ class LemmaWorker:
                         lemma_file=lemma_file,
                         verified_file=verified,
                         review_file=review_file,
+                        theorem_check_file=theorem_check_file,
+                        solved_problem=solved_problem,
                     )
                 if round_index < self.max_verify_rounds:
                     self._run_reviser(lemma_file, review_text, round_index=round_index)
+                    if self._should_stop():
+                        return self._finish(
+                            "cancelled",
+                            "lemmaworker cancelled because another worker solved the problem",
+                            lemma_file=lemma_file,
+                            review_file=review_file,
+                        )
 
             summary = "未能产生通过验证的引理。"
             if lemma_file.exists():
@@ -163,6 +206,49 @@ class LemmaWorker:
         self.trace.append({"role": "verifier", "round": round_index, "trace": result.trace, "final_answer": result.final_answer})
         return result.final_answer
 
+    def _run_theorem_checks(self, verified_file: Path) -> tuple[bool, str]:
+        attempts: list[str] = []
+        for attempt_index in range(1, AlphaSolveConfig.CHECK_IS_THEOREM_TIMES + 1):
+            if self._should_stop():
+                return False, _format_theorem_check_attempts(attempts)
+            check_text = self._run_theorem_checker(verified_file, attempt_index=attempt_index)
+            attempts.append(check_text)
+            if not _solves_problem(check_text):
+                return False, _format_theorem_check_attempts(attempts)
+        return True, _format_theorem_check_attempts(attempts)
+
+    def _run_theorem_checker(self, verified_file: Path, *, attempt_index: int) -> str:
+        role = "theorem_checker"
+        self._set_phase(role, status="thinking")
+        config = self.suite.agents["theorem_checker"]
+        access = RoleWorkspaceAccess(
+            workspace=self.workspace,
+            worker_rel=self.worker_rel,
+            deny_other_unverified=True,
+        )
+        subagents = SubagentService(
+            suite=self.suite,
+            client_factory=self.client_factory,
+            max_depth=self.subagent_max_depth,
+            execution_gateway=self.execution_gateway,
+            session_prefix=f"{self.worker_dir.name}/theorem-checker",
+            digest_queue=self.digest_queue,
+        )
+        agent = GeneralPurposeAgent(
+            config=config,
+            client=self.client_factory(config),
+            tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
+            event_sink=self._event_sink(role),
+        )
+        result = agent.run(self._theorem_checker_task(verified_file, attempt_index=attempt_index))
+        self.trace.append({
+            "role": "theorem_checker",
+            "attempt": attempt_index,
+            "trace": result.trace,
+            "final_answer": result.final_answer,
+        })
+        return result.final_answer
+
     def _run_reviser(self, lemma_file: Path, review_text: str, *, round_index: int) -> None:
         role = f"reviser r{round_index}"
         self._set_phase(role, status="thinking")
@@ -195,7 +281,7 @@ class LemmaWorker:
         candidates = [
             path
             for path in self.worker_dir.glob("*.md")
-            if path.name not in {"review.md", "worker_hint.md"} and path.is_file()
+            if path.name not in {"review.md", "theorem_check.md", "worker_hint.md"} and path.is_file()
         ]
         if not candidates:
             return None
@@ -224,7 +310,7 @@ class LemmaWorker:
                     f"`{self.worker_rel}`. The filename should be a concise abstract of the lemma, "
                     "for example `compactness-criterion.md`, not a numbered lemma name. The file must contain "
                     "a Statement section and a Proof section. You may reference verified lemmas with "
-                    "\\ref{verified lemma abstract}."
+                    "\\ref{filename-without-extension}."
                 ),
             ]
             if part
@@ -238,8 +324,24 @@ class LemmaWorker:
             + "\n\n# Candidate Lemma File\n"
             + rel
             + "\n\nRead the candidate lemma and write a rigorous review. Your final answer must include `Verdict: pass` "
-            "or `Verdict: fail`."
+            "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified lemma "
+            "filename without the `.md` extension. Do not judge whether this lemma solves the original problem; "
+            "that is handled by a separate theorem checker."
             + f"\n\nVerification round: {round_index}"
+        )
+
+    def _theorem_checker_task(self, verified_file: Path, *, attempt_index: int) -> str:
+        rel = verified_file.relative_to(self.layout.workspace_dir).as_posix()
+        return (
+            "# Problem\n"
+            + self.layout.read_problem()
+            + "\n\n# Newly Verified Lemma File\n"
+            + rel
+            + "\n\nDecide whether the newly verified lemma, together with any verified lemmas cited by "
+            "`\\ref{filename-without-extension}`, proves the original problem. Read cited verified lemmas as needed. "
+            "Do not re-review the lemma proof except to understand what has been established. Your final answer must "
+            "include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
+            + f"\n\nIndependent theorem check attempt: {attempt_index} of {AlphaSolveConfig.CHECK_IS_THEOREM_TIMES}"
         )
 
     def _reviser_task(self, lemma_file: Path, review_text: str, *, round_index: int) -> str:
@@ -263,6 +365,8 @@ class LemmaWorker:
         lemma_file: Path | None = None,
         verified_file: Path | None = None,
         review_file: Path | None = None,
+        theorem_check_file: Path | None = None,
+        solved_problem: bool = False,
     ) -> LemmaWorkerRunResult:
         self._set_phase("done", status=status)
         trace_path = self.worker_dir / "trace.json"
@@ -275,6 +379,8 @@ class LemmaWorker:
             lemma_file=lemma_file,
             verified_file=verified_file,
             review_file=review_file,
+            theorem_check_file=theorem_check_file,
+            solved_problem=solved_problem,
             trace=list(self.trace),
         )
 
@@ -285,10 +391,25 @@ class LemmaWorker:
         if self.renderer is not None:
             self.renderer.update_phase(self.worker_id, phase, status=status)
 
+    def _should_stop(self) -> bool:
+        return self.stop_event is not None and self.stop_event.is_set()
+
 
 def _is_pass_verdict(text: str) -> bool:
     lowered = (text or "").lower()
     return "verdict: pass" in lowered or "\\boxed{valid}" in lowered or "boxed{valid}" in lowered
+
+
+def _solves_problem(text: str) -> bool:
+    lowered = (text or "").lower()
+    return bool(re.search(r"solves\s+original\s+problem\s*:\s*yes\b", lowered))
+
+
+def _format_theorem_check_attempts(attempts: list[str]) -> str:
+    parts = ["# Theorem Check", ""]
+    for index, text in enumerate(attempts, start=1):
+        parts.extend([f"## Attempt {index}", "", text.strip(), ""])
+    return "\n".join(parts).rstrip() + "\n"
 
 
 def _extract_statement(text: str) -> str:

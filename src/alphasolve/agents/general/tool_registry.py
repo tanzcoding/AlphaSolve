@@ -15,6 +15,8 @@ ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
 class ToolResult:
     content: str
     is_error: bool = False
+    stop_agent: bool = False
+    stop_answer: str | None = None
 
 
 @dataclass(frozen=True)

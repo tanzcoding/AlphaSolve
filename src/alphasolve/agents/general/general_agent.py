@@ -179,6 +179,9 @@ class GeneralPurposeAgent:
                     result = self.tool_registry.execute(name, parsed_args or {})
                     result_content = result.content
                     is_error = result.is_error
+                    stop_agent = result.stop_agent
+                else:
+                    stop_agent = False
                 trace.append(
                     {
                         "type": "tool_result",
@@ -187,6 +190,7 @@ class GeneralPurposeAgent:
                         "name": name,
                         "content": result_content,
                         "is_error": is_error,
+                        "stop_agent": stop_agent,
                     }
                 )
                 self._emit(trace[-1])
@@ -199,6 +203,18 @@ class GeneralPurposeAgent:
                         "content": result_content,
                     }
                 )
+                if stop_agent:
+                    final_answer = result.stop_answer or result_content
+                    trace.append(
+                        {
+                            "type": "run_finish",
+                            "turn": turn,
+                            "final_answer": final_answer,
+                            "reason": "tool_requested_stop",
+                        }
+                    )
+                    self._emit(trace[-1])
+                    return AgentRunResult(final_answer=final_answer, messages=messages, trace=trace, turns=turn)
 
         trace.append(
             {

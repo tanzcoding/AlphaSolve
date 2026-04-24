@@ -1,5 +1,7 @@
+import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 from contextlib import contextmanager
@@ -9,7 +11,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from alphasolve.agents.general import Workspace, load_agent_suite_config  # noqa: E402
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
+from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
+from alphasolve.agents.team.solution import write_solution  # noqa: E402
 from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService  # noqa: E402
+from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.execution import ExecutionGateway  # noqa: E402
 
@@ -32,7 +37,7 @@ def test_default_agent_suite_loads_yaml_roles():
     suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
     suite_from_dir = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-    assert {"orchestrator", "generator", "verifier", "reviser"} <= set(suite.agents)
+    assert {"orchestrator", "generator", "verifier", "reviser", "theorem_checker"} <= set(suite.agents)
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
     assert "spawn_worker" in suite.agents["orchestrator"].tools
     assert "agent" in suite.agents["generator"].tools
@@ -52,13 +57,154 @@ def test_agent_team_demo_creates_workspace_and_verified_lemma():
             print_to_console=False,
         ).run()
 
-        assert result.final_answer == "Demo run complete."
+        assert result.final_answer.startswith("Problem solved. Solution written to ")
         assert (project_dir / "workspace" / "knowledge").is_dir()
         assert (project_dir / "workspace" / "unverified_lemmas").is_dir()
         assert (project_dir / "workspace" / "verified_lemmas" / "demo-lemma.md").is_file()
+        assert (project_dir / "solution.md").is_file()
         assert (project_dir / "logs" / "orchestrator_trace.json").is_file()
         assert result.worker_results
         assert result.worker_results[0].status == "verified"
+        assert result.worker_results[0].solved_problem
+        assert result.worker_results[0].theorem_check_file is not None
+        assert result.worker_results[0].theorem_check_file.name == "theorem_check.md"
+        assert sum(1 for item in result.worker_results[0].trace if item["role"] == "theorem_checker") == AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
+        assert result.solution_path == project_dir / "solution.md"
+
+
+def test_theorem_checker_not_verifier_decides_problem_solved():
+    calls = {"theorem_checker": 0}
+
+    class CheckerAuthorityClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            if self.role == "orchestrator":
+                if self.calls == 1:
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "spawn_worker",
+                                "type": "function",
+                                "function": {
+                                    "name": "spawn_worker",
+                                    "arguments": json.dumps({"hint": "Try a near miss."}),
+                                },
+                            }
+                        ],
+                    }
+                if self.calls == 2:
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "wait_worker",
+                                "type": "function",
+                                "function": {
+                                    "name": "wait",
+                                    "arguments": json.dumps({"seconds": 5}),
+                                },
+                            }
+                        ],
+                    }
+                return {"role": "assistant", "content": "No solution yet."}
+            if self.role == "generator":
+                if self.calls > 1:
+                    return {"role": "assistant", "content": "Generator wrote the near miss lemma."}
+                task = "\n".join(str(message.get("content") or "") for message in messages)
+                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "write_near_miss",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": f"{worker_dir}/near-miss.md",
+                                        "content": (
+                                            "# Near Miss\n\n"
+                                            "## Statement\n\n"
+                                            "For every real number x, x = x.\n\n"
+                                            "## Proof\n\n"
+                                            "By reflexivity.\n"
+                                        ),
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self.role == "verifier":
+                return {
+                    "role": "assistant",
+                    "content": "Verdict: pass\nSolves original problem: yes\n\nThe lemma itself is valid.",
+                }
+            if self.role == "theorem_checker":
+                calls["theorem_checker"] += 1
+                return {
+                    "role": "assistant",
+                    "content": "Solves original problem: no\n\nThe verified lemma is only reflexivity.",
+                }
+            return {"role": "assistant", "content": "unused"}
+
+    def factory(config):
+        return CheckerAuthorityClient(config.name)
+
+    with local_project_dir("checker_authority") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nProve that 1 + 1 = 3.\n", encoding="utf-8")
+
+        result = AlphaSolve(
+            project_dir=project_dir,
+            max_workers=1,
+            client_factory=factory,
+            prime_wolfram=False,
+            print_to_console=False,
+        ).run()
+
+        assert result.final_answer == "No solution yet."
+        assert result.worker_results[0].status == "verified"
+        assert not result.worker_results[0].solved_problem
+        assert result.worker_results[0].theorem_check_file is None
+        assert calls["theorem_checker"] == 1
+        assert result.solution_path is None
+        assert not (project_dir / "solution.md").exists()
+        assert not any(path.name == "theorem_check.md" for path in result.worker_results[0].worker_dir.glob("*.md"))
+
+
+def test_solution_writer_collects_recursive_refs_with_final_lemma_last():
+    with local_project_dir("solution_refs") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nProve C.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        (layout.verified_dir / "a.md").write_text(
+            "# A\n\n## Statement\n\nA.\n\n## Proof\n\nDirect.\n",
+            encoding="utf-8",
+        )
+        (layout.verified_dir / "b.md").write_text(
+            "# B\n\n## Statement\n\nB by \\ref{a}.\n\n## Proof\n\nUse \\ref{a}.\n",
+            encoding="utf-8",
+        )
+        (layout.verified_dir / "c.md").write_text(
+            "# C\n\n## Statement\n\nC by \\ref{b}.\n\n## Proof\n\nUse \\ref{b}.\n",
+            encoding="utf-8",
+        )
+
+        solution_path = write_solution(layout, layout.verified_dir / "c.md")
+        solution = solution_path.read_text(encoding="utf-8")
+
+        assert solution_path == project_dir / "solution.md"
+        assert solution.index("### 1. a") < solution.index("### 2. b") < solution.index("### 3. c")
 
 
 def test_role_workspace_access_blocks_other_unverified_workers_and_locks_generator_file():

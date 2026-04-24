@@ -1,0 +1,12 @@
+version: 1
+agent:
+  name: theorem_checker
+  system_prompt_path: ../../prompts/theorem_checker.md
+  model_config: VERIFIER_CONFIG
+  max_turns: 60
+  tools:
+    - read_file
+    - get_child_item
+    - search_files
+    - grep
+    - agent

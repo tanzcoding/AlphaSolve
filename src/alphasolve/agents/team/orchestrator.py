@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import GeneralPurposeAgent, Workspace
@@ -11,6 +13,7 @@ from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
 from .dashboard import make_orchestrator_event_sink
 from .lemma_worker import LemmaWorker, LemmaWorkerRunResult
 from .project import ProjectLayout
+from .solution import write_solution
 from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_registry
 
 if TYPE_CHECKING:
@@ -24,6 +27,7 @@ class OrchestratorRunResult:
     final_answer: str
     trace: list[dict[str, Any]]
     worker_results: list[LemmaWorkerRunResult] = field(default_factory=list)
+    solution_path: Path | None = None
 
 
 class WorkerManager:
@@ -53,9 +57,18 @@ class WorkerManager:
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
+        self.stop_event = threading.Event()
+        self.solution_path: Path | None = None
+        self.solved_result: LemmaWorkerRunResult | None = None
 
     def spawn(self, hint: str | None = None) -> dict[str, Any]:
         self._collect_done()
+        if self.solved_result is not None:
+            return {
+                "spawned": False,
+                "reason": "problem_already_solved",
+                "solution_path": str(self.solution_path) if self.solution_path else None,
+            }
         if len(self.active) >= self.max_workers:
             return {
                 "spawned": False,
@@ -82,6 +95,7 @@ class WorkerManager:
             renderer=self.renderer,
             execution_gateway=self.execution_gateway,
             digest_queue=self.digest_queue,
+            stop_event=self.stop_event,
         )
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
@@ -103,13 +117,20 @@ class WorkerManager:
             return_when=concurrent.futures.FIRST_COMPLETED,
         )
         completed = self._consume_done(done)
-        return {
+        payload = {
             "completed": completed,
             "active_workers": sorted(self.active.values()),
             "wait_seconds": timeout,
         }
+        if self.solved_result is not None:
+            payload["solved"] = True
+            payload["solution_path"] = str(self.solution_path) if self.solution_path else None
+            payload["message"] = "problem solved; orchestration should stop"
+        return payload
 
     def close(self) -> None:
+        if self.solved_result is not None:
+            self.stop_event.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
         self._collect_done()
 
@@ -131,6 +152,10 @@ class WorkerManager:
                 completed.append({"worker_id": worker_id, "status": "failed", "summary": str(exc)})
                 continue
             self.results.append(result)
+            if result.solved_problem and result.verified_file is not None and self.solved_result is None:
+                self.solved_result = result
+                self.stop_event.set()
+                self.solution_path = write_solution(self.layout, result.verified_file)
             if self.renderer is not None:
                 self.renderer.finish_worker(
                     worker_id,
@@ -140,7 +165,7 @@ class WorkerManager:
                 self.renderer.record_commit(
                     accepted=result.status == "verified",
                     status=result.status,
-                    solved=False,
+                    solved=result.solved_problem,
                     verified_count=self._verified_count(),
                 )
             completed.append(_worker_result_payload(result))
@@ -204,11 +229,17 @@ class Orchestrator:
             manager.close()
 
         if result is None:
-            return OrchestratorRunResult(final_answer="", trace=[], worker_results=list(manager.results))
+            return OrchestratorRunResult(
+                final_answer="",
+                trace=[],
+                worker_results=list(manager.results),
+                solution_path=manager.solution_path,
+            )
         return OrchestratorRunResult(
             final_answer=result.final_answer,
             trace=result.trace,
             worker_results=list(manager.results),
+            solution_path=manager.solution_path,
         )
 
     def _build_registry(self, manager: WorkerManager) -> ToolRegistry:
@@ -224,7 +255,7 @@ class Orchestrator:
                 },
                 "required": [],
             },
-            handler=lambda args: ToolResult(json.dumps(manager.spawn(args.get("hint")), ensure_ascii=False)),
+            handler=lambda args: self._spawn_tool(manager, args),
         )
         registry.register(
             name="wait",
@@ -236,9 +267,27 @@ class Orchestrator:
                 },
                 "required": [],
             },
-            handler=lambda args: ToolResult(json.dumps(manager.wait(float(args.get("seconds", 600))), ensure_ascii=False)),
+            handler=lambda args: self._wait_tool(manager, args),
         )
         return registry
+
+    def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        payload = manager.spawn(args.get("hint"))
+        return ToolResult(
+            json.dumps(payload, ensure_ascii=False),
+            stop_agent=manager.solved_result is not None,
+            stop_answer=_solution_final_answer(manager.solution_path),
+        )
+
+    def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        payload = manager.wait(float(args.get("seconds", 600)))
+        if manager.solved_result is not None:
+            manager.close()
+        return ToolResult(
+            json.dumps(payload, ensure_ascii=False),
+            stop_agent=manager.solved_result is not None,
+            stop_answer=_solution_final_answer(manager.solution_path),
+        )
 
     def _task(self) -> str:
         hint = self.layout.read_hint()
@@ -273,6 +322,7 @@ def _worker_result_payload(result: LemmaWorkerRunResult) -> dict[str, Any]:
         "status": result.status,
         "summary": result.summary,
         "worker_dir": str(result.worker_dir),
+        "solved_problem": result.solved_problem,
     }
     if result.lemma_file:
         payload["lemma_file"] = str(result.lemma_file)
@@ -280,6 +330,8 @@ def _worker_result_payload(result: LemmaWorkerRunResult) -> dict[str, Any]:
         payload["verified_file"] = str(result.verified_file)
     if result.review_file:
         payload["review_file"] = str(result.review_file)
+    if result.theorem_check_file:
+        payload["theorem_check_file"] = str(result.theorem_check_file)
     return payload
 
 
@@ -288,3 +340,9 @@ def _short_summary(summary: str, *, limit: int = 180) -> str:
     if len(clean) <= limit:
         return clean
     return clean[: limit - 3] + "..."
+
+
+def _solution_final_answer(solution_path: Path | None) -> str:
+    if solution_path is None:
+        return "Problem solved."
+    return f"Problem solved. Solution written to {solution_path}."

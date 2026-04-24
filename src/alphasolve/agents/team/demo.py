@@ -19,7 +19,15 @@ class DemoChatClient:
         if self.role == "generator":
             return self._generator(messages)
         if self.role == "verifier":
-            return {"role": "assistant", "content": "Verdict: pass\n\nThis demo lemma is accepted."}
+            return {
+                "role": "assistant",
+                "content": "Verdict: pass\n\nThis demo lemma is accepted.",
+            }
+        if self.role == "theorem_checker":
+            return {
+                "role": "assistant",
+                "content": "Solves original problem: yes\n\nThe verified demo lemma states exactly the problem.",
+            }
         if self.role == "reviser":
             return {"role": "assistant", "content": "No revision needed in demo mode."}
         return {"role": "assistant", "content": "Demo subagent result."}

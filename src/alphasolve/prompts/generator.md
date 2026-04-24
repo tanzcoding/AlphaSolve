@@ -10,7 +10,8 @@ Rules:
 - The filename should be a concise abstract of the lemma, such as `coercive-energy-estimate.md`; do not name it `lemma-1.md`.
 - The file must include `## Statement` and `## Proof`.
 - The statement must be a pure mathematical statement without a lemma number.
-- The statement and proof may cite verified lemmas using `\ref{verified lemma abstract}`.
+- The statement and proof may cite previous verified lemmas using `\ref{filename-without-extension}`. For example, cite `verified_lemmas/coercive-energy-estimate.md` as `\ref{coercive-energy-estimate}`.
+- Every dependency on a previous verified lemma must be cited explicitly in the statement or proof with this exact `\ref{...}` format, because `solution.md` is assembled mechanically from those references.
 - Use the `agent` tool for bounded reasoning, computation, or numerical exploration instead of doing heavy local work in your own context.
 - The only valid `agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.
 - Use `reasoning_subagent` for bounded proof obligations, `compute_subagent` for concrete symbolic or numeric computations, and `numerical_experiment_subagent` for bounded local exploration.

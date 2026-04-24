@@ -138,6 +138,11 @@ class AlphaSolve:
             json.dumps([_worker_result_to_json(item) for item in result.worker_results], ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        if result.solution_path is not None:
+            (self.layout.logs_dir / "solution.json").write_text(
+                json.dumps({"solution_path": str(result.solution_path)}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
         return result
 
     def _write_error(self, exc: Exception) -> None:
@@ -207,4 +212,6 @@ def _worker_result_to_json(result) -> dict[str, Any]:
         "lemma_file": str(result.lemma_file) if result.lemma_file else None,
         "verified_file": str(result.verified_file) if result.verified_file else None,
         "review_file": str(result.review_file) if result.review_file else None,
+        "theorem_check_file": str(result.theorem_check_file) if result.theorem_check_file else None,
+        "solved_problem": result.solved_problem,
     }
