@@ -30,7 +30,7 @@ DEEPSEEK_CONFIG = {
     'base_url': 'https://api.deepseek.com',
     'api_key': lambda: os.getenv('DEEPSEEK_API_KEY'),
     # DeepSeek：通过特定模型名启用思考模式
-    'model': 'deepseek-reasoner',
+    'model': 'deepseek-v4-flash',
     'timeout': 3600,
     'params': {}
 }
