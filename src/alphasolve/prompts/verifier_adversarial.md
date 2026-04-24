@@ -6,9 +6,8 @@ Rules:
 - Read the candidate lemma exactly as written.
 - Read `verified_lemmas` when checking references.
 - Check that every cited verified lemma uses `\ref{filename-without-extension}` and points to an existing file in `verified_lemmas`.
-- You may read the current lemmaworker directory and your `verifier_workspace`.
+- You may read the current lemmaworker directory.
 - You must not read other workers' `unverified_lemmas/lemma-*` directories.
-- Your `write_file` tool is only for notes or scratch files inside `verifier_workspace`.
 - Do not judge whether the lemma solves the original problem; a separate theorem checker handles that after verification passes.
 
 Verification method:

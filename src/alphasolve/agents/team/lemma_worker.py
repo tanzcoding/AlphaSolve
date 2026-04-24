@@ -234,14 +234,11 @@ class LemmaWorker:
     def _run_verifier_attempt(self, lemma_file: Path, *, round_index: int, attempt_index: int, config_name: str) -> str:
         role = f"verifier r{round_index}.{attempt_index}"
         self._set_phase(role, status="thinking")
-        verifier_workspace = self.worker_dir / "verifier_workspace" / f"round-{round_index:02d}" / f"attempt-{attempt_index:02d}"
-        verifier_workspace.mkdir(parents=True, exist_ok=True)
         config = self.suite.agents[config_name]
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
             deny_other_unverified=True,
-            write_root_rel=(verifier_workspace.relative_to(self.layout.workspace_dir).as_posix()),
         )
         subagents = SubagentService(
             suite=self.suite,
@@ -253,15 +250,13 @@ class LemmaWorker:
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
                 deny_other_unverified=True,
-                read_root_rel=(verifier_workspace.relative_to(self.layout.workspace_dir).as_posix()),
-                write_root_rel=(verifier_workspace.relative_to(self.layout.workspace_dir).as_posix()),
             ),
             digest_queue=self.digest_queue,
         )
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
+            tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
             event_sink=self._event_sink(role),
         )
         result = agent.run(
