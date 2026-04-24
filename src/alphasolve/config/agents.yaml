@@ -1,0 +1,90 @@
+settings:
+  max_verify_rounds: 2
+  subagent_max_depth: 2
+
+agents:
+  orchestrator:
+    name: orchestrator
+    prompt_path: ../prompts/orchestrator_filesystem.md
+    model_config: ORCHESTRATOR_CONFIG
+    max_turns: 80
+    tools:
+      allow:
+        - grep
+        - search_files
+        - get_child_item
+        - read_file
+        - spawn_worker
+        - wait
+
+  generator:
+    name: generator
+    prompt_path: ../prompts/generator_filesystem.md
+    model_config: GENERATOR_CONFIG
+    max_turns: 80
+    tools:
+      allow:
+        - read_file
+        - get_child_item
+        - search_files
+        - grep
+        - write_file
+        - agent
+
+  verifier:
+    name: verifier
+    prompt_path: ../prompts/verifier_filesystem.md
+    model_config: VERIFIER_CONFIG
+    max_turns: 80
+    tools:
+      allow:
+        - read_file
+        - get_child_item
+        - search_files
+        - grep
+        - write_file
+        - agent
+
+  reviser:
+    name: reviser
+    prompt_path: ../prompts/reviser_filesystem.md
+    model_config: REVISER_CONFIG
+    max_turns: 80
+    tools:
+      allow:
+        - read_file
+        - get_child_item
+        - search_files
+        - grep
+        - write_file
+        - agent
+
+subagents:
+  reasoning_subagent:
+    name: reasoning_subagent
+    prompt_path: ../prompts/reasoning_subagent.md
+    model_config: PROOF_SUBAGENT_CONFIG
+    max_turns: 40
+    tools:
+      allow:
+        - agent
+
+  compute_subagent:
+    name: compute_subagent
+    prompt_path: ../prompts/compute_subagent.md
+    model_config: COMPUTE_SUBAGENT_CONFIG
+    max_turns: 40
+    tools:
+      allow:
+        - run_python
+        - run_wolfram
+
+  numerical_experiment_subagent:
+    name: numerical_experiment_subagent
+    prompt_path: ../prompts/numerical_experiment_subagent.md
+    model_config: COMPUTE_SUBAGENT_CONFIG
+    max_turns: 40
+    tools:
+      allow:
+        - run_python
+        - run_wolfram

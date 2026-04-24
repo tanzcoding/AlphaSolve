@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+import argparse
 import os
 import sys
-import argparse
+from pathlib import Path
 
-# Ensure UTF-8 on Windows so Rich spinners and Unicode symbols render correctly.
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding="utf-8")
     except Exception:
         pass
 
-from alphasolve.workflow import AlphaSolve
-from alphasolve.utils.utils import load_prompt_from_file
+from alphasolve.agents.team import FilesystemAlphaSolve
+from alphasolve.agents.team.demo import make_demo_client_factory
 from alphasolve.config.agent_config import AlphaSolveConfig
-from alphasolve.utils.log_session import LogSession
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
+from alphasolve.utils.log_session import LogSession
+from alphasolve.utils.utils import load_prompt_from_file
+from alphasolve.workflow import AlphaSolve
 
 
 def main():
@@ -35,10 +37,54 @@ def main():
         help="Path to an optional hint markdown file",
     )
     parser.add_argument(
+        "--lemmaworkers",
+        type=int,
+        default=None,
+        help="Maximum number of concurrent lemmaworkers for the filesystem workflow",
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        help="Path to an agent YAML config for the filesystem workflow",
+    )
+    parser.add_argument(
+        "--max_verify_rounds",
+        type=int,
+        default=2,
+        help="Maximum verifier/reviser rounds per lemmaworker",
+    )
+    parser.add_argument(
+        "--subagent_max_depth",
+        type=int,
+        default=2,
+        help="Maximum recursive depth for configured subagents",
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Run a deterministic local demo without calling an LLM API",
+    )
+    parser.add_argument(
+        "--no_wolfram_prime",
+        action="store_true",
+        help="Skip the startup Wolfram kernel probe for the filesystem workflow",
+    )
+    parser.add_argument(
+        "--no_dashboard",
+        action="store_true",
+        help="Disable the live terminal dashboard for the filesystem workflow",
+    )
+    parser.add_argument(
+        "--legacy",
+        action="store_true",
+        help="Run the previous schema-based AlphaSolve workflow",
+    )
+    parser.add_argument(
         "--tool_executor_size",
         type=int,
         default=default_max_worker_num,
-        help="Number of Python execution worker processes",
+        help="Number of Python execution worker processes for the legacy workflow",
     )
     parser.add_argument(
         "--init_from_previous",
@@ -49,10 +95,24 @@ def main():
 
     args = parser.parse_args()
 
-    # 读取问题文件
+    if not args.legacy:
+        result = FilesystemAlphaSolve(
+            project_dir=Path.cwd(),
+            problem=args.problem,
+            hint=args.hint,
+            config_path=args.config,
+            max_workers=args.lemmaworkers or default_max_worker_num,
+            max_verify_rounds=args.max_verify_rounds,
+            subagent_max_depth=args.subagent_max_depth,
+            client_factory=make_demo_client_factory() if args.demo else None,
+            prime_wolfram=not args.no_wolfram_prime,
+            print_to_console=not args.no_dashboard,
+        ).run()
+        print(result.final_answer or "")
+        return
+
     problem = load_prompt_from_file(args.problem)
 
-    # 读取可选 hint
     hint = None
     if args.hint and os.path.exists(args.hint):
         hint = load_prompt_from_file(args.hint)

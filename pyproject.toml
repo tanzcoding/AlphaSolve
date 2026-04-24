@@ -12,6 +12,7 @@ dependencies = [
     "openai>=1.0",
     "wolframclient>=1.3",
     "rich>=13.0",
+    "PyYAML>=6.0",
 ]
 
 [project.scripts]
@@ -21,4 +22,4 @@ alphasolve = "alphasolve.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-alphasolve = ["prompts/*.md"]
+alphasolve = ["prompts/*.md", "config/*.yaml"]
