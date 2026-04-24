@@ -95,6 +95,14 @@ flowchart TD
    - 当问题解决时，整理所有依赖的引理和最终定理
    - 生成可读的解决方案报告
 
+## 致谢与相关工作
+
+AlphaSolve 的生成-验证-修正（Generator-Verifier-Reviser）循环主要受到 [AI Mathematician (AIM): Towards Fully Automated Frontier Mathematical Research](https://arxiv.org/html/2505.22451v1) 及其开源实现 [Carlos-Mero/AIM](https://github.com/Carlos-Mero/AIM/) 的启发。AIM 通过多步探索、共享记忆、验证和精炼机制来推动长程数学研究，其中“先生成候选引理，再经验证和修正后纳入可复用记忆”的思路，对 AlphaSolve 的 LemmaWorker 与 LemmaPool 设计影响尤其直接。
+
+AlphaSolve 也参考了 [Long-horizon Reasoning Agent for Olympiad-Level Mathematical Problem Solving](https://arxiv.org/html/2512.10739v2) 中面向奥林匹克数学的多轮层级推理、引理记忆和验证机制。该工作强调用紧凑的 lemma memory 承载长程推理状态，这与 AlphaSolve 通过 LemmaPool 跨线程复用已验证引理的目标一致。
+
+此外，[Towards Autonomous Mathematics Research](https://arxiv.org/html/2602.10177v3) 介绍的 Aletheia 系统同样采用生成、验证和修正的自然语言数学研究流程，并把这一流程推进到更开放的研究级场景。Aletheia 相关的后续评测工作，例如 [Aletheia tackles FirstProof autonomously](https://arxiv.org/abs/2602.21201)，也展示了这类 agentic 数学系统在研究问题上的潜力。
+
 
 ## 安装与配置
 

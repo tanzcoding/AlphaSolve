@@ -118,6 +118,10 @@ class GeneralPurposeAgent:
                 self._emit(trace[-1])
                 raise AgentRunError(f"agent {self.config.name} failed: {exc}", trace=trace) from exc
             messages.append(assistant_message)
+            reasoning = assistant_message.get("reasoning_content") or ""
+            if reasoning:
+                trace.append({"type": "thinking", "turn": turn, "content": reasoning})
+                self._emit(trace[-1])
             trace.append(
                 {
                     "type": "assistant_message",

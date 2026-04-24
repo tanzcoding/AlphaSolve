@@ -148,6 +148,56 @@ def _assert_load_general_agent_config(tmp_path):
     assert config.max_turns == 7
 
 
+def test_load_general_agent_config_supports_extend_and_exclude_tools():
+    with local_test_dir("extend_config") as tmp_path:
+        prompt = tmp_path / "base.md"
+        prompt.write_text("Base ${ROLE}", encoding="utf-8")
+        base = tmp_path / "base.yaml"
+        base.write_text(
+            "\n".join(
+                [
+                    "version: 1",
+                    "agent:",
+                    "  name: base",
+                    "  system_prompt_path: ./base.md",
+                    "  system_prompt_args:",
+                    "    ROLE: agent",
+                    "  model_config: BASE_MODEL",
+                    "  max_turns: 9",
+                    "  tools:",
+                    "    - read_file",
+                    "    - write_file",
+                    "    - agent",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        child = tmp_path / "child.yaml"
+        child.write_text(
+            "\n".join(
+                [
+                    "version: 1",
+                    "agent:",
+                    "  extend: ./base.yaml",
+                    "  name: child",
+                    "  system_prompt_args:",
+                    "    ROLE: child",
+                    "  exclude_tools:",
+                    "    - write_file",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        config = load_general_agent_config(child)
+
+        assert config.name == "child"
+        assert config.system_prompt == "Base child"
+        assert config.model_config == "BASE_MODEL"
+        assert config.max_turns == 9
+        assert config.tools == ["read_file", "agent"]
+
+
 def _run_as_script():
     root = pathlib.Path(__file__).resolve().parents[1]
     tmp_root = root / "_tmp_general_agent_test"

@@ -9,6 +9,8 @@ Rules:
 - You must not read other workers' `unverified_lemmas/lemma-*` directories.
 - Your `write_file` tool is only for notes or scratch files inside `verifier_workspace`.
 - Use the `agent` tool for bounded checks. A verifier-called subagent may use files only inside `verifier_workspace`.
+- The only valid `agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.
+- Use `reasoning_subagent` for bounded proof verification, `compute_subagent` for concrete symbolic or numeric checks, and `numerical_experiment_subagent` for bounded local counterexample search or branch exploration.
 - Do not silently repair the lemma. Review the statement and proof as written.
 
 Your final answer is the review that will be saved as `review.md`. It must include exactly one of:

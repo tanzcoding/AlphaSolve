@@ -6,10 +6,10 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
-from alphasolve.llms.tools import run_python, run_wolfram
+from alphasolve.execution.runners import run_python, run_wolfram
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway

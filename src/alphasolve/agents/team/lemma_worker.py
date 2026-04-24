@@ -31,7 +31,7 @@ class LemmaWorkerRunResult:
     trace: list[dict[str, Any]] = field(default_factory=list)
 
 
-class FilesystemLemmaWorker:
+class LemmaWorker:
     def __init__(
         self,
         *,

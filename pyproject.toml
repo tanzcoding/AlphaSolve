@@ -22,4 +22,4 @@ alphasolve = "alphasolve.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-alphasolve = ["prompts/*.md", "config/*.yaml"]
+alphasolve = ["prompts/*.md", "config/*.yaml", "config/agents/*.yaml", "config/subagents/*.yaml"]

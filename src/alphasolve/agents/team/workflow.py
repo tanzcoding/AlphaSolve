@@ -13,12 +13,12 @@ from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
 from alphasolve.utils.rich_renderer import LemmaTeamRenderer
 
 from .knowledge_digest import KnowledgeDigestQueue, init_knowledge_base
-from .orchestrator import FilesystemOrchestrator, OrchestratorRunResult
+from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count
 from .project import ProjectLayout
 from .tools import ClientFactory
 
 
-class FilesystemAlphaSolve:
+class AlphaSolve:
     def __init__(
         self,
         *,
@@ -63,7 +63,7 @@ class FilesystemAlphaSolve:
             }
             if renderer is not None:
                 renderer.log(None, f"workspace: {self.layout.workspace_dir}", module="startup")
-                renderer.update_pool(verified_count=_count_markdown_files(self.layout.verified_dir))
+                renderer.update_pool(verified_count=verified_count(self.layout.verified_dir))
             if self.prime_wolfram:
                 if renderer is not None:
                     renderer.update_orchestrator_phase("wolfram probe", status="running")
@@ -105,7 +105,7 @@ class FilesystemAlphaSolve:
                 )
                 digest_queue.start()
 
-            orchestrator = FilesystemOrchestrator(
+            orchestrator = Orchestrator(
                 layout=self.layout,
                 suite=suite,
                 client_factory=client_factory,
@@ -155,9 +155,8 @@ class FilesystemAlphaSolve:
         )
 
 
-def run_filesystem_alphasolve(**kwargs) -> OrchestratorRunResult:
-    return FilesystemAlphaSolve(**kwargs).run()
-
+def run_alphasolve(**kwargs) -> OrchestratorRunResult:
+    return AlphaSolve(**kwargs).run()
 
 
 def make_openai_client_factory(suite) -> ClientFactory:
@@ -209,9 +208,3 @@ def _worker_result_to_json(result) -> dict[str, Any]:
         "verified_file": str(result.verified_file) if result.verified_file else None,
         "review_file": str(result.review_file) if result.review_file else None,
     }
-
-
-def _count_markdown_files(path: Path) -> int:
-    if not path.exists():
-        return 0
-    return sum(1 for item in path.glob("*.md") if item.is_file())

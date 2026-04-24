@@ -21,6 +21,11 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
             renderer.log(None, "orchestrator started", module="orchestrator")
         elif event_type == "model_request":
             renderer.update_orchestrator_phase("thinking", status="thinking")
+        elif event_type == "thinking":
+            content = str(event.get("content") or "")
+            if content:
+                renderer.update_orchestrator_thinking(module="orchestrator", thinking_text=content, elapsed=0)
+                renderer.finish_orchestrator_thinking(module="orchestrator", elapsed=0, char_count=len(content))
         elif event_type == "assistant_message":
             content = str(event.get("content") or "")
             if content:
@@ -65,6 +70,11 @@ def make_worker_event_sink(
             renderer.log(worker_id, f"{role} started", module=role)
         elif event_type == "model_request":
             renderer.update_phase(worker_id, role, status="thinking")
+        elif event_type == "thinking":
+            content = str(event.get("content") or "")
+            if content:
+                renderer.update_thinking(worker_id, module=role, thinking_text=content, elapsed=0)
+                renderer.finish_thinking(worker_id, module=role, elapsed=0, char_count=len(content))
         elif event_type == "assistant_message":
             content = str(event.get("content") or "")
             if content:

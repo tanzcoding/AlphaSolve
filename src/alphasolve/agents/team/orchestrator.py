@@ -9,7 +9,7 @@ from alphasolve.agents.general import GeneralPurposeAgent, Workspace
 from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
 
 from .dashboard import make_orchestrator_event_sink
-from .lemma_worker import FilesystemLemmaWorker, LemmaWorkerRunResult
+from .lemma_worker import LemmaWorker, LemmaWorkerRunResult
 from .project import ProjectLayout
 from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_registry
 
@@ -71,7 +71,7 @@ class WorkerManager:
                 verified_ctx_size=self._verified_count(),
                 remaining_capacity=max(0, self.max_workers - len(self.active) - 1),
             )
-        worker = FilesystemLemmaWorker(
+        worker = LemmaWorker(
             layout=self.layout,
             suite=self.suite,
             client_factory=self.client_factory,
@@ -110,7 +110,7 @@ class WorkerManager:
         }
 
     def close(self) -> None:
-        self.executor.shutdown(wait=True, cancel_futures=False)
+        self.executor.shutdown(wait=False, cancel_futures=True)
         self._collect_done()
 
     def _collect_done(self) -> None:
@@ -147,12 +147,10 @@ class WorkerManager:
         return completed
 
     def _verified_count(self) -> int:
-        if not self.layout.verified_dir.exists():
-            return 0
-        return sum(1 for path in self.layout.verified_dir.glob("*.md") if path.is_file())
+        return verified_count(self.layout.verified_dir)
 
 
-class FilesystemOrchestrator:
+class Orchestrator:
     def __init__(
         self,
         *,
@@ -260,9 +258,13 @@ class FilesystemOrchestrator:
         return "\n\n".join(parts)
 
     def _verified_count(self) -> int:
-        if not self.layout.verified_dir.exists():
-            return 0
-        return sum(1 for path in self.layout.verified_dir.glob("*.md") if path.is_file())
+        return verified_count(self.layout.verified_dir)
+
+
+def verified_count(verified_dir: Path) -> int:
+    if not verified_dir.exists():
+        return 0
+    return sum(1 for path in verified_dir.glob("*.md") if path.is_file())
 
 
 def _worker_result_payload(result: LemmaWorkerRunResult) -> dict[str, Any]:

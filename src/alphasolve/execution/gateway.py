@@ -3,12 +3,13 @@ from __future__ import annotations
 import multiprocessing as mp
 import os
 import queue
+import shutil
+import tempfile
 import threading
 import uuid
 from dataclasses import dataclass
-from typing import Optional
 
-from alphasolve.llms.tools import run_python, run_wolfram
+from alphasolve.execution.runners import run_python, run_wolfram
 from alphasolve.utils.logger import Logger
 from wolframclient.evaluation import WolframLanguageSession
 
@@ -36,13 +37,14 @@ class ExecutionGateway:
         *,
         python_workers: int = 2,
         wolfram_enabled: bool = True,
-        logger: Optional[Logger] = None,
+        logger: Logger | None = None,
     ) -> None:
         self.python_workers = max(1, int(python_workers))
         self.wolfram_enabled = wolfram_enabled
         self.logger = logger
+        self._sandbox_root = tempfile.mkdtemp(prefix="alphasolve-exec-")
 
-        self._python_pool: Optional[_PythonWorkerPool] = None
+        self._python_pool: _PythonWorkerPool | None = None
         self._wolfram = _WolframSessionRegistry(logger=logger)
 
     def run_python(
@@ -51,10 +53,15 @@ class ExecutionGateway:
         session_id: str,
         code: str,
         timeout_seconds: int = 300,
+        allow_filesystem: bool = False,
     ) -> ExecutionOutput:
         if self._python_pool is None:
-            self._python_pool = _PythonWorkerPool(self.python_workers, logger=self.logger)
-        return self._python_pool.execute(session_id, code, timeout_seconds)
+            self._python_pool = _PythonWorkerPool(
+                self.python_workers,
+                sandbox_root=self._sandbox_root,
+                logger=self.logger,
+            )
+        return self._python_pool.execute(session_id, code, timeout_seconds, allow_filesystem=allow_filesystem)
 
     def run_wolfram(
         self,
@@ -72,18 +79,20 @@ class ExecutionGateway:
             self._python_pool.close()
             self._python_pool = None
         self._wolfram.close()
+        shutil.rmtree(self._sandbox_root, ignore_errors=True)
 
 
 class _PythonWorkerPool:
-    def __init__(self, workers: int, *, logger: Optional[Logger] = None) -> None:
+    def __init__(self, workers: int, *, sandbox_root: str, logger: Logger | None = None) -> None:
         self._logger = logger
+        self._sandbox_root = sandbox_root
         self._ctx = mp.get_context("spawn")
         self._out_queue = self._ctx.Queue()
         self._in_queues = [self._ctx.Queue() for _ in range(workers)]
         self._processes = [
             self._ctx.Process(
                 target=_python_worker_loop,
-                args=(idx, self._in_queues[idx], self._out_queue),
+                args=(idx, self._in_queues[idx], self._out_queue, self._sandbox_root),
                 daemon=True,
             )
             for idx in range(workers)
@@ -99,7 +108,14 @@ class _PythonWorkerPool:
         self._dispatcher = threading.Thread(target=self._dispatch_results, daemon=True)
         self._dispatcher.start()
 
-    def execute(self, session_id: str, code: str, timeout_seconds: int) -> ExecutionOutput:
+    def execute(
+        self,
+        session_id: str,
+        code: str,
+        timeout_seconds: int,
+        *,
+        allow_filesystem: bool,
+    ) -> ExecutionOutput:
         request_id = uuid.uuid4().hex
         result_box: "queue.Queue[dict]" = queue.Queue(maxsize=1)
         worker_idx = self._worker_for_session(session_id)
@@ -115,6 +131,7 @@ class _PythonWorkerPool:
                 "session_id": session_id,
                 "code": code,
                 "timeout_seconds": timeout_seconds,
+                "allow_filesystem": allow_filesystem,
             }
         )
 
@@ -167,7 +184,7 @@ class _PythonWorkerPool:
 
 
 class _WolframSessionRegistry:
-    def __init__(self, *, logger: Optional[Logger] = None) -> None:
+    def __init__(self, *, logger: Logger | None = None) -> None:
         self._logger = logger
         self._lock = threading.Lock()
         self._sessions: dict[str, object] = {}
@@ -202,7 +219,7 @@ class _WolframSessionRegistry:
         with self._lock:
             session = self._sessions.get(session_id)
             if session is None:
-                session = _start_wolfram_session(False)
+                session = _start_wolfram_session()
                 if session is not None:
                     self._sessions[session_id] = session
             return session
@@ -218,7 +235,7 @@ class _WolframSessionRegistry:
     def _restart_session(self, session_id: str) -> None:
         with self._lock:
             old = self._sessions.pop(session_id, None)
-            new = _start_wolfram_session(False)
+            new = _start_wolfram_session()
             if new is not None:
                 self._sessions[session_id] = new
         if old is not None:
@@ -228,8 +245,9 @@ class _WolframSessionRegistry:
                 pass
 
 
-def _python_worker_loop(worker_idx: int, in_queue, out_queue) -> None:
+def _python_worker_loop(worker_idx: int, in_queue, out_queue, sandbox_root: str) -> None:
     envs: dict[str, dict] = {}
+    session_dirs: dict[str, str] = {}
     while True:
         request = in_queue.get()
         if request is None:
@@ -239,9 +257,24 @@ def _python_worker_loop(worker_idx: int, in_queue, out_queue) -> None:
         session_id = request["session_id"]
         code = request.get("code", "")
         timeout_seconds = int(request.get("timeout_seconds", 300))
+        allow_filesystem = bool(request.get("allow_filesystem", False))
         env = envs.setdefault(session_id, {})
+        session_dir = session_dirs.get(session_id)
+        if session_dir is None:
+            session_dir = tempfile.mkdtemp(prefix=f"py-{worker_idx}-", dir=sandbox_root)
+            session_dirs[session_id] = session_dir
 
-        stdout, error = run_python(code, env, timeout_seconds=timeout_seconds)
+        old_cwd = os.getcwd()
+        try:
+            os.chdir(session_dir)
+            stdout, error = run_python(
+                code,
+                env,
+                timeout_seconds=timeout_seconds,
+                allow_filesystem=allow_filesystem,
+            )
+        finally:
+            os.chdir(old_cwd)
         tool_content, log_parts = _format_output(output=stdout, error=error, output_label="stdout")
         out_queue.put(
             {
@@ -253,7 +286,7 @@ def _python_worker_loop(worker_idx: int, in_queue, out_queue) -> None:
         )
 
 
-def _format_output(*, output: str, error: Optional[str], output_label: str) -> tuple[str, list[str]]:
+def _format_output(*, output: str, error: str | None, output_label: str) -> tuple[str, list[str]]:
     tool_content = ""
     log_parts: list[str] = []
     if output:
@@ -267,7 +300,7 @@ def _format_output(*, output: str, error: Optional[str], output_label: str) -> t
     return tool_content, log_parts
 
 
-def _start_wolfram_session(print_to_console: bool = False):
+def _start_wolfram_session():
     try:
         return WolframLanguageSession()
     except Exception:

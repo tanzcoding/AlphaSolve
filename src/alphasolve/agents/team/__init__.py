@@ -1,6 +1,6 @@
-from .workflow import FilesystemAlphaSolve, run_filesystem_alphasolve
+from .workflow import AlphaSolve, run_alphasolve
 
 __all__ = [
-    "FilesystemAlphaSolve",
-    "run_filesystem_alphasolve",
+    "AlphaSolve",
+    "run_alphasolve",
 ]

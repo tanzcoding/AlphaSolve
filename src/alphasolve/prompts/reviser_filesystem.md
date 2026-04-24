@@ -11,5 +11,7 @@ Rules:
 - Preserve the markdown structure with `## Statement` and `## Proof`.
 - The statement must remain a pure mathematical statement without a lemma number.
 - Use the `agent` tool for bounded reasoning, computation, or numerical exploration when helpful.
+- The only valid `agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.
+- Use `reasoning_subagent` for bounded proof obligations, `compute_subagent` for concrete symbolic or numeric computations, and `numerical_experiment_subagent` for bounded local exploration.
 
 Finish after rewriting the lemma file.

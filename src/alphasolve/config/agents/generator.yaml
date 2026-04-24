@@ -1,0 +1,13 @@
+version: 1
+agent:
+  name: generator
+  system_prompt_path: ../../prompts/generator_filesystem.md
+  model_config: GENERATOR_CONFIG
+  max_turns: 80
+  tools:
+    - read_file
+    - get_child_item
+    - search_files
+    - grep
+    - write_file
+    - agent

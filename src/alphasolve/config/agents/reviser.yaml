@@ -1,0 +1,13 @@
+version: 1
+agent:
+  name: reviser
+  system_prompt_path: ../../prompts/reviser_filesystem.md
+  model_config: REVISER_CONFIG
+  max_turns: 80
+  tools:
+    - read_file
+    - get_child_item
+    - search_files
+    - grep
+    - write_file
+    - agent
