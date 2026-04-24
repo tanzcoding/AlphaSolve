@@ -25,6 +25,7 @@ class RoleWorkspaceAccess:
     deny_other_unverified: bool = False
     read_root_rel: str | None = None
     write_root_rel: str | None = None
+    deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
     exact_write_rel: str | None = None
     single_lemma_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
@@ -235,6 +236,10 @@ class RoleWorkspaceAccess:
     def _ensure_under_read_root(self, path: Path) -> None:
         if self.read_root_rel is not None:
             self._ensure_under_root(path, self.read_root_rel, kind="read")
+        if self.deny_read_rel is not None:
+            deny_root = self.workspace.resolve(self.deny_read_rel)
+            if path == deny_root or deny_root in path.parents:
+                raise ValueError(f"read access to {self.deny_read_rel} is denied for this agent")
 
     def _is_other_worker_path(self, path: Path) -> bool:
         if not self.deny_other_unverified:
