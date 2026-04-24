@@ -29,6 +29,8 @@ def main():
                         help="Path to an agent suite YAML file or directory containing agents.yaml")
     parser.add_argument("--max_verify_rounds", type=int, default=None,
                         help="Maximum verifier/reviser rounds per lemma worker (default: from agents.yaml)")
+    parser.add_argument("--verifier_scaling_factor", type=int, default=None,
+                        help="Independent verifier attempts per verifier round (default: from agents.yaml)")
     parser.add_argument("--subagent_max_depth", type=int, default=None,
                         help="Maximum recursive depth for subagents (default: from agents.yaml)")
     parser.add_argument("--demo", action="store_true",
@@ -47,6 +49,11 @@ def main():
     config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
     suite_settings = load_agent_suite_config(config_path).settings
     max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
+    verifier_scaling_factor = (
+        args.verifier_scaling_factor
+        if args.verifier_scaling_factor is not None
+        else int(suite_settings.get("verifier_scaling_factor", 1))
+    )
     subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
 
     try:
@@ -57,6 +64,7 @@ def main():
             config_path=args.config,
             max_workers=args.lemmaworkers or default_max_workers,
             max_verify_rounds=max_verify_rounds,
+            verifier_scaling_factor=verifier_scaling_factor,
             subagent_max_depth=subagent_max_depth,
             client_factory=make_demo_client_factory() if args.demo else None,
             prime_wolfram=not args.no_wolfram_prime,

@@ -1,0 +1,20 @@
+version: 1
+agent:
+  name: verifier_premise_chain
+  system_prompt_path: ../../prompts/verifier_premise_chain.md
+  model_config: VERIFIER_CONFIG
+  max_turns: 80
+  tools:
+    - read_file
+    - get_child_item
+    - search_files
+    - grep
+    - write_file
+    - agent
+  tool_parameters:
+    agent:
+      type:
+        enum:
+          - compute_subagent
+          - numerical_experiment_subagent
+          - reasoning_subagent

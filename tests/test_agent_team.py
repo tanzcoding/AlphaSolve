@@ -38,7 +38,16 @@ def test_default_agent_suite_loads_yaml_roles():
     suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
     suite_from_dir = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-    assert {"orchestrator", "generator", "verifier", "reviser", "theorem_checker"} <= set(suite.agents)
+    assert {
+        "orchestrator",
+        "generator",
+        "verifier",
+        "verifier_stepwise",
+        "verifier_premise_chain",
+        "verifier_adversarial",
+        "reviser",
+        "theorem_checker",
+    } <= set(suite.agents)
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
     assert "spawn_worker" in suite.agents["orchestrator"].tools
     assert "agent" in suite.agents["generator"].tools
@@ -48,6 +57,13 @@ def test_default_agent_suite_loads_yaml_roles():
         "reasoning_subagent",
     ]
     assert suite.subagents["reasoning_subagent"].tool_parameters["agent"]["type"]["enum"] == ["reasoning_subagent"]
+    assert suite.settings["verifier_scaling_factor"] == 4
+    assert suite.settings["verifier_agents"] == [
+        "verifier",
+        "verifier_stepwise",
+        "verifier_premise_chain",
+        "verifier_adversarial",
+    ]
     assert suite.subagents["reasoning_subagent"].when_to_use
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
@@ -152,7 +168,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                         }
                     ],
                 }
-            if self.role == "verifier":
+            if self.role.startswith("verifier"):
                 return {
                     "role": "assistant",
                     "content": "Verdict: pass\nSolves original problem: yes\n\nThe lemma itself is valid.",
@@ -187,6 +203,88 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
         assert result.solution_path is None
         assert not (project_dir / "solution.md").exists()
         assert not any(path.name == "theorem_check.md" for path in result.worker_results[0].worker_dir.glob("*.md"))
+
+
+def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
+    verifier_calls = []
+
+    class ScalingClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            if self.role == "generator":
+                if self.calls > 1:
+                    return {"role": "assistant", "content": "Generator wrote the lemma."}
+                task = "\n".join(str(message.get("content") or "") for message in messages)
+                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "write_scaling_candidate",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": f"{worker_dir}/scaling-candidate.md",
+                                        "content": (
+                                            "# Scaling Candidate\n\n"
+                                            "## Statement\n\n"
+                                            "For every real number x, x = x.\n\n"
+                                            "## Proof\n\n"
+                                            "By reflexivity.\n"
+                                        ),
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self.role.startswith("verifier"):
+                verifier_calls.append(self.role)
+                if len(verifier_calls) == 1:
+                    return {"role": "assistant", "content": "Verdict: pass\n\nAttempt one accepts the lemma."}
+                return {"role": "assistant", "content": "Verdict: fail\n\nAttempt two found a gap."}
+            if self.role == "reviser":
+                return {"role": "assistant", "content": "No revision in this test."}
+            if self.role == "theorem_checker":
+                return {"role": "assistant", "content": "Solves original problem: yes"}
+            return {"role": "assistant", "content": "unused"}
+
+    def factory(config):
+        return ScalingClient(config.name)
+
+    with local_project_dir("verifier_scaling") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+
+        result = LemmaWorker(
+            layout=layout,
+            suite=suite,
+            client_factory=factory,
+            worker_id=0,
+            max_verify_rounds=1,
+            verifier_scaling_factor=2,
+            subagent_max_depth=1,
+        ).run()
+
+        assert result.status == "rejected"
+        assert result.review_file is not None
+        review = result.review_file.read_text(encoding="utf-8")
+        assert review.startswith("Verdict: fail")
+        assert "Attempt 1 (verifier): pass" in review
+        assert "Attempt 2 (verifier_stepwise): fail" in review
+        assert verifier_calls == ["verifier", "verifier_stepwise"]
+        verifier_traces = [item for item in result.trace if item["role"] == "verifier"]
+        assert [item["config"] for item in verifier_traces] == ["verifier", "verifier_stepwise"]
 
 
 def test_solution_writer_collects_recursive_refs_with_final_lemma_last():
@@ -356,7 +454,7 @@ def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
                 return {"role": "assistant", "content": "Generator finished."}
             if self.role == "reasoning_subagent":
                 return {"role": "assistant", "content": "PROVED\n\nThe bounded claim is valid."}
-            if self.role == "verifier":
+            if self.role.startswith("verifier"):
                 return {"role": "assistant", "content": "Verdict: pass\n\nThe lemma is valid."}
             if self.role == "theorem_checker":
                 return {"role": "assistant", "content": "Solves original problem: yes\n\nThe lemma matches the problem."}

@@ -28,6 +28,7 @@ class AlphaSolve:
         config_path: str | Path | None = None,
         max_workers: int = 2,
         max_verify_rounds: int = 2,
+        verifier_scaling_factor: int | None = None,
         subagent_max_depth: int = 2,
         client_factory: ClientFactory | None = None,
         prime_wolfram: bool = True,
@@ -39,6 +40,7 @@ class AlphaSolve:
         self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "config"
         self.max_workers = max(1, int(max_workers))
         self.max_verify_rounds = max(1, int(max_verify_rounds))
+        self.verifier_scaling_factor_override = verifier_scaling_factor
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.client_factory_override = client_factory
         self.prime_wolfram = prime_wolfram
@@ -92,6 +94,12 @@ class AlphaSolve:
             )
 
             suite = load_agent_suite_config(self.config_path)
+            verifier_scaling_factor = (
+                int(self.verifier_scaling_factor_override)
+                if self.verifier_scaling_factor_override is not None
+                else int(suite.settings.get("verifier_scaling_factor", 1))
+            )
+            verifier_scaling_factor = max(1, verifier_scaling_factor)
             client_factory = self.client_factory_override or make_openai_client_factory(suite)
 
             if "knowledge_digest" in suite.subagents:
@@ -111,6 +119,7 @@ class AlphaSolve:
                 client_factory=client_factory,
                 max_workers=self.max_workers,
                 max_verify_rounds=self.max_verify_rounds,
+                verifier_scaling_factor=verifier_scaling_factor,
                 subagent_max_depth=self.subagent_max_depth,
                 renderer=renderer,
                 execution_gateway=execution_gateway,

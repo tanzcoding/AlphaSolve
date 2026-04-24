@@ -39,6 +39,7 @@ class WorkerManager:
         client_factory: ClientFactory,
         max_workers: int,
         max_verify_rounds: int,
+        verifier_scaling_factor: int,
         subagent_max_depth: int,
         renderer: LemmaTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
@@ -49,6 +50,7 @@ class WorkerManager:
         self.client_factory = client_factory
         self.max_workers = max(1, int(max_workers))
         self.max_verify_rounds = max_verify_rounds
+        self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = subagent_max_depth
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.active: dict[concurrent.futures.Future, int] = {}
@@ -91,6 +93,7 @@ class WorkerManager:
             worker_id=worker_id,
             worker_hint=hint,
             max_verify_rounds=self.max_verify_rounds,
+            verifier_scaling_factor=self.verifier_scaling_factor,
             subagent_max_depth=self.subagent_max_depth,
             renderer=self.renderer,
             execution_gateway=self.execution_gateway,
@@ -184,6 +187,7 @@ class Orchestrator:
         client_factory: ClientFactory,
         max_workers: int,
         max_verify_rounds: int,
+        verifier_scaling_factor: int,
         subagent_max_depth: int,
         renderer: LemmaTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
@@ -194,6 +198,7 @@ class Orchestrator:
         self.client_factory = client_factory
         self.max_workers = max_workers
         self.max_verify_rounds = max_verify_rounds
+        self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = subagent_max_depth
         self.renderer = renderer
         self.execution_gateway = execution_gateway
@@ -209,6 +214,7 @@ class Orchestrator:
             client_factory=self.client_factory,
             max_workers=self.max_workers,
             max_verify_rounds=self.max_verify_rounds,
+            verifier_scaling_factor=self.verifier_scaling_factor,
             subagent_max_depth=self.subagent_max_depth,
             renderer=self.renderer,
             execution_gateway=self.execution_gateway,

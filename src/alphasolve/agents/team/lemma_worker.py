@@ -79,6 +79,7 @@ class LemmaWorker:
         worker_id: int,
         worker_hint: str | None = None,
         max_verify_rounds: int = 2,
+        verifier_scaling_factor: int = 1,
         subagent_max_depth: int = 2,
         renderer: LemmaTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
@@ -91,6 +92,7 @@ class LemmaWorker:
         self.worker_id = worker_id
         self.worker_hint = worker_hint
         self.max_verify_rounds = max(1, int(max_verify_rounds))
+        self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.workspace = Workspace(layout.workspace_dir)
         self.worker_dir = layout.unverified_dir / f"lemma-{worker_id:04d}-{uuid.uuid4().hex[:8]}"
@@ -205,11 +207,36 @@ class LemmaWorker:
         return self._find_lemma_file()
 
     def _run_verifier(self, lemma_file: Path, *, round_index: int) -> str:
-        role = f"verifier r{round_index}"
+        attempt_reviews: list[dict[str, Any]] = []
+        config_names = self._verifier_config_names()
+        for attempt_index in range(1, self.verifier_scaling_factor + 1):
+            if self._should_stop():
+                break
+            config_name = config_names[(attempt_index - 1) % len(config_names)]
+            review_text = self._run_verifier_attempt(
+                lemma_file,
+                round_index=round_index,
+                attempt_index=attempt_index,
+                config_name=config_name,
+            )
+            attempt_reviews.append(
+                {
+                    "attempt": attempt_index,
+                    "config": config_name,
+                    "passed": _is_pass_verdict(review_text),
+                    "review": review_text,
+                }
+            )
+            if not _is_pass_verdict(review_text):
+                break
+        return _combine_verifier_reviews(attempt_reviews, self.verifier_scaling_factor)
+
+    def _run_verifier_attempt(self, lemma_file: Path, *, round_index: int, attempt_index: int, config_name: str) -> str:
+        role = f"verifier r{round_index}.{attempt_index}"
         self._set_phase(role, status="thinking")
-        verifier_workspace = self.worker_dir / "verifier_workspace"
+        verifier_workspace = self.worker_dir / "verifier_workspace" / f"round-{round_index:02d}" / f"attempt-{attempt_index:02d}"
         verifier_workspace.mkdir(parents=True, exist_ok=True)
-        config = self.suite.agents["verifier"]
+        config = self.suite.agents[config_name]
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
@@ -221,7 +248,7 @@ class LemmaWorker:
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/verifier-r{round_index}",
+            session_prefix=f"{self.worker_dir.name}/verifier-r{round_index}-a{attempt_index}-{config_name}",
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -237,8 +264,23 @@ class LemmaWorker:
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
             event_sink=self._event_sink(role),
         )
-        result = agent.run(self._verifier_task(lemma_file, round_index=round_index))
-        self.trace.append({"role": "verifier", "round": round_index, "trace": result.trace, "final_answer": result.final_answer})
+        result = agent.run(
+            self._verifier_task(
+                lemma_file,
+                round_index=round_index,
+                attempt_index=attempt_index,
+                attempt_total=self.verifier_scaling_factor,
+                config_name=config_name,
+            )
+        )
+        self.trace.append({
+            "role": "verifier",
+            "round": round_index,
+            "attempt": attempt_index,
+            "config": config_name,
+            "trace": result.trace,
+            "final_answer": result.final_answer,
+        })
         return result.final_answer
 
     def _run_theorem_checks(self, verified_file: Path) -> tuple[bool, str]:
@@ -351,7 +393,15 @@ class LemmaWorker:
             if part
         )
 
-    def _verifier_task(self, lemma_file: Path, *, round_index: int) -> str:
+    def _verifier_task(
+        self,
+        lemma_file: Path,
+        *,
+        round_index: int,
+        attempt_index: int,
+        attempt_total: int,
+        config_name: str,
+    ) -> str:
         rel = lemma_file.relative_to(self.layout.workspace_dir).as_posix()
         return (
             "# Problem\n"
@@ -363,6 +413,8 @@ class LemmaWorker:
             "filename without the `.md` extension. Do not judge whether this lemma solves the original problem; "
             "that is handled by a separate theorem checker."
             + f"\n\nVerification round: {round_index}"
+            + f"\nIndependent verification attempt: {attempt_index} of {attempt_total}"
+            + f"\nVerifier config: {config_name}"
         )
 
     def _theorem_checker_task(self, verified_file: Path, *, attempt_index: int) -> str:
@@ -439,10 +491,54 @@ class LemmaWorker:
     def _should_stop(self) -> bool:
         return self.stop_event is not None and self.stop_event.is_set()
 
+    def _verifier_config_names(self) -> list[str]:
+        raw = self.suite.settings.get("verifier_agents") or ["verifier"]
+        if isinstance(raw, str):
+            names = [item.strip() for item in raw.split(",") if item.strip()]
+        else:
+            names = [str(item).strip() for item in raw if str(item).strip()]
+        if not names:
+            names = ["verifier"]
+        missing = [name for name in names if name not in self.suite.agents]
+        if missing:
+            raise ValueError(f"unknown verifier agent config(s): {missing}")
+        return names
+
 
 def _is_pass_verdict(text: str) -> bool:
+    for line in (text or "").splitlines():
+        clean = line.strip().lower()
+        if not clean:
+            continue
+        if clean.startswith("verdict:"):
+            return clean.split(":", 1)[1].strip().startswith("pass")
     lowered = (text or "").lower()
-    return "verdict: pass" in lowered or "\\boxed{valid}" in lowered or "boxed{valid}" in lowered
+    return "\\boxed{valid}" in lowered or "boxed{valid}" in lowered
+
+
+def _combine_verifier_reviews(attempt_reviews: list[dict[str, Any]], expected_attempts: int) -> str:
+    failed = [item for item in attempt_reviews if not item["passed"]]
+    verdict = "fail" if failed or len(attempt_reviews) < expected_attempts else "pass"
+    parts = [
+        f"Verdict: {verdict}",
+        "",
+        "# Independent Verifier Attempts",
+        "",
+    ]
+    if len(attempt_reviews) < expected_attempts:
+        parts.extend([
+            f"Only {len(attempt_reviews)} of {expected_attempts} verifier attempts completed.",
+            "",
+        ])
+    for item in attempt_reviews:
+        status = "pass" if item["passed"] else "fail"
+        parts.extend([
+            f"## Attempt {item['attempt']} ({item['config']}): {status}",
+            "",
+            str(item["review"]).strip(),
+            "",
+        ])
+    return "\n".join(parts).rstrip() + "\n"
 
 
 def _solves_problem(text: str) -> bool:
