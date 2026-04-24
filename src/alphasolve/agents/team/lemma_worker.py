@@ -36,6 +36,39 @@ class LemmaWorkerRunResult:
     trace: list[dict[str, Any]] = field(default_factory=list)
 
 
+class GeneratorDigestContext:
+    def __init__(self, *, worker_id: int, worker_rel: str) -> None:
+        self.worker_id = worker_id
+        self.worker_rel = worker_rel
+        self._reasoning_since_last_subagent: list[dict[str, Any]] = []
+
+    def record_event(self, event: dict[str, Any]) -> None:
+        if event.get("type") != "thinking":
+            return
+        content = str(event.get("content") or "")
+        if not content.strip():
+            return
+        self._reasoning_since_last_subagent.append(
+            {
+                "turn": event.get("turn"),
+                "content": content,
+            }
+        )
+
+    def consume(self, subagent_call: dict[str, Any]) -> dict[str, Any]:
+        reasoning = self._reasoning_since_last_subagent
+        self._reasoning_since_last_subagent = []
+        return {
+            "caller_role": "generator",
+            "worker_id": self.worker_id,
+            "worker_dir": self.worker_rel,
+            "subagent_type": subagent_call.get("agent_type"),
+            "subagent_session_id": subagent_call.get("session_id"),
+            "subagent_task": subagent_call.get("task"),
+            "reasoning_since_previous_subagent": reasoning,
+        }
+
+
 class LemmaWorker:
     def __init__(
         self,
@@ -151,6 +184,7 @@ class LemmaWorker:
             deny_other_unverified=True,
             single_lemma_file=True,
         )
+        digest_context = GeneratorDigestContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
         subagents = SubagentService(
             suite=self.suite,
             client_factory=self.client_factory,
@@ -158,12 +192,13 @@ class LemmaWorker:
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/generator",
             digest_queue=self.digest_queue,
+            digest_context_provider=digest_context.consume,
         )
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
-            event_sink=self._event_sink("generator"),
+            event_sink=self._generator_event_sink(digest_context),
         )
         result = agent.run(self._generator_task())
         self.trace.append({"role": "generator", "trace": result.trace, "final_answer": result.final_answer})
@@ -386,6 +421,16 @@ class LemmaWorker:
 
     def _event_sink(self, role: str):
         return make_worker_event_sink(self.renderer, worker_id=self.worker_id, role=role)
+
+    def _generator_event_sink(self, digest_context: GeneratorDigestContext):
+        worker_sink = self._event_sink("generator")
+
+        def sink(event: dict[str, Any]) -> None:
+            digest_context.record_event(event)
+            if worker_sink is not None:
+                worker_sink(event)
+
+        return sink
 
     def _set_phase(self, phase: str, *, status: str) -> None:
         if self.renderer is not None:

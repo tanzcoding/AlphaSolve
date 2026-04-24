@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from alphasolve.agents.general import Workspace, load_agent_suite_config  # noqa: E402
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
+from alphasolve.agents.team.lemma_worker import LemmaWorker  # noqa: E402
 from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
 from alphasolve.agents.team.solution import write_solution  # noqa: E402
 from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService  # noqa: E402
@@ -263,6 +264,128 @@ def test_role_workspace_access_can_restrict_reads_to_verifier_workspace():
             assert "read path must stay under" in str(exc)
         else:
             raise AssertionError("subagent file reads should stay inside verifier_workspace")
+
+
+def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
+    class CapturingDigestQueue:
+        def __init__(self):
+            self.tasks = []
+
+        def submit(self, task):
+            self.tasks.append(task)
+
+    class DigestClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            if self.role == "generator":
+                task = "\n".join(str(message.get("content") or "") for message in messages)
+                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                if self.calls == 1:
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "First generator reasoning slice.",
+                        "tool_calls": [
+                            {
+                                "id": "call_reasoning_a",
+                                "type": "function",
+                                "function": {
+                                    "name": "agent",
+                                    "arguments": json.dumps(
+                                        {"type": "reasoning_subagent", "task": "Check the first bounded claim."}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                if self.calls == 2:
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "reasoning_content": "Second generator reasoning slice.",
+                        "tool_calls": [
+                            {
+                                "id": "call_reasoning_b",
+                                "type": "function",
+                                "function": {
+                                    "name": "agent",
+                                    "arguments": json.dumps(
+                                        {"type": "reasoning_subagent", "task": "Check the second bounded claim."}
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                if self.calls == 3:
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "write_digest_demo",
+                                "type": "function",
+                                "function": {
+                                    "name": "write_file",
+                                    "arguments": json.dumps(
+                                        {
+                                            "path": f"{worker_dir}/digest-demo.md",
+                                            "content": (
+                                                "# Digest Demo\n\n"
+                                                "## Statement\n\n"
+                                                "For every real number x, x = x.\n\n"
+                                                "## Proof\n\n"
+                                                "This follows from equality reflexivity.\n"
+                                            ),
+                                        }
+                                    ),
+                                },
+                            }
+                        ],
+                    }
+                return {"role": "assistant", "content": "Generator finished."}
+            if self.role == "reasoning_subagent":
+                return {"role": "assistant", "content": "PROVED\n\nThe bounded claim is valid."}
+            if self.role == "verifier":
+                return {"role": "assistant", "content": "Verdict: pass\n\nThe lemma is valid."}
+            if self.role == "theorem_checker":
+                return {"role": "assistant", "content": "Solves original problem: yes\n\nThe lemma matches the problem."}
+            return {"role": "assistant", "content": "unused"}
+
+    def factory(config):
+        return DigestClient(config.name)
+
+    with local_project_dir("generator_digest") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        digest_queue = CapturingDigestQueue()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+
+        result = LemmaWorker(
+            layout=layout,
+            suite=suite,
+            client_factory=factory,
+            worker_id=0,
+            max_verify_rounds=1,
+            subagent_max_depth=1,
+            digest_queue=digest_queue,
+        ).run()
+
+        assert result.status == "verified"
+        assert len(digest_queue.tasks) == 2
+        first_context = digest_queue.tasks[0].caller_context
+        second_context = digest_queue.tasks[1].caller_context
+        assert digest_queue.tasks[0].source_label.endswith("/generator/reasoning_subagent")
+        assert first_context["caller_role"] == "generator"
+        assert first_context["reasoning_since_previous_subagent"][0]["content"] == "First generator reasoning slice."
+        assert second_context["reasoning_since_previous_subagent"][0]["content"] == "Second generator reasoning slice."
+        assert "First generator reasoning slice." not in json.dumps(second_context, ensure_ascii=False)
+        assert digest_queue.tasks[0].trace_segment[0]["type"] == "run_start"
 
 
 def test_execution_gateway_keeps_sessions_isolated_and_blocks_filesystem():

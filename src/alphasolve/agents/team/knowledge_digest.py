@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 class DigestTask:
     trace_segment: list[dict[str, Any]]
     source_label: str  # e.g. "worker-0001/generator/compute_subagent"
+    caller_context: dict[str, Any] | None = None
 
 
 class KnowledgeDigestQueue:
@@ -85,11 +86,20 @@ class KnowledgeDigestQueue:
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagent_svc)
 
-        trace_text = json.dumps(task.trace_segment, ensure_ascii=False, indent=2)
+        payload: Any = task.trace_segment
+        if task.caller_context:
+            payload = {
+                "source_label": task.source_label,
+                "caller_context": task.caller_context,
+                "subagent_trace": task.trace_segment,
+            }
+        trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
         task_prompt = (
             f"# New trace segment from: {task.source_label}\n\n"
             f"```json\n{trace_text}\n```\n\n"
-            "Update the knowledge base in `knowledge/` based on this trace. "
+            "Update the knowledge base in `knowledge/` based on this trace segment. "
+            "If `caller_context` is present, it contains the caller's new reasoning since the previous subagent "
+            "call plus metadata about the current subagent call; use it together with `subagent_trace`. "
             "Read `knowledge/index.md` first to understand existing entries. "
             "Create or update wiki-style entries. "
             "Append a one-line entry to `knowledge/log.md` when done."

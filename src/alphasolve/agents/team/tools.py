@@ -410,6 +410,7 @@ class SubagentService:
         execution_gateway: "ExecutionGateway | None" = None,
         session_prefix: str = "subagent",
         digest_queue: "Any | None" = None,
+        digest_context_provider: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     ) -> None:
         self.suite = suite
         self.client_factory = client_factory
@@ -418,6 +419,7 @@ class SubagentService:
         self.execution_gateway = execution_gateway
         self.session_prefix = session_prefix
         self.digest_queue = digest_queue
+        self.digest_context_provider = digest_context_provider
 
     def available_types(self) -> list[str]:
         return sorted(self.suite.subagents)
@@ -473,9 +475,23 @@ class SubagentService:
         # Submit trace to digest queue unless we ARE the digest agent (avoid recursion)
         if self.digest_queue is not None and not self.session_prefix.startswith("knowledge_digest"):
             from .knowledge_digest import DigestTask
+            caller_context = None
+            if self.digest_context_provider is not None:
+                try:
+                    caller_context = self.digest_context_provider(
+                        {
+                            "agent_type": agent_type,
+                            "session_id": session_id,
+                            "task": task,
+                            "result": out,
+                        }
+                    )
+                except Exception as exc:
+                    caller_context = {"digest_context_error": str(exc)}
             self.digest_queue.submit(DigestTask(
                 trace_segment=result.trace,
                 source_label=f"{self.session_prefix}/{agent_type}",
+                caller_context=caller_context,
             ))
         return out
 
