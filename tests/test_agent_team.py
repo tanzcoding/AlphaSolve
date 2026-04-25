@@ -8,9 +8,10 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agents.general import Workspace, load_agent_suite_config  # noqa: E402
+from alphasolve.agents.general import GeneralAgentConfig, Workspace, load_agent_suite_config  # noqa: E402
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
+from alphasolve.agents.team.knowledge_digest import DigestTask, KnowledgeDigestQueue  # noqa: E402
 from alphasolve.agents.team.lemma_worker import LemmaWorker  # noqa: E402
 from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
 from alphasolve.agents.team.solution import write_solution  # noqa: E402
@@ -70,7 +71,57 @@ def test_default_agent_suite_loads_yaml_roles():
     assert digest.tool_parameters["get_child_item"]["path"] == {"default": "knowledge", "enum": ["knowledge", "knowledge/"]}
     assert digest.tool_parameters["get_child_item"]["recursive"]["const"] is False
     assert digest.tool_parameters["write_file"]["path"]["pattern"].endswith("\\.md$")
+    assert "not a transcript archive" in digest.system_prompt
+    assert "<source_label>" not in digest.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
+
+
+def test_knowledge_digest_task_prompt_hides_source_labels():
+    class CapturingClient:
+        def __init__(self):
+            self.messages = []
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.messages = messages
+            return {"role": "assistant", "content": "done"}
+
+    class Suite:
+        def __init__(self):
+            self.subagents = {
+                "knowledge_digest": GeneralAgentConfig(
+                    name="knowledge_digest",
+                    system_prompt="Digest prompt",
+                    tools=[],
+                    max_turns=1,
+                )
+            }
+
+    with local_project_dir("digest_sanitizes_source") as project_dir:
+        workspace_dir = project_dir / "workspace"
+        knowledge_dir = workspace_dir / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+        client = CapturingClient()
+        queue = KnowledgeDigestQueue(
+            knowledge_dir=knowledge_dir,
+            workspace_dir=workspace_dir,
+            suite=Suite(),
+            client_factory=lambda config: client,
+        )
+
+        queue._run_digest(
+            DigestTask(
+                trace_segment=[{"role": "assistant", "content": "The inequality ||u||_{H^k} <= C||u||_{H^{k-1}} fails."}],
+                source_label="lemma-0007-fc2e84e3/verifier-r6-a1-verifier_failure_modes",
+                caller_context={"caller_role": "verifier"},
+            )
+        )
+
+        task_text = client.messages[1]["content"]
+        assert "lemma-0007-fc2e84e3" not in task_text
+        assert "verifier-r6" not in task_text
+        assert '"trace_kind": "verifier"' in task_text
+        assert "private triage" in task_text
 
 
 def test_agent_team_demo_creates_workspace_and_verified_lemma():

@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 @dataclass
 class DigestTask:
     trace_segment: list[dict[str, Any]]
-    source_label: str  # e.g. "worker-0001/generator/compute_subagent"
+    source_label: str  # 调度用来源标签，不应原样写入知识库。
     caller_context: dict[str, Any] | None = None
 
 
@@ -90,34 +90,39 @@ class KnowledgeDigestQueue:
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagent_svc)
 
-        payload: Any = task.trace_segment
+        trace_kind = _trace_kind(task.source_label)
+        payload: Any = {
+            "trace_kind": trace_kind,
+            "trace": task.trace_segment,
+        }
         if task.caller_context:
             payload = {
-                "source_label": task.source_label,
+                "trace_kind": trace_kind,
                 "caller_context": task.caller_context,
                 "subagent_trace": task.trace_segment,
             }
         trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
-        is_verifier = "verifier" in task.source_label
+        is_verifier = trace_kind == "verifier"
         if is_verifier:
             extra = (
-                "This trace is from a verifier. In addition to normal knowledge updates, "
-                "append up to 3 bullet points to `knowledge/common-errors.md` summarizing "
-                "any proof errors or near-misses found. Each bullet must be one concise sentence. "
-                "Do not add bullets for issues that are already covered in that file."
+                "This trace may contain proof-review material. In addition to normal knowledge updates, "
+                "append up to 3 general mathematical pitfalls to `knowledge/common-errors.md` when useful. "
+                "Each bullet must describe a reusable proof error pattern, not a specific failed lemma, "
+                "reviewer, worker, round, attempt, or source label. Do not add bullets for issues already covered."
             )
         else:
             extra = "Do not modify `knowledge/common-errors.md`."
         task_prompt = (
-            f"# New trace segment from: {task.source_label}\n\n"
+            "# Trace Segment for Knowledge Digest\n\n"
             f"```json\n{trace_text}\n```\n\n"
             "Update the knowledge base in `knowledge/` based on this trace segment. "
-            "If `caller_context` is present, it contains the caller's new reasoning since the previous subagent "
-            "call plus metadata about the current subagent call; use it together with `subagent_trace`. "
-            "Read `knowledge/index.md` first to understand existing entries. "
-            "Create or update wiki-style entries. "
+            "Trace metadata is for private triage only; do not copy source labels, worker names, lemma IDs, "
+            "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
+            "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
+            "Follow the required directory-listing and candidate-search workflow from the system prompt. "
+            "Create or update topic-based wiki entries. "
             f"{extra} "
-            "Append a one-line entry to `knowledge/log.md` when done."
+            "Append a one-line topic-based entry to `knowledge/log.md` when done."
         )
 
         agent = GeneralPurposeAgent(
@@ -132,6 +137,14 @@ class KnowledgeDigestQueue:
 def _make_workspace(workspace_dir: Path):
     from alphasolve.agents.general import Workspace
     return Workspace(workspace_dir)
+
+
+def _trace_kind(source_label: str) -> str:
+    lowered = source_label.lower()
+    for kind in ("verifier", "reviser", "generator", "theorem_checker", "orchestrator"):
+        if kind in lowered:
+            return kind
+    return "subagent"
 
 
 def _update_entry_metadata(knowledge_dir: Path) -> None:
