@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from alphasolve.agents.general import (  # noqa: E402
     GeneralAgentConfig,
     GeneralPurposeAgent,
+    ToolRegistry,
+    ToolResult,
     Workspace,
     build_default_tool_registry,
     load_general_agent_config,
@@ -269,6 +271,33 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
         assert "tool is not enabled" in tool_results[0]["content"]
         assert tool_results[1]["is_error"]
         assert "must be one of" in tool_results[1]["content"]
+
+
+def test_tool_parameter_constraints_apply_runtime_defaults():
+    registry = ToolRegistry()
+
+    registry.register(
+        name="show_path",
+        description="Return the path argument.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "default": "."},
+            },
+            "required": [],
+        },
+        handler=lambda args: ToolResult(str(args["path"])),
+    )
+
+    constraints = {"show_path": {"path": {"default": "knowledge", "const": "knowledge"}}}
+
+    ok = registry.execute("show_path", {}, enabled=["show_path"], tool_parameters=constraints)
+    blocked = registry.execute("show_path", {"path": "."}, enabled=["show_path"], tool_parameters=constraints)
+
+    assert ok.content == "knowledge"
+    assert not ok.is_error
+    assert blocked.is_error
+    assert "must be 'knowledge'" in blocked.content
 
 
 def _run_as_script():

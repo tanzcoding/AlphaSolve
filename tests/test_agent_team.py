@@ -66,6 +66,10 @@ def test_default_agent_suite_loads_yaml_roles():
     assert suite.settings["max_orchestrator_restarts"] == 50
     assert suite.subagents["reasoning_subagent"].when_to_use
     assert "get_child_item" in suite.subagents["reasoning_subagent"].tools
+    digest = suite.subagents["knowledge_digest"]
+    assert digest.tool_parameters["get_child_item"]["path"] == {"default": "knowledge", "enum": ["knowledge", "knowledge/"]}
+    assert digest.tool_parameters["get_child_item"]["recursive"]["const"] is False
+    assert digest.tool_parameters["write_file"]["path"]["pattern"].endswith("\\.md$")
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
 

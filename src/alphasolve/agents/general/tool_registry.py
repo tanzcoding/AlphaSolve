@@ -92,11 +92,12 @@ class ToolRegistry:
         if tool is None:
             return ToolResult(json.dumps({"error": f"unknown tool: {name}"}, ensure_ascii=False), is_error=True)
         constraints = (tool_parameters or {}).get(name) or {}
-        error = _validate_tool_arguments(name, args, constraints)
+        effective_args = _apply_argument_defaults(args, tool.parameters, constraints)
+        error = _validate_tool_arguments(name, effective_args, constraints)
         if error:
             return ToolResult(json.dumps({"error": error}, ensure_ascii=False), is_error=True)
         try:
-            return tool.handler(dict(args))
+            return tool.handler(effective_args)
         except Exception as exc:
             return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
 
@@ -123,6 +124,32 @@ def _validate_tool_arguments(tool_name: str, args: Mapping[str, Any], constraint
         if error:
             return error
     return None
+
+
+def _apply_argument_defaults(
+    args: Mapping[str, Any],
+    parameters: Mapping[str, Any],
+    constraints: Mapping[str, Any],
+) -> dict[str, Any]:
+    out = dict(args)
+    properties = parameters.get("properties", {})
+    if not isinstance(properties, Mapping):
+        properties = {}
+    names = set(properties) | set(constraints)
+    for name in names:
+        key = str(name)
+        if key in out:
+            continue
+        merged: dict[str, Any] = {}
+        base = properties.get(key)
+        if isinstance(base, Mapping):
+            merged.update(dict(base))
+        constraint = constraints.get(key)
+        if isinstance(constraint, Mapping):
+            merged.update(dict(constraint))
+        if "default" in merged:
+            out[key] = deepcopy(merged["default"])
+    return out
 
 
 def _validate_value(value: Any, schema: Mapping[str, Any], *, path: str) -> str | None:

@@ -30,15 +30,21 @@ sources: [<source labels>]
 
 ## Your Workflow
 
-1. Read `knowledge/index.md` to understand existing entries.
-2. Analyze the new trace segment provided in the task.
-3. For each significant mathematical insight, computation result, or reasoning step in the trace:
-   - Find the most relevant existing entry, OR create a new entry if the content is sufficiently distinct.
+1. First call `get_child_item` on `knowledge/` to see the current entry files. Do this before deciding whether any new file is needed.
+2. Read `knowledge/index.md` to understand the current entry map.
+3. Analyze the new trace segment and extract a short list of concrete keywords: mathematical objects, named estimates, failure modes, lemma names, and distinctive formula fragments.
+4. Before creating any new entry, search for candidate existing entries:
+   - Use `search_files` on filename-style keywords.
+   - Use `grep` on mathematical phrases, theorem names, and distinctive claims.
+   - Read the most relevant candidate entries, not just the index line.
+5. For each significant mathematical insight, computation result, or reasoning step in the trace:
+   - Prefer updating the most relevant existing entry when the topic is already covered.
+   - Create a new entry only after the directory listing plus keyword searches show that no suitable existing entry covers the topic.
    - Use `str_replace_file` to update existing entries (preferred over full rewrites).
-   - Use `write_file` to create new entries.
+   - Use `write_file` only for genuinely new `.md` entries.
    - If new content contradicts an existing entry, reason carefully about which is correct. Use `agent` (reasoning_subagent or compute_subagent) if needed to resolve the contradiction.
-4. Update `knowledge/index.md`: add new entries, update descriptions of modified entries.
-5. Append one line to `knowledge/log.md` in the format: `- [<timestamp>] <source_label>: <one-sentence summary of what was added/updated>`
+6. Update `knowledge/index.md`: add new entries, update descriptions of modified entries, and avoid turning one index line into a running history.
+7. Append one line to `knowledge/log.md` in the format: `- [<timestamp>] <source_label>: <one-sentence summary of what was added/updated>`
 
 ## Entry Naming
 

@@ -14,6 +14,50 @@ agent:
     - grep
     - agent
   tool_parameters:
+    read_file:
+      path:
+        pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+    write_file:
+      path:
+        pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+    str_replace_file:
+      path:
+        pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+    get_child_item:
+      path:
+        default: knowledge
+        enum:
+          - knowledge
+          - knowledge/
+      recursive:
+        default: false
+        const: false
+      max_results:
+        default: 300
+        minimum: 1
+        maximum: 500
+    search_files:
+      path:
+        default: knowledge
+        enum:
+          - knowledge
+          - knowledge/
+      max_results:
+        default: 20
+        minimum: 1
+        maximum: 100
+    grep:
+      path:
+        default: knowledge
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*\\.md)?$"
+      max_results:
+        default: 20
+        minimum: 1
+        maximum: 100
+      context_lines:
+        default: 1
+        minimum: 0
+        maximum: 3
     agent:
       type:
         enum:
