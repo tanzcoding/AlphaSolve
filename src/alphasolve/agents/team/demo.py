@@ -23,10 +23,10 @@ class DemoChatClient:
                 "role": "assistant",
                 "content": "Verdict: pass\n\nThis demo lemma is accepted.",
             }
-        if self.role == "review_aggregator":
+        if self.role == "review_verdict_judge":
             return {
                 "role": "assistant",
-                "content": "Verdict: pass\n\nThe verifier attempts accept this demo lemma.",
+                "content": "pass",
             }
         if self.role == "theorem_checker":
             return {

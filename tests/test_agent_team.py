@@ -231,10 +231,10 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                     "role": "assistant",
                     "content": "Verdict: pass\nSolves original problem: yes\n\nThe lemma itself is valid.",
                 }
-            if self.role == "review_aggregator":
+            if self.role == "review_verdict_judge":
                 return {
                     "role": "assistant",
-                    "content": "Verdict: pass\n\nThe verifier attempts accept the lemma.",
+                    "content": "pass",
                 }
             if self.role == "theorem_checker":
                 calls["theorem_checker"] += 1
@@ -315,16 +315,10 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
                 if len(verifier_calls) == 1:
                     return {"role": "assistant", "content": "Verdict: pass\n\nAttempt one accepts the lemma."}
                 return {"role": "assistant", "content": "Verdict: fail\n\nAttempt two found a gap."}
-            if self.role == "review_aggregator":
+            if self.role == "review_verdict_judge":
                 return {
                     "role": "assistant",
-                    "content": (
-                        "Verdict: fail\n\n"
-                        "# Independent Verifier Attempts\n\n"
-                        "Attempt 1 (verifier_failure_modes): pass\n\n"
-                        "Attempt 2 (verifier_stepwise): fail\n\n"
-                        "Attempt two found a gap."
-                    ),
+                    "content": "fail",
                 }
             if self.role == "reviser":
                 return {"role": "assistant", "content": "No revision in this test."}
@@ -354,15 +348,16 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         assert result.status == "rejected"
         assert result.review_file is not None
         review = result.review_file.read_text(encoding="utf-8")
-        assert review.startswith("Verdict: fail")
-        assert "Attempt 1 (verifier_failure_modes): pass" in review
-        assert "Attempt 2 (verifier_stepwise): fail" in review
+        assert "Attempt 1 (verifier_failure_modes)" in review
+        assert "Attempt 2 (verifier_stepwise)" in review
+        assert "Attempt one accepts the lemma." in review
+        assert "Attempt two found a gap." in review
         assert verifier_calls == ["verifier_failure_modes", "verifier_stepwise"]
         verifier_traces = [item for item in result.trace if item["role"] == "verifier"]
         assert [item["config"] for item in verifier_traces] == ["verifier_failure_modes", "verifier_stepwise"]
 
 
-def test_review_aggregator_handles_markdown_wrapped_verdicts():
+def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
     class MarkdownVerdictClient:
         def __init__(self, role):
             self.role = role
@@ -403,30 +398,9 @@ def test_review_aggregator_handles_markdown_wrapped_verdicts():
                 }
             if self.role.startswith("verifier"):
                 return {"role": "assistant", "content": "**Verdict: pass**\n\nThe lemma is valid."}
-            if self.role == "review_aggregator":
-                if self.calls > 1:
-                    return {"role": "assistant", "content": "Aggregation written."}
+            if self.role == "review_verdict_judge":
                 assert "attempt-01/review.md" in task
-                review_path = re.findall(r"`(unverified_lemmas/lemma-[^`]+/review\.md)`", task)[-1]
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "write_aggregated_review",
-                            "type": "function",
-                            "function": {
-                                "name": "write_file",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": review_path,
-                                        "content": "Verdict: pass\n\nThe wrapped attempt verdict is accepted as pass.",
-                                    }
-                                ),
-                            },
-                        }
-                    ],
-                }
+                return {"role": "assistant", "content": "`pass`"}
             if self.role == "theorem_checker":
                 return {"role": "assistant", "content": "Solves original problem: yes"}
             return {"role": "assistant", "content": "unused"}
@@ -454,8 +428,86 @@ def test_review_aggregator_handles_markdown_wrapped_verdicts():
         attempt_review = result.worker_dir / "verifier_workspace" / "round-01" / "attempt-01" / "review.md"
         assert "**Verdict: pass**" in attempt_review.read_text(encoding="utf-8")
         assert result.review_file is not None
-        assert result.review_file.read_text(encoding="utf-8").startswith("Verdict: pass")
-        assert any(item["role"] == "review_aggregator" for item in result.trace)
+        assert "**Verdict: pass**" in result.review_file.read_text(encoding="utf-8")
+        assert any(item["role"] == "review_verdict_judge" for item in result.trace)
+
+
+def test_verifier_pass_continues_until_max_verify_rounds():
+    judge_calls = []
+    theorem_checker_calls = []
+
+    class MultiRoundVerifierClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            task = "\n".join(str(message.get("content") or "") for message in messages)
+            if self.role == "generator":
+                if self.calls > 1:
+                    return {"role": "assistant", "content": "Generator wrote the lemma."}
+                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "write_multiround_candidate",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": f"{worker_dir}/multi-round.md",
+                                        "content": (
+                                            "# Multi Round\n\n"
+                                            "## Statement\n\n"
+                                            "For every real number x, x = x.\n\n"
+                                            "## Proof\n\n"
+                                            "By reflexivity.\n"
+                                        ),
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self.role.startswith("verifier"):
+                return {"role": "assistant", "content": "Verdict: pass\n\nThe attempt accepts the lemma."}
+            if self.role == "review_verdict_judge":
+                judge_calls.append(task)
+                return {"role": "assistant", "content": "pass" if len(judge_calls) == 1 else "fail"}
+            if self.role == "theorem_checker":
+                theorem_checker_calls.append(task)
+                return {"role": "assistant", "content": "Solves original problem: yes"}
+            return {"role": "assistant", "content": "unused"}
+
+    def factory(config):
+        return MultiRoundVerifierClient(config.name)
+
+    with local_project_dir("verifier_requires_all_rounds") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+
+        result = LemmaWorker(
+            layout=layout,
+            suite=suite,
+            client_factory=factory,
+            worker_id=0,
+            max_verify_rounds=2,
+            verifier_scaling_factor=1,
+            subagent_max_depth=0,
+        ).run()
+
+        assert result.status == "rejected"
+        assert len(judge_calls) == 2
+        assert theorem_checker_calls == []
+        verifier_rounds = [item["round"] for item in result.trace if item["role"] == "verifier"]
+        assert verifier_rounds == [1, 2]
 
 
 def test_verifier_review_is_not_visible_to_later_attempts():
@@ -521,8 +573,8 @@ def test_verifier_review_is_not_visible_to_later_attempts():
                     }
                 read_probe["content"] = str(messages[-1].get("content") or "")
                 return {"role": "assistant", "content": "Verdict: fail\n\nSecond round remains independent."}
-            if self.role == "review_aggregator":
-                return {"role": "assistant", "content": "Verdict: fail\n\nAggregated verifier review."}
+            if self.role == "review_verdict_judge":
+                return {"role": "assistant", "content": "fail"}
             if self.role == "reviser":
                 return {"role": "assistant", "content": "No revision in this test."}
             return {"role": "assistant", "content": "unused"}
@@ -723,8 +775,8 @@ def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
                 return {"role": "assistant", "content": "PROVED\n\nThe bounded claim is valid."}
             if self.role.startswith("verifier"):
                 return {"role": "assistant", "content": "Verdict: pass\n\nThe lemma is valid."}
-            if self.role == "review_aggregator":
-                return {"role": "assistant", "content": "Verdict: pass\n\nThe verifier attempts accept the lemma."}
+            if self.role == "review_verdict_judge":
+                return {"role": "assistant", "content": "pass"}
             if self.role == "theorem_checker":
                 return {"role": "assistant", "content": "Solves original problem: yes\n\nThe lemma matches the problem."}
             return {"role": "assistant", "content": "unused"}
