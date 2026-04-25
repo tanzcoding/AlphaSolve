@@ -3,11 +3,11 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from alphasolve.agents.general import GeneralPurposeAgent, Workspace
+from alphasolve.agents.general import AgentRunError, GeneralPurposeAgent, Workspace
 from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
 
 from .dashboard import make_orchestrator_event_sink
@@ -31,6 +31,8 @@ class OrchestratorRunResult:
 
 
 class WorkerManager:
+    DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
+
     def __init__(
         self,
         *,
@@ -109,15 +111,24 @@ class WorkerManager:
             "max_workers": self.max_workers,
         }
 
-    def wait(self) -> dict[str, Any]:
+    def wait(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         self._collect_done()
         if not self.active:
             return {"completed": [], "active_workers": [], "message": "no active lemmaworkers"}
+        timeout = self.DEFAULT_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else max(300.0, float(timeout_seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
-            timeout=None,
+            timeout=timeout,
             return_when=concurrent.futures.FIRST_COMPLETED,
         )
+        if not done:
+            return {
+                "completed": [],
+                "active_workers": sorted(self.active.values()),
+                "timed_out": True,
+                "timeout_seconds": timeout,
+                "message": f"no lemmaworker finished within {timeout:g} seconds",
+            }
         completed = self._consume_done(done)
         payload = {
             "completed": completed,
@@ -129,10 +140,16 @@ class WorkerManager:
             payload["message"] = "problem solved; orchestration should stop"
         return payload
 
-    def close(self) -> None:
-        if self.solved_result is not None:
-            self.stop_event.set()
+    def close(self, *, timeout: float = 5.0) -> None:
+        self.stop_event.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
+        if self.active and timeout > 0:
+            done, _ = concurrent.futures.wait(
+                list(self.active.keys()),
+                timeout=timeout,
+                return_when=concurrent.futures.ALL_COMPLETED,
+            )
+            self._consume_done(done)
         self._collect_done()
 
     def _collect_done(self) -> None:
@@ -150,9 +167,11 @@ class WorkerManager:
             except Exception as exc:
                 if self.renderer is not None:
                     self.renderer.finish_worker(worker_id, status="failed", summary=str(exc))
-                completed.append({"worker_id": worker_id, "status": "failed", "summary": str(exc)})
+                payload = {"worker_id": worker_id, "status": "failed", "summary": str(exc)}
+                self._append_worker_result_log(payload)
+                completed.append(payload)
                 continue
-            self.results.append(result)
+            self.results.append(replace(result, trace=[]))
             if result.solved_problem and result.verified_file is not None and self.solved_result is None:
                 self.solved_result = result
                 self.stop_event.set()
@@ -169,11 +188,21 @@ class WorkerManager:
                     solved=result.solved_problem,
                     verified_count=self._verified_count(),
                 )
-            completed.append(_worker_result_payload(result))
+            payload = _worker_result_payload(result)
+            self._append_worker_result_log(payload)
+            completed.append(payload)
         return completed
 
     def _verified_count(self) -> int:
         return verified_count(self.layout.verified_dir)
+
+    def _append_worker_result_log(self, payload: dict[str, Any]) -> None:
+        try:
+            self.layout.logs_dir.mkdir(parents=True, exist_ok=True)
+            with (self.layout.logs_dir / "worker_results.jsonl").open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
 
 
 class Orchestrator:
@@ -219,6 +248,8 @@ class Orchestrator:
             digest_queue=self.digest_queue,
         )
         result = None
+        error_final_answer = ""
+        error_trace: list[dict[str, Any]] = []
         try:
             registry = self._build_registry(manager)
             config = self.suite.agents["orchestrator"]
@@ -229,13 +260,16 @@ class Orchestrator:
                 event_sink=make_orchestrator_event_sink(self.renderer),
             )
             result = agent.run(self._task())
+        except AgentRunError as exc:
+            error_final_answer = str(exc)
+            error_trace = exc.trace
         finally:
             manager.close()
 
         if result is None:
             return OrchestratorRunResult(
-                final_answer="",
-                trace=[],
+                final_answer=error_final_answer,
+                trace=error_trace,
                 worker_results=list(manager.results),
                 solution_path=manager.solution_path,
             )
@@ -264,7 +298,19 @@ class Orchestrator:
         registry.register(
             name="wait",
             description="Wait until any one active lemmaworker finishes, returning its lifecycle result.",
-            parameters={"type": "object", "properties": {}, "required": []},
+            parameters={
+                "type": "object",
+                "properties": {
+                    "seconds": {
+                        "type": "number",
+                        "description": "Maximum seconds to wait before returning active worker status.",
+                        "default": WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
+                        "minimum": 300,
+                        "maximum": 3600,
+                    },
+                },
+                "required": [],
+            },
             handler=lambda args: self._wait_tool(manager, args),
         )
         return registry
@@ -278,7 +324,8 @@ class Orchestrator:
         )
 
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
-        payload = manager.wait()
+        timeout_seconds = args.get("seconds")
+        payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
         if manager.solved_result is not None:
             manager.close()
         return ToolResult(
@@ -308,7 +355,8 @@ class Orchestrator:
                 "3. Spawn workers with specific, well-motivated hints based on your analysis.\n"
                 "4. Call `wait` to block until a worker finishes, then read its output and repeat.\n\n"
                 "Use `wait` only to receive worker results — it blocks until one worker's lifecycle ends. "
-                "Do not use it as a timer or polling mechanism.\n\n"
+                "It may return `timed_out: true` if no worker finishes within the requested timeout; if repeated "
+                "timeouts show no progress, report the stall so the outer Ralph loop can restart orchestration.\n\n"
                 "You may issue multiple tool calls in a single turn: for example, read several lemma files "
                 "in parallel, or spawn multiple workers at once with distinct hints targeting different "
                 "sub-problems. Avoid spawning workers with redundant or near-identical hints."

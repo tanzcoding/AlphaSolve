@@ -26,6 +26,7 @@ class RoleWorkspaceAccess:
     read_root_rel: str | None = None
     write_root_rel: str | None = None
     deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
+    deny_read_file_names: tuple[str, ...] = ()
     exact_write_rel: str | None = None
     single_lemma_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
@@ -81,7 +82,7 @@ class RoleWorkspaceAccess:
                         return out
                 for name in sorted(files):
                     file_path = current_path / name
-                    if not self._is_other_worker_path(file_path):
+                    if not self._is_other_worker_path(file_path) and not self._is_denied_read_file(file_path):
                         out.append(self._rel(file_path))
                         if len(out) >= max_results:
                             return out
@@ -89,6 +90,8 @@ class RoleWorkspaceAccess:
 
         for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
             if self._is_other_worker_path(child):
+                continue
+            if self._is_denied_read_file(child):
                 continue
             out.append(self._rel(child) + ("/" if child.is_dir() else ""))
             if len(out) >= max_results:
@@ -117,6 +120,8 @@ class RoleWorkspaceAccess:
             for filename in files:
                 file_path = current_path / filename
                 if self._is_other_worker_path(file_path):
+                    continue
+                if self._is_denied_read_file(file_path):
                     continue
                 if needle in filename.lower() and self._extension_allowed(file_path):
                     matches.append(self._rel(file_path))
@@ -147,6 +152,8 @@ class RoleWorkspaceAccess:
         for file_path in files:
             if self._is_other_worker_path(file_path) or not self._extension_allowed(file_path):
                 continue
+            if self._is_denied_read_file(file_path):
+                continue
             lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
             for index, line in enumerate(lines, start=1):
                 hit = bool(compiled.search(line)) if compiled else pattern in line
@@ -172,6 +179,8 @@ class RoleWorkspaceAccess:
         target = self.workspace.resolve(path)
         self._ensure_under_read_root(target)
         self._ensure_not_other_worker_path(target)
+        if self._is_denied_read_file(target):
+            raise ValueError(f"read access to {target.name} is denied for this agent")
         if not target.is_file():
             raise ValueError(f"not a file: {path}")
         if not self._extension_allowed(target):
@@ -192,7 +201,7 @@ class RoleWorkspaceAccess:
             worker_dir = self.workspace.resolve(self.worker_rel)
             if target.parent != worker_dir:
                 raise ValueError("generator can only write one markdown file directly in its own lemma directory")
-            if target.name == "review.md" or target.suffix.lower() != ".md":
+            if target.name in {"review.md", "theorem_check.md", "worker_hint.md"} or target.suffix.lower() != ".md":
                 raise ValueError("generator output must be a lemma markdown file")
             rel = self._rel(target)
             if self._locked_lemma_rel is None:
@@ -216,7 +225,9 @@ class RoleWorkspaceAccess:
                 and not self._is_other_worker_path(current_path / name)
             ]
             for filename in files:
-                yield current_path / filename
+                file_path = current_path / filename
+                if not self._is_denied_read_file(file_path):
+                    yield file_path
 
     def _extension_allowed(self, path: Path) -> bool:
         return path.suffix.lower() in self.allowed_extensions
@@ -252,6 +263,9 @@ class RoleWorkspaceAccess:
             return True
         worker_rel = self.worker_rel.strip("/")
         return not (rel == worker_rel or rel.startswith(worker_rel + "/") or rel == "unverified_lemmas")
+
+    def _is_denied_read_file(self, path: Path) -> bool:
+        return path.is_file() and path.name in set(self.deny_read_file_names)
 
 
 def build_workspace_tool_registry(
@@ -412,6 +426,7 @@ class SubagentService:
         client_factory: ClientFactory,
         max_depth: int = 2,
         file_access_factory: Callable[[], RoleWorkspaceAccess] | None = None,
+        file_allow_write: bool = False,
         execution_gateway: "ExecutionGateway | None" = None,
         session_prefix: str = "subagent",
         digest_queue: "Any | None" = None,
@@ -421,6 +436,7 @@ class SubagentService:
         self.client_factory = client_factory
         self.max_depth = max(0, int(max_depth))
         self.file_access_factory = file_access_factory
+        self.file_allow_write = bool(file_allow_write)
         self.execution_gateway = execution_gateway
         self.session_prefix = session_prefix
         self.digest_queue = digest_queue
@@ -449,9 +465,21 @@ class SubagentService:
         registry = self._build_subagent_registry(depth=depth, session_id=session_id)
         enabled_tools = list(config.tools)
         if self.file_access_factory is not None:
-            for name in ("read_file", "write_file", "get_child_item", "search_files", "grep"):
+            for name in ("read_file", "get_child_item", "search_files", "grep"):
                 if name not in enabled_tools:
                     enabled_tools.append(name)
+            if self.file_allow_write:
+                for name in ("write_file", "str_replace_file"):
+                    if name not in enabled_tools:
+                        enabled_tools.append(name)
+            else:
+                enabled_tools = [name for name in enabled_tools if name not in {"write_file", "str_replace_file"}]
+        else:
+            enabled_tools = [
+                name
+                for name in enabled_tools
+                if name not in {"read_file", "write_file", "str_replace_file", "get_child_item", "search_files", "grep"}
+            ]
         if depth >= self.max_depth and "agent" in enabled_tools:
             enabled_tools = [name for name in enabled_tools if name != "agent"]
         if enabled_tools != list(config.tools):
@@ -541,7 +569,7 @@ class SubagentService:
         )
         if self.file_access_factory is not None:
             access = self.file_access_factory()
-            file_registry = build_workspace_tool_registry(access, allow_write=True)
+            file_registry = build_workspace_tool_registry(access, allow_write=self.file_allow_write)
             for tool in file_registry.registered_tools():
                 registry.register(
                     name=tool.name,

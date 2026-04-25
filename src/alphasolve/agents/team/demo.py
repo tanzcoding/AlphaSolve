@@ -18,7 +18,7 @@ class DemoChatClient:
             return self._orchestrator()
         if self.role == "generator":
             return self._generator(messages)
-        if self.role == "verifier":
+        if self.role.startswith("verifier"):
             return {
                 "role": "assistant",
                 "content": "Verdict: pass\n\nThis demo lemma is accepted.",

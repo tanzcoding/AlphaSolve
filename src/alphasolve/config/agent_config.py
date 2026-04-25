@@ -17,6 +17,13 @@ class AlphaSolveConfig:
         "timeout": 3600,
         "params": {},
     }
+    DEEPSEEK_PRO_CONFIG = {
+        "base_url": "https://api.deepseek.com",
+        "api_key": lambda: os.getenv("DEEPSEEK_API_KEY"),
+        "model": "deepseek-v4-pro",
+        "timeout": 3600,
+        "params": {},
+    }
     PARASAIL_CONFIG = {
         "base_url": "https://api.parasail.io/v1",
         "api_key": lambda: os.getenv("PARASAIL_API_KEY"),
@@ -76,7 +83,7 @@ class AlphaSolveConfig:
     REVISER_CONFIG = {**DEEPSEEK_CONFIG}
     COMPUTE_SUBAGENT_CONFIG = {**DEEPSEEK_CONFIG}
     PROOF_SUBAGENT_CONFIG = {**DEEPSEEK_CONFIG}
-    ORCHESTRATOR_CONFIG = {**LONGCAT_CONFIG}
+    ORCHESTRATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}
 
     CHECK_IS_THEOREM_TIMES = 5
 

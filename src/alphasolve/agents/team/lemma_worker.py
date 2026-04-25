@@ -122,25 +122,31 @@ class LemmaWorker:
             if lemma_file is None:
                 return self._finish("rejected", "generator did not produce a lemma markdown file")
 
-            review_file: Path | None = None
+            final_review_file: Path | None = None
+            last_review_text = ""
             for round_index in range(1, self.max_verify_rounds + 1):
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
                         "lemmaworker cancelled because another worker solved the problem",
                         lemma_file=lemma_file,
-                        review_file=review_file,
                     )
                 review_text = self._run_verifier(lemma_file, round_index=round_index)
-                review_file = self.worker_dir / "review.md"
-                review_file.write_text(review_text, encoding="utf-8")
+                last_review_text = review_text
+                self._write_round_review(review_text, round_index=round_index)
+                if self._should_stop():
+                    return self._finish(
+                        "cancelled",
+                        "lemmaworker cancelled because another worker solved the problem",
+                        lemma_file=lemma_file,
+                    )
                 if _is_pass_verdict(review_text):
+                    final_review_file = self._write_final_review(review_text)
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
                             "lemmaworker cancelled because another worker solved the problem",
                             lemma_file=lemma_file,
-                            review_file=review_file,
                         )
                     verified = self._copy_to_verified(lemma_file)
                     solved_problem, theorem_check_text = self._run_theorem_checks(verified)
@@ -154,7 +160,7 @@ class LemmaWorker:
                         + _extract_statement(lemma_file.read_text(encoding="utf-8")),
                         lemma_file=lemma_file,
                         verified_file=verified,
-                        review_file=review_file,
+                        review_file=final_review_file,
                         theorem_check_file=theorem_check_file,
                         solved_problem=solved_problem,
                     )
@@ -165,15 +171,16 @@ class LemmaWorker:
                             "cancelled",
                             "lemmaworker cancelled because another worker solved the problem",
                             lemma_file=lemma_file,
-                            review_file=review_file,
                         )
 
             summary = "未能产生通过验证的引理。"
             if lemma_file.exists():
                 summary += "\n\n" + lemma_file.read_text(encoding="utf-8")[:4000]
-            if review_file is not None and review_file.exists():
-                summary += "\n\n最终审稿意见：\n" + review_file.read_text(encoding="utf-8")[:4000]
-            return self._finish("rejected", summary, lemma_file=lemma_file, review_file=review_file)
+            if last_review_text:
+                final_review_file = self._write_final_review(last_review_text)
+            if final_review_file is not None and final_review_file.exists():
+                summary += "\n\n最终审稿意见：\n" + final_review_file.read_text(encoding="utf-8")[:4000]
+            return self._finish("rejected", summary, lemma_file=lemma_file, review_file=final_review_file)
         except Exception as exc:
             return self._finish("failed", str(exc))
 
@@ -195,6 +202,11 @@ class LemmaWorker:
             session_prefix=f"{self.worker_dir.name}/generator",
             digest_queue=self.digest_queue,
             digest_context_provider=digest_context.consume,
+            file_access_factory=lambda: RoleWorkspaceAccess(
+                workspace=self.workspace,
+                worker_rel=self.worker_rel,
+                deny_other_unverified=True,
+            ),
         )
         agent = GeneralPurposeAgent(
             config=config,
@@ -245,6 +257,7 @@ class LemmaWorker:
             deny_other_unverified=True,
             write_root_rel=verifier_rel,
             deny_read_rel=all_verifier_ws_rel,
+            deny_read_file_names=("review.md",),
         )
         subagents = SubagentService(
             suite=self.suite,
@@ -258,6 +271,7 @@ class LemmaWorker:
                 deny_other_unverified=True,
                 write_root_rel=verifier_rel,
                 deny_read_rel=all_verifier_ws_rel,
+                deny_read_file_names=("review.md",),
             ),
             digest_queue=self.digest_queue,
         )
@@ -319,6 +333,11 @@ class LemmaWorker:
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/theorem-checker",
             digest_queue=self.digest_queue,
+            file_access_factory=lambda: RoleWorkspaceAccess(
+                workspace=self.workspace,
+                worker_rel=self.worker_rel,
+                deny_other_unverified=True,
+            ),
         )
         agent = GeneralPurposeAgent(
             config=config,
@@ -353,6 +372,11 @@ class LemmaWorker:
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/reviser-r{round_index}",
             digest_queue=self.digest_queue,
+            file_access_factory=lambda: RoleWorkspaceAccess(
+                workspace=self.workspace,
+                worker_rel=self.worker_rel,
+                deny_other_unverified=True,
+            ),
         )
         agent = GeneralPurposeAgent(
             config=config,
@@ -379,6 +403,17 @@ class LemmaWorker:
             target = self.layout.verified_dir / f"{lemma_file.stem}-{uuid.uuid4().hex[:6]}{lemma_file.suffix}"
         shutil.copy2(lemma_file, target)
         return target
+
+    def _write_round_review(self, review_text: str, *, round_index: int) -> Path:
+        path = self.worker_dir / "verifier_workspace" / f"round-{round_index:02d}" / "review.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(review_text, encoding="utf-8")
+        return path
+
+    def _write_final_review(self, review_text: str) -> Path:
+        path = self.worker_dir / "review.md"
+        path.write_text(review_text, encoding="utf-8")
+        return path
 
     def _generator_task(self) -> str:
         return "\n\n".join(
@@ -421,9 +456,9 @@ class LemmaWorker:
             "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified lemma "
             "filename without the `.md` extension. Do not judge whether this lemma solves the original problem; "
             "that is handled by a separate theorem checker."
-            + f"\n\nVerification round: {round_index}"
-            + f"\nIndependent verification attempt: {attempt_index} of {attempt_total}"
-            + f"\nVerifier config: {config_name}"
+            + f"\n\nVerification round: {round_index}\n"
+            + f"Independent verification attempt: {attempt_index} of {attempt_total}\n"
+            + f"Verifier config: {config_name}"
         )
 
     def _theorem_checker_task(self, verified_file: Path, *, attempt_index: int) -> str:

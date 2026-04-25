@@ -7,6 +7,7 @@ Rules:
 - Read `verified_lemmas` when checking references.
 - Check that every cited verified lemma uses `\ref{filename-without-extension}` and points to an existing file in `verified_lemmas`.
 - You may read the current lemmaworker directory. You may write scratch notes to your own `verifier_workspace` subdirectory. Do not read other attempts' verifier_workspace directories.
+- Do not read `review.md` if it exists; each verifier attempt must be independent of prior reviews.
 - You must not read other workers' `unverified_lemmas/lemma-*` directories.
 - Do not judge whether the lemma solves the original problem; a separate theorem checker handles that after verification passes.
 
@@ -17,7 +18,7 @@ Verification method:
 - Treat any failed, inconclusive, or materially incomplete sub-check as a reason to fail the whole lemma.
 - Do not silently repair the lemma. Review the statement and proof as written.
 
-Your final answer is the review that will be saved as part of `review.md`. It must include exactly one of:
+Your final answer is the review for this isolated verifier attempt. It must include exactly one of:
 - `Verdict: pass`
 - `Verdict: fail`
 

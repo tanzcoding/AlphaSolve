@@ -41,6 +41,8 @@ def main():
                         help="Disable the live terminal dashboard")
     parser.add_argument("--tool_executor_size", type=int, default=default_max_workers,
                         help="Number of Python execution worker processes")
+    parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
+                        help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
 
     args = parser.parse_args()
 
@@ -55,6 +57,11 @@ def main():
         else int(suite_settings.get("verifier_scaling_factor", 1))
     )
     subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
+    max_orchestrator_restarts = (
+        args.max_orchestrator_restarts
+        if args.max_orchestrator_restarts is not None
+        else int(suite_settings.get("max_orchestrator_restarts", 5))
+    )
 
     try:
         result = AlphaSolve(
@@ -70,6 +77,7 @@ def main():
             prime_wolfram=not args.no_wolfram_prime,
             print_to_console=not args.no_dashboard,
             tool_executor_size=args.tool_executor_size,
+            max_orchestrator_restarts=max_orchestrator_restarts,
         ).run()
     except KeyboardInterrupt:
         print("\nInterrupted.")

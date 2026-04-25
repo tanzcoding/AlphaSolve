@@ -7,6 +7,10 @@ agent:
   when_to_use: Bounded proof and mathematical reasoning obligations.
   tools:
     - agent
+    - read_file
+    - get_child_item
+    - search_files
+    - grep
   tool_parameters:
     agent:
       type:

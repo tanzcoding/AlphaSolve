@@ -57,14 +57,15 @@ def test_default_agent_suite_loads_yaml_roles():
         "reasoning_subagent",
     ]
     assert suite.subagents["reasoning_subagent"].tool_parameters["agent"]["type"]["enum"] == ["reasoning_subagent"]
-    assert suite.settings["verifier_scaling_factor"] == 4
+    assert suite.settings["max_verify_rounds"] == 6
+    assert suite.settings["verifier_scaling_factor"] == 5
     assert suite.settings["verifier_agents"] == [
-        "verifier",
+        "verifier_failure_modes",
         "verifier_stepwise",
-        "verifier_premise_chain",
-        "verifier_adversarial",
     ]
+    assert suite.settings["max_orchestrator_restarts"] == 50
     assert suite.subagents["reasoning_subagent"].when_to_use
+    assert "get_child_item" in suite.subagents["reasoning_subagent"].tools
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
 
@@ -91,7 +92,9 @@ def test_agent_team_demo_creates_workspace_and_verified_lemma():
         assert result.worker_results[0].solved_problem
         assert result.worker_results[0].theorem_check_file is not None
         assert result.worker_results[0].theorem_check_file.name == "theorem_check.md"
-        assert sum(1 for item in result.worker_results[0].trace if item["role"] == "theorem_checker") == AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
+        assert result.worker_results[0].trace == []
+        worker_trace = json.loads((result.worker_results[0].worker_dir / "trace.json").read_text(encoding="utf-8"))
+        assert sum(1 for item in worker_trace if item["role"] == "theorem_checker") == AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
         assert result.solution_path == project_dir / "solution.md"
 
 
@@ -193,6 +196,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
             client_factory=factory,
             prime_wolfram=False,
             print_to_console=False,
+            max_orchestrator_restarts=1,
         ).run()
 
         assert result.final_answer == "No solution yet."
@@ -280,11 +284,104 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         assert result.review_file is not None
         review = result.review_file.read_text(encoding="utf-8")
         assert review.startswith("Verdict: fail")
-        assert "Attempt 1 (verifier): pass" in review
+        assert "Attempt 1 (verifier_failure_modes): pass" in review
         assert "Attempt 2 (verifier_stepwise): fail" in review
-        assert verifier_calls == ["verifier", "verifier_stepwise"]
+        assert verifier_calls == ["verifier_failure_modes", "verifier_stepwise"]
         verifier_traces = [item for item in result.trace if item["role"] == "verifier"]
-        assert [item["config"] for item in verifier_traces] == ["verifier", "verifier_stepwise"]
+        assert [item["config"] for item in verifier_traces] == ["verifier_failure_modes", "verifier_stepwise"]
+
+
+def test_verifier_review_is_not_visible_to_later_attempts():
+    read_probe = {"content": ""}
+
+    class ReviewIsolationClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            task = "\n".join(str(message.get("content") or "") for message in messages)
+            if self.role == "generator":
+                if self.calls > 1:
+                    return {"role": "assistant", "content": "Generator wrote the lemma."}
+                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "write_candidate",
+                            "type": "function",
+                            "function": {
+                                "name": "write_file",
+                                "arguments": json.dumps(
+                                    {
+                                        "path": f"{worker_dir}/candidate.md",
+                                        "content": (
+                                            "# Candidate\n\n"
+                                            "## Statement\n\n"
+                                            "For every real number x, x = x.\n\n"
+                                            "## Proof\n\n"
+                                            "By reflexivity.\n"
+                                        ),
+                                    }
+                                ),
+                            },
+                        }
+                    ],
+                }
+            if self.role.startswith("verifier"):
+                if "Verification round: 1" in task:
+                    return {"role": "assistant", "content": "Verdict: fail\n\nFirst round review."}
+                if self.calls == 1:
+                    lemma_rel = re.findall(r"unverified_lemmas/lemma-[^\s]+/candidate\.md", task)[-1]
+                    worker_dir = pathlib.PurePosixPath(lemma_rel).parent.as_posix()
+                    return {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "id": "read_prior_review",
+                                "type": "function",
+                                "function": {
+                                    "name": "read_file",
+                                    "arguments": json.dumps({"path": f"{worker_dir}/review.md"}),
+                                },
+                            }
+                        ],
+                    }
+                read_probe["content"] = str(messages[-1].get("content") or "")
+                return {"role": "assistant", "content": "Verdict: fail\n\nSecond round remains independent."}
+            if self.role == "reviser":
+                return {"role": "assistant", "content": "No revision in this test."}
+            return {"role": "assistant", "content": "unused"}
+
+    def factory(config):
+        return ReviewIsolationClient(config.name)
+
+    with local_project_dir("review_isolation") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+
+        result = LemmaWorker(
+            layout=layout,
+            suite=suite,
+            client_factory=factory,
+            worker_id=0,
+            max_verify_rounds=2,
+            verifier_scaling_factor=1,
+            subagent_max_depth=0,
+        ).run()
+
+        assert result.status == "rejected"
+        assert result.review_file is not None
+        assert result.review_file.name == "review.md"
+        assert "error" in read_probe["content"]
+        assert (result.worker_dir / "verifier_workspace" / "round-01" / "review.md").is_file()
 
 
 def test_solution_writer_collects_recursive_refs_with_final_lemma_last():
@@ -481,15 +578,16 @@ def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
         ).run()
 
         assert result.status == "verified"
-        assert len(digest_queue.tasks) == 2
-        first_context = digest_queue.tasks[0].caller_context
-        second_context = digest_queue.tasks[1].caller_context
-        assert digest_queue.tasks[0].source_label.endswith("/generator/reasoning_subagent")
+        generator_tasks = [task for task in digest_queue.tasks if "/generator/" in task.source_label]
+        assert len(generator_tasks) == 2
+        first_context = generator_tasks[0].caller_context
+        second_context = generator_tasks[1].caller_context
+        assert generator_tasks[0].source_label.endswith("/generator/reasoning_subagent")
         assert first_context["caller_role"] == "generator"
         assert first_context["reasoning_since_previous_subagent"][0]["content"] == "First generator reasoning slice."
         assert second_context["reasoning_since_previous_subagent"][0]["content"] == "Second generator reasoning slice."
         assert "First generator reasoning slice." not in json.dumps(second_context, ensure_ascii=False)
-        assert digest_queue.tasks[0].trace_segment[0]["type"] == "run_start"
+        assert generator_tasks[0].trace_segment[0]["type"] == "run_start"
 
 
 def test_execution_gateway_keeps_sessions_isolated_and_blocks_filesystem():
@@ -548,6 +646,8 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         ]
         assert blocked.is_error
         assert "must be one of" in blocked.content
+        reasoning = service.call_tool({"type": "reasoning_subagent", "task": "Check x=x."})
+        assert not reasoning.is_error
 
         max_depth_registry = service._build_subagent_registry(depth=1, session_id="pytest/deep")
         assert "agent" not in [tool.name for tool in max_depth_registry.registered_tools()]

@@ -90,6 +90,10 @@ class AlphaSolve:
                 "wolfram_enabled": AlphaSolveConfig.WOLFRAM_AVAILABLE,
             }
             self.layout.logs_dir.mkdir(parents=True, exist_ok=True)
+            for transient_log in ("worker_results.jsonl", "orchestrator_runs.jsonl"):
+                path = self.layout.logs_dir / transient_log
+                if path.exists():
+                    path.unlink()
             (self.layout.logs_dir / "startup.json").write_text(
                 json.dumps(startup, ensure_ascii=False, indent=2),
                 encoding="utf-8",
@@ -116,6 +120,7 @@ class AlphaSolve:
                 digest_queue.start()
 
             result = None
+            all_worker_results = []
             for restart_index in range(self.max_orchestrator_restarts):
                 if restart_index > 0 and renderer is not None:
                     renderer.log(
@@ -137,8 +142,19 @@ class AlphaSolve:
                     digest_queue=digest_queue,
                 )
                 result = orchestrator.run()
+                all_worker_results.extend(result.worker_results)
+                self._append_orchestrator_run_log(restart_index=restart_index, result=result)
                 if result.solution_path is not None:
                     break
+            if result is None:
+                result = OrchestratorRunResult(final_answer="", trace=[], worker_results=[], solution_path=None)
+            elif all_worker_results != result.worker_results:
+                result = OrchestratorRunResult(
+                    final_answer=result.final_answer,
+                    trace=result.trace,
+                    worker_results=all_worker_results,
+                    solution_path=result.solution_path,
+                )
         except Exception as exc:
             if renderer is not None:
                 renderer.update_orchestrator_phase("error", status="failed")
@@ -180,6 +196,17 @@ class AlphaSolve:
             json.dumps(payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    def _append_orchestrator_run_log(self, *, restart_index: int, result: OrchestratorRunResult) -> None:
+        payload = {
+            "attempt": restart_index + 1,
+            "final_answer": (result.final_answer or "")[:1000],
+            "trace_events": len(result.trace),
+            "worker_results": len(result.worker_results),
+            "solution_path": str(result.solution_path) if result.solution_path else None,
+        }
+        with (self.layout.logs_dir / "orchestrator_runs.jsonl").open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
 
 
 def run_alphasolve(**kwargs) -> OrchestratorRunResult:

@@ -83,6 +83,10 @@ class KnowledgeDigestQueue:
             max_depth=1,
             execution_gateway=self.execution_gateway,
             session_prefix="knowledge_digest",
+            file_access_factory=lambda: RoleWorkspaceAccess(
+                workspace=_make_workspace(self.workspace_dir),
+                read_root_rel="knowledge",
+            ),
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagent_svc)
 
