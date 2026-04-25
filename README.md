@@ -6,7 +6,7 @@ AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明
 
 - **Orchestrator 驱动**：LLM Orchestrator 读取已验证引理和 knowledge/ 下的知识摘要，动态决定何时 spawn 新 worker 以及使用什么提示
 - **并行 LemmaWorker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser → TheoremChecker 流水线
-- **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，最终由 LLM 综合所有审查意见给出 pass/fail 判定
+- **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，一次不通过则视为不通过。支持通过 YAML 自行配置 Verifier 的工作方式，支持为 Verifier 添加 SKILLS
 - **Subagent 系统**：Generator、Verifier、Reviser 可调用 compute subagent（Python / Wolfram）和 reasoning subagent 辅助探索
 - **知识摘要**：后台 `knowledge_digest` agent 持续将运行 trace 摘要写入 `workspace/knowledge/`，供 Orchestrator 参考
 - **多 LLM 提供商**：支持 DeepSeek、火山引擎、Moonshot、DashScope、LongCat、Parasail、OpenRouter、MIMO 等
