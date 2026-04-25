@@ -1,15 +1,14 @@
 # AlphaSolve
 
-AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用**编排器驱动的并行工作线程**架构，通过生成-验证-修正的迭代循环，逐步构建完整的数学证明。
+AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用 **Orchestrator 驱动、多 worker 并行**的架构，通过 生成 → 验证 → 修正 的迭代循环，逐步构建完整的数学证明。
 
 ## 核心特性
 
-- **Orchestrator 驱动**：一个 LLM 编排器读取已验证引理和知识摘要，动态决定何时派生新工作线程及使用何种提示
-- **并行 LemmaWorker**：多个工作线程同时独立探索，每个线程运行完整的 Generator → Verifier → Reviser → TheoremChecker 流水线
-- **多验证器人格**：每轮验证由多种验证器（`verifier_failure_modes`、`verifier_stepwise` 等）独立审查，提高可靠性
-- **测试时扩展验证**：`verifier_scaling_factor` 次独立验证尝试，多数通过才算验证成功
-- **子代理系统**：Generator/Verifier/Reviser 可调用计算子代理（Python/Wolfram）和推理子代理辅助探索
-- **知识摘要**：后台 `knowledge_digest` 代理持续将运行轨迹摘要写入 `workspace/knowledge/log.md`，供编排器参考
+- **Orchestrator 驱动**：LLM Orchestrator 读取已验证引理和 knowledge/ 下的知识摘要，动态决定何时 spawn 新 worker 以及使用什么提示
+- **并行 LemmaWorker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser → TheoremChecker 流水线
+- **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，最终由 LLM 综合所有审查意见给出 pass/fail 判定
+- **Subagent 系统**：Generator、Verifier、Reviser 可调用 compute subagent（Python / Wolfram）和 reasoning subagent 辅助探索
+- **知识摘要**：后台 `knowledge_digest` agent 持续将运行 trace 摘要写入 `workspace/knowledge/`，供 Orchestrator 参考
 - **多 LLM 提供商**：支持 DeepSeek、火山引擎、Moonshot、DashScope、LongCat、Parasail、OpenRouter、MIMO 等
 
 ## 系统架构
@@ -18,8 +17,8 @@ AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明
 CLI (alphasolve)
     └── AlphaSolve.run()                        [workflow.py]
             ├── Wolfram 内核探测
-            ├── ExecutionGateway (Python/Wolfram 进程池)
-            ├── KnowledgeDigestQueue (后台知识摘要代理)
+            ├── ExecutionGateway (Python / Wolfram 进程池)
+            ├── KnowledgeDigestQueue (后台知识摘要 agent)
             └── Orchestrator.run()              [orchestrator.py]
                     └── WorkerManager
                             └── LemmaWorker × N (线程)  [lemma_worker.py]
@@ -36,35 +35,35 @@ problem.md
     │
     ▼
 Orchestrator (LLM)
-    │  读取 verified_lemmas/ 和 knowledge/log.md
+    │  读取 verified_lemmas/ 和 knowledge/
     │  调用 spawn_worker(hint) / wait()
     │
     ├──► LemmaWorker
     │        │
     │        ├─ Generator      → 生成引理 .md（陈述 + 证明）
-    │        ├─ Verifier × N   → 多验证器独立审查，输出 pass/fail
+    │        ├─ Verifier × N   → 多个 Verifier 独立审查，LLM 综合判定
     │        ├─ Reviser        → 根据反馈修正（最多 max_verify_rounds 轮）
-    │        └─ TheoremChecker → 判断是否解决原问题（CHECK_IS_THEOREM_TIMES 次）
+    │        └─ TheoremChecker → 判断是否解决原问题（CHECK_IS_THEOREM_TIMES 次独立检查）
     │
     ▼
-verified_lemmas/   ←  通过验证的引理（供所有线程和编排器读取）
+verified_lemmas/   ←  通过验证的引理（供所有 worker 和 Orchestrator 读取）
     │
     └── 某引理解决原问题 → solution.md
 ```
 
 ### 核心组件
 
-| 组件 | 角色 |
+| 组件 | 作用 |
 |------|------|
-| **Orchestrator** | 研究总监；读取工作区，用有针对性的提示派生工作线程，调用 `wait()` 等待结果 |
-| **LemmaWorker** | 独立线程，运行完整的生成-验证-修正流水线 |
-| **Generator** | 提出新引理（猜想 + 证明），写入工作线程目录 |
-| **Verifier** | 严格审查证明；支持多种验证器人格，可调用计算子代理 |
-| **Reviser** | 根据验证器反馈修正引理，原地重写文件 |
+| **Orchestrator** | 读取工作区状态，用有针对性的提示 spawn worker，调用 `wait()` 等待结果 |
+| **LemmaWorker** | 独立线程，运行完整的 生成 → 验证 → 修正 流水线 |
+| **Generator** | 提出新引理（猜想 + 证明），写入 worker 目录 |
+| **Verifier** | 严格审查证明；有多种 Verifier 策略，可调用 subagent |
+| **Reviser** | 根据 Verifier 反馈修正引理，原地重写文件 |
 | **TheoremChecker** | 判断已验证引理是否（连同其引用的引理）证明了原问题 |
-| **compute_subagent** | 有 `run_python` / `run_wolfram` 工具的计算子代理 |
-| **reasoning_subagent** | 纯数学推理子代理（无计算工具） |
-| **knowledge_digest** | 后台代理，将轨迹摘要写入 `knowledge/log.md` |
+| **compute subagent** | 配备 `run_python` / `run_wolfram` 工具的计算 subagent |
+| **reasoning subagent** | 纯数学推理 subagent（无计算工具） |
+| **knowledge_digest** | 后台 agent，将 trace 中的知识提取出来，并写入 `knowledge/` |
 
 ## 安装
 
@@ -94,7 +93,7 @@ pip install -e .
 ```bash
 export DEEPSEEK_API_KEY=your_key      # DeepSeek
 export ARK_API_KEY=your_key           # 火山引擎（字节跳动）
-export MOONSHOT_API_KEY=your_key      # Moonshot/Kimi
+export MOONSHOT_API_KEY=your_key      # Moonshot / Kimi
 export DASHSCOPE_API_KEY=your_key     # 阿里云 DashScope
 export LONGCAT_API_KEY=your_key       # LongCat
 export PARASAIL_API_KEY=your_key      # Parasail
@@ -118,21 +117,21 @@ export WOLFRAM_KERNEL=/path/to/WolframKernel
 GENERATOR_CONFIG    = {**DEEPSEEK_CONFIG}
 VERIFIER_CONFIG     = {**DEEPSEEK_CONFIG}
 REVISER_CONFIG      = {**DEEPSEEK_CONFIG}
-ORCHESTRATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}   # 编排器默认使用 DeepSeek Pro
+ORCHESTRATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}   # Orchestrator 默认使用 DeepSeek Pro
 ```
 
 支持的预置：`DEEPSEEK_CONFIG`、`DEEPSEEK_PRO_CONFIG`、`VOLCANO_CONFIG`、`MOONSHOT_CONFIG`、`DASHSCOPE_CONFIG`、`LONGCAT_CONFIG`、`PARASAIL_CONFIG`、`OPENROUTER_CONFIG`、`MIMO_CONFIG`
 
-每个代理的详细参数（system prompt、工具列表、max_turns 等）在 `src/alphasolve/config/agents/` 下的 YAML 文件中配置。
+每个 agent 的详细参数（system prompt、工具列表、max_turns 等）在 `src/alphasolve/config/agents/` 下的 YAML 文件中配置。
 
 ### 关键参数（`agents.yaml`）
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
 | `max_verify_rounds` | 6 | 每个引理的最大验证-修正轮数 |
-| `verifier_scaling_factor` | 5 | 每轮独立验证器尝试次数 |
-| `verifier_agents` | `verifier_failure_modes`, `verifier_stepwise` | 使用的验证器人格列表 |
-| `subagent_max_depth` | 2 | 子代理最大递归深度 |
+| `verifier_scaling_factor` | 5 | 每轮独立验证尝试次数 |
+| `verifier_agents` | `verifier_failure_modes`, `verifier_stepwise` | 使用的 Verifier 列表 |
+| `subagent_max_depth` | 2 | subagent 最大递归深度 |
 
 `CHECK_IS_THEOREM_TIMES`（默认 5）在 `agent_config.py` 中配置，控制定理检查的独立尝试次数。
 
@@ -182,11 +181,11 @@ alphasolve --demo
 |------|--------|------|
 | `--problem` | `problem.md` | 问题文件路径 |
 | `--hint` | 无 | 提示文件路径 |
-| `--lemmaworkers` | 4 | 并发工作线程数 |
+| `--lemmaworkers` | 4 | 并发 worker 数 |
 | `--config` | 内置配置 | 自定义 agents.yaml 路径或目录 |
 | `--max_verify_rounds` | 来自 agents.yaml | 每个引理最大验证-修正轮数 |
 | `--verifier_scaling_factor` | 来自 agents.yaml | 每轮独立验证次数 |
-| `--subagent_max_depth` | 来自 agents.yaml | 子代理最大递归深度 |
+| `--subagent_max_depth` | 来自 agents.yaml | subagent 最大递归深度 |
 | `--tool_executor_size` | 4 | Python 执行进程池大小 |
 | `--no_wolfram_prime` | false | 跳过启动时的 Wolfram 探测 |
 | `--no_dashboard` | false | 关闭实时终端面板 |
@@ -199,18 +198,16 @@ alphasolve --demo
 ```
 workspace/
     verified_lemmas/    # 所有通过验证的引理
-    knowledge/log.md    # 运行过程知识摘要
+    knowledge/          # 运行过程知识摘要（log.md + 按主题整理的知识条目）
 solution.md             # 最终解决方案（问题解决时生成）
 logs/
     startup.json            # 启动配置快照
-    orchestrator_trace.json # 编排器完整 LLM 轨迹
-    worker_results.json     # 所有工作线程结果
+    orchestrator_trace.json # Orchestrator 完整 LLM trace
+    worker_results.json     # 所有 worker 结果
 ```
 
 ## 致谢与相关工作
 
-AlphaSolve 的生成-验证-修正循环主要受到以下工作启发：
+AlphaSolve 的架构参考了如下工作：
 
-- [AI Mathematician (AIM)](https://arxiv.org/html/2505.22451v1) 及其开源实现 [Carlos-Mero/AIM](https://github.com/Carlos-Mero/AIM/)：多步探索、共享记忆、验证和精炼机制
-- [Long-horizon Reasoning Agent for Olympiad-Level Mathematical Problem Solving](https://arxiv.org/html/2512.10739v2)：面向奥林匹克数学的多轮层级推理与引理记忆
-- [Towards Autonomous Mathematics Research (Aletheia)](https://arxiv.org/html/2602.10177v3)：生成、验证和修正的自然语言数学研究流程
+- [AI Mathematician (AIM)](https://arxiv.org/html/2505.22451v1) 及其开源实现 [Carlos-Mero/AIM](https://github.com/Carlos-Mero/AIM/)
