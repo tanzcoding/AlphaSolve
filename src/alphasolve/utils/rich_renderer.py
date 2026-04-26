@@ -434,6 +434,19 @@ class LemmaTeamRenderer:
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
+    def reset_stream(
+        self,
+        worker_id: int,
+        *,
+        content_chars: int = 0,
+        reasoning_chars: int = 0,
+        phase: str | None = None,
+    ) -> None:
+        with self._lock:
+            state = self._ensure_worker(worker_id)
+            self._reset_state_stream(state, content_chars=content_chars, reasoning_chars=reasoning_chars, phase=phase)
+            self._refresh_locked(force=True)
+
     def update_tool_start(self, worker_id: int, *, module: str, name: str, arg_preview: str) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -546,6 +559,16 @@ class LemmaTeamRenderer:
             state.char_count += len(text)
             state.status = "writing"
             state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def reset_orchestrator_stream(self, *, content_chars: int = 0, reasoning_chars: int = 0) -> None:
+        with self._lock:
+            self._reset_state_stream(
+                self._orchestrator,
+                content_chars=content_chars,
+                reasoning_chars=reasoning_chars,
+                phase="thinking",
+            )
             self._refresh_locked(force=True)
 
     def update_orchestrator_tool_start(self, *, module: str, name: str, arg_preview: str) -> None:
@@ -865,6 +888,26 @@ class LemmaTeamRenderer:
             )
             self._worker_started += 1
         return self._workers[worker_id]
+
+    def _reset_state_stream(
+        self,
+        state: WorkerRenderState | OrchestratorRenderState,
+        *,
+        content_chars: int,
+        reasoning_chars: int,
+        phase: str | None,
+    ) -> None:
+        content_chars = max(0, int(content_chars))
+        reasoning_chars = max(0, int(reasoning_chars))
+        if content_chars:
+            state.output_text = state.output_text[:-content_chars] if content_chars < len(state.output_text) else ""
+        if reasoning_chars:
+            state.thinking_text = ""
+        state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
+        if phase:
+            state.phase = phase
+        state.status = "thinking"
+        state.updated_at = time.time()
 
     def _fmt_log(self, message: str, *, module: str | None, level: str) -> str:
         prefix = f"[{level.lower()}]" if level != "INFO" else ""

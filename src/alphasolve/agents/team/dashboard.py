@@ -21,6 +21,12 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
             renderer.log(None, "orchestrator started", module="orchestrator")
         elif event_type == "model_request":
             renderer.update_orchestrator_phase("thinking", status="thinking")
+        elif event_type == "model_retry":
+            renderer.reset_orchestrator_stream(
+                content_chars=int(event.get("content_chars") or 0),
+                reasoning_chars=int(event.get("reasoning_chars") or 0),
+            )
+            renderer.log(None, _event_retry(event), module="orchestrator", level="WARNING")
         elif event_type == "thinking_delta":
             content = str(event.get("content") or "")
             if content:
@@ -83,6 +89,14 @@ def make_worker_event_sink(
             renderer.log(worker_id, f"{role} started", module=role)
         elif event_type == "model_request":
             renderer.update_phase(worker_id, role, status="thinking")
+        elif event_type == "model_retry":
+            renderer.reset_stream(
+                worker_id,
+                content_chars=int(event.get("content_chars") or 0),
+                reasoning_chars=int(event.get("reasoning_chars") or 0),
+                phase=role,
+            )
+            renderer.log(worker_id, _event_retry(event), module=role, level="WARNING")
         elif event_type == "thinking_delta":
             content = str(event.get("content") or "")
             if content:
@@ -152,6 +166,13 @@ def _event_error(event: dict[str, Any]) -> str:
     if error.startswith(error_type + ":"):
         return _shorten(error, 2000)
     return _shorten(f"{error_type}: {error}", 2000)
+
+
+def _event_retry(event: dict[str, Any]) -> str:
+    attempt = int(event.get("attempt") or 0)
+    error = _event_error(event)
+    prefix = f"retrying model stream after attempt {attempt}"
+    return _shorten(f"{prefix}: {error}", 1000)
 
 
 def _shorten(text: str, limit: int) -> str:

@@ -45,6 +45,14 @@ class AgentRunError(RuntimeError):
 
 AgentEventSink = Callable[[dict[str, Any]], None]
 
+_RETRYABLE_EXCEPTIONS = (
+    openai.InternalServerError,
+    openai.APITimeoutError,
+    openai.APIConnectionError,
+    openai.RateLimitError,
+    httpx.RemoteProtocolError,
+)
+
 
 class OpenAIChatClient:
     def __init__(self, config: Mapping[str, Any]):
@@ -80,25 +88,23 @@ class OpenAIChatClient:
         max_retries = 8
         delay = 5.0
         for attempt in range(max_retries + 1):
-            emitted_delta = False
             try:
                 if delta_sink is not None:
-                    def guarded_delta_sink(delta: dict[str, Any]) -> None:
-                        nonlocal emitted_delta
-                        emitted_delta = True
-                        delta_sink(delta)
-
-                    return self._complete_streaming(request, delta_sink=guarded_delta_sink)
+                    return self._complete_streaming(request, delta_sink=delta_sink)
                 return self._complete_non_streaming(request)
-            except (
-                openai.InternalServerError,
-                openai.APITimeoutError,
-                openai.APIConnectionError,
-                openai.RateLimitError,
-                httpx.RemoteProtocolError,
-            ) as exc:
-                if emitted_delta or attempt == max_retries:
+            except _RETRYABLE_EXCEPTIONS as exc:
+                if attempt == max_retries:
                     raise
+                if delta_sink is not None:
+                    delta_sink(
+                        {
+                            "type": "retry",
+                            "attempt": attempt + 1,
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                            "error_detail": _format_exception_detail(exc),
+                        }
+                    )
                 time.sleep(delay)
                 delay = min(delay * 2, 300.0)
 
@@ -380,6 +386,26 @@ class GeneralPurposeAgent:
         def sink(delta: dict[str, Any]) -> None:
             delta_type = str(delta.get("type") or "")
             fragment = str(delta.get("content") or "")
+            if delta_type == "retry":
+                reasoning_chars = len(state["reasoning"])
+                content_chars = len(state["content"])
+                state["reasoning"] = ""
+                state["content"] = ""
+                self._emit(
+                    {
+                        "type": "model_retry",
+                        "turn": turn,
+                        "attempt": int(delta.get("attempt") or 0),
+                        "error_type": str(delta.get("error_type") or "Error"),
+                        "error": str(delta.get("error") or ""),
+                        "error_detail": str(delta.get("error_detail") or ""),
+                        "reasoning_chars": reasoning_chars,
+                        "content_chars": content_chars,
+                        "elapsed": time.time() - started_at,
+                    }
+                )
+                return
+
             if not fragment:
                 return
 

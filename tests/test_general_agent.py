@@ -131,6 +131,55 @@ def test_general_agent_emits_streaming_delta_events():
     assert assistant_final["streamed_content"] is True
 
 
+def test_general_agent_resets_stream_state_on_retry_delta():
+    class RetryStreamingClient:
+        def complete(self, *, messages, tools, delta_sink=None):
+            del messages, tools
+            assert delta_sink is not None
+            delta_sink({"type": "reasoning", "content": "stale reasoning"})
+            delta_sink({"type": "content", "content": "stale answer"})
+            delta_sink(
+                {
+                    "type": "retry",
+                    "attempt": 1,
+                    "error_type": "RemoteProtocolError",
+                    "error": "peer closed connection",
+                }
+            )
+            delta_sink({"type": "reasoning", "content": "fresh reasoning"})
+            delta_sink({"type": "content", "content": "fresh answer"})
+            return {
+                "role": "assistant",
+                "reasoning_content": "fresh reasoning",
+                "content": "fresh answer",
+            }
+
+    events = []
+    agent = GeneralPurposeAgent(
+        config=GeneralAgentConfig(
+            name="retry-stream",
+            system_prompt="You stream.",
+            tools=[],
+            max_turns=1,
+        ),
+        client=RetryStreamingClient(),
+        tool_registry=ToolRegistry(),
+        event_sink=events.append,
+    )
+
+    result = agent.run("Retry a stream.")
+
+    assert result.final_answer == "fresh answer"
+    retry_events = [event for event in events if event["type"] == "model_retry"]
+    assert len(retry_events) == 1
+    assert retry_events[0]["reasoning_chars"] == len("stale reasoning")
+    assert retry_events[0]["content_chars"] == len("stale answer")
+    thinking_deltas = [event["content"] for event in events if event["type"] == "thinking_delta"]
+    assistant_deltas = [event["content"] for event in events if event["type"] == "assistant_delta"]
+    assert thinking_deltas == ["stale reasoning", "fresh reasoning"]
+    assert assistant_deltas == ["stale answer", "fresh answer"]
+
+
 def test_openai_chat_client_reconstructs_streaming_tool_calls():
     class FakeCompletions:
         def __init__(self):
@@ -228,6 +277,46 @@ def test_openai_chat_client_retries_remote_protocol_error_before_first_delta():
 
     assert fake_openai.chat.completions.calls == 2
     assert message["content"] == "ok"
+
+
+def test_openai_chat_client_retries_remote_protocol_error_after_delta_with_reset():
+    class FlakyCompletions:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **request):
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                def broken_stream():
+                    yield {"choices": [{"delta": {"reasoning_content": "stale"}}]}
+                    raise httpx.RemoteProtocolError(
+                        "peer closed connection without sending complete message body"
+                    )
+
+                return broken_stream()
+            return [{"choices": [{"delta": {"reasoning_content": "fresh", "content": "ok"}}]}]
+
+    class FakeOpenAI:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FlakyCompletions()})()
+
+    fake_openai = FakeOpenAI()
+    client = OpenAIChatClient({"api_key": "test", "model": "fake-model"})
+    client.client = fake_openai
+    old_sleep = general_agent_module.time.sleep
+    general_agent_module.time.sleep = lambda _seconds: None
+    deltas = []
+    try:
+        message = client.complete(messages=[], tools=[], delta_sink=deltas.append)
+    finally:
+        general_agent_module.time.sleep = old_sleep
+
+    assert fake_openai.chat.completions.calls == 2
+    assert message["reasoning_content"] == "fresh"
+    assert message["content"] == "ok"
+    assert [delta["type"] for delta in deltas] == ["reasoning", "retry", "reasoning", "content"]
+    assert deltas[1]["error_type"] == "RemoteProtocolError"
 
 
 def _assert_agent_can_write_and_read_workspace_file(tmp_path):

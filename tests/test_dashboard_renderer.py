@@ -202,6 +202,41 @@ def test_dashboard_sink_does_not_duplicate_streamed_final_events():
     assert state.output_text == "ok"
 
 
+def test_dashboard_retry_event_removes_partial_streamed_output():
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=100,
+        height=28,
+        record=True,
+        force_terminal=False,
+        color_system=None,
+    )
+    renderer = LemmaTeamRenderer(console=console, screen=False)
+    sink = make_worker_event_sink(renderer, worker_id=0, role="generator")
+    assert sink is not None
+
+    sink({"type": "thinking_delta", "content": "stale reasoning", "delta": "stale reasoning"})
+    sink({"type": "assistant_delta", "content": "stale answer", "delta": "stale answer"})
+    sink(
+        {
+            "type": "model_retry",
+            "attempt": 1,
+            "error_type": "RemoteProtocolError",
+            "error": "peer closed connection",
+            "reasoning_chars": len("stale reasoning"),
+            "content_chars": len("stale answer"),
+        }
+    )
+    sink({"type": "thinking_delta", "content": "fresh reasoning", "delta": "fresh reasoning"})
+    sink({"type": "assistant_delta", "content": "fresh answer", "delta": "fresh answer"})
+
+    state = renderer._workers[0]
+    assert state.thinking_text == "fresh reasoning"
+    assert state.output_text == "fresh answer"
+    assert any("retrying model stream" in item for item in state.log_lines)
+
+
 def test_dashboard_wraps_long_error_logs_in_agent_panel():
     stream = io.StringIO()
     console = Console(
