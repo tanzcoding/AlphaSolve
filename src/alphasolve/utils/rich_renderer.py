@@ -394,6 +394,15 @@ class LemmaTeamRenderer:
             self._workers.pop(worker_id, None)
             self._refresh_locked(force=True)
 
+    def clear_worker_text(self, worker_id: int) -> None:
+        """Clear thinking and output text for *worker_id* (e.g. between agents)."""
+        with self._lock:
+            state = self._ensure_worker(worker_id)
+            state.thinking_text = ""
+            state.output_text = ""
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
     def update_phase(self, worker_id: int, phase: str, *, status: str = "running") -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -821,7 +830,7 @@ class LemmaTeamRenderer:
 
         sections: list[Text] = []
         if state.thinking_text:
-            has_other_content = bool(state.output_text or state.tool_history or state.log_lines)
+            has_other_content = bool(state.output_text or state.tool_history)
             cot_lines = max(2, min(max_lines, max_lines // 2 + 1)) if has_other_content else max_lines
             sections.extend(self._section_lines("CoT", state.thinking_text, width=width, max_lines=cot_lines, style="grey50 italic"))
 

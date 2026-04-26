@@ -706,6 +706,7 @@ class LemmaWorker:
 
     def _set_phase(self, phase: str, *, status: str) -> None:
         if self.renderer is not None:
+            self.renderer.clear_worker_text(self.worker_id)
             self.renderer.update_phase(self.worker_id, phase, status=status)
 
     def _should_stop(self) -> bool:

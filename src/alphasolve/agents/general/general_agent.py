@@ -135,7 +135,7 @@ class OpenAIChatClient:
                 continue
 
             role = str(delta.get("role") or role)
-            reasoning_delta = _first_text_delta(delta, ("reasoning_content", "reasoning", "reasoning_text"))
+            reasoning_delta = _first_text_delta(delta, ("reasoning_content", "reasoning", "reasoning_text", "thinking"))
             if reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
                 delta_sink({"type": "reasoning", "content": reasoning_delta})
@@ -211,6 +211,7 @@ class GeneralPurposeAgent:
         self._emit(trace[-1])
 
         for turn in range(1, self.config.max_turns + 1):
+            turn_start = time.time()
             trace.append({"type": "model_request", "agent": self.config.name, "turn": turn})
             self._emit(trace[-1])
             stream_state = {"reasoning": "", "content": ""}
@@ -230,6 +231,7 @@ class GeneralPurposeAgent:
                 self.last_trace = trace
                 self._emit(trace[-1])
                 raise AgentRunError(f"agent {self.config.name} failed: {exc}", trace=trace) from exc
+            turn_elapsed = time.time() - turn_start
             if stream_state["reasoning"] and not assistant_message.get("reasoning_content"):
                 assistant_message = dict(assistant_message)
                 assistant_message["reasoning_content"] = stream_state["reasoning"]
@@ -246,6 +248,7 @@ class GeneralPurposeAgent:
                         "turn": turn,
                         "content": reasoning,
                         "streamed": bool(stream_state["reasoning"]),
+                        "elapsed": turn_elapsed,
                     }
                 )
                 self._emit(trace[-1])
@@ -452,7 +455,14 @@ def _object_to_dict(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
         return dict(value)
     if hasattr(value, "model_dump"):
-        return value.model_dump(exclude_none=True)
+        result = value.model_dump(exclude_none=True)
+        for attr in ("reasoning_content", "reasoning", "reasoning_text", "thinking"):
+            if attr in result or not hasattr(value, attr):
+                continue
+            attr_value = getattr(value, attr)
+            if attr_value:
+                result[attr] = str(attr_value)
+        return result
     return dict(value)
 
 

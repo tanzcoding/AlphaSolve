@@ -40,7 +40,7 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
             if content:
                 if not event.get("streamed"):
                     renderer.update_orchestrator_thinking(module="orchestrator", thinking_text=content, elapsed=0)
-                renderer.finish_orchestrator_thinking(module="orchestrator", elapsed=0, char_count=len(content))
+                renderer.finish_orchestrator_thinking(module="orchestrator", elapsed=float(event.get("elapsed") or 0), char_count=len(content))
         elif event_type == "assistant_delta":
             delta = str(event.get("delta") or "")
             if delta:
@@ -111,7 +111,7 @@ def make_worker_event_sink(
             if content:
                 if not event.get("streamed"):
                     renderer.update_thinking(worker_id, module=role, thinking_text=content, elapsed=0)
-                renderer.finish_thinking(worker_id, module=role, elapsed=0, char_count=len(content))
+                renderer.finish_thinking(worker_id, module=role, elapsed=float(event.get("elapsed") or 0), char_count=len(content))
         elif event_type == "assistant_delta":
             delta = str(event.get("delta") or "")
             if delta:
