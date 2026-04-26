@@ -191,7 +191,26 @@ alphasolve --demo
 | `--no_dashboard` | false | 关闭实时终端面板 |
 | `--demo` | false | 本地 demo 模式（无 LLM 调用） |
 
-### 3. 查看结果
+### 3. 从断点继续研究
+
+AlphaSolve 支持在已有工作基础上继续运行。只需在同一工作目录下再次执行 `alphasolve`：
+
+```bash
+cd my_problem   # 已有 workspace/、problem.md 的目录
+alphasolve
+```
+
+**续跑机制：**
+
+- `workspace/verified_lemmas/` 中已验证的引理会被新的 Orchestrator 自动读取，作为已知知识直接复用
+- `workspace/knowledge/log.md` 中积累的知识摘要同样供 Orchestrator 参考
+- 新产生的 worker 目录命名为 `lemma-{hash}`，不含序号，不会与上次运行的目录冲突
+
+**人工添加引理：**
+
+人类专家可以直接将自己认为关键的引理（标准 Markdown + LaTeX 格式）放入 `workspace/verified_lemmas/`，AlphaSolve 续跑时会将其视为已验证引理，在此基础上继续探索。
+
+### 4. 查看结果
 
 运行结束后，工作目录下会生成：
 

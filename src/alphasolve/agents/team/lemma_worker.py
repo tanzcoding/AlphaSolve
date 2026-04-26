@@ -197,7 +197,7 @@ class LemmaWorker:
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.workspace = Workspace(layout.workspace_dir)
-        self.worker_dir = layout.unverified_dir / f"lemma-{worker_id:04d}-{uuid.uuid4().hex[:8]}"
+        self.worker_dir = layout.unverified_dir / f"lemma-{uuid.uuid4().hex[:8]}"
         self.worker_rel = self.worker_dir.relative_to(layout.workspace_dir).as_posix()
         self.trace: list[dict[str, Any]] = []
         self.renderer = renderer
