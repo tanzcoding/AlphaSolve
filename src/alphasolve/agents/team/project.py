@@ -38,8 +38,8 @@ class ProjectLayout:
             workspace_dir=workspace_dir,
             logs_dir=project_root / "logs",
             knowledge_dir=workspace_dir / "knowledge",
-            unverified_dir=workspace_dir / "unverified_lemmas",
-            verified_dir=workspace_dir / "verified_lemmas",
+            unverified_dir=workspace_dir / "unverified_propositions",
+            verified_dir=workspace_dir / "verified_propositions",
         )
 
     def ensure(self) -> None:

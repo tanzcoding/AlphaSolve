@@ -56,7 +56,7 @@ class LogSession:
             return self._pool_state_path(name, pool_id)
 
     def _pool_state_path(self, cur_dir, pool_id: int = 0) -> str:
-        pool_dir = os.path.join(self.run_root, cur_dir, f"lemma_pool_{pool_id:02d}")
+        pool_dir = os.path.join(self.run_root, cur_dir, f"prop_pool_{pool_id:02d}")
         os.makedirs(pool_dir, exist_ok=True)
         return os.path.join(pool_dir, "state.json")
 

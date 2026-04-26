@@ -8,11 +8,11 @@ from .project import ProjectLayout
 REF_PATTERN = re.compile(r"\\ref\{([^{}]+)\}")
 
 
-def write_solution(layout: ProjectLayout, final_lemma: Path) -> Path:
-    final_path = final_lemma.resolve()
+def write_solution(layout: ProjectLayout, final_proposition: Path) -> Path:
+    final_path = final_proposition.resolve()
     verified_dir = layout.verified_dir.resolve()
     if final_path.parent != verified_dir:
-        raise ValueError(f"final lemma must be in verified_lemmas: {final_lemma}")
+        raise ValueError(f"final proposition must be in verified_propositions: {final_proposition}")
 
     ordered: list[Path] = []
     visiting: set[str] = set()
@@ -23,13 +23,13 @@ def write_solution(layout: ProjectLayout, final_lemma: Path) -> Path:
         if stem in visited:
             return
         if stem in visiting:
-            raise ValueError(f"cyclic lemma reference detected: {stem}")
+            raise ValueError(f"cyclic proposition reference detected: {stem}")
         visiting.add(stem)
         text = path.read_text(encoding="utf-8")
         for ref in _extract_refs(text):
             dependency = verified_dir / f"{ref}.md"
             if not dependency.is_file():
-                raise ValueError(f"missing verified lemma reference: \\ref{{{ref}}}")
+                raise ValueError(f"missing verified proposition reference: \\ref{{{ref}}}")
             visit(dependency)
         visiting.remove(stem)
         visited.add(stem)
@@ -44,15 +44,15 @@ def write_solution(layout: ProjectLayout, final_lemma: Path) -> Path:
         "",
         layout.read_problem().strip(),
         "",
-        "## Verified Lemma Chain",
+        "## Verified Proposition Chain",
         "",
     ]
-    for index, lemma_path in enumerate(ordered, start=1):
+    for index, prop_path in enumerate(ordered, start=1):
         out.extend(
             [
-                f"### {index}. {lemma_path.stem}",
+                f"### {index}. {prop_path.stem}",
                 "",
-                lemma_path.read_text(encoding="utf-8").strip(),
+                prop_path.read_text(encoding="utf-8").strip(),
                 "",
             ]
         )

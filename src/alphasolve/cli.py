@@ -23,12 +23,12 @@ def main():
                         help="Path to the problem markdown file (default: problem.md)")
     parser.add_argument("--hint", type=str, default=None,
                         help="Path to an optional hint markdown file")
-    parser.add_argument("--lemmaworkers", type=int, default=None,
-                        help="Maximum number of concurrent lemma workers")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Maximum number of concurrent workers")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to an agent suite YAML file or directory containing agents.yaml")
     parser.add_argument("--max_verify_rounds", type=int, default=None,
-                        help="Maximum verifier/reviser rounds per lemma worker (default: from agents.yaml)")
+                        help="Maximum verifier/reviser rounds per worker (default: from agents.yaml)")
     parser.add_argument("--verifier_scaling_factor", type=int, default=None,
                         help="Independent verifier attempts per verifier round (default: from agents.yaml)")
     parser.add_argument("--subagent_max_depth", type=int, default=None,
@@ -69,7 +69,7 @@ def main():
             problem=args.problem,
             hint=args.hint,
             config_path=args.config,
-            max_workers=args.lemmaworkers or default_max_workers,
+            max_workers=args.workers or default_max_workers,
             max_verify_rounds=max_verify_rounds,
             verifier_scaling_factor=verifier_scaling_factor,
             subagent_max_depth=subagent_max_depth,

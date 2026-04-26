@@ -12,7 +12,7 @@ from alphasolve.agents.general import GeneralAgentConfig, Workspace, load_agent_
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
 from alphasolve.agents.team.knowledge_digest import DigestTask, KnowledgeDigestQueue  # noqa: E402
-from alphasolve.agents.team.lemma_worker import LemmaWorker  # noqa: E402
+from alphasolve.agents.team.worker import Worker  # noqa: E402
 from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
 from alphasolve.agents.team.solution import write_solution  # noqa: E402
 from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService  # noqa: E402
@@ -337,7 +337,7 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         layout.ensure()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-        result = LemmaWorker(
+        result = Worker(
             layout=layout,
             suite=suite,
             client_factory=factory,
@@ -417,7 +417,7 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
         layout.ensure()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-        result = LemmaWorker(
+        result = Worker(
             layout=layout,
             suite=suite,
             client_factory=factory,
@@ -495,7 +495,7 @@ def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
         layout.ensure()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-        result = LemmaWorker(
+        result = Worker(
             layout=layout,
             suite=suite,
             client_factory=factory,
@@ -590,7 +590,7 @@ def test_verifier_review_is_not_visible_to_later_attempts():
         layout.ensure()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-        result = LemmaWorker(
+        result = Worker(
             layout=layout,
             suite=suite,
             client_factory=factory,
@@ -615,7 +615,7 @@ def test_clear_verifier_artifacts_leaves_empty_workspace():
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
-        worker = LemmaWorker(
+        worker = Worker(
             layout=layout,
             suite=suite,
             client_factory=make_demo_client_factory(),
@@ -641,7 +641,7 @@ def test_verifier_workflow_reset_keeps_only_lemma_hint_and_empty_workspace():
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
-        worker = LemmaWorker(
+        worker = Worker(
             layout=layout,
             suite=suite,
             client_factory=make_demo_client_factory(),
@@ -853,7 +853,7 @@ def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
         digest_queue = CapturingDigestQueue()
         suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
 
-        result = LemmaWorker(
+        result = Worker(
             layout=layout,
             suite=suite,
             client_factory=factory,

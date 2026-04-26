@@ -8,10 +8,10 @@ from rich.console import Console
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agents.team.dashboard import make_worker_event_sink  # noqa: E402
-from alphasolve.utils.rich_renderer import LemmaTeamRenderer  # noqa: E402
+from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
 
 
-def test_dashboard_renders_native_split_panes_with_cot_and_tool_statuses():
+def test_dashboard_renders_native_split_panes_with_timeline():
     stream = io.StringIO()
     console = Console(
         file=stream,
@@ -21,7 +21,7 @@ def test_dashboard_renders_native_split_panes_with_cot_and_tool_statuses():
         force_terminal=False,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console)
+    renderer = PropositionTeamRenderer(console=console)
 
     renderer.update_orchestrator_phase("planning", status="thinking")
     renderer.update_orchestrator_thinking(
@@ -35,6 +35,7 @@ def test_dashboard_renders_native_split_panes_with_cot_and_tool_statuses():
         arg_preview='{"hint":"try a compact proof"}',
     )
     renderer.update_orchestrator_tool_done(name="spawn_worker", is_error=False)
+    renderer.finish_orchestrator_thinking(module="orchestrator", elapsed=1.0, char_count=60)
 
     renderer.register_worker(0)
     renderer.update_thinking(
@@ -43,6 +44,7 @@ def test_dashboard_renders_native_split_panes_with_cot_and_tool_statuses():
         thinking_text="try the invariant\ncheck boundary cases\nwrite the candidate lemma",
         elapsed=0,
     )
+    renderer.finish_thinking(0, module="generator", elapsed=1.2, char_count=55)
     renderer.update_tool_start(0, module="generator", name="write_file", arg_preview='{"path":"lemma.md"}')
     renderer.update_tool_done(0, name="write_file", is_error=False)
 
@@ -58,8 +60,6 @@ def test_dashboard_renders_native_split_panes_with_cot_and_tool_statuses():
     assert "@orchestrator" in text
     assert "@worker-00" in text
     assert "@worker-01" in text
-    assert "CoT" in text
-    assert "spawn a focused search" in text
     assert "✓ spawn_worker" in text
     assert "✓ write_file" in text
     assert "✗ run_python" in text
@@ -75,7 +75,7 @@ def test_dashboard_live_refresh_is_event_driven_to_reduce_flicker():
         force_terminal=False,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False)
+    renderer = PropositionTeamRenderer(console=console, screen=False)
 
     renderer.start()
     try:
@@ -97,7 +97,7 @@ def test_dashboard_line_diff_painter_skips_unchanged_lines():
         force_terminal=True,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False, refresh_per_second=1000)
+    renderer = PropositionTeamRenderer(console=console, screen=False, refresh_per_second=1000)
 
     renderer.start()
     try:
@@ -131,7 +131,7 @@ def test_dashboard_repaints_when_terminal_size_changes():
         force_terminal=True,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False)
+    renderer = PropositionTeamRenderer(console=console, screen=False)
 
     renderer.start()
     try:
@@ -160,7 +160,7 @@ def test_dashboard_thinking_tokens_bypass_refresh_throttle():
         force_terminal=True,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False)
+    renderer = PropositionTeamRenderer(console=console, screen=False)
 
     renderer.start()
     try:
@@ -171,7 +171,7 @@ def test_dashboard_thinking_tokens_bypass_refresh_throttle():
         renderer.update_thinking(0, module="worker", thinking_text="first token", elapsed=0)
 
         token_delta = stream.getvalue()
-        assert "first token" in token_delta
+        assert "Thinking" in token_delta
         assert "\x1b[2K" in token_delta
     finally:
         renderer.stop()
@@ -187,7 +187,7 @@ def test_dashboard_sink_does_not_duplicate_streamed_final_events():
         force_terminal=False,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False)
+    renderer = PropositionTeamRenderer(console=console, screen=False)
     sink = make_worker_event_sink(renderer, worker_id=0, role="generator")
     assert sink is not None
 
@@ -198,8 +198,10 @@ def test_dashboard_sink_does_not_duplicate_streamed_final_events():
     sink({"type": "assistant_message", "content": "ok", "streamed_content": True})
 
     state = renderer._workers[0]
-    assert state.thinking_text == "first second"
-    assert state.output_text == "ok"
+    # thinking_text no longer exists; instead timeline has a THOUGHT event
+    assert any(e.type.name == "THOUGHT" for e in state.timeline)
+    # output is flushed to timeline as CONTENT
+    assert any(e.type.name == "CONTENT" for e in state.timeline)
 
 
 def test_dashboard_retry_event_removes_partial_streamed_output():
@@ -212,7 +214,7 @@ def test_dashboard_retry_event_removes_partial_streamed_output():
         force_terminal=False,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False)
+    renderer = PropositionTeamRenderer(console=console, screen=False)
     sink = make_worker_event_sink(renderer, worker_id=0, role="generator")
     assert sink is not None
 
@@ -232,9 +234,9 @@ def test_dashboard_retry_event_removes_partial_streamed_output():
     sink({"type": "assistant_delta", "content": "fresh answer", "delta": "fresh answer"})
 
     state = renderer._workers[0]
-    assert state.thinking_text == "fresh reasoning"
-    assert state.output_text == "fresh answer"
-    assert any("retrying model stream" in item for item in state.log_lines)
+    # output_buffer should have been reset by model_retry
+    assert state.output_buffer == "fresh answer"
+    assert any("retrying model stream" in e.text for e in state.timeline)
 
 
 def test_dashboard_wraps_long_error_logs_in_agent_panel():
@@ -247,7 +249,7 @@ def test_dashboard_wraps_long_error_logs_in_agent_panel():
         force_terminal=False,
         color_system=None,
     )
-    renderer = LemmaTeamRenderer(console=console, screen=False)
+    renderer = PropositionTeamRenderer(console=console, screen=False)
     message = (
         "RemoteProtocolError: peer closed connection without sending complete "
         "message body while streaming the response"
@@ -259,6 +261,5 @@ def test_dashboard_wraps_long_error_logs_in_agent_panel():
     text = console.export_text()
 
     assert "RemoteProtocolError" in text
-    assert "without sending complete message" in text
-    assert "body while streaming the response" in text
-    assert "response" in text
+    # In timeline mode long logs are truncated to a single line
+    assert "peer closed connection" in text

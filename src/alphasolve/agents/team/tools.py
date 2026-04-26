@@ -28,12 +28,12 @@ class RoleWorkspaceAccess:
     deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
     deny_read_file_names: tuple[str, ...] = ()
     exact_write_rel: str | None = None
-    single_lemma_file: bool = False
+    single_proposition_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
     max_read_chars: int = 20000
 
     def __post_init__(self) -> None:
-        self._locked_lemma_rel: str | None = None
+        self._locked_proposition_rel: str | None = None
 
     def read_text(self, path: str, *, max_chars: int | None = None) -> str:
         target = self._resolve_readable_file(path)
@@ -49,7 +49,7 @@ class RoleWorkspaceAccess:
         target.write_text(str(content), encoding="utf-8")
         return self._rel(target)
 
-    def str_replace(self, path: str, old_str: str, new_str: str) -> str:
+    def edit(self, path: str, old_str: str, new_str: str) -> str:
         target = self._resolve_writable_file(path)
         text = target.read_text(encoding="utf-8")
         if old_str not in text:
@@ -195,19 +195,14 @@ class RoleWorkspaceAccess:
                 raise ValueError(f"write_file can only rewrite {self.exact_write_rel}")
             return target
 
-        if self.single_lemma_file:
+        if self.single_proposition_file:
             if self.worker_rel is None:
-                raise ValueError("single lemma write requires worker_rel")
+                raise ValueError("single proposition write requires worker_rel")
             worker_dir = self.workspace.resolve(self.worker_rel)
-            if target.parent != worker_dir:
-                raise ValueError("generator can only write one markdown file directly in its own lemma directory")
-            if target.name in {"review.md", "theorem_check.md", "worker_hint.md"} or target.suffix.lower() != ".md":
-                raise ValueError("generator output must be a lemma markdown file")
-            rel = self._rel(target)
-            if self._locked_lemma_rel is None:
-                self._locked_lemma_rel = rel
-            elif self._locked_lemma_rel != rel:
-                raise ValueError(f"generator can only rewrite {self._locked_lemma_rel}")
+            proposition_path = worker_dir / "proposition.md"
+            if target != proposition_path:
+                raise ValueError("generator can only write proposition.md in its own directory")
+            self._locked_proposition_rel = self._rel(proposition_path)
             return target
 
         if self.write_root_rel is None:
@@ -256,13 +251,13 @@ class RoleWorkspaceAccess:
         if not self.deny_other_unverified:
             return False
         rel = self._rel(path)
-        prefix = "unverified_lemmas/"
-        if not (rel == "unverified_lemmas" or rel.startswith(prefix)):
+        prefix = "unverified_propositions/"
+        if not (rel == "unverified_propositions" or rel.startswith(prefix)):
             return False
         if self.worker_rel is None:
             return True
         worker_rel = self.worker_rel.strip("/")
-        return not (rel == worker_rel or rel.startswith(worker_rel + "/") or rel == "unverified_lemmas")
+        return not (rel == worker_rel or rel.startswith(worker_rel + "/") or rel == "unverified_propositions")
 
     def _is_denied_read_file(self, path: Path) -> bool:
         return path.is_file() and path.name in set(self.deny_read_file_names)
@@ -306,7 +301,7 @@ def build_workspace_tool_registry(
             handler=lambda args: ToolResult(json.dumps({"path": access.write_text(args["path"], args["content"])}, ensure_ascii=False)),
         )
         registry.register(
-            name="str_replace_file",
+            name="edit",
             description=(
                 "Replace an exact substring in a file. "
                 "old_str must match exactly once; use write_file for full rewrites."
@@ -321,7 +316,7 @@ def build_workspace_tool_registry(
                 "required": ["path", "old_str", "new_str"],
             },
             handler=lambda args: ToolResult(
-                json.dumps({"path": access.str_replace(args["path"], args["old_str"], args["new_str"])}, ensure_ascii=False)
+                json.dumps({"path": access.edit(args["path"], args["old_str"], args["new_str"])}, ensure_ascii=False)
             ),
         )
 
@@ -469,16 +464,16 @@ class SubagentService:
                 if name not in enabled_tools:
                     enabled_tools.append(name)
             if self.file_allow_write:
-                for name in ("write_file", "str_replace_file"):
+                for name in ("write_file", "edit"):
                     if name not in enabled_tools:
                         enabled_tools.append(name)
             else:
-                enabled_tools = [name for name in enabled_tools if name not in {"write_file", "str_replace_file"}]
+                enabled_tools = [name for name in enabled_tools if name not in {"write_file", "edit"}]
         else:
             enabled_tools = [
                 name
                 for name in enabled_tools
-                if name not in {"read_file", "write_file", "str_replace_file", "get_child_item", "search_files", "grep"}
+                if name not in {"read_file", "write_file", "edit", "get_child_item", "search_files", "grep"}
             ]
         if depth >= self.max_depth and "agent" in enabled_tools:
             enabled_tools = [name for name in enabled_tools if name != "agent"]

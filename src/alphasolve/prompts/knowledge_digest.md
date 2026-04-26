@@ -61,7 +61,7 @@ If an existing entry still has older frontmatter such as `sources`, do not add s
    - Create a new entry only after the directory listing plus keyword searches show that no suitable existing entry covers the topic.
    - If several entries overlap, add a short cross-reference instead of duplicating a long explanation.
 6. Edit carefully:
-   - Prefer `str_replace_file` for targeted updates.
+   - Prefer `edit` for targeted updates.
    - Use `write_file` only for genuinely new `.md` entries or a deliberate full rewrite of a small file.
    - Keep `knowledge/index.md` compact. Do not turn one index line into a chronological history of every verification or revision.
 7. Append one line to `knowledge/log.md` in this format:

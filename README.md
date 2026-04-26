@@ -5,7 +5,7 @@ AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明
 ## 核心特性
 
 - **Orchestrator 驱动**：LLM Orchestrator 读取已验证引理和 knowledge/ 下的知识摘要，动态决定何时 spawn 新 worker 以及使用什么提示
-- **并行 LemmaWorker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser → TheoremChecker 流水线
+- **并行 Worker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser → TheoremChecker 流水线
 - **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，一次不通过则视为不通过。支持通过 YAML 自行配置 Verifier 的工作方式，支持为 Verifier 添加 SKILLS
 - **Subagent 系统**：Generator、Verifier、Reviser 可调用 compute subagent（Python / Wolfram）和 reasoning subagent 辅助探索
 - **知识摘要**：后台 `knowledge_digest` agent 持续将运行 trace 摘要写入 `workspace/knowledge/`，供 Orchestrator 参考
@@ -21,7 +21,7 @@ CLI (alphasolve)
             ├── KnowledgeDigestQueue (后台知识摘要 agent)
             └── Orchestrator.run()              [orchestrator.py]
                     └── WorkerManager
-                            └── LemmaWorker × N (线程)  [lemma_worker.py]
+                            └── Worker × N (线程)  [worker.py]
                                     ├── Generator
                                     ├── Verifier (× verifier_scaling_factor)
                                     ├── Reviser
@@ -38,7 +38,7 @@ Orchestrator (LLM)
     │  读取 verified_lemmas/ 和 knowledge/
     │  调用 spawn_worker(hint) / wait()
     │
-    ├──► LemmaWorker
+    ├──► Worker
     │        │
     │        ├─ Generator      → 生成引理 .md（陈述 + 证明）
     │        ├─ Verifier × N   → 多个 Verifier 独立审查，LLM 综合判定
@@ -56,7 +56,7 @@ verified_lemmas/   ←  通过验证的引理（供所有 worker 和 Orchestrato
 | 组件 | 作用 |
 |------|------|
 | **Orchestrator** | 读取工作区状态，用有针对性的提示 spawn worker，调用 `wait()` 等待结果 |
-| **LemmaWorker** | 独立线程，运行完整的 生成 → 验证 → 修正 流水线 |
+| **Worker** | 独立线程，运行完整的 生成 → 验证 → 修正 流水线 |
 | **Generator** | 提出新引理（猜想 + 证明），写入 worker 目录 |
 | **Verifier** | 严格审查证明；有多种 Verifier 策略，可调用 subagent |
 | **Reviser** | 根据 Verifier 反馈修正引理，原地重写文件 |
@@ -160,7 +160,7 @@ alphasolve
 alphasolve --problem ./problem.md --hint ./hint.md
 
 # 调整并发和验证强度
-alphasolve --lemmaworkers 4 --verifier_scaling_factor 3 --max_verify_rounds 4
+alphasolve --workers 4 --verifier_scaling_factor 3 --max_verify_rounds 4
 
 # 使用自定义配置目录
 alphasolve --config ./my_config/
@@ -181,7 +181,7 @@ alphasolve --demo
 |------|--------|------|
 | `--problem` | `problem.md` | 问题文件路径 |
 | `--hint` | 无 | 提示文件路径 |
-| `--lemmaworkers` | 4 | 并发 worker 数 |
+| `--workers` | 4 | 并发 worker 数 |
 | `--config` | 内置配置 | 自定义 agents.yaml 路径或目录 |
 | `--max_verify_rounds` | 来自 agents.yaml | 每个引理最大验证-修正轮数 |
 | `--verifier_scaling_factor` | 来自 agents.yaml | 每轮独立验证次数 |

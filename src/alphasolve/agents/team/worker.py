@@ -20,21 +20,21 @@ from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_wo
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
-    from alphasolve.utils.rich_renderer import LemmaTeamRenderer
+    from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .knowledge_digest import KnowledgeDigestQueue
 
 
 _REVIEW_VERDICT_PROMPT = """You are an AlphaSolve verifier-attempt verdict classifier.
 
-Your job is to read one isolated verifier-attempt review and classify whether the candidate lemma passed that attempt.
+Your job is to read one isolated verifier-attempt review and classify whether the candidate proposition passed that attempt.
 
 Rules:
 - Interpret nested verifier verdicts semantically; Markdown decoration such as `**Verdict: pass**` must not change its meaning.
 - Decide from the mathematical substance of this one review.
 - Return exactly one lowercase word: `pass` or `fail`.
 - Do not include Markdown, punctuation, explanation, or any other text.
-- Return `pass` only if the review establishes that the lemma is correct, complete, and rigorous.
-- Do not judge whether the lemma solves the original problem; a separate theorem checker handles that.
+- Return `pass` only if the review establishes that the proposition is correct, complete, and rigorous.
+- Do not judge whether the proposition solves the original problem; a separate theorem checker handles that.
 """
 
 
@@ -117,12 +117,12 @@ def _reset_directory(path: Path) -> None:
 
 
 @dataclass(frozen=True)
-class LemmaWorkerRunResult:
+class WorkerRunResult:
     worker_id: int
     worker_dir: Path
     status: str
     summary: str
-    lemma_file: Path | None = None
+    proposition_file: Path | None = None
     verified_file: Path | None = None
     review_file: Path | None = None
     theorem_check_file: Path | None = None
@@ -171,7 +171,7 @@ class GeneratorDigestContext:
         }
 
 
-class LemmaWorker:
+class Worker:
     def __init__(
         self,
         *,
@@ -183,7 +183,7 @@ class LemmaWorker:
         max_verify_rounds: int = 2,
         verifier_scaling_factor: int = 1,
         subagent_max_depth: int = 2,
-        renderer: LemmaTeamRenderer | None = None,
+        renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
         stop_event: threading.Event | None = None,
@@ -197,7 +197,7 @@ class LemmaWorker:
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.workspace = Workspace(layout.workspace_dir)
-        self.worker_dir = layout.unverified_dir / f"lemma-{uuid.uuid4().hex[:8]}"
+        self.worker_dir = layout.unverified_dir / f"prop-{uuid.uuid4().hex[:8]}"
         self.worker_rel = self.worker_dir.relative_to(layout.workspace_dir).as_posix()
         self.trace: list[dict[str, Any]] = []
         self.renderer = renderer
@@ -205,24 +205,24 @@ class LemmaWorker:
         self.digest_queue = digest_queue
         self.stop_event = stop_event
 
-    def run(self) -> LemmaWorkerRunResult:
+    def run(self) -> WorkerRunResult:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
         self._set_phase("starting", status="running")
         if self._should_stop():
-            return self._finish("cancelled", "lemmaworker cancelled because another worker solved the problem")
+            return self._finish("cancelled", "worker cancelled because another worker solved the problem")
         if self.worker_hint:
             (self.worker_dir / "worker_hint.md").write_text(self.worker_hint, encoding="utf-8")
 
         try:
-            lemma_file = self._run_generator()
+            proposition_file = self._run_generator()
             if self._should_stop():
                 return self._finish(
                     "cancelled",
-                    "lemmaworker cancelled because another worker solved the problem",
-                    lemma_file=lemma_file,
+                    "worker cancelled because another worker solved the problem",
+                    proposition_file=proposition_file,
                 )
-            if lemma_file is None:
-                return self._finish("rejected", "generator did not produce a lemma markdown file")
+            if proposition_file is None:
+                return self._finish("rejected", "generator did not produce a proposition markdown file")
 
             final_review_file: Path | None = None
             last_review_text = ""
@@ -230,26 +230,26 @@ class LemmaWorker:
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
-                        "lemmaworker cancelled because another worker solved the problem",
-                        lemma_file=lemma_file,
+                        "worker cancelled because another worker solved the problem",
+                        proposition_file=proposition_file,
                     )
-                workflow_result = self._run_verifier_workflow(lemma_file, workflow_index=workflow_index)
+                workflow_result = self._run_verifier_workflow(proposition_file, workflow_index=workflow_index)
                 last_review_text = workflow_result.review_text
                 final_review_file = workflow_result.review_file
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
-                        "lemmaworker cancelled because another worker solved the problem",
-                        lemma_file=lemma_file,
+                        "worker cancelled because another worker solved the problem",
+                        proposition_file=proposition_file,
                     )
                 if workflow_result.passed:
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
-                            "lemmaworker cancelled because another worker solved the problem",
-                            lemma_file=lemma_file,
+                            "worker cancelled because another worker solved the problem",
+                            proposition_file=proposition_file,
                         )
-                    verified = self._copy_to_verified(lemma_file)
+                    verified = self._copy_to_verified(proposition_file)
                     solved_problem, theorem_check_text = self._run_theorem_checks(verified)
                     theorem_check_file = None
                     if solved_problem:
@@ -257,31 +257,31 @@ class LemmaWorker:
                         theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
                     return self._finish(
                         "verified",
-                        "成功产生一个引理，lemma statement 如下："
-                        + _extract_statement(lemma_file.read_text(encoding="utf-8")),
-                        lemma_file=lemma_file,
+                        "Successfully produced a verified proposition. Statement: "
+                        + _extract_statement(proposition_file.read_text(encoding="utf-8")),
+                        proposition_file=proposition_file,
                         verified_file=verified,
                         review_file=final_review_file,
                         theorem_check_file=theorem_check_file,
                         solved_problem=solved_problem,
                     )
                 if workflow_index < self.max_verify_rounds:
-                    self._run_reviser(lemma_file, workflow_result.review_text, workflow_index=workflow_index)
+                    self._run_reviser(proposition_file, workflow_result.review_text, workflow_index=workflow_index)
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
-                            "lemmaworker cancelled because another worker solved the problem",
-                            lemma_file=lemma_file,
+                            "worker cancelled because another worker solved the problem",
+                            proposition_file=proposition_file,
                         )
 
-            summary = "未能产生通过验证的引理。"
-            if lemma_file.exists():
-                summary += "\n\n" + lemma_file.read_text(encoding="utf-8")[:4000]
+            summary = "Failed to produce a verified proposition."
+            if proposition_file.exists():
+                summary += "\n\n" + proposition_file.read_text(encoding="utf-8")[:4000]
             if last_review_text and (final_review_file is None or not final_review_file.exists()):
                 final_review_file = self._write_final_review(last_review_text)
             if final_review_file is not None and final_review_file.exists():
-                summary += "\n\n最终审稿意见：\n" + final_review_file.read_text(encoding="utf-8")[:4000]
-            return self._finish("rejected", summary, lemma_file=lemma_file, review_file=final_review_file)
+                summary += "\n\nFinal review:\n" + final_review_file.read_text(encoding="utf-8")[:4000]
+            return self._finish("rejected", summary, proposition_file=proposition_file, review_file=final_review_file)
         except Exception as exc:
             return self._finish("failed", str(exc))
 
@@ -292,7 +292,7 @@ class LemmaWorker:
             workspace=self.workspace,
             worker_rel=self.worker_rel,
             deny_other_unverified=True,
-            single_lemma_file=True,
+            single_proposition_file=True,
         )
         digest_context = GeneratorDigestContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
         subagents = SubagentService(
@@ -317,10 +317,10 @@ class LemmaWorker:
         )
         result = agent.run(self._generator_task())
         self.trace.append({"role": "generator", "trace": result.trace, "final_answer": result.final_answer})
-        return self._find_lemma_file()
+        return self._find_proposition_file()
 
-    def _run_verifier_workflow(self, lemma_file: Path, *, workflow_index: int) -> VerifierWorkflowResult:
-        self._reset_verifier_workflow_workspace(lemma_file)
+    def _run_verifier_workflow(self, proposition_file: Path, *, workflow_index: int) -> VerifierWorkflowResult:
+        self._reset_verifier_workflow_workspace(proposition_file)
         config_names = self._verifier_config_names()
         last_review_text = ""
         last_review_file: Path | None = None
@@ -330,7 +330,7 @@ class LemmaWorker:
             self._clear_attempt_review()
             config_name = config_names[(attempt_index - 1) % len(config_names)]
             last_review_text = self._run_verifier_attempt_agent(
-                lemma_file,
+                proposition_file,
                 workflow_index=workflow_index,
                 attempt_index=attempt_index,
                 config_name=config_name,
@@ -359,7 +359,7 @@ class LemmaWorker:
         })
         return VerifierWorkflowResult(last_review_text, passed, last_review_file, attempts_run)
 
-    def _run_verifier_attempt_agent(self, lemma_file: Path, *, workflow_index: int, attempt_index: int, config_name: str) -> str:
+    def _run_verifier_attempt_agent(self, proposition_file: Path, *, workflow_index: int, attempt_index: int, config_name: str) -> str:
         role = f"verifier_attempt w{workflow_index}.{attempt_index}"
         self._set_phase(role, status="thinking")
         all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
@@ -394,7 +394,7 @@ class LemmaWorker:
         )
         result = agent.run(
             self._verifier_task(
-                lemma_file,
+                proposition_file,
                 workflow_index=workflow_index,
                 attempt_index=attempt_index,
                 attempt_total=self.verifier_scaling_factor,
@@ -465,11 +465,11 @@ class LemmaWorker:
         })
         return result.final_answer
 
-    def _run_reviser(self, lemma_file: Path, review_text: str, *, workflow_index: int) -> None:
+    def _run_reviser(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> None:
         role = f"reviser w{workflow_index}"
         self._set_phase(role, status="thinking")
         config = self.suite.agents["reviser"]
-        exact_rel = lemma_file.relative_to(self.layout.workspace_dir).as_posix()
+        exact_rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
@@ -495,7 +495,7 @@ class LemmaWorker:
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
             event_sink=self._event_sink(role),
         )
-        result = agent.run(self._reviser_task(lemma_file, review_text, workflow_index=workflow_index))
+        result = agent.run(self._reviser_task(proposition_file, review_text, workflow_index=workflow_index))
         self.trace.append({"role": "reviser", "workflow": workflow_index, "trace": result.trace, "final_answer": result.final_answer})
 
     def _run_review_verdict_judge(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
@@ -534,7 +534,7 @@ class LemmaWorker:
         })
         return verdict
 
-    def _find_lemma_file(self) -> Path | None:
+    def _find_proposition_file(self) -> Path | None:
         candidates = [
             path
             for path in self.worker_dir.glob("*.md")
@@ -544,12 +544,38 @@ class LemmaWorker:
             return None
         return sorted(candidates, key=lambda path: path.stat().st_mtime)[-1]
 
-    def _copy_to_verified(self, lemma_file: Path) -> Path:
-        target = self.layout.verified_dir / lemma_file.name
+    def _copy_to_verified(self, proposition_file: Path) -> Path:
+        name = self._generate_proposition_name(proposition_file)
+        target = self.layout.verified_dir / name
         if target.exists():
-            target = self.layout.verified_dir / f"{lemma_file.stem}-{uuid.uuid4().hex[:6]}{lemma_file.suffix}"
-        shutil.copy2(lemma_file, target)
+            target = self.layout.verified_dir / f"{target.stem}-{uuid.uuid4().hex[:6]}.md"
+        shutil.copy2(proposition_file, target)
         return target
+
+    def _generate_proposition_name(self, proposition_file: Path) -> str:
+        content = proposition_file.read_text(encoding="utf-8")[:3000]
+        config = self.suite.agents.get("generator") or next(iter(self.suite.agents.values()))
+        prompt = (
+            "Read the following verified mathematical proposition and return a short kebab-case filename "
+            "(2-5 words, lowercase, hyphens only, no extension) that captures its mathematical content. "
+            "Examples: energy-identity-bootstrap, compactness-criterion, sobolev-embedding-estimate. "
+            "Return ONLY the filename, nothing else.\n\n"
+            + content
+        )
+        try:
+            client = self.client_factory(config)
+            response = client.complete(
+                messages=[{"role": "user", "content": prompt}],
+                tools=[],
+            )
+            raw = (response.get("content") or "").strip().lower()
+            name = re.sub(r"[^a-z0-9-]", "-", raw).strip("-")
+            name = re.sub(r"-{2,}", "-", name)
+            if name and len(name) <= 80:
+                return name + ".md"
+        except Exception:
+            pass
+        return f"proposition-{uuid.uuid4().hex[:8]}.md"
 
     def _write_final_review(self, review_text: str) -> Path:
         path = self.worker_dir / "review.md"
@@ -561,10 +587,10 @@ class LemmaWorker:
         if review_file.exists():
             _remove_path_with_retries(review_file)
 
-    def _reset_verifier_workflow_workspace(self, lemma_file: Path) -> None:
+    def _reset_verifier_workflow_workspace(self, proposition_file: Path) -> None:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
         protected = {
-            lemma_file.resolve(),
+            proposition_file.resolve(),
             (self.worker_dir / "worker_hint.md").resolve(),
         }
         verifier_workspace = self.worker_dir / "verifier_workspace"
@@ -594,10 +620,9 @@ class LemmaWorker:
                 self.worker_hint,
                 "# Output",
                 (
-                    "Create exactly one lemma markdown file directly in your own directory "
-                    f"`{self.worker_rel}`. The filename should be a concise abstract of the lemma, "
-                    "for example `compactness-criterion.md`, not a numbered lemma name. The file must contain "
-                    "a Statement section and a Proof section. You may reference verified lemmas with "
+                    "Create a file named `proposition.md` directly in your own directory "
+                    f"`{self.worker_rel}`. The file must contain "
+                    "a Statement section and a Proof section. You may reference verified propositions with "
                     "\\ref{filename-without-extension}."
                 ),
             ]
@@ -606,22 +631,22 @@ class LemmaWorker:
 
     def _verifier_task(
         self,
-        lemma_file: Path,
+        proposition_file: Path,
         *,
         workflow_index: int,
         attempt_index: int,
         attempt_total: int,
         config_name: str,
     ) -> str:
-        rel = lemma_file.relative_to(self.layout.workspace_dir).as_posix()
+        rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
         return (
             "# Problem\n"
             + self.layout.read_problem()
-            + "\n\n# Candidate Lemma File\n"
+            + "\n\n# Candidate Proposition File\n"
             + rel
-            + "\n\nRead the candidate lemma and write a rigorous review. Your final answer must include `Verdict: pass` "
-            "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified lemma "
-            "filename without the `.md` extension. Do not judge whether this lemma solves the original problem; "
+            + "\n\nRead the candidate proposition and write a rigorous review. Your final answer must include `Verdict: pass` "
+            "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified proposition "
+            "filename without the `.md` extension. Do not judge whether this proposition solves the original problem; "
             "that is handled by a separate theorem checker."
             + f"\n\nVerifier workflow: {workflow_index}\n"
             + f"Independent verification attempt: {attempt_index} of {attempt_total}\n"
@@ -642,25 +667,25 @@ class LemmaWorker:
         return (
             "# Problem\n"
             + self.layout.read_problem()
-            + "\n\n# Newly Verified Lemma File\n"
+            + "\n\n# Newly Verified Proposition File\n"
             + rel
-            + "\n\nDecide whether the newly verified lemma, together with any verified lemmas cited by "
-            "`\\ref{filename-without-extension}`, proves the original problem. Read cited verified lemmas as needed. "
-            "Do not re-review the lemma proof except to understand what has been established. Your final answer must "
+            + "\n\nDecide whether the newly verified proposition, together with any verified propositions cited by "
+            "`\\ref{filename-without-extension}`, proves the original problem. Read cited verified propositions as needed. "
+            "Do not re-review the proposition proof except to understand what has been established. Your final answer must "
             "include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
             + f"\n\nIndependent theorem check attempt: {attempt_index} of {AlphaSolveConfig.CHECK_IS_THEOREM_TIMES}"
         )
 
-    def _reviser_task(self, lemma_file: Path, review_text: str, *, workflow_index: int) -> str:
-        rel = lemma_file.relative_to(self.layout.workspace_dir).as_posix()
+    def _reviser_task(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> str:
+        rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
         return (
             "# Problem\n"
             + self.layout.read_problem()
-            + "\n\n# Candidate Lemma File\n"
+            + "\n\n# Candidate Proposition File\n"
             + rel
             + "\n\n# Review\n"
             + review_text
-            + "\n\nRewrite the same lemma markdown file in place, addressing every review issue."
+            + "\n\nRewrite the same proposition markdown file in place, addressing every review issue."
             + f"\n\nRevision after verifier workflow: {workflow_index}"
         )
 
@@ -669,21 +694,21 @@ class LemmaWorker:
         status: str,
         summary: str,
         *,
-        lemma_file: Path | None = None,
+        proposition_file: Path | None = None,
         verified_file: Path | None = None,
         review_file: Path | None = None,
         theorem_check_file: Path | None = None,
         solved_problem: bool = False,
-    ) -> LemmaWorkerRunResult:
+    ) -> WorkerRunResult:
         self._set_phase("done", status=status)
         trace_path = self.worker_dir / "trace.json"
         trace_path.write_text(json.dumps(self.trace, ensure_ascii=False, indent=2), encoding="utf-8")
-        return LemmaWorkerRunResult(
+        return WorkerRunResult(
             worker_id=self.worker_id,
             worker_dir=self.worker_dir,
             status=status,
             summary=summary,
-            lemma_file=lemma_file,
+            proposition_file=proposition_file,
             verified_file=verified_file,
             review_file=review_file,
             theorem_check_file=theorem_check_file,
@@ -727,7 +752,7 @@ class LemmaWorker:
 
     def _verifier_attempt_config(self, config_name: str) -> GeneralAgentConfig:
         config = self.suite.agents[config_name]
-        tools = [name for name in config.tools if name not in {"write_file", "str_replace_file"}]
+        tools = [name for name in config.tools if name not in {"write_file", "edit"}]
         if tools == config.tools:
             return config
         return replace(config, tools=tools)

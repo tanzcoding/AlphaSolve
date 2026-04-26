@@ -4,13 +4,13 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from alphasolve.utils.rich_renderer import LemmaTeamRenderer
+from alphasolve.utils.rich_renderer import PropositionTeamRenderer
 
 
 AgentEventHandler = Callable[[dict[str, Any]], None]
 
 
-def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEventHandler | None:
+def make_orchestrator_event_sink(renderer: PropositionTeamRenderer | None) -> AgentEventHandler | None:
     if renderer is None:
         return None
 
@@ -49,6 +49,8 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
             content = str(event.get("content") or "")
             if content and not event.get("streamed_content"):
                 renderer.append_orchestrator_output(content)
+            if event.get("streamed_content"):
+                renderer.flush_orchestrator_output()
         elif event_type == "tool_call":
             renderer.update_orchestrator_tool_start(
                 module="orchestrator",
@@ -62,6 +64,7 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
             if is_error:
                 renderer.log(None, _content_preview(event), module=name, level="ERROR")
         elif event_type == "run_finish":
+            renderer.flush_orchestrator_output()
             renderer.update_orchestrator_phase("complete", status="verified")
             final_answer = str(event.get("final_answer") or "")
             if final_answer:
@@ -74,7 +77,7 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
 
 
 def make_worker_event_sink(
-    renderer: LemmaTeamRenderer | None,
+    renderer: PropositionTeamRenderer | None,
     *,
     worker_id: int,
     role: str,
@@ -120,6 +123,8 @@ def make_worker_event_sink(
             content = str(event.get("content") or "")
             if content and not event.get("streamed_content"):
                 renderer.append_output(worker_id, content)
+            if event.get("streamed_content"):
+                renderer.flush_output(worker_id)
         elif event_type == "tool_call":
             renderer.update_tool_start(
                 worker_id,
@@ -134,6 +139,7 @@ def make_worker_event_sink(
             if is_error:
                 renderer.log(worker_id, _content_preview(event), module=name, level="ERROR")
         elif event_type == "run_finish":
+            renderer.flush_output(worker_id)
             renderer.update_phase(worker_id, f"{role} done", status="running")
         elif event_type == "run_error":
             renderer.update_phase(worker_id, f"{role} error", status="failed")

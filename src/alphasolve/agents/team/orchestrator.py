@@ -11,14 +11,14 @@ from alphasolve.agents.general import AgentRunError, GeneralPurposeAgent, Worksp
 from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
 
 from .dashboard import make_orchestrator_event_sink
-from .lemma_worker import LemmaWorker, LemmaWorkerRunResult
+from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
 from .solution import write_solution
 from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_registry
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
-    from alphasolve.utils.rich_renderer import LemmaTeamRenderer
+    from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .knowledge_digest import KnowledgeDigestQueue
 
 
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 class OrchestratorRunResult:
     final_answer: str
     trace: list[dict[str, Any]]
-    worker_results: list[LemmaWorkerRunResult] = field(default_factory=list)
+    worker_results: list[WorkerRunResult] = field(default_factory=list)
     solution_path: Path | None = None
 
 
@@ -43,7 +43,7 @@ class WorkerManager:
         max_verify_rounds: int,
         verifier_scaling_factor: int,
         subagent_max_depth: int,
-        renderer: LemmaTeamRenderer | None = None,
+        renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
     ) -> None:
@@ -56,14 +56,14 @@ class WorkerManager:
         self.subagent_max_depth = subagent_max_depth
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.active: dict[concurrent.futures.Future, int] = {}
-        self.results: list[LemmaWorkerRunResult] = []
+        self.results: list[WorkerRunResult] = []
         self.next_worker_id = 0
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
         self.stop_event = threading.Event()
         self.solution_path: Path | None = None
-        self.solved_result: LemmaWorkerRunResult | None = None
+        self.solved_result: WorkerRunResult | None = None
 
     def spawn(self, hint: str | None = None) -> dict[str, Any]:
         self._collect_done()
@@ -88,7 +88,7 @@ class WorkerManager:
                 verified_ctx_size=self._verified_count(),
                 remaining_capacity=max(0, self.max_workers - len(self.active) - 1),
             )
-        worker = LemmaWorker(
+        worker = Worker(
             layout=self.layout,
             suite=self.suite,
             client_factory=self.client_factory,
@@ -114,7 +114,7 @@ class WorkerManager:
     def wait(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         self._collect_done()
         if not self.active:
-            return {"completed": [], "active_workers": [], "message": "no active lemmaworkers"}
+            return {"completed": [], "active_workers": [], "message": "no active workers"}
         timeout = self.DEFAULT_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else max(300.0, float(timeout_seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
@@ -127,7 +127,7 @@ class WorkerManager:
                 "active_workers": sorted(self.active.values()),
                 "timed_out": True,
                 "timeout_seconds": timeout,
-                "message": f"no lemmaworker finished within {timeout:g} seconds",
+                "message": f"no worker finished within {timeout:g} seconds",
             }
         completed = self._consume_done(done)
         payload = {
@@ -216,7 +216,7 @@ class Orchestrator:
         max_verify_rounds: int,
         verifier_scaling_factor: int,
         subagent_max_depth: int,
-        renderer: LemmaTeamRenderer | None = None,
+        renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
     ) -> None:
@@ -285,7 +285,7 @@ class Orchestrator:
         registry = build_workspace_tool_registry(access, allow_write=False)
         registry.register(
             name="spawn_worker",
-            description="Spawn one lemmaworker with an optional orchestrator hint. This call returns immediately.",
+            description="Spawn one worker with an optional orchestrator hint. This call returns immediately.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -297,7 +297,7 @@ class Orchestrator:
         )
         registry.register(
             name="wait",
-            description="Wait until any one active lemmaworker finishes, returning its lifecycle result.",
+            description="Wait until any one active worker finishes, returning its lifecycle result.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -341,27 +341,35 @@ class Orchestrator:
             self.layout.read_problem(),
             "# Project Workspace",
             (
-                "You are the orchestrator. Your role is that of a research director: read existing lemmas "
-                "and the knowledge log to understand what has already been established, identify gaps or "
-                "promising directions, then spawn lemmaworkers with targeted hints that push the overall "
-                "proof forward. Do not solve or verify lemmas yourself.\n\n"
-                "Your session succeeds if and only if a lemma that solves the original problem appears in "
-                "the `verified_lemmas/` directory. There is no other way to succeed. Do not stop until "
+                "You are the orchestrator. Your role is that of a research director: survey what has already "
+                "been rigorously established, identify the most promising gaps, and spawn workers with "
+                "targeted hints that push the overall proof forward. Do not solve or verify propositions yourself.\n\n"
+                "Your session succeeds if and only if a proposition that solves the original problem appears in "
+                "the `verified_propositions/` directory. There is no other way to succeed. Do not stop until "
                 "that happens — if workers finish without solving the problem, keep spawning new ones with "
                 "better hints.\n\n"
+                "Workspace layout:\n"
+                "- `verified_propositions/` — the ground truth of current progress. Every `.md` file here is a "
+                "rigorously verified mathematical result you can build on. Read these to understand exactly "
+                "what has been proved and what remains.\n"
+                "- `knowledge/` — exploratory notes distilled from past worker runs. These capture ideas, "
+                "partial arguments, and observations that workers have encountered but not yet turned into "
+                "verified propositions. Treat this as a research notebook: useful for inspiration and for crafting "
+                "hints, but nothing here counts as established until it appears in `verified_propositions/`.\n\n"
                 "Workflow:\n"
-                "1. Read `knowledge/log.md` and any relevant lemma files to survey current progress.\n"
-                "2. Identify what is missing or what would most advance the solution.\n"
-                "3. Spawn workers with specific, well-motivated hints based on your analysis.\n"
-                "4. Call `wait` to block until a worker finishes, then read its output and repeat.\n\n"
+                "1. Read all files in `verified_propositions/` to assess what has been rigorously proved.\n"
+                "2. Read `knowledge/log.md` for exploratory insights from past workers.\n"
+                "3. Identify the most valuable next proposition: what single result would most advance the proof?\n"
+                "4. Spawn workers with specific, well-motivated hints based on your analysis.\n"
+                "5. Call `wait` to block until a worker finishes, then read its output and repeat.\n\n"
                 "Use `wait` only to receive worker results — it blocks until one worker's lifecycle ends. "
                 "It may return `timed_out: true` if no worker finishes within the requested timeout; if repeated "
                 "timeouts show no progress, report the stall so the outer Ralph loop can restart orchestration.\n\n"
-                "You may issue multiple tool calls in a single turn: for example, read several lemma files "
+                "You may issue multiple tool calls in a single turn: for example, read several proposition files "
                 "in parallel, or spawn multiple workers at once with distinct hints targeting different "
                 "sub-problems. Avoid spawning workers with redundant or near-identical hints."
             ),
-            f"Maximum concurrent lemmaworkers: {self.max_workers}",
+            f"Maximum concurrent workers: {self.max_workers}",
         ]
         if hint:
             parts.extend(["# User Hint", hint])
@@ -377,7 +385,7 @@ def verified_count(verified_dir: Path) -> int:
     return sum(1 for path in verified_dir.glob("*.md") if path.is_file())
 
 
-def _worker_result_payload(result: LemmaWorkerRunResult) -> dict[str, Any]:
+def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "worker_id": result.worker_id,
         "status": result.status,
@@ -385,8 +393,8 @@ def _worker_result_payload(result: LemmaWorkerRunResult) -> dict[str, Any]:
         "worker_dir": str(result.worker_dir),
         "solved_problem": result.solved_problem,
     }
-    if result.lemma_file:
-        payload["lemma_file"] = str(result.lemma_file)
+    if result.proposition_file:
+        payload["proposition_file"] = str(result.proposition_file)
     if result.verified_file:
         payload["verified_file"] = str(result.verified_file)
     if result.review_file:

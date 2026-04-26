@@ -8,7 +8,7 @@ agent:
   tools:
     - read_file
     - write_file
-    - str_replace_file
+    - edit
     - get_child_item
     - search_files
     - grep
@@ -20,7 +20,7 @@ agent:
     write_file:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
-    str_replace_file:
+    edit:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
     get_child_item:

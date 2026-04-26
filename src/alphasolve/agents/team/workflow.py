@@ -10,7 +10,7 @@ from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, OpenAIC
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
-from alphasolve.utils.rich_renderer import LemmaTeamRenderer
+from alphasolve.utils.rich_renderer import PropositionTeamRenderer
 
 from .knowledge_digest import KnowledgeDigestQueue, init_knowledge_base
 from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count
@@ -51,7 +51,7 @@ class AlphaSolve:
         self.max_orchestrator_restarts = max(1, int(max_orchestrator_restarts))
 
     def run(self) -> OrchestratorRunResult:
-        renderer = LemmaTeamRenderer(screen=False) if self.print_to_console else None
+        renderer = PropositionTeamRenderer(screen=False) if self.print_to_console else None
         execution_gateway: ExecutionGateway | None = None
         owns_gateway = self.execution_gateway_override is None
         digest_queue: KnowledgeDigestQueue | None = None
@@ -258,7 +258,7 @@ def _worker_result_to_json(result) -> dict[str, Any]:
         "worker_dir": str(result.worker_dir),
         "status": result.status,
         "summary": result.summary,
-        "lemma_file": str(result.lemma_file) if result.lemma_file else None,
+        "proposition_file": str(result.proposition_file) if result.proposition_file else None,
         "verified_file": str(result.verified_file) if result.verified_file else None,
         "review_file": str(result.review_file) if result.review_file else None,
         "theorem_check_file": str(result.theorem_check_file) if result.theorem_check_file else None,

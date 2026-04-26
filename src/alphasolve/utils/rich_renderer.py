@@ -4,7 +4,9 @@ import io
 import threading
 import time
 import textwrap
+from collections import deque
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import TYPE_CHECKING
 
 from rich import box
@@ -12,6 +14,7 @@ from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.rule import Rule
+from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
@@ -22,11 +25,12 @@ if TYPE_CHECKING:
 RICH_CONSOLE = Console()
 
 _DISPLAY_CHAR_LIMIT = 16000
-_MAX_TOOL_HISTORY = 8
 _MAX_TEAM_LOG_LINES = 80
 _ORCHESTRATOR_LOG_LINES = 30
 _RESIZE_POLL_INTERVAL = 0.10
 _TERMINAL_STATUSES = {"verified", "rejected", "failed", "solved", "cancelled"}
+_MAX_TIMELINE_EVENTS = 40
+_WORKER_RETENTION_SECONDS = 600
 
 _TEAM_COLORS = (
     "cyan",
@@ -58,6 +62,10 @@ _CHECK = "✓"
 _CROSS = "✗"
 _PLAY = "▶"
 _DOT = "·"
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 
 
 def _fmt_elapsed(seconds: float) -> str:
@@ -127,12 +135,32 @@ def _text_line(text: str, style: str = "", *, no_wrap: bool = True) -> Text:
     return Text(text, style=style, no_wrap=no_wrap, overflow="ellipsis")
 
 
+# ---------------------------------------------------------------------------
+# Timeline event model (kimi-cli style)
+# ---------------------------------------------------------------------------
+
+
+class EventType(Enum):
+    PHASE = auto()
+    THOUGHT = auto()
+    TOOL_DONE = auto()
+    CONTENT = auto()
+    WARNING = auto()
+    LOG = auto()
+
+
 @dataclass
-class ToolRenderEvent:
-    name: str
-    args: str = ""
-    is_error: bool = False
-    finished_at: float = field(default_factory=time.time)
+class TimelineEvent:
+    type: EventType
+    timestamp: float
+    text: str
+    style: str = ""
+    meta: dict = field(default_factory=dict)
+
+
+# ---------------------------------------------------------------------------
+# Render state
+# ---------------------------------------------------------------------------
 
 
 @dataclass
@@ -143,14 +171,21 @@ class WorkerRenderState:
     phase: str = "starting"
     started_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    char_count: int = 0
+    timeline: deque[TimelineEvent] = field(
+        default_factory=lambda: deque(maxlen=_MAX_TIMELINE_EVENTS)
+    )
+    finished_at: float | None = None
+    # Runtime thinking state (for dynamic spinner rendering)
+    thinking_started_at: float = 0.0
+    thinking_token_count: int = 0
     thinking_text: str = ""
-    output_text: str = ""
+    # Runtime tool state
     active_tool: str | None = None
     active_tool_args: str = ""
-    tool_history: list[ToolRenderEvent] = field(default_factory=list)
-    log_lines: list[str] = field(default_factory=list)
+    # Output buffer (accumulates assistant output, flushed to timeline on completion)
+    output_buffer: str = ""
     result_summary: str = ""
-    char_count: int = 0
 
 
 @dataclass
@@ -159,13 +194,21 @@ class OrchestratorRenderState:
     phase: str = "orchestrator"
     started_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
+    char_count: int = 0
+    timeline: deque[TimelineEvent] = field(
+        default_factory=lambda: deque(maxlen=_MAX_TIMELINE_EVENTS)
+    )
+    thinking_started_at: float = 0.0
+    thinking_token_count: int = 0
     thinking_text: str = ""
-    output_text: str = ""
     active_tool: str | None = None
     active_tool_args: str = ""
-    tool_history: list[ToolRenderEvent] = field(default_factory=list)
-    log_lines: list[str] = field(default_factory=list)
-    char_count: int = 0
+    output_buffer: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Low-level terminal painter
+# ---------------------------------------------------------------------------
 
 
 class _LineDiffLive:
@@ -268,8 +311,13 @@ class _LineDiffLive:
         self.console.file.flush()
 
 
-class LemmaTeamRenderer:
-    """Native Rich dashboard for the AlphaSolve agent team."""
+# ---------------------------------------------------------------------------
+# PropositionTeamRenderer
+# ---------------------------------------------------------------------------
+
+
+class PropositionTeamRenderer:
+    """Native Rich dashboard for the AlphaSolve agent team (kimi-cli timeline style)."""
 
     def __init__(
         self,
@@ -395,11 +443,10 @@ class LemmaTeamRenderer:
             self._refresh_locked(force=True)
 
     def clear_worker_text(self, worker_id: int) -> None:
-        """Clear thinking and output text for *worker_id* (e.g. between agents)."""
+        """Clear output buffer for *worker_id* (e.g. between agents)."""
         with self._lock:
             state = self._ensure_worker(worker_id)
-            state.thinking_text = ""
-            state.output_text = ""
+            state.output_buffer = ""
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
@@ -411,25 +458,40 @@ class LemmaTeamRenderer:
             state.updated_at = time.time()
             self._refresh_locked()
 
-    def update_thinking(self, worker_id: int, *, module: str, thinking_text: str, elapsed: float) -> None:
+    def update_thinking(
+        self, worker_id: int, *, module: str, thinking_text: str, elapsed: float
+    ) -> None:
         del elapsed
         with self._lock:
             state = self._ensure_worker(worker_id)
             state.phase = module
             state.status = "thinking"
-            state.char_count += max(0, len(thinking_text) - len(state.thinking_text))
+            if state.thinking_started_at == 0:
+                state.thinking_started_at = time.time()
+            delta = max(0, len(thinking_text) - state.thinking_token_count)
+            state.thinking_token_count = len(thinking_text)
             state.thinking_text = _tail_chars(thinking_text)
+            state.char_count += delta
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def finish_thinking(self, worker_id: int, *, module: str, elapsed: float, char_count: int) -> None:
+    def finish_thinking(
+        self, worker_id: int, *, module: str, elapsed: float, char_count: int
+    ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
             state.phase = module
             state.status = "running"
-            state.log_lines.append(f"CoT {elapsed:.1f}s {_DOT} {_fmt_count(char_count)} chars")
-            state.log_lines = state.log_lines[-self.max_log_lines :]
             state.updated_at = time.time()
+            self._append_event(
+                state,
+                EventType.THOUGHT,
+                f"Thought for {elapsed:.1f}s {_DOT} {_fmt_count(char_count)} chars",
+                style="grey50 italic",
+            )
+            state.thinking_started_at = 0.0
+            state.thinking_token_count = 0
+            state.thinking_text = ""
             self._refresh_locked(force=True)
 
     def append_output(self, worker_id: int, text: str) -> None:
@@ -437,9 +499,26 @@ class LemmaTeamRenderer:
             return
         with self._lock:
             state = self._ensure_worker(worker_id)
-            state.output_text = _tail_chars(state.output_text + text)
+            state.output_buffer = _tail_chars(state.output_buffer + text)
             state.char_count += len(text)
             state.status = "writing"
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def flush_output(self, worker_id: int) -> None:
+        """Flush accumulated assistant output into the timeline."""
+        with self._lock:
+            state = self._ensure_worker(worker_id)
+            buf = state.output_buffer.strip()
+            if buf:
+                preview = _clean_inline(buf)
+                self._append_event(
+                    state,
+                    EventType.CONTENT,
+                    preview,
+                    style="grey70",
+                )
+            state.output_buffer = ""
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
@@ -453,10 +532,22 @@ class LemmaTeamRenderer:
     ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
-            self._reset_state_stream(state, content_chars=content_chars, reasoning_chars=reasoning_chars, phase=phase)
+            if content_chars:
+                state.output_buffer = state.output_buffer[:-content_chars] if content_chars < len(state.output_buffer) else ""
+            if reasoning_chars:
+                state.thinking_started_at = 0.0
+                state.thinking_token_count = 0
+                state.thinking_text = ""
+            state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
+            if phase:
+                state.phase = phase
+            state.status = "thinking"
+            state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def update_tool_start(self, worker_id: int, *, module: str, name: str, arg_preview: str) -> None:
+    def update_tool_start(
+        self, worker_id: int, *, module: str, name: str, arg_preview: str
+    ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
             state.phase = module
@@ -470,28 +561,44 @@ class LemmaTeamRenderer:
         with self._lock:
             state = self._ensure_worker(worker_id)
             args = state.active_tool_args if state.active_tool == name else ""
-            state.tool_history.append(ToolRenderEvent(name=name, args=args, is_error=is_error))
-            state.tool_history = state.tool_history[-_MAX_TOOL_HISTORY:]
+            marker = _CROSS if is_error else _CHECK
+            style = "red" if is_error else "green"
+            self._append_event(
+                state,
+                EventType.TOOL_DONE,
+                f"{marker} {name}  {args}".rstrip(),
+                style=style,
+                meta={"is_error": is_error},
+            )
             state.active_tool = None
             state.active_tool_args = ""
             state.status = "running"
             state.updated_at = time.time()
-            marker = _CROSS if is_error else _CHECK
             self._append_team_log_locked(f"@worker-{worker_id:02d} {marker} {name}")
             self._refresh_locked(force=True)
 
-    def finish_worker(self, worker_id: int, *, status: str, solved: bool = False, summary: str = "") -> None:
+    def finish_worker(
+        self, worker_id: int, *, status: str, solved: bool = False, summary: str = ""
+    ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
+            self.flush_output(worker_id)
             state.status = "solved" if solved else status
             state.phase = "done"
             state.result_summary = _clean_inline(summary)
             state.active_tool = None
             state.active_tool_args = ""
+            state.finished_at = time.time()
             state.updated_at = time.time()
             self._worker_finished += 1
             if state.status == "failed":
                 self._failed += 1
+            self._append_event(
+                state,
+                EventType.PHASE,
+                f"finished: {state.status}",
+                style="bold green" if solved else "grey50",
+            )
             self._append_team_log_locked(f"@worker-{worker_id:02d} finished: {state.status}")
             self._refresh_locked(force=True)
 
@@ -512,8 +619,7 @@ class LemmaTeamRenderer:
                 return
             line = self._fmt_log(message, module=module, level=level)
             with self._lock:
-                self._orchestrator.log_lines.append(line)
-                self._orchestrator.log_lines = self._orchestrator.log_lines[-_ORCHESTRATOR_LOG_LINES:]
+                self._append_event(self._orchestrator, EventType.LOG, line, style="grey60")
                 self._orchestrator.updated_at = time.time()
                 self._append_team_log_locked(f"orchestrator {line}")
                 self._refresh_locked()
@@ -525,11 +631,14 @@ class LemmaTeamRenderer:
         line = self._fmt_log(message, module=module, level=level)
         with self._lock:
             state = self._ensure_worker(worker_id)
-            state.log_lines.append(line)
-            state.log_lines = state.log_lines[-self.max_log_lines :]
+            event_type = EventType.WARNING if level == "WARNING" else EventType.LOG
+            style = "yellow" if level == "WARNING" else ("red" if level == "ERROR" else "grey60")
+            self._append_event(state, event_type, line, style=style)
             state.updated_at = time.time()
             self._append_team_log_locked(f"@worker-{worker_id:02d} {line}")
             self._refresh_locked()
+
+    # -- Orchestrator --------------------------------------------------------
 
     def update_orchestrator_phase(self, phase: str, *, status: str = "running") -> None:
         with self._lock:
@@ -538,25 +647,40 @@ class LemmaTeamRenderer:
             self._orchestrator.updated_at = time.time()
             self._refresh_locked()
 
-    def update_orchestrator_thinking(self, *, module: str, thinking_text: str, elapsed: float) -> None:
+    def update_orchestrator_thinking(
+        self, *, module: str, thinking_text: str, elapsed: float
+    ) -> None:
         del elapsed
         with self._lock:
             state = self._orchestrator
             state.phase = module
             state.status = "thinking"
-            state.char_count += max(0, len(thinking_text) - len(state.thinking_text))
+            if state.thinking_started_at == 0:
+                state.thinking_started_at = time.time()
+            delta = max(0, len(thinking_text) - state.thinking_token_count)
+            state.thinking_token_count = len(thinking_text)
             state.thinking_text = _tail_chars(thinking_text)
+            state.char_count += delta
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def finish_orchestrator_thinking(self, *, module: str, elapsed: float, char_count: int) -> None:
+    def finish_orchestrator_thinking(
+        self, *, module: str, elapsed: float, char_count: int
+    ) -> None:
         with self._lock:
             state = self._orchestrator
             state.phase = module
             state.status = "running"
-            state.log_lines.append(f"CoT {elapsed:.1f}s {_DOT} {_fmt_count(char_count)} chars")
-            state.log_lines = state.log_lines[-_ORCHESTRATOR_LOG_LINES:]
             state.updated_at = time.time()
+            self._append_event(
+                state,
+                EventType.THOUGHT,
+                f"Thought for {elapsed:.1f}s {_DOT} {_fmt_count(char_count)} chars",
+                style="grey50 italic",
+            )
+            state.thinking_started_at = 0.0
+            state.thinking_token_count = 0
+            state.thinking_text = ""
             self._refresh_locked(force=True)
 
     def append_orchestrator_output(self, text: str) -> None:
@@ -564,23 +688,42 @@ class LemmaTeamRenderer:
             return
         with self._lock:
             state = self._orchestrator
-            state.output_text = _tail_chars(state.output_text + text)
+            state.output_buffer = _tail_chars(state.output_buffer + text)
             state.char_count += len(text)
             state.status = "writing"
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def reset_orchestrator_stream(self, *, content_chars: int = 0, reasoning_chars: int = 0) -> None:
+    def flush_orchestrator_output(self) -> None:
         with self._lock:
-            self._reset_state_stream(
-                self._orchestrator,
-                content_chars=content_chars,
-                reasoning_chars=reasoning_chars,
-                phase="thinking",
-            )
+            state = self._orchestrator
+            buf = state.output_buffer.strip()
+            if buf:
+                preview = _clean_inline(buf)
+                self._append_event(state, EventType.CONTENT, preview, style="grey70")
+            state.output_buffer = ""
+            state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def update_orchestrator_tool_start(self, *, module: str, name: str, arg_preview: str) -> None:
+    def reset_orchestrator_stream(
+        self, *, content_chars: int = 0, reasoning_chars: int = 0
+    ) -> None:
+        with self._lock:
+            state = self._orchestrator
+            if content_chars:
+                state.output_buffer = state.output_buffer[:-content_chars] if content_chars < len(state.output_buffer) else ""
+            if reasoning_chars:
+                state.thinking_started_at = 0.0
+                state.thinking_token_count = 0
+                state.thinking_text = ""
+            state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
+            state.status = "thinking"
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def update_orchestrator_tool_start(
+        self, *, module: str, name: str, arg_preview: str
+    ) -> None:
         with self._lock:
             state = self._orchestrator
             state.phase = module
@@ -594,8 +737,15 @@ class LemmaTeamRenderer:
         with self._lock:
             state = self._orchestrator
             args = state.active_tool_args if state.active_tool == name else ""
-            state.tool_history.append(ToolRenderEvent(name=name, args=args, is_error=is_error))
-            state.tool_history = state.tool_history[-_MAX_TOOL_HISTORY:]
+            marker = _CROSS if is_error else _CHECK
+            style = "red" if is_error else "green"
+            self._append_event(
+                state,
+                EventType.TOOL_DONE,
+                f"{marker} {name}  {args}".rstrip(),
+                style=style,
+                meta={"is_error": is_error},
+            )
             state.active_tool = None
             state.active_tool_args = ""
             state.status = "running"
@@ -604,8 +754,20 @@ class LemmaTeamRenderer:
             self._append_team_log_locked(f"orchestrator {marker} {name}")
             self._refresh_locked(force=True)
 
+    # -- Rendering -----------------------------------------------------------
+
     def render(self) -> "RenderableType":
         with self._lock:
+            # 清理超过 10 分钟的已完成 worker
+            now = time.time()
+            to_remove = [
+                wid
+                for wid, s in self._workers.items()
+                if s.finished_at is not None and now - s.finished_at > _WORKER_RETENTION_SECONDS
+            ]
+            for wid in to_remove:
+                self._workers.pop(wid, None)
+
             width = max(80, self.console.size.width)
             height = max(24, self.console.size.height)
             elapsed = time.time() - self._started_at
@@ -669,7 +831,7 @@ class LemmaTeamRenderer:
         if not workers:
             lines.append(_text_line("  waiting for workers", "grey50 italic"))
         else:
-            for state in workers[-max(1, min(len(workers), 8)) :]:
+            for state in workers[-max(1, min(len(workers), 8)): ]:
                 icon, style = _STATUS_ICON.get(state.status, ("○", "grey50"))
                 line = Text(no_wrap=True, overflow="ellipsis")
                 line.append(f"{icon} ", style)
@@ -710,7 +872,7 @@ class LemmaTeamRenderer:
         states = sorted(self._workers.values(), key=lambda s: s.worker_id)
         if not states:
             return Panel(
-                Text("Waiting for lemma workers…", style="grey50 italic"),
+                Text("Waiting for workers…", style="grey50 italic"),
                 title="[grey50]workers[/]",
                 title_align="left",
                 border_style="grey35",
@@ -763,6 +925,7 @@ class LemmaTeamRenderer:
         icon, icon_style = _STATUS_ICON.get(state.status, ("○", "grey50"))
         lines: list[Text] = []
 
+        # Header line
         status = Text(no_wrap=True, overflow="ellipsis")
         status.append(f"{icon} ", icon_style)
         status.append(_truncate(state.phase, max(6, content_width - 20)), "bold")
@@ -770,14 +933,18 @@ class LemmaTeamRenderer:
         status.append(f"  ↑{_fmt_count(state.char_count)}", "grey50")
         lines.append(status)
 
-        tool_line = self._render_tool_line(state, content_width)
-        if tool_line is not None:
-            lines.append(tool_line)
+        # Timeline events (oldest first, newest last)
+        timeline_lines = self._render_timeline(state, width=content_width, max_lines=max_lines - 1)
+        lines.extend(timeline_lines)
 
-        remaining = max(0, max_lines - len(lines))
-        lines.extend(self._render_agent_content_lines(state, width=content_width, max_lines=remaining))
+        # Active indicators (thinking / tool) at the bottom
+        active_lines = self._render_active_lines(state, width=content_width)
+        # Ensure we don't overflow; if we do, drop old timeline lines
+        while len(lines) + len(active_lines) > max_lines and len(lines) > 1:
+            lines.pop(1)  # remove oldest timeline line, keep header
+        lines.extend(active_lines)
 
-        if len(lines) < max_lines and not state.thinking_text and not state.output_text and not state.log_lines and not state.active_tool:
+        if len(lines) < max_lines and not state.timeline and not state.active_tool and state.status not in ("thinking", "tool"):
             lines.append(_text_line("waiting for activity", "grey50 italic"))
 
         subtitle = self._panel_subtitle(state)
@@ -793,32 +960,7 @@ class LemmaTeamRenderer:
             height=height,
         )
 
-    def _render_tool_line(
-        self,
-        state: WorkerRenderState | OrchestratorRenderState,
-        width: int,
-    ) -> Text | None:
-        if state.active_tool:
-            line = Text(no_wrap=True, overflow="ellipsis")
-            line.append(f"{_PLAY} use tool ", "yellow")
-            line.append(state.active_tool, "bold blue")
-            if state.active_tool_args:
-                line.append("  " + _truncate(state.active_tool_args, max(4, width - cell_len(line.plain) - 2)), "grey50")
-            return line
-
-        if state.tool_history:
-            event = state.tool_history[-1]
-            marker = _CROSS if event.is_error else _CHECK
-            style = "red" if event.is_error else "green"
-            line = Text(no_wrap=True, overflow="ellipsis")
-            line.append(f"{marker} ", style)
-            line.append(event.name, "blue")
-            if event.args:
-                line.append("  " + _truncate(event.args, max(4, width - cell_len(line.plain) - 2)), "grey50")
-            return line
-        return None
-
-    def _render_agent_content_lines(
+    def _render_timeline(
         self,
         state: WorkerRenderState | OrchestratorRenderState,
         *,
@@ -827,66 +969,59 @@ class LemmaTeamRenderer:
     ) -> list[Text]:
         if max_lines <= 0:
             return []
-
-        sections: list[Text] = []
-        if state.thinking_text:
-            has_other_content = bool(state.output_text or state.tool_history)
-            cot_lines = max(2, min(max_lines, max_lines // 2 + 1)) if has_other_content else max_lines
-            sections.extend(self._section_lines("CoT", state.thinking_text, width=width, max_lines=cot_lines, style="grey50 italic"))
-
-        used = len(sections)
-        if used < max_lines and state.output_text:
-            sections.extend(self._section_lines("assistant", state.output_text, width=width, max_lines=max_lines - used, style="grey70"))
-            used = len(sections)
-
-        if used < max_lines and state.tool_history:
-            for event in state.tool_history[-max(1, max_lines - used) :]:
-                marker = _CROSS if event.is_error else _CHECK
-                style = "red" if event.is_error else "green"
-                line = Text(no_wrap=True, overflow="ellipsis")
-                line.append(f"{marker} ", style)
-                line.append(_truncate(event.name, max(4, width - 4)), "grey70")
-                sections.append(line)
-            used = len(sections)
-
-        if used < max_lines and state.log_lines:
-            sections.extend(self._render_log_lines(state.log_lines, width=width, max_lines=max_lines - used))
-
-        return sections[:max_lines]
-
-    def _section_lines(self, label: str, text: str, *, width: int, max_lines: int, style: str) -> list[Text]:
-        lines: list[Text] = []
-        if max_lines <= 0:
-            return lines
-        header = Text(no_wrap=True, overflow="ellipsis")
-        header.append(f"{label} ", "grey39")
-        header.append("↓", "grey39")
-        lines.append(header)
-        for raw in _tail_lines(text, max(0, max_lines - 1)):
-            if not raw.strip():
-                continue
-            lines.append(_text_line(_truncate(raw, width), style))
-        return lines[:max_lines]
-
-    def _render_log_lines(self, log_lines: list[str], *, width: int, max_lines: int) -> list[Text]:
         rendered: list[Text] = []
-        for item in reversed(log_lines):
-            style = "red" if item.lower().startswith("[error]") else "grey60"
-            wrapped = _wrap_inline(item, width=width, max_lines=max_lines - len(rendered))
-            for line in reversed(wrapped):
-                rendered.insert(0, _text_line(line, style))
-            if len(rendered) >= max_lines:
-                break
-        return rendered[-max_lines:]
+        for event in list(state.timeline)[-max_lines:]:
+            text = _truncate(event.text, width)
+            rendered.append(_text_line(text, event.style or "grey70"))
+        return rendered
+
+    def _render_active_lines(
+        self,
+        state: WorkerRenderState | OrchestratorRenderState,
+        *,
+        width: int,
+    ) -> list[Text]:
+        lines: list[Text] = []
+        if state.status == "thinking" and state.thinking_started_at > 0:
+            thinking_elapsed = time.time() - state.thinking_started_at
+            count_str = _fmt_count(state.thinking_token_count)
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append("Thinking", "italic")
+            frame = _bullet_frame_for(thinking_elapsed)
+            line.append(f" {frame}", "cyan")
+            line.append(f"  {_fmt_elapsed(thinking_elapsed)}", "grey50")
+            line.append(f" · {count_str} chars", "grey50")
+            if thinking_elapsed > 0.5 and state.thinking_token_count > 0:
+                rate = int(state.thinking_token_count / thinking_elapsed)
+                if rate > 0:
+                    line.append(f" · {rate} char/s", "grey50")
+            lines.append(line)
+
+            # kimi-cli style: show a small preview of the latest reasoning text
+            if state.thinking_text:
+                for raw in _tail_lines(state.thinking_text, 3):
+                    if raw.strip():
+                        lines.append(_text_line(_truncate(raw, width), "grey50 italic"))
+
+        if state.active_tool:
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append(f"{_PLAY} Using ", "yellow")
+            line.append(state.active_tool, "bold blue")
+            if state.active_tool_args:
+                line.append("  " + _truncate(state.active_tool_args, max(4, width - cell_len(line.plain) - 2)), "grey50")
+            lines.append(line)
+        return lines
 
     def _panel_subtitle(self, state: WorkerRenderState | OrchestratorRenderState) -> str:
         if state.active_tool:
             return "[yellow]tool running[/]"
         if state.status in _TERMINAL_STATUSES:
             return f"[grey50]{state.status}[/]"
-        if state.tool_history:
-            event = state.tool_history[-1]
-            return "[red]last tool failed[/]" if event.is_error else "[green]last tool ok[/]"
+        # Show the most recent event type as a hint
+        if state.timeline:
+            last = state.timeline[-1]
+            if last.type == EventType.TOOL_DONE:
+                return "[red]last tool failed[/]" if last.meta.get("is_error") else "[green]last tool ok[/]"
         return "[grey50]live[/]"
 
     def _ensure_worker(self, worker_id: int) -> WorkerRenderState:
@@ -898,25 +1033,23 @@ class LemmaTeamRenderer:
             self._worker_started += 1
         return self._workers[worker_id]
 
-    def _reset_state_stream(
+    def _append_event(
         self,
         state: WorkerRenderState | OrchestratorRenderState,
-        *,
-        content_chars: int,
-        reasoning_chars: int,
-        phase: str | None,
+        event_type: EventType,
+        text: str,
+        style: str = "",
+        meta: dict | None = None,
     ) -> None:
-        content_chars = max(0, int(content_chars))
-        reasoning_chars = max(0, int(reasoning_chars))
-        if content_chars:
-            state.output_text = state.output_text[:-content_chars] if content_chars < len(state.output_text) else ""
-        if reasoning_chars:
-            state.thinking_text = ""
-        state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
-        if phase:
-            state.phase = phase
-        state.status = "thinking"
-        state.updated_at = time.time()
+        state.timeline.append(
+            TimelineEvent(
+                type=event_type,
+                timestamp=time.time(),
+                text=text,
+                style=style,
+                meta=meta or {},
+            )
+        )
 
     def _fmt_log(self, message: str, *, module: str | None, level: str) -> str:
         prefix = f"[{level.lower()}]" if level != "INFO" else ""
@@ -994,3 +1127,20 @@ class LemmaTeamRenderer:
             self._refresh_pending = True
             return
         self._paint_now_locked(now=now)
+
+
+# ---------------------------------------------------------------------------
+# Animated bullet frame for thinking spinner (kimi-cli style)
+# ---------------------------------------------------------------------------
+
+_BULLET_FRAMES = (".  ", ".. ", "...", " ..", "  .", "   ")
+_BULLET_FRAME_INTERVAL = 0.13
+
+
+def _bullet_frame_for(elapsed: float) -> str:
+    idx = int(elapsed / _BULLET_FRAME_INTERVAL) % len(_BULLET_FRAMES)
+    return _BULLET_FRAMES[idx]
+
+
+# Legacy alias for backward compatibility in tests
+LemmaTeamRenderer = PropositionTeamRenderer

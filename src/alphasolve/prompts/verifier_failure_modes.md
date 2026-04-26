@@ -6,7 +6,7 @@ Rules:
 - Read the candidate lemma exactly as written.
 - Read `verified_lemmas` when checking references.
 - Check that every cited verified lemma uses `\ref{filename-without-extension}` and points to an existing file in `verified_lemmas`.
-- You may read the current lemmaworker directory, but you must not write files. `verifier_workspace` is reserved for future Lean support and is not part of the current review flow.
+- You may read the current worker directory, but you must not write files. `verifier_workspace` is reserved for future Lean support and is not part of the current review flow.
 - Do not read `review.md` if it exists; each verifier attempt must be independent of prior reviews.
 - You must not read other workers' `unverified_lemmas/lemma-*` directories.
 - Do not judge whether the lemma solves the original problem; a separate theorem checker handles that.
