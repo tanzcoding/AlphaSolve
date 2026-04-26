@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import inspect
 import json
 import time
+import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
+import httpx
 import openai
 from openai import OpenAI
 
@@ -12,8 +15,17 @@ from .config import GeneralAgentConfig
 from .tool_registry import ToolRegistry
 
 
+ChatDeltaSink = Callable[[dict[str, Any]], None]
+
+
 class ChatClient(Protocol):
-    def complete(self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        delta_sink: ChatDeltaSink | None = None,
+    ) -> dict[str, Any]:
         ...
 
 
@@ -49,7 +61,13 @@ class OpenAIChatClient:
             timeout=self.timeout,
         )
 
-    def complete(self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        delta_sink: ChatDeltaSink | None = None,
+    ) -> dict[str, Any]:
         request: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
@@ -62,17 +80,91 @@ class OpenAIChatClient:
         max_retries = 8
         delay = 5.0
         for attempt in range(max_retries + 1):
+            emitted_delta = False
             try:
-                response = self.client.chat.completions.create(**request)
-                message = response.choices[0].message
-                if hasattr(message, "model_dump"):
-                    return message.model_dump(exclude_none=True)
-                return dict(message)
-            except (openai.InternalServerError, openai.APITimeoutError, openai.APIConnectionError, openai.RateLimitError) as exc:
-                if attempt == max_retries:
+                if delta_sink is not None:
+                    def guarded_delta_sink(delta: dict[str, Any]) -> None:
+                        nonlocal emitted_delta
+                        emitted_delta = True
+                        delta_sink(delta)
+
+                    return self._complete_streaming(request, delta_sink=guarded_delta_sink)
+                return self._complete_non_streaming(request)
+            except (
+                openai.InternalServerError,
+                openai.APITimeoutError,
+                openai.APIConnectionError,
+                openai.RateLimitError,
+                httpx.RemoteProtocolError,
+            ) as exc:
+                if emitted_delta or attempt == max_retries:
                     raise
                 time.sleep(delay)
                 delay = min(delay * 2, 300.0)
+
+        raise RuntimeError("unreachable OpenAI retry state")
+
+    def _complete_non_streaming(self, request: dict[str, Any]) -> dict[str, Any]:
+        response = self.client.chat.completions.create(**request)
+        message = response.choices[0].message
+        return _object_to_dict(message)
+
+    def _complete_streaming(self, request: dict[str, Any], *, delta_sink: ChatDeltaSink) -> dict[str, Any]:
+        stream_request = dict(request)
+        stream_request["stream"] = True
+
+        role = "assistant"
+        content_parts: list[str] = []
+        reasoning_parts: list[str] = []
+        tool_call_parts: dict[int, dict[str, Any]] = {}
+
+        for chunk in self.client.chat.completions.create(**stream_request):
+            chunk_dict = _object_to_dict(chunk)
+            choices = chunk_dict.get("choices") or []
+            if not choices:
+                continue
+            choice = _object_to_dict(choices[0])
+            delta = _object_to_dict(choice.get("delta") or {})
+            if not delta:
+                continue
+
+            role = str(delta.get("role") or role)
+            reasoning_delta = _first_text_delta(delta, ("reasoning_content", "reasoning", "reasoning_text"))
+            if reasoning_delta:
+                reasoning_parts.append(reasoning_delta)
+                delta_sink({"type": "reasoning", "content": reasoning_delta})
+
+            content_delta = _first_text_delta(delta, ("content",))
+            if content_delta:
+                content_parts.append(content_delta)
+                delta_sink({"type": "content", "content": content_delta})
+
+            for raw_tool_delta in delta.get("tool_calls") or []:
+                tool_delta = _object_to_dict(raw_tool_delta)
+                index = int(tool_delta.get("index") or 0)
+                current = tool_call_parts.setdefault(
+                    index,
+                    {"id": "", "type": "function", "function": {"name": "", "arguments": ""}},
+                )
+                if tool_delta.get("id"):
+                    current["id"] = str(tool_delta["id"])
+                if tool_delta.get("type"):
+                    current["type"] = str(tool_delta["type"])
+
+                function_delta = _object_to_dict(tool_delta.get("function") or {})
+                function = current.setdefault("function", {"name": "", "arguments": ""})
+                if function_delta.get("name"):
+                    function["name"] = str(function.get("name") or "") + str(function_delta["name"])
+                if function_delta.get("arguments"):
+                    function["arguments"] = str(function.get("arguments") or "") + str(function_delta["arguments"])
+
+        message: dict[str, Any] = {"role": role, "content": "".join(content_parts)}
+        reasoning = "".join(reasoning_parts)
+        if reasoning:
+            message["reasoning_content"] = reasoning
+        if tool_call_parts:
+            message["tool_calls"] = [tool_call_parts[index] for index in sorted(tool_call_parts)]
+        return message
 
 
 class GeneralPurposeAgent:
@@ -115,8 +207,10 @@ class GeneralPurposeAgent:
         for turn in range(1, self.config.max_turns + 1):
             trace.append({"type": "model_request", "agent": self.config.name, "turn": turn})
             self._emit(trace[-1])
+            stream_state = {"reasoning": "", "content": ""}
+            delta_sink = self._make_delta_sink(turn=turn, state=stream_state) if self.event_sink is not None else None
             try:
-                assistant_message = self.client.complete(messages=messages, tools=tools)
+                assistant_message = self._complete(messages=messages, tools=tools, delta_sink=delta_sink)
             except Exception as exc:
                 trace.append(
                     {
@@ -124,15 +218,30 @@ class GeneralPurposeAgent:
                         "turn": turn,
                         "error_type": type(exc).__name__,
                         "error": str(exc),
+                        "error_detail": _format_exception_detail(exc),
                     }
                 )
                 self.last_trace = trace
                 self._emit(trace[-1])
                 raise AgentRunError(f"agent {self.config.name} failed: {exc}", trace=trace) from exc
+            if stream_state["reasoning"] and not assistant_message.get("reasoning_content"):
+                assistant_message = dict(assistant_message)
+                assistant_message["reasoning_content"] = stream_state["reasoning"]
+            if stream_state["content"] and not assistant_message.get("content"):
+                assistant_message = dict(assistant_message)
+                assistant_message["content"] = stream_state["content"]
+
             messages.append(assistant_message)
             reasoning = assistant_message.get("reasoning_content") or ""
             if reasoning:
-                trace.append({"type": "thinking", "turn": turn, "content": reasoning})
+                trace.append(
+                    {
+                        "type": "thinking",
+                        "turn": turn,
+                        "content": reasoning,
+                        "streamed": bool(stream_state["reasoning"]),
+                    }
+                )
                 self._emit(trace[-1])
             trace.append(
                 {
@@ -140,6 +249,7 @@ class GeneralPurposeAgent:
                     "turn": turn,
                     "content": assistant_message.get("content") or "",
                     "tool_call_count": len(assistant_message.get("tool_calls") or []),
+                    "streamed_content": bool(stream_state["content"]),
                     "raw": assistant_message,
                 }
             )
@@ -252,3 +362,89 @@ class GeneralPurposeAgent:
             self.event_sink(event)
         except Exception:
             pass
+
+    def _complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        delta_sink: ChatDeltaSink | None,
+    ) -> dict[str, Any]:
+        if delta_sink is not None and _client_accepts_delta_sink(self.client):
+            return self.client.complete(messages=messages, tools=tools, delta_sink=delta_sink)
+        return self.client.complete(messages=messages, tools=tools)
+
+    def _make_delta_sink(self, *, turn: int, state: dict[str, str]) -> ChatDeltaSink:
+        started_at = time.time()
+
+        def sink(delta: dict[str, Any]) -> None:
+            delta_type = str(delta.get("type") or "")
+            fragment = str(delta.get("content") or "")
+            if not fragment:
+                return
+
+            if delta_type == "reasoning":
+                state["reasoning"] += fragment
+                self._emit(
+                    {
+                        "type": "thinking_delta",
+                        "turn": turn,
+                        "content": state["reasoning"],
+                        "delta": fragment,
+                        "elapsed": time.time() - started_at,
+                    }
+                )
+            elif delta_type == "content":
+                state["content"] += fragment
+                self._emit(
+                    {
+                        "type": "assistant_delta",
+                        "turn": turn,
+                        "content": state["content"],
+                        "delta": fragment,
+                        "elapsed": time.time() - started_at,
+                    }
+                )
+
+        return sink
+
+
+def _client_accepts_delta_sink(client: ChatClient) -> bool:
+    try:
+        signature = inspect.signature(client.complete)
+    except (TypeError, ValueError):
+        return False
+    return "delta_sink" in signature.parameters or any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
+def _object_to_dict(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    if hasattr(value, "model_dump"):
+        return value.model_dump(exclude_none=True)
+    return dict(value)
+
+
+def _first_text_delta(delta: dict[str, Any], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = delta.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _format_exception_detail(exc: BaseException) -> str:
+    lines = [item.strip() for item in traceback.format_exception_only(type(exc), exc) if item.strip()]
+    detail = " ".join(lines)
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        cause_lines = [item.strip() for item in traceback.format_exception_only(type(cause), cause) if item.strip()]
+        cause_detail = " ".join(cause_lines)
+        if cause_detail and cause_detail not in detail:
+            detail = f"{detail} | caused by {cause_detail}" if detail else cause_detail
+    return detail

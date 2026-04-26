@@ -5,11 +5,15 @@ import shutil
 import sys
 from contextlib import contextmanager
 
+import httpx
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
+import alphasolve.agents.general.general_agent as general_agent_module  # noqa: E402
 from alphasolve.agents.general import (  # noqa: E402
     GeneralAgentConfig,
     GeneralPurposeAgent,
+    OpenAIChatClient,
     ToolRegistry,
     ToolResult,
     Workspace,
@@ -79,6 +83,151 @@ def local_test_dir(name):
 def test_general_agent_can_write_and_read_workspace_file():
     with local_test_dir("write_read") as tmp_path:
         _assert_agent_can_write_and_read_workspace_file(tmp_path)
+
+
+def test_general_agent_emits_streaming_delta_events():
+    class StreamingClient:
+        def __init__(self):
+            self.used_delta_sink = False
+
+        def complete(self, *, messages, tools, delta_sink=None):
+            del messages, tools
+            self.used_delta_sink = delta_sink is not None
+            assert delta_sink is not None
+            delta_sink({"type": "reasoning", "content": "think "})
+            delta_sink({"type": "reasoning", "content": "now"})
+            delta_sink({"type": "content", "content": "done"})
+            return {
+                "role": "assistant",
+                "reasoning_content": "think now",
+                "content": "done",
+            }
+
+    events = []
+    client = StreamingClient()
+    agent = GeneralPurposeAgent(
+        config=GeneralAgentConfig(
+            name="streaming",
+            system_prompt="You stream.",
+            tools=[],
+            max_turns=1,
+        ),
+        client=client,
+        tool_registry=ToolRegistry(),
+        event_sink=events.append,
+    )
+
+    result = agent.run("Stream a small answer.")
+
+    assert client.used_delta_sink
+    assert result.final_answer == "done"
+    thinking_deltas = [event for event in events if event["type"] == "thinking_delta"]
+    assistant_deltas = [event for event in events if event["type"] == "assistant_delta"]
+    assert [event["content"] for event in thinking_deltas] == ["think ", "think now"]
+    assert [event["delta"] for event in assistant_deltas] == ["done"]
+    thinking_final = [event for event in result.trace if event["type"] == "thinking"][0]
+    assistant_final = [event for event in result.trace if event["type"] == "assistant_message"][0]
+    assert thinking_final["streamed"] is True
+    assert assistant_final["streamed_content"] is True
+
+
+def test_openai_chat_client_reconstructs_streaming_tool_calls():
+    class FakeCompletions:
+        def __init__(self):
+            self.requests = []
+
+        def create(self, **request):
+            self.requests.append(request)
+            return [
+                {"choices": [{"delta": {"role": "assistant", "reasoning_content": "plan "}}]},
+                {"choices": [{"delta": {"reasoning_content": "tool"}}]},
+                {"choices": [{"delta": {"content": "Preparing."}}]},
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "id": "call_write",
+                                        "type": "function",
+                                        "function": {"name": "write_", "arguments": "{\"path\":"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+                {
+                    "choices": [
+                        {
+                            "delta": {
+                                "tool_calls": [
+                                    {
+                                        "index": 0,
+                                        "function": {"name": "file", "arguments": "\"lemma.md\"}"},
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            ]
+
+    class FakeOpenAI:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    fake_openai = FakeOpenAI()
+    client = OpenAIChatClient({"api_key": "test", "model": "fake-model"})
+    client.client = fake_openai
+    deltas = []
+
+    message = client.complete(messages=[], tools=[{"type": "function"}], delta_sink=deltas.append)
+
+    request = fake_openai.chat.completions.requests[0]
+    assert request["stream"] is True
+    assert message["role"] == "assistant"
+    assert message["reasoning_content"] == "plan tool"
+    assert message["content"] == "Preparing."
+    assert message["tool_calls"][0]["id"] == "call_write"
+    assert message["tool_calls"][0]["function"]["name"] == "write_file"
+    assert message["tool_calls"][0]["function"]["arguments"] == '{"path":"lemma.md"}'
+    assert deltas == [
+        {"type": "reasoning", "content": "plan "},
+        {"type": "reasoning", "content": "tool"},
+        {"type": "content", "content": "Preparing."},
+    ]
+
+
+def test_openai_chat_client_retries_remote_protocol_error_before_first_delta():
+    class FlakyCompletions:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, **request):
+            del request
+            self.calls += 1
+            if self.calls == 1:
+                raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
+            return [{"choices": [{"delta": {"content": "ok"}}]}]
+
+    class FakeOpenAI:
+        def __init__(self):
+            self.chat = type("Chat", (), {"completions": FlakyCompletions()})()
+
+    fake_openai = FakeOpenAI()
+    client = OpenAIChatClient({"api_key": "test", "model": "fake-model"})
+    client.client = fake_openai
+    old_sleep = general_agent_module.time.sleep
+    general_agent_module.time.sleep = lambda _seconds: None
+    try:
+        message = client.complete(messages=[], tools=[], delta_sink=lambda _delta: None)
+    finally:
+        general_agent_module.time.sleep = old_sleep
+
+    assert fake_openai.chat.completions.calls == 2
+    assert message["content"] == "ok"
 
 
 def _assert_agent_can_write_and_read_workspace_file(tmp_path):

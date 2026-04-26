@@ -21,14 +21,27 @@ def make_orchestrator_event_sink(renderer: LemmaTeamRenderer | None) -> AgentEve
             renderer.log(None, "orchestrator started", module="orchestrator")
         elif event_type == "model_request":
             renderer.update_orchestrator_phase("thinking", status="thinking")
+        elif event_type == "thinking_delta":
+            content = str(event.get("content") or "")
+            if content:
+                renderer.update_orchestrator_thinking(
+                    module="orchestrator",
+                    thinking_text=content,
+                    elapsed=float(event.get("elapsed") or 0),
+                )
         elif event_type == "thinking":
             content = str(event.get("content") or "")
             if content:
-                renderer.update_orchestrator_thinking(module="orchestrator", thinking_text=content, elapsed=0)
+                if not event.get("streamed"):
+                    renderer.update_orchestrator_thinking(module="orchestrator", thinking_text=content, elapsed=0)
                 renderer.finish_orchestrator_thinking(module="orchestrator", elapsed=0, char_count=len(content))
+        elif event_type == "assistant_delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                renderer.append_orchestrator_output(delta)
         elif event_type == "assistant_message":
             content = str(event.get("content") or "")
-            if content:
+            if content and not event.get("streamed_content"):
                 renderer.append_orchestrator_output(content)
         elif event_type == "tool_call":
             renderer.update_orchestrator_tool_start(
@@ -70,14 +83,28 @@ def make_worker_event_sink(
             renderer.log(worker_id, f"{role} started", module=role)
         elif event_type == "model_request":
             renderer.update_phase(worker_id, role, status="thinking")
+        elif event_type == "thinking_delta":
+            content = str(event.get("content") or "")
+            if content:
+                renderer.update_thinking(
+                    worker_id,
+                    module=role,
+                    thinking_text=content,
+                    elapsed=float(event.get("elapsed") or 0),
+                )
         elif event_type == "thinking":
             content = str(event.get("content") or "")
             if content:
-                renderer.update_thinking(worker_id, module=role, thinking_text=content, elapsed=0)
+                if not event.get("streamed"):
+                    renderer.update_thinking(worker_id, module=role, thinking_text=content, elapsed=0)
                 renderer.finish_thinking(worker_id, module=role, elapsed=0, char_count=len(content))
+        elif event_type == "assistant_delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                renderer.append_output(worker_id, delta)
         elif event_type == "assistant_message":
             content = str(event.get("content") or "")
-            if content:
+            if content and not event.get("streamed_content"):
                 renderer.append_output(worker_id, content)
         elif event_type == "tool_call":
             renderer.update_tool_start(
@@ -120,8 +147,11 @@ def _content_preview(event: dict[str, Any]) -> str:
 
 def _event_error(event: dict[str, Any]) -> str:
     error_type = str(event.get("error_type") or "Error")
-    error = str(event.get("error") or "")
-    return _shorten(f"{error_type}: {error}", 500)
+    detail = str(event.get("error_detail") or "")
+    error = detail or str(event.get("error") or "")
+    if error.startswith(error_type + ":"):
+        return _shorten(error, 2000)
+    return _shorten(f"{error_type}: {error}", 2000)
 
 
 def _shorten(text: str, limit: int) -> str:
