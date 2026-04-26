@@ -91,6 +91,7 @@ class KnowledgeDigestQueue:
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagent_svc)
 
         trace_kind = _trace_kind(task.source_label)
+        is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
         payload: Any = {
             "trace_kind": trace_kind,
             "trace": task.trace_segment,
@@ -102,13 +103,16 @@ class KnowledgeDigestQueue:
                 "subagent_trace": task.trace_segment,
             }
         trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
-        is_verifier = trace_kind == "verifier"
-        if is_verifier:
+        if is_verifier_final:
             extra = (
-                "This trace may contain proof-review material. In addition to normal knowledge updates, "
-                "append up to 3 general mathematical pitfalls to `knowledge/common-errors.md` when useful. "
-                "Each bullet must describe a reusable proof error pattern, not a specific failed proposition, "
-                "reviewer, worker, round, attempt, or source label. Do not add bullets for issues already covered."
+                "This trace contains a verifier's final review of a generator's proposition. "
+                "In addition to normal knowledge updates, carefully read the verifier's review, "
+                "then read the generator's `proposition.md` to understand what mistake was made. "
+                "Append up to 3 general error patterns to `knowledge/common-errors.md` when useful. "
+                "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
+                "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
+                "Keep patterns general enough to apply across different problems. "
+                "Do not add bullets for issues already covered."
             )
         else:
             extra = "Do not modify `knowledge/common-errors.md`."
@@ -145,6 +149,19 @@ def _trace_kind(source_label: str) -> str:
         if kind in lowered:
             return kind
     return "subagent"
+
+
+def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
+    """Return True if the trace segment contains a verifier's final response.
+
+    Verifier-attempt traces submitted from worker.py carry a single-element
+    segment with ``{"role": "verifier_attempt", "content": ...}``.
+    Intermediate subagent traces do not have this marker.
+    """
+    return any(
+        isinstance(item, dict) and item.get("role") == "verifier_attempt"
+        for item in trace_segment
+    )
 
 
 def _update_entry_metadata(knowledge_dir: Path) -> None:

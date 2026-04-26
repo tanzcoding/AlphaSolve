@@ -1,11 +1,11 @@
 # AlphaSolve
 
-AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用 **Orchestrator 驱动、多 worker 并行**的架构，通过 生成 → 验证 → 修正 的迭代循环，逐步构建完整的数学证明。
+AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用 **Orchestrator 驱动、多 worker 并行**的架构，通过 Generator → Verifier → Reviser 的迭代循环，逐步构建完整的数学证明。
 
 ## 核心特性
 
-- **Orchestrator 驱动**：LLM Orchestrator 读取已验证引理和 knowledge/ 下的知识摘要，动态决定何时 spawn 新 worker 以及使用什么提示
-- **并行 Worker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser → TheoremChecker 流水线
+- **Orchestrator 驱动**：LLM Orchestrator 读取已验证命题和 knowledge/ 下的知识摘要，动态决定何时 spawn 新 worker 以及使用什么提示
+- **并行 Worker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser 流水线
 - **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，一次不通过则视为不通过。支持通过 YAML 自行配置 Verifier 的工作方式，支持为 Verifier 添加 SKILLS
 - **Subagent 系统**：Generator、Verifier、Reviser 可调用 compute subagent（Python / Wolfram）和 reasoning subagent 辅助探索
 - **知识摘要**：后台 `knowledge_digest` agent 持续将运行 trace 摘要写入 `workspace/knowledge/`，供 Orchestrator 参考
@@ -35,20 +35,20 @@ problem.md
     │
     ▼
 Orchestrator (LLM)
-    │  读取 verified_lemmas/ 和 knowledge/
+    │  读取 verified_propositions/ 和 knowledge/
     │  调用 spawn_worker(hint) / wait()
     │
     ├──► Worker
     │        │
-    │        ├─ Generator      → 生成引理 .md（陈述 + 证明）
+    │        ├─ Generator      → 生成命题 proposition.md（陈述 + 证明）
     │        ├─ Verifier × N   → 多个 Verifier 独立审查，LLM 综合判定
     │        ├─ Reviser        → 根据反馈修正（最多 max_verify_rounds 轮）
     │        └─ TheoremChecker → 判断是否解决原问题（CHECK_IS_THEOREM_TIMES 次独立检查）
     │
     ▼
-verified_lemmas/   ←  通过验证的引理（供所有 worker 和 Orchestrator 读取）
+verified_propositions/   ←  通过验证的命题（供所有 worker 和 Orchestrator 读取）
     │
-    └── 某引理解决原问题 → solution.md
+    └── 某命题解决原问题 → solution.md
 ```
 
 ### 核心组件
@@ -57,13 +57,13 @@ verified_lemmas/   ←  通过验证的引理（供所有 worker 和 Orchestrato
 |------|------|
 | **Orchestrator** | 读取工作区状态，用有针对性的提示 spawn worker，调用 `wait()` 等待结果 |
 | **Worker** | 独立线程，运行完整的 生成 → 验证 → 修正 流水线 |
-| **Generator** | 提出新引理（猜想 + 证明），写入 worker 目录 |
+| **Generator** | 提出新命题（猜想 + 证明），写入 worker 目录 |
 | **Verifier** | 严格审查证明；有多种 Verifier 策略，可调用 subagent |
-| **Reviser** | 根据 Verifier 反馈修正引理，原地重写文件 |
-| **TheoremChecker** | 判断已验证引理是否（连同其引用的引理）证明了原问题 |
+| **Reviser** | 根据 Verifier 反馈修正命题，原地重写文件 |
+| **TheoremChecker** | 判断已验证命题是否（连同其引用的命题）证明了原问题 |
 | **compute subagent** | 配备 `run_python` / `run_wolfram` 工具的计算 subagent |
 | **reasoning subagent** | 纯数学推理 subagent（无计算工具） |
-| **knowledge_digest** | 后台 agent，将 trace 中的知识提取出来，并写入 `knowledge/` |
+| **knowledge_digest** | 后台 agent，将 trace 中的数学知识提取摘要写入 `knowledge/`，处理知识冲突并进行交叉验证 |
 
 ## 安装
 
@@ -122,13 +122,13 @@ ORCHESTRATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}   # Orchestrator 默认使用 Deep
 
 支持的预置：`DEEPSEEK_CONFIG`、`DEEPSEEK_PRO_CONFIG`、`VOLCANO_CONFIG`、`MOONSHOT_CONFIG`、`DASHSCOPE_CONFIG`、`LONGCAT_CONFIG`、`PARASAIL_CONFIG`、`OPENROUTER_CONFIG`、`MIMO_CONFIG`
 
-每个 agent 的详细参数（system prompt、工具列表、max_turns 等）在 `src/alphasolve/config/agents/` 下的 YAML 文件中配置。
+每个 agent 的详细参数（system prompt、工具列表、max_turns 等）在 `src/alphasolve/config/agents/` 下的独立 YAML 文件中配置，顶层 `src/alphasolve/config/agents.yaml` 作为入口。
 
 ### 关键参数（`agents.yaml`）
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `max_verify_rounds` | 6 | 每个引理的最大验证-修正轮数 |
+| `max_verify_rounds` | 6 | 每个命题的最大验证-修正轮数 |
 | `verifier_scaling_factor` | 5 | 每轮独立验证尝试次数 |
 | `verifier_agents` | `verifier_failure_modes`, `verifier_stepwise` | 使用的 Verifier 列表 |
 | `subagent_max_depth` | 2 | subagent 最大递归深度 |
@@ -183,7 +183,7 @@ alphasolve --demo
 | `--hint` | 无 | 提示文件路径 |
 | `--workers` | 4 | 并发 worker 数 |
 | `--config` | 内置配置 | 自定义 agents.yaml 路径或目录 |
-| `--max_verify_rounds` | 来自 agents.yaml | 每个引理最大验证-修正轮数 |
+| `--max_verify_rounds` | 来自 agents.yaml | 每个命题最大验证-修正轮数 |
 | `--verifier_scaling_factor` | 来自 agents.yaml | 每轮独立验证次数 |
 | `--subagent_max_depth` | 来自 agents.yaml | subagent 最大递归深度 |
 | `--tool_executor_size` | 4 | Python 执行进程池大小 |
@@ -202,13 +202,13 @@ alphasolve
 
 **续跑机制：**
 
-- `workspace/verified_lemmas/` 中已验证的引理会被新的 Orchestrator 自动读取，作为已知知识直接复用
+- `workspace/verified_propositions/` 中已验证的命题会被新的 Orchestrator 自动读取，作为已知知识直接复用
 - `workspace/knowledge/log.md` 中积累的知识摘要同样供 Orchestrator 参考
-- 新产生的 worker 目录命名为 `lemma-{hash}`，不含序号，不会与上次运行的目录冲突
+- 新产生的 worker 目录命名为 `prop-{hash}`，不含序号，不会与上次运行的目录冲突
 
-**人工添加引理：**
+**人工添加命题：**
 
-人类专家可以直接将自己认为关键的引理（标准 Markdown + LaTeX 格式）放入 `workspace/verified_lemmas/`，AlphaSolve 续跑时会将其视为已验证引理，在此基础上继续探索。
+人类专家可以直接将自己认为关键的命题（标准 Markdown + LaTeX 格式）放入 `workspace/verified_propositions/`，AlphaSolve 续跑时会将其视为已验证命题，在此基础上继续探索。
 
 ### 4. 查看结果
 
@@ -216,7 +216,7 @@ alphasolve
 
 ```
 workspace/
-    verified_lemmas/    # 所有通过验证的引理
+    verified_propositions/    # 所有通过验证的命题
     knowledge/          # 运行过程知识摘要（log.md + 按主题整理的知识条目）
 solution.md             # 最终解决方案（问题解决时生成）
 logs/
