@@ -26,7 +26,7 @@ def test_dashboard_renders_native_split_panes_with_timeline():
     renderer.update_orchestrator_phase("planning", status="thinking")
     renderer.update_orchestrator_thinking(
         module="orchestrator",
-        thinking_text="survey known lemmas\nchoose a promising worker hint\nspawn a focused search",
+        thinking_text="survey known propositions\nchoose a promising worker hint\nspawn a focused search",
         elapsed=0,
     )
     renderer.update_orchestrator_tool_start(
@@ -41,11 +41,11 @@ def test_dashboard_renders_native_split_panes_with_timeline():
     renderer.update_thinking(
         0,
         module="generator",
-        thinking_text="try the invariant\ncheck boundary cases\nwrite the candidate lemma",
+        thinking_text="try the invariant\ncheck boundary cases\nwrite the candidate proposition",
         elapsed=0,
     )
     renderer.finish_thinking(0, module="generator", elapsed=1.2, char_count=55)
-    renderer.update_tool_start(0, module="generator", name="write_file", arg_preview='{"path":"lemma.md"}')
+    renderer.update_tool_start(0, module="generator", name="write_file", arg_preview='{"path":"proposition.md"}')
     renderer.update_tool_done(0, name="write_file", is_error=False)
 
     renderer.register_worker(1)

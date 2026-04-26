@@ -232,7 +232,7 @@ class RoleWorkspaceAccess:
 
     def _ensure_not_other_worker_path(self, path: Path) -> None:
         if self._is_other_worker_path(path):
-            raise ValueError(f"access to other unverified lemma worker directories is denied: {self._rel(path)}")
+            raise ValueError(f"access to other unverified proposition worker directories is denied: {self._rel(path)}")
 
     def _ensure_under_root(self, path: Path, root_rel: str, *, kind: str = "path") -> None:
         root = self.workspace.resolve(root_rel)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import subprocess
 from copy import deepcopy
 from dataclasses import dataclass
@@ -279,10 +280,14 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
         if not command.strip():
             return ToolResult("[error] empty command", is_error=True)
 
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return ToolResult("[error] malformed command; could not parse", is_error=True)
         result = subprocess.run(
-            command,
+            argv,
             cwd=str(workspace.root),
-            shell=True,
+            shell=False,
             text=True,
             capture_output=True,
             timeout=bash_timeout_seconds,

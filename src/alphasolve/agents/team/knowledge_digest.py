@@ -107,7 +107,7 @@ class KnowledgeDigestQueue:
             extra = (
                 "This trace may contain proof-review material. In addition to normal knowledge updates, "
                 "append up to 3 general mathematical pitfalls to `knowledge/common-errors.md` when useful. "
-                "Each bullet must describe a reusable proof error pattern, not a specific failed lemma, "
+                "Each bullet must describe a reusable proof error pattern, not a specific failed proposition, "
                 "reviewer, worker, round, attempt, or source label. Do not add bullets for issues already covered."
             )
         else:
@@ -116,7 +116,7 @@ class KnowledgeDigestQueue:
             "# Trace Segment for Knowledge Digest\n\n"
             f"```json\n{trace_text}\n```\n\n"
             "Update the knowledge base in `knowledge/` based on this trace segment. "
-            "Trace metadata is for private triage only; do not copy source labels, worker names, lemma IDs, "
+            "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
             "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
             "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
             "Follow the required directory-listing and candidate-search workflow from the system prompt. "

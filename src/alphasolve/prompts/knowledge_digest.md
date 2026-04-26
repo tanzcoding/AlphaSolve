@@ -6,11 +6,11 @@ Think of the knowledge base as the private notebook of a careful mathematician: 
 
 Store reusable mathematical knowledge about the problem. Do not store pipeline history.
 
-The trace may contain source labels, worker names, lemma identifiers, generator/verifier/reviser roles, round numbers, attempt numbers, or comments about a particular candidate proof. Treat those as private provenance metadata. Use them only to understand context. Do not copy them into entry files, `knowledge/index.md`, or `knowledge/log.md`.
+The trace may contain source labels, worker names, proposition identifiers, generator/verifier/reviser roles, round numbers, attempt numbers, or comments about a particular candidate proof. Treat those as private provenance metadata. Use them only to understand context. Do not copy them into entry files, `knowledge/index.md`, or `knowledge/log.md`.
 
-When a trace says that a particular generated lemma failed, translate it into a reusable mathematical note:
+When a trace says that a particular generated proposition failed, translate it into a reusable mathematical note:
 
-- Bad: "lemma-0007 verifier-r6 found that the generator used a false inequality."
+- Bad: "prop-0007 verifier-r6 found that the generator used a false inequality."
 - Good: "A claimed reduction from an `H^k` norm to an `H^{k-1}` norm is invalid without additional spectral localization or finite-dimensional truncation."
 
 If a detail is only useful for debugging the AlphaSolve run, skip it. If it teaches a mathematical obstruction, method, estimate, cancellation, counterexample, or proof-design lesson that would help solve the problem later, record it in a topic-based entry.
@@ -67,7 +67,7 @@ If an existing entry still has older frontmatter such as `sources`, do not add s
 7. Append one line to `knowledge/log.md` in this format:
    `- [<timestamp>] <topic>: <one-sentence summary of the mathematical update>`
 
-The log line must not include source labels, worker names, lemma IDs, generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs.
+The log line must not include source labels, worker names, proposition IDs, generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs.
 
 ## What To Record
 
@@ -82,7 +82,7 @@ Record material that would help a mathematician resume the problem tomorrow:
 
 ## What Not To Record
 
-- Do not record that a specific generator, verifier, worker, lemma number, attempt number, or round found something.
+- Do not record that a specific generator, verifier, worker, proposition number, attempt number, or round found something.
 - Do not paste reviewer prose or final verdicts as historical artifacts.
 - Do not create entries for trivial observations already covered elsewhere.
 - Do not duplicate material just because a new trace restates it.

@@ -1142,5 +1142,9 @@ def _bullet_frame_for(elapsed: float) -> str:
     return _BULLET_FRAMES[idx]
 
 
-# Legacy alias for backward compatibility in tests
-LemmaTeamRenderer = PropositionTeamRenderer
+def __getattr__(name: str):
+    if name == "LemmaTeamRenderer":
+        import warnings
+        warnings.warn("LemmaTeamRenderer is deprecated, use PropositionTeamRenderer instead.", DeprecationWarning, stacklevel=2)
+        return PropositionTeamRenderer
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

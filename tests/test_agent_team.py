@@ -112,19 +112,19 @@ def test_knowledge_digest_task_prompt_hides_source_labels():
         queue._run_digest(
             DigestTask(
                 trace_segment=[{"role": "assistant", "content": "The inequality ||u||_{H^k} <= C||u||_{H^{k-1}} fails."}],
-                source_label="lemma-0007-fc2e84e3/verifier-r6-a1-verifier_failure_modes",
+                source_label="prop-0007-fc2e84e3/verifier-r6-a1-verifier_failure_modes",
                 caller_context={"caller_role": "verifier"},
             )
         )
 
         task_text = client.messages[1]["content"]
-        assert "lemma-0007-fc2e84e3" not in task_text
+        assert "prop-0007-fc2e84e3" not in task_text
         assert "verifier-r6" not in task_text
         assert '"trace_kind": "verifier"' in task_text
         assert "private triage" in task_text
 
 
-def test_agent_team_demo_creates_workspace_and_verified_lemma():
+def test_agent_team_demo_creates_workspace_and_verified_proposition():
     with local_project_dir("demo") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
 
@@ -138,8 +138,8 @@ def test_agent_team_demo_creates_workspace_and_verified_lemma():
 
         assert result.final_answer.startswith("Problem solved. Solution written to ")
         assert (project_dir / "workspace" / "knowledge").is_dir()
-        assert (project_dir / "workspace" / "unverified_lemmas").is_dir()
-        assert (project_dir / "workspace" / "verified_lemmas" / "demo-lemma.md").is_file()
+        assert (project_dir / "workspace" / "unverified_propositions").is_dir()
+        assert (project_dir / "workspace" / "verified_propositions" / "demo-proposition.md").is_file()
         assert (project_dir / "solution.md").is_file()
         assert (project_dir / "logs" / "orchestrator_trace.json").is_file()
         assert result.worker_results
@@ -198,9 +198,9 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                 return {"role": "assistant", "content": "No solution yet."}
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the near miss lemma."}
+                    return {"role": "assistant", "content": "Generator wrote the near miss proposition."}
                 task = "\n".join(str(message.get("content") or "") for message in messages)
-                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 return {
                     "role": "assistant",
                     "content": "",
@@ -229,7 +229,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
             if self.role.startswith("verifier"):
                 return {
                     "role": "assistant",
-                    "content": "Verdict: pass\nSolves original problem: yes\n\nThe lemma itself is valid.",
+                    "content": "Verdict: pass\nSolves original problem: yes\n\nThe proposition itself is valid.",
                 }
             if self.role == "review_verdict_judge":
                 return {
@@ -240,7 +240,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                 calls["theorem_checker"] += 1
                 return {
                     "role": "assistant",
-                    "content": "Solves original problem: no\n\nThe verified lemma is only reflexivity.",
+                    "content": "Solves original problem: no\n\nThe verified proposition is only reflexivity.",
                 }
             return {"role": "assistant", "content": "unused"}
 
@@ -284,8 +284,8 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
             task = "\n".join(str(message.get("content") or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the lemma."}
-                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 return {
                     "role": "assistant",
                     "content": "",
@@ -314,7 +314,7 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
             if self.role.startswith("verifier"):
                 verifier_calls.append(self.role)
                 if len(verifier_calls) == 1:
-                    return {"role": "assistant", "content": "Verdict: pass\n\nAttempt one accepts the lemma."}
+                    return {"role": "assistant", "content": "Verdict: pass\n\nAttempt one accepts the proposition."}
                 return {"role": "assistant", "content": "Verdict: fail\n\nAttempt two found a gap."}
             if self.role == "review_verdict_judge":
                 judge_calls.append(task)
@@ -351,7 +351,7 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         assert result.review_file is not None
         review = result.review_file.read_text(encoding="utf-8")
         assert "Attempt two found a gap." in review
-        assert "Attempt one accepts the lemma." not in review
+        assert "Attempt one accepts the proposition." not in review
         assert verifier_calls == ["verifier_failure_modes", "verifier_stepwise"]
         verifier_traces = [item for item in result.trace if item["role"] == "verifier_attempt"]
         assert [item["config"] for item in verifier_traces] == ["verifier_failure_modes", "verifier_stepwise"]
@@ -371,8 +371,8 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
             task = "\n".join(str(message.get("content") or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the lemma."}
-                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 return {
                     "role": "assistant",
                     "content": "",
@@ -399,7 +399,7 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
                     ],
                 }
             if self.role.startswith("verifier"):
-                return {"role": "assistant", "content": "**Verdict: pass**\n\nThe lemma is valid."}
+                return {"role": "assistant", "content": "**Verdict: pass**\n\nThe proposition is valid."}
             if self.role == "review_verdict_judge":
                 assert "# Attempt Review" in task
                 assert "**Verdict: pass**" in task
@@ -449,8 +449,8 @@ def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
             task = "\n".join(str(message.get("content") or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the lemma."}
-                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 return {
                     "role": "assistant",
                     "content": "",
@@ -477,7 +477,7 @@ def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
                     ],
                 }
             if self.role.startswith("verifier"):
-                return {"role": "assistant", "content": "Verdict: pass\n\nThe attempt accepts the lemma."}
+                return {"role": "assistant", "content": "Verdict: pass\n\nThe attempt accepts the proposition."}
             if self.role == "review_verdict_judge":
                 judge_calls.append(task)
                 return {"role": "assistant", "content": "pass"}
@@ -526,8 +526,8 @@ def test_verifier_review_is_not_visible_to_later_attempts():
             task = "\n".join(str(message.get("content") or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the lemma."}
-                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 return {
                     "role": "assistant",
                     "content": "",
@@ -557,8 +557,8 @@ def test_verifier_review_is_not_visible_to_later_attempts():
                 if "Verifier workflow: 1" in task:
                     return {"role": "assistant", "content": "Verdict: fail\n\nFirst round review."}
                 if self.calls == 1:
-                    lemma_rel = re.findall(r"unverified_lemmas/lemma-[^\s]+/candidate\.md", task)[-1]
-                    worker_dir = pathlib.PurePosixPath(lemma_rel).parent.as_posix()
+                    proposition_rel = re.findall(r"unverified_propositions/prop-[^\s]+/candidate\.md", task)[-1]
+                    worker_dir = pathlib.PurePosixPath(proposition_rel).parent.as_posix()
                     return {
                         "role": "assistant",
                         "content": "",
@@ -635,7 +635,7 @@ def test_clear_verifier_artifacts_leaves_empty_workspace():
         assert not (worker.worker_dir / "review.md").exists()
 
 
-def test_verifier_workflow_reset_keeps_only_lemma_hint_and_empty_workspace():
+def test_verifier_workflow_reset_keeps_only_proposition_hint_and_empty_workspace():
     with local_project_dir("verifier_workflow_reset") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
@@ -648,8 +648,8 @@ def test_verifier_workflow_reset_keeps_only_lemma_hint_and_empty_workspace():
             worker_id=0,
         )
         worker.worker_dir.mkdir(parents=True)
-        lemma_file = worker.worker_dir / "candidate-name.md"
-        lemma_file.write_text("# Candidate\n\n## Statement\n\nx=x.\n", encoding="utf-8")
+        proposition_file = worker.worker_dir / "candidate-name.md"
+        proposition_file.write_text("# Candidate\n\n## Statement\n\nx=x.\n", encoding="utf-8")
         (worker.worker_dir / "worker_hint.md").write_text("hint", encoding="utf-8")
         (worker.worker_dir / "trace.json").write_text("{}", encoding="utf-8")
         (worker.worker_dir / "review.md").write_text("old review", encoding="utf-8")
@@ -657,9 +657,9 @@ def test_verifier_workflow_reset_keeps_only_lemma_hint_and_empty_workspace():
         old_attempt.mkdir(parents=True)
         (old_attempt / "review.md").write_text("old attempt", encoding="utf-8")
 
-        worker._reset_verifier_workflow_workspace(lemma_file)
+        worker._reset_verifier_workflow_workspace(proposition_file)
 
-        assert lemma_file.is_file()
+        assert proposition_file.is_file()
         assert (worker.worker_dir / "worker_hint.md").is_file()
         assert not (worker.worker_dir / "trace.json").exists()
         assert not (worker.worker_dir / "review.md").exists()
@@ -668,7 +668,7 @@ def test_verifier_workflow_reset_keeps_only_lemma_hint_and_empty_workspace():
         assert list(verifier_workspace.iterdir()) == []
 
 
-def test_solution_writer_collects_recursive_refs_with_final_lemma_last():
+def test_solution_writer_collects_recursive_refs_with_final_proposition_last():
     with local_project_dir("solution_refs") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nProve C.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
@@ -696,39 +696,39 @@ def test_solution_writer_collects_recursive_refs_with_final_lemma_last():
 def test_role_workspace_access_blocks_other_unverified_workers_and_locks_generator_file():
     with local_project_dir("guards") as project_dir:
         workspace_root = project_dir / "workspace"
-        own_dir = workspace_root / "unverified_lemmas" / "lemma-own"
-        other_dir = workspace_root / "unverified_lemmas" / "lemma-other"
+        own_dir = workspace_root / "unverified_propositions" / "prop-own"
+        other_dir = workspace_root / "unverified_propositions" / "prop-other"
         own_dir.mkdir(parents=True)
         other_dir.mkdir(parents=True)
         (other_dir / "secret.md").write_text("do not read", encoding="utf-8")
 
         access = RoleWorkspaceAccess(
             workspace=Workspace(workspace_root),
-            worker_rel="unverified_lemmas/lemma-own",
+            worker_rel="unverified_propositions/prop-own",
             deny_other_unverified=True,
-            single_lemma_file=True,
+            single_proposition_file=True,
         )
 
         try:
-            access.read_text("unverified_lemmas/lemma-other/secret.md")
+            access.read_text("unverified_propositions/prop-other/secret.md")
         except Exception as exc:
             assert "other unverified" in str(exc)
         else:
             raise AssertionError("reading another worker directory should fail")
 
-        access.write_text("unverified_lemmas/lemma-own/first.md", "ok")
+        access.write_text("unverified_propositions/prop-own/first.md", "ok")
         try:
-            access.write_text("unverified_lemmas/lemma-own/second.md", "no")
+            access.write_text("unverified_propositions/prop-own/second.md", "no")
         except Exception as exc:
             assert "only rewrite" in str(exc)
         else:
-            raise AssertionError("generator should be locked to its first lemma file")
+            raise AssertionError("generator should be locked to its first proposition file")
 
 
 def test_role_workspace_access_can_restrict_reads_to_verifier_workspace():
     with local_project_dir("read_root") as project_dir:
         workspace_root = project_dir / "workspace"
-        verifier_workspace = workspace_root / "unverified_lemmas" / "lemma-own" / "verifier_workspace"
+        verifier_workspace = workspace_root / "unverified_propositions" / "prop-own" / "verifier_workspace"
         verifier_workspace.mkdir(parents=True)
         (verifier_workspace / "note.md").write_text("scratch", encoding="utf-8")
         (workspace_root / "knowledge").mkdir(parents=True)
@@ -736,13 +736,13 @@ def test_role_workspace_access_can_restrict_reads_to_verifier_workspace():
 
         access = RoleWorkspaceAccess(
             workspace=Workspace(workspace_root),
-            worker_rel="unverified_lemmas/lemma-own",
+            worker_rel="unverified_propositions/prop-own",
             deny_other_unverified=True,
-            read_root_rel="unverified_lemmas/lemma-own/verifier_workspace",
-            write_root_rel="unverified_lemmas/lemma-own/verifier_workspace",
+            read_root_rel="unverified_propositions/prop-own/verifier_workspace",
+            write_root_rel="unverified_propositions/prop-own/verifier_workspace",
         )
 
-        assert access.read_text("unverified_lemmas/lemma-own/verifier_workspace/note.md") == "scratch"
+        assert access.read_text("unverified_propositions/prop-own/verifier_workspace/note.md") == "scratch"
         try:
             access.read_text("knowledge/global.md")
         except Exception as exc:
@@ -769,7 +769,7 @@ def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
             self.calls += 1
             if self.role == "generator":
                 task = "\n".join(str(message.get("content") or "") for message in messages)
-                worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
+                worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 if self.calls == 1:
                     return {
                         "role": "assistant",
@@ -836,11 +836,11 @@ def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():
             if self.role == "reasoning_subagent":
                 return {"role": "assistant", "content": "PROVED\n\nThe bounded claim is valid."}
             if self.role.startswith("verifier"):
-                return {"role": "assistant", "content": "Verdict: pass\n\nThe lemma is valid."}
+                return {"role": "assistant", "content": "Verdict: pass\n\nThe proposition is valid."}
             if self.role == "review_verdict_judge":
                 return {"role": "assistant", "content": "pass"}
             if self.role == "theorem_checker":
-                return {"role": "assistant", "content": "Solves original problem: yes\n\nThe lemma matches the problem."}
+                return {"role": "assistant", "content": "Solves original problem: yes\n\nThe proposition matches the problem."}
             return {"role": "assistant", "content": "unused"}
 
     def factory(config):

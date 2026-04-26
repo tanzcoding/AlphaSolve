@@ -40,8 +40,8 @@ class FakeChatClient:
                             "name": "write_file",
                             "arguments": json.dumps(
                                 {
-                                    "path": "lemmas/lemma-0.md",
-                                    "content": "# Lemma 0\n\n## Statement\n\nDemo.\n",
+                                    "path": "propositions/prop-0.md",
+                                    "content": "# Proposition 0\n\n## Statement\n\nDemo.\n",
                                 }
                             ),
                         },
@@ -58,7 +58,7 @@ class FakeChatClient:
                         "type": "function",
                         "function": {
                             "name": "read_file",
-                            "arguments": json.dumps({"path": "lemmas/lemma-0.md"}),
+                            "arguments": json.dumps({"path": "propositions/prop-0.md"}),
                         },
                     }
                 ],
@@ -214,7 +214,7 @@ def test_openai_chat_client_reconstructs_streaming_tool_calls():
                                 "tool_calls": [
                                     {
                                         "index": 0,
-                                        "function": {"name": "file", "arguments": "\"lemma.md\"}"},
+                                        "function": {"name": "file", "arguments": "\"proposition.md\"}"},
                                     }
                                 ]
                             }
@@ -241,7 +241,7 @@ def test_openai_chat_client_reconstructs_streaming_tool_calls():
     assert message["content"] == "Preparing."
     assert message["tool_calls"][0]["id"] == "call_write"
     assert message["tool_calls"][0]["function"]["name"] == "write_file"
-    assert message["tool_calls"][0]["function"]["arguments"] == '{"path":"lemma.md"}'
+    assert message["tool_calls"][0]["function"]["arguments"] == '{"path":"proposition.md"}'
     assert deltas == [
         {"type": "reasoning", "content": "plan "},
         {"type": "reasoning", "content": "tool"},
@@ -330,10 +330,10 @@ def _assert_agent_can_write_and_read_workspace_file(tmp_path):
     )
     agent = GeneralPurposeAgent(config=config, client=FakeChatClient(), tool_registry=registry)
 
-    result = agent.run("Create a lemma file and read it back.")
+    result = agent.run("Create a proposition file and read it back.")
 
     assert result.final_answer == "demo complete"
-    assert (tmp_path / "lemmas" / "lemma-0.md").read_text(encoding="utf-8").startswith("# Lemma 0")
+    assert (tmp_path / "propositions" / "prop-0.md").read_text(encoding="utf-8").startswith("# Proposition 0")
     assert result.turns == 3
     assert result.trace[0]["type"] == "run_start"
     assert result.trace[-1]["type"] == "run_finish"
