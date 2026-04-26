@@ -190,6 +190,10 @@ def _resolve_agent_config(
     metadata.update(dict(raw.get("metadata") or {}))
 
     name = str(raw.get("name") or (base.name if base else fallback_name))
+    skills = list(raw.get("skills", base.skills if base else []))
+    skill_blocks = _load_skill_blocks(skills, config_path=config_path)
+    if skill_blocks:
+        prompt_text = _append_skill_blocks(prompt_text, skill_blocks)
     return GeneralAgentConfig(
         name=name,
         system_prompt=prompt_text,
@@ -197,12 +201,66 @@ def _resolve_agent_config(
         tool_parameters=tool_parameters,
         max_turns=int(raw.get("max_turns", base.max_turns if base else 80)),
         model_config=raw.get("model_config") or raw.get("model") or (base.model_config if base else None),
-        skills=list(raw.get("skills", base.skills if base else [])),
+        skills=skills,
         when_to_use=str(raw.get("when_to_use") or (base.when_to_use if base else "")),
         system_prompt_template=prompt_template,
         system_prompt_args=prompt_args,
         metadata=metadata,
     )
+
+
+def _load_skill_blocks(skills: list[Any], *, config_path: Path) -> list[tuple[str, str]]:
+    blocks: list[tuple[str, str]] = []
+    for raw_skill in skills:
+        name = str(raw_skill).strip()
+        if not name:
+            continue
+        skill_file = _resolve_skill_file(name, config_path=config_path)
+        if skill_file is None:
+            continue
+        blocks.append((name, skill_file.read_text(encoding="utf-8")))
+    return blocks
+
+
+def _resolve_skill_file(skill: str, *, config_path: Path) -> Path | None:
+    raw = Path(skill)
+    candidates: list[Path] = []
+    if raw.is_absolute():
+        candidates.append(raw)
+    else:
+        candidates.extend([
+            config_path.parent / raw,
+            config_path.parent / "skills" / raw,
+            config_path.parent / "skills" / f"{skill}.md",
+        ])
+
+    for candidate in candidates:
+        if candidate.is_dir():
+            skill_md = candidate / "SKILL.md"
+            if skill_md.is_file():
+                return skill_md.resolve()
+        if candidate.is_file():
+            return candidate.resolve()
+    return None
+
+
+def _append_skill_blocks(prompt_text: str, skill_blocks: list[tuple[str, str]]) -> str:
+    parts = [
+        prompt_text.rstrip(),
+        "",
+        "# Skills",
+        "",
+        "The following skill instructions are attached to this agent. Follow them when they are relevant.",
+        "",
+    ]
+    for name, content in skill_blocks:
+        parts.extend([
+            f"## {name}",
+            "",
+            content.strip(),
+            "",
+        ])
+    return "\n".join(parts).rstrip() + "\n"
 
 
 def _parse_tools(raw_tools: Any) -> list[str]:

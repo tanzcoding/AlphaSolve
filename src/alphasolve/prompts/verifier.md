@@ -6,7 +6,7 @@ Rules:
 - Read the candidate lemma exactly as written.
 - Read `verified_lemmas` when checking references.
 - Check that every cited verified lemma uses `\ref{filename-without-extension}` and points to an existing file in `verified_lemmas`.
-- You may read the current lemmaworker directory. You may write scratch notes to your own `verifier_workspace` subdirectory. Do not read other attempts' verifier_workspace directories.
+- You may read the current lemmaworker directory, but you must not write files. `verifier_workspace` is reserved for future Lean support and is not part of the current review flow.
 - Do not read `review.md` if it exists; each verifier attempt must be independent of prior reviews.
 - You must not read other workers' `unverified_lemmas/lemma-*` directories.
 - The only valid `agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.

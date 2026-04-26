@@ -271,6 +271,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
 
 def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
     verifier_calls = []
+    judge_calls = []
 
     class ScalingClient:
         def __init__(self, role):
@@ -280,10 +281,10 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         def complete(self, *, messages, tools):
             del tools
             self.calls += 1
+            task = "\n".join(str(message.get("content") or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
                     return {"role": "assistant", "content": "Generator wrote the lemma."}
-                task = "\n".join(str(message.get("content") or "") for message in messages)
                 worker_dir = re.findall(r"`(unverified_lemmas/lemma-[^`]+)`", task)[-1]
                 return {
                     "role": "assistant",
@@ -316,9 +317,10 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
                     return {"role": "assistant", "content": "Verdict: pass\n\nAttempt one accepts the lemma."}
                 return {"role": "assistant", "content": "Verdict: fail\n\nAttempt two found a gap."}
             if self.role == "review_verdict_judge":
+                judge_calls.append(task)
                 return {
                     "role": "assistant",
-                    "content": "fail",
+                    "content": "pass" if len(judge_calls) == 1 else "fail",
                 }
             if self.role == "reviser":
                 return {"role": "assistant", "content": "No revision in this test."}
@@ -348,13 +350,13 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         assert result.status == "rejected"
         assert result.review_file is not None
         review = result.review_file.read_text(encoding="utf-8")
-        assert "Attempt 1 (verifier_failure_modes)" in review
-        assert "Attempt 2 (verifier_stepwise)" in review
-        assert "Attempt one accepts the lemma." in review
         assert "Attempt two found a gap." in review
+        assert "Attempt one accepts the lemma." not in review
         assert verifier_calls == ["verifier_failure_modes", "verifier_stepwise"]
-        verifier_traces = [item for item in result.trace if item["role"] == "verifier"]
+        verifier_traces = [item for item in result.trace if item["role"] == "verifier_attempt"]
         assert [item["config"] for item in verifier_traces] == ["verifier_failure_modes", "verifier_stepwise"]
+        assert result.trace[-1]["role"] == "verifier_workflow"
+        assert result.trace[-1]["attempts_run"] == 2
 
 
 def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
@@ -399,7 +401,8 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
             if self.role.startswith("verifier"):
                 return {"role": "assistant", "content": "**Verdict: pass**\n\nThe lemma is valid."}
             if self.role == "review_verdict_judge":
-                assert "attempt-01/review.md" in task
+                assert "# Attempt Review" in task
+                assert "**Verdict: pass**" in task
                 return {"role": "assistant", "content": "`pass`"}
             if self.role == "theorem_checker":
                 return {"role": "assistant", "content": "Solves original problem: yes"}
@@ -425,14 +428,13 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
         ).run()
 
         assert result.status == "verified"
-        attempt_review = result.worker_dir / "verifier_workspace" / "round-01" / "attempt-01" / "review.md"
-        assert "**Verdict: pass**" in attempt_review.read_text(encoding="utf-8")
         assert result.review_file is not None
         assert "**Verdict: pass**" in result.review_file.read_text(encoding="utf-8")
+        assert list((result.worker_dir / "verifier_workspace").iterdir()) == []
         assert any(item["role"] == "review_verdict_judge" for item in result.trace)
 
 
-def test_verifier_pass_continues_until_max_verify_rounds():
+def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
     judge_calls = []
     theorem_checker_calls = []
 
@@ -478,7 +480,7 @@ def test_verifier_pass_continues_until_max_verify_rounds():
                 return {"role": "assistant", "content": "Verdict: pass\n\nThe attempt accepts the lemma."}
             if self.role == "review_verdict_judge":
                 judge_calls.append(task)
-                return {"role": "assistant", "content": "pass" if len(judge_calls) == 1 else "fail"}
+                return {"role": "assistant", "content": "pass"}
             if self.role == "theorem_checker":
                 theorem_checker_calls.append(task)
                 return {"role": "assistant", "content": "Solves original problem: yes"}
@@ -487,7 +489,7 @@ def test_verifier_pass_continues_until_max_verify_rounds():
     def factory(config):
         return MultiRoundVerifierClient(config.name)
 
-    with local_project_dir("verifier_requires_all_rounds") as project_dir:
+    with local_project_dir("verifier_pass_short_circuit") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
@@ -503,11 +505,11 @@ def test_verifier_pass_continues_until_max_verify_rounds():
             subagent_max_depth=0,
         ).run()
 
-        assert result.status == "rejected"
-        assert len(judge_calls) == 2
-        assert theorem_checker_calls == []
-        verifier_rounds = [item["round"] for item in result.trace if item["role"] == "verifier"]
-        assert verifier_rounds == [1, 2]
+        assert result.status == "verified"
+        assert len(judge_calls) == 1
+        assert len(theorem_checker_calls) == AlphaSolveConfig.CHECK_IS_THEOREM_TIMES
+        verifier_workflows = [item["workflow"] for item in result.trace if item["role"] == "verifier_workflow"]
+        assert verifier_workflows == [1]
 
 
 def test_verifier_review_is_not_visible_to_later_attempts():
@@ -552,7 +554,7 @@ def test_verifier_review_is_not_visible_to_later_attempts():
                     ],
                 }
             if self.role.startswith("verifier"):
-                if "Verification round: 1" in task:
+                if "Verifier workflow: 1" in task:
                     return {"role": "assistant", "content": "Verdict: fail\n\nFirst round review."}
                 if self.calls == 1:
                     lemma_rel = re.findall(r"unverified_lemmas/lemma-[^\s]+/candidate\.md", task)[-1]
@@ -602,8 +604,68 @@ def test_verifier_review_is_not_visible_to_later_attempts():
         assert result.review_file is not None
         assert result.review_file.name == "review.md"
         assert "error" in read_probe["content"]
-        assert not (result.worker_dir / "verifier_workspace" / "round-01").exists()
-        assert (result.worker_dir / "verifier_workspace" / "round-02" / "attempt-01" / "review.md").is_file()
+        assert list((result.worker_dir / "verifier_workspace").iterdir()) == []
+        workflows = [item for item in result.trace if item["role"] == "verifier_workflow"]
+        assert [item["workflow"] for item in workflows] == [1, 2]
+
+
+def test_clear_verifier_artifacts_leaves_empty_workspace():
+    with local_project_dir("clear_verifier_artifacts") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        worker = LemmaWorker(
+            layout=layout,
+            suite=suite,
+            client_factory=make_demo_client_factory(),
+            worker_id=0,
+        )
+        worker.worker_dir.mkdir(parents=True)
+        (worker.worker_dir / "review.md").write_text("old review", encoding="utf-8")
+        attempt_dir = worker.worker_dir / "verifier_workspace" / "round-01" / "attempt-01"
+        attempt_dir.mkdir(parents=True)
+        (attempt_dir / "review.md").write_text("old attempt", encoding="utf-8")
+
+        worker._clear_verifier_artifacts()
+
+        verifier_workspace = worker.worker_dir / "verifier_workspace"
+        assert verifier_workspace.is_dir()
+        assert list(verifier_workspace.iterdir()) == []
+        assert not (worker.worker_dir / "review.md").exists()
+
+
+def test_verifier_workflow_reset_keeps_only_lemma_hint_and_empty_workspace():
+    with local_project_dir("verifier_workflow_reset") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        worker = LemmaWorker(
+            layout=layout,
+            suite=suite,
+            client_factory=make_demo_client_factory(),
+            worker_id=0,
+        )
+        worker.worker_dir.mkdir(parents=True)
+        lemma_file = worker.worker_dir / "candidate-name.md"
+        lemma_file.write_text("# Candidate\n\n## Statement\n\nx=x.\n", encoding="utf-8")
+        (worker.worker_dir / "worker_hint.md").write_text("hint", encoding="utf-8")
+        (worker.worker_dir / "trace.json").write_text("{}", encoding="utf-8")
+        (worker.worker_dir / "review.md").write_text("old review", encoding="utf-8")
+        old_attempt = worker.worker_dir / "verifier_workspace" / "round-01" / "attempt-01"
+        old_attempt.mkdir(parents=True)
+        (old_attempt / "review.md").write_text("old attempt", encoding="utf-8")
+
+        worker._reset_verifier_workflow_workspace(lemma_file)
+
+        assert lemma_file.is_file()
+        assert (worker.worker_dir / "worker_hint.md").is_file()
+        assert not (worker.worker_dir / "trace.json").exists()
+        assert not (worker.worker_dir / "review.md").exists()
+        verifier_workspace = worker.worker_dir / "verifier_workspace"
+        assert verifier_workspace.is_dir()
+        assert list(verifier_workspace.iterdir()) == []
 
 
 def test_solution_writer_collects_recursive_refs_with_final_lemma_last():

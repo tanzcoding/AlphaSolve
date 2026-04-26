@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import stat
 import threading
+import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -22,18 +24,96 @@ if TYPE_CHECKING:
     from .knowledge_digest import KnowledgeDigestQueue
 
 
-_REVIEW_VERDICT_PROMPT = """You are an AlphaSolve verifier verdict classifier.
+_REVIEW_VERDICT_PROMPT = """You are an AlphaSolve verifier-attempt verdict classifier.
 
-Your job is to read one complete verifier-round review and classify whether the candidate lemma passed that verifier round.
+Your job is to read one isolated verifier-attempt review and classify whether the candidate lemma passed that attempt.
 
 Rules:
 - Interpret nested verifier verdicts semantically; Markdown decoration such as `**Verdict: pass**` must not change its meaning.
-- Do not count votes mechanically. Decide from the mathematical substance of the review.
+- Decide from the mathematical substance of this one review.
 - Return exactly one lowercase word: `pass` or `fail`.
 - Do not include Markdown, punctuation, explanation, or any other text.
 - Return `pass` only if the review establishes that the lemma is correct, complete, and rigorous.
 - Do not judge whether the lemma solves the original problem; a separate theorem checker handles that.
 """
+
+
+_REMOVE_RETRY_DELAYS = (0.1, 0.3, 0.7)
+
+
+def _make_path_writable(path: Path) -> None:
+    try:
+        mode = path.stat().st_mode
+        path.chmod(mode | stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+    except OSError:
+        return
+
+
+def _make_tree_writable(path: Path) -> None:
+    _make_path_writable(path)
+    if not path.is_dir() or path.is_symlink():
+        return
+    try:
+        children = list(path.rglob("*"))
+    except OSError:
+        return
+    for child in children:
+        _make_path_writable(child)
+
+
+def _rmtree_onerror(func, path, _exc_info) -> None:
+    # Windows/OneDrive 有时会把目录标成只读，先放宽属性再重试删除。
+    _make_path_writable(Path(path))
+    func(path)
+
+
+def _remove_path_once(path: Path) -> None:
+    _make_tree_writable(path)
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path, onerror=_rmtree_onerror)
+    else:
+        path.unlink()
+
+
+def _remove_path_with_retries(path: Path) -> None:
+    last_error: OSError | None = None
+    for delay in (0.0, *_REMOVE_RETRY_DELAYS):
+        if delay:
+            time.sleep(delay)
+        try:
+            _remove_path_once(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            # 这类错误常见于 Windows 文件句柄短暂未释放或 OneDrive 正在同步。
+            if getattr(exc, "winerror", None) not in {5, 32, 33, None}:
+                raise
+    if last_error is not None:
+        raise last_error
+
+
+def _empty_directory_with_retries(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    for child in list(path.iterdir()):
+        _remove_path_with_retries(child)
+
+
+def _reset_directory(path: Path) -> None:
+    if not path.exists():
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    try:
+        _remove_path_with_retries(path)
+    except OSError:
+        if not path.is_dir():
+            raise
+        # 如果 Windows/OneDrive 拒绝删除目录本身，就退而求其次清空其内容。
+        _make_tree_writable(path)
+        _empty_directory_with_retries(path)
+        return
+    path.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass(frozen=True)
@@ -48,6 +128,14 @@ class LemmaWorkerRunResult:
     theorem_check_file: Path | None = None
     solved_problem: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class VerifierWorkflowResult:
+    review_text: str
+    passed: bool
+    review_file: Path | None
+    attempts_run: int
 
 
 class GeneratorDigestContext:
@@ -138,25 +226,23 @@ class LemmaWorker:
 
             final_review_file: Path | None = None
             last_review_text = ""
-            for round_index in range(1, self.max_verify_rounds + 1):
+            for workflow_index in range(1, self.max_verify_rounds + 1):
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
                         "lemmaworker cancelled because another worker solved the problem",
                         lemma_file=lemma_file,
                     )
-                review_text, verifier_passed, round_review_file = self._run_verifier(lemma_file, round_index=round_index)
-                last_review_text = review_text
+                workflow_result = self._run_verifier_workflow(lemma_file, workflow_index=workflow_index)
+                last_review_text = workflow_result.review_text
+                final_review_file = workflow_result.review_file
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
                         "lemmaworker cancelled because another worker solved the problem",
                         lemma_file=lemma_file,
                     )
-                if verifier_passed:
-                    if round_index < self.max_verify_rounds:
-                        continue
-                    final_review_file = self._copy_round_review_to_final(round_review_file)
+                if workflow_result.passed:
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
@@ -179,10 +265,8 @@ class LemmaWorker:
                         theorem_check_file=theorem_check_file,
                         solved_problem=solved_problem,
                     )
-                final_review_file = self._copy_round_review_to_final(round_review_file)
-                if round_index < self.max_verify_rounds:
-                    self._run_reviser(lemma_file, review_text, round_index=round_index)
-                    self._clear_verifier_artifacts()
+                if workflow_index < self.max_verify_rounds:
+                    self._run_reviser(lemma_file, workflow_result.review_text, workflow_index=workflow_index)
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
@@ -193,7 +277,7 @@ class LemmaWorker:
             summary = "未能产生通过验证的引理。"
             if lemma_file.exists():
                 summary += "\n\n" + lemma_file.read_text(encoding="utf-8")[:4000]
-            if last_review_text:
+            if last_review_text and (final_review_file is None or not final_review_file.exists()):
                 final_review_file = self._write_final_review(last_review_text)
             if final_review_file is not None and final_review_file.exists():
                 summary += "\n\n最终审稿意见：\n" + final_review_file.read_text(encoding="utf-8")[:4000]
@@ -235,50 +319,55 @@ class LemmaWorker:
         self.trace.append({"role": "generator", "trace": result.trace, "final_answer": result.final_answer})
         return self._find_lemma_file()
 
-    def _run_verifier(self, lemma_file: Path, *, round_index: int) -> tuple[str, bool, Path]:
-        attempt_reviews: list[dict[str, Any]] = []
+    def _run_verifier_workflow(self, lemma_file: Path, *, workflow_index: int) -> VerifierWorkflowResult:
+        self._reset_verifier_workflow_workspace(lemma_file)
         config_names = self._verifier_config_names()
+        last_review_text = ""
+        last_review_file: Path | None = None
         for attempt_index in range(1, self.verifier_scaling_factor + 1):
             if self._should_stop():
                 break
+            self._clear_attempt_review()
             config_name = config_names[(attempt_index - 1) % len(config_names)]
-            review_text = self._run_verifier_attempt(
+            last_review_text = self._run_verifier_attempt_agent(
                 lemma_file,
-                round_index=round_index,
+                workflow_index=workflow_index,
                 attempt_index=attempt_index,
                 config_name=config_name,
             )
-            review_path = self._write_attempt_review(
-                review_text,
-                round_index=round_index,
+            last_review_file = self._write_final_review(last_review_text)
+            verdict = self._run_review_verdict_judge(
+                last_review_text,
+                workflow_index=workflow_index,
                 attempt_index=attempt_index,
             )
-            attempt_reviews.append(
-                {
-                    "attempt": attempt_index,
-                    "config": config_name,
-                    "path": review_path,
-                    "review": review_text,
-                }
-            )
-        round_review = self._format_round_review(attempt_reviews, self.verifier_scaling_factor)
-        round_review_file = self._write_round_review(round_review, round_index=round_index)
-        verdict = self._run_review_verdict_judge(round_review, round_index=round_index)
-        return round_review, verdict == "pass", round_review_file
+            if verdict != "pass":
+                self.trace.append({
+                    "role": "verifier_workflow",
+                    "workflow": workflow_index,
+                    "attempts_run": attempt_index,
+                    "verdict": "fail",
+                })
+                return VerifierWorkflowResult(last_review_text, False, last_review_file, attempt_index)
+        attempts_run = self.verifier_scaling_factor if last_review_text else 0
+        passed = attempts_run == self.verifier_scaling_factor and bool(last_review_text)
+        self.trace.append({
+            "role": "verifier_workflow",
+            "workflow": workflow_index,
+            "attempts_run": attempts_run,
+            "verdict": "pass" if passed else "fail",
+        })
+        return VerifierWorkflowResult(last_review_text, passed, last_review_file, attempts_run)
 
-    def _run_verifier_attempt(self, lemma_file: Path, *, round_index: int, attempt_index: int, config_name: str) -> str:
-        role = f"verifier r{round_index}.{attempt_index}"
+    def _run_verifier_attempt_agent(self, lemma_file: Path, *, workflow_index: int, attempt_index: int, config_name: str) -> str:
+        role = f"verifier_attempt w{workflow_index}.{attempt_index}"
         self._set_phase(role, status="thinking")
-        verifier_workspace = self.worker_dir / "verifier_workspace" / f"round-{round_index:02d}" / f"attempt-{attempt_index:02d}"
-        verifier_workspace.mkdir(parents=True, exist_ok=True)
-        verifier_rel = verifier_workspace.relative_to(self.layout.workspace_dir).as_posix()
         all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
-        config = self.suite.agents[config_name]
+        config = self._verifier_attempt_config(config_name)
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
             deny_other_unverified=True,
-            write_root_rel=verifier_rel,
             deny_read_rel=all_verifier_ws_rel,
             deny_read_file_names=("review.md",),
         )
@@ -287,12 +376,11 @@ class LemmaWorker:
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/verifier-r{round_index}-a{attempt_index}-{config_name}",
+            session_prefix=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
                 deny_other_unverified=True,
-                write_root_rel=verifier_rel,
                 deny_read_rel=all_verifier_ws_rel,
                 deny_read_file_names=("review.md",),
             ),
@@ -301,21 +389,21 @@ class LemmaWorker:
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
+            tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
             event_sink=self._event_sink(role),
         )
         result = agent.run(
             self._verifier_task(
                 lemma_file,
-                round_index=round_index,
+                workflow_index=workflow_index,
                 attempt_index=attempt_index,
                 attempt_total=self.verifier_scaling_factor,
                 config_name=config_name,
             )
         )
         self.trace.append({
-            "role": "verifier",
-            "round": round_index,
+            "role": "verifier_attempt",
+            "workflow": workflow_index,
             "attempt": attempt_index,
             "config": config_name,
             "trace": result.trace,
@@ -324,8 +412,8 @@ class LemmaWorker:
         if self.digest_queue is not None:
             from .knowledge_digest import DigestTask
             self.digest_queue.submit(DigestTask(
-                trace_segment=[{"role": "verifier", "content": result.final_answer}],
-                source_label=f"{self.worker_dir.name}/verifier-r{round_index}-a{attempt_index}-{config_name}",
+                trace_segment=[{"role": "verifier_attempt", "content": result.final_answer}],
+                source_label=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
             ))
         return result.final_answer
 
@@ -377,8 +465,8 @@ class LemmaWorker:
         })
         return result.final_answer
 
-    def _run_reviser(self, lemma_file: Path, review_text: str, *, round_index: int) -> None:
-        role = f"reviser r{round_index}"
+    def _run_reviser(self, lemma_file: Path, review_text: str, *, workflow_index: int) -> None:
+        role = f"reviser w{workflow_index}"
         self._set_phase(role, status="thinking")
         config = self.suite.agents["reviser"]
         exact_rel = lemma_file.relative_to(self.layout.workspace_dir).as_posix()
@@ -393,7 +481,7 @@ class LemmaWorker:
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/reviser-r{round_index}",
+            session_prefix=f"{self.worker_dir.name}/reviser-workflow-{workflow_index}",
             digest_queue=self.digest_queue,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
@@ -407,11 +495,11 @@ class LemmaWorker:
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
             event_sink=self._event_sink(role),
         )
-        result = agent.run(self._reviser_task(lemma_file, review_text, round_index=round_index))
-        self.trace.append({"role": "reviser", "round": round_index, "trace": result.trace, "final_answer": result.final_answer})
+        result = agent.run(self._reviser_task(lemma_file, review_text, workflow_index=workflow_index))
+        self.trace.append({"role": "reviser", "workflow": workflow_index, "trace": result.trace, "final_answer": result.final_answer})
 
-    def _run_review_verdict_judge(self, review_text: str, *, round_index: int) -> str:
-        role = f"review_verdict_judge r{round_index}"
+    def _run_review_verdict_judge(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
+        role = f"review_verdict_judge w{workflow_index}.{attempt_index}"
         self._set_phase(role, status="thinking")
         base_config = self.suite.agents.get("verifier") or self.suite.agents[self._verifier_config_names()[0]]
         config = GeneralAgentConfig(
@@ -434,11 +522,12 @@ class LemmaWorker:
             ),
             event_sink=self._event_sink(role),
         )
-        result = agent.run(self._review_verdict_task(review_text, round_index=round_index))
+        result = agent.run(self._review_verdict_task(review_text, workflow_index=workflow_index, attempt_index=attempt_index))
         verdict = _parse_review_verdict(result.final_answer)
         self.trace.append({
             "role": "review_verdict_judge",
-            "round": round_index,
+            "workflow": workflow_index,
+            "attempt": attempt_index,
             "verdict": verdict,
             "trace": result.trace,
             "final_answer": result.final_answer,
@@ -462,60 +551,36 @@ class LemmaWorker:
         shutil.copy2(lemma_file, target)
         return target
 
-    def _write_attempt_review(self, review_text: str, *, round_index: int, attempt_index: int) -> Path:
-        path = (
-            self.worker_dir
-            / "verifier_workspace"
-            / f"round-{round_index:02d}"
-            / f"attempt-{attempt_index:02d}"
-            / "review.md"
-        )
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(review_text, encoding="utf-8")
-        return path
-
-    def _write_round_review(self, review_text: str, *, round_index: int) -> Path:
-        path = self.worker_dir / "verifier_workspace" / f"round-{round_index:02d}" / "review.md"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(review_text, encoding="utf-8")
-        return path
-
     def _write_final_review(self, review_text: str) -> Path:
         path = self.worker_dir / "review.md"
         path.write_text(review_text, encoding="utf-8")
         return path
 
-    def _copy_round_review_to_final(self, round_review_file: Path) -> Path:
-        path = self.worker_dir / "review.md"
-        shutil.copy2(round_review_file, path)
-        return path
-
-    def _clear_verifier_artifacts(self) -> None:
+    def _clear_attempt_review(self) -> None:
         review_file = self.worker_dir / "review.md"
         if review_file.exists():
-            review_file.unlink()
-        verifier_workspace = self.worker_dir / "verifier_workspace"
-        if verifier_workspace.exists():
-            shutil.rmtree(verifier_workspace)
+            _remove_path_with_retries(review_file)
 
-    def _format_round_review(self, attempt_reviews: list[dict[str, Any]], expected_attempts: int) -> str:
-        parts = [
-            "# Independent Verifier Attempts",
-            "",
-            f"Completed attempts: {len(attempt_reviews)} of {expected_attempts}.",
-            "",
-        ]
-        for item in attempt_reviews:
-            rel = item["path"].relative_to(self.layout.workspace_dir).as_posix()
-            parts.extend([
-                f"## Attempt {item['attempt']} ({item['config']})",
-                "",
-                f"Review file: `{rel}`",
-                "",
-                str(item["review"]).strip(),
-                "",
-            ])
-        return "\n".join(parts).rstrip() + "\n"
+    def _reset_verifier_workflow_workspace(self, lemma_file: Path) -> None:
+        self.worker_dir.mkdir(parents=True, exist_ok=True)
+        protected = {
+            lemma_file.resolve(),
+            (self.worker_dir / "worker_hint.md").resolve(),
+        }
+        verifier_workspace = self.worker_dir / "verifier_workspace"
+        for child in list(self.worker_dir.iterdir()):
+            if child.resolve() in protected:
+                continue
+            if child == verifier_workspace:
+                _reset_directory(verifier_workspace)
+            else:
+                _remove_path_with_retries(child)
+        verifier_workspace.mkdir(parents=True, exist_ok=True)
+
+    def _clear_verifier_artifacts(self) -> None:
+        self._clear_attempt_review()
+        verifier_workspace = self.worker_dir / "verifier_workspace"
+        _reset_directory(verifier_workspace)
 
     def _generator_task(self) -> str:
         return "\n\n".join(
@@ -543,7 +608,7 @@ class LemmaWorker:
         self,
         lemma_file: Path,
         *,
-        round_index: int,
+        workflow_index: int,
         attempt_index: int,
         attempt_total: int,
         config_name: str,
@@ -558,15 +623,16 @@ class LemmaWorker:
             "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified lemma "
             "filename without the `.md` extension. Do not judge whether this lemma solves the original problem; "
             "that is handled by a separate theorem checker."
-            + f"\n\nVerification round: {round_index}\n"
+            + f"\n\nVerifier workflow: {workflow_index}\n"
             + f"Independent verification attempt: {attempt_index} of {attempt_total}\n"
             + f"Verifier config: {config_name}"
         )
 
-    def _review_verdict_task(self, review_text: str, *, round_index: int) -> str:
+    def _review_verdict_task(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
         return (
-            f"# Verification Round\n{round_index}\n\n"
-            "# Round Review\n"
+            f"# Verifier Workflow\n{workflow_index}\n\n"
+            f"# Attempt\n{attempt_index}\n\n"
+            "# Attempt Review\n"
             + review_text
             + "\nReturn exactly either `pass` or `fail`."
         )
@@ -585,7 +651,7 @@ class LemmaWorker:
             + f"\n\nIndependent theorem check attempt: {attempt_index} of {AlphaSolveConfig.CHECK_IS_THEOREM_TIMES}"
         )
 
-    def _reviser_task(self, lemma_file: Path, review_text: str, *, round_index: int) -> str:
+    def _reviser_task(self, lemma_file: Path, review_text: str, *, workflow_index: int) -> str:
         rel = lemma_file.relative_to(self.layout.workspace_dir).as_posix()
         return (
             "# Problem\n"
@@ -595,7 +661,7 @@ class LemmaWorker:
             + "\n\n# Review\n"
             + review_text
             + "\n\nRewrite the same lemma markdown file in place, addressing every review issue."
-            + f"\n\nRevision round: {round_index}"
+            + f"\n\nRevision after verifier workflow: {workflow_index}"
         )
 
     def _finish(
@@ -657,6 +723,13 @@ class LemmaWorker:
         if missing:
             raise ValueError(f"unknown verifier agent config(s): {missing}")
         return names
+
+    def _verifier_attempt_config(self, config_name: str) -> GeneralAgentConfig:
+        config = self.suite.agents[config_name]
+        tools = [name for name in config.tools if name not in {"write_file", "str_replace_file"}]
+        if tools == config.tools:
+            return config
+        return replace(config, tools=tools)
 
 
 def _parse_review_verdict(text: str) -> str:

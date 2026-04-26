@@ -9,7 +9,6 @@ agent:
     - get_child_item
     - search_files
     - grep
-    - write_file
     - agent
   tool_parameters:
     agent:

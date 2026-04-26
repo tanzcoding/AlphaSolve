@@ -127,6 +127,38 @@ def test_load_general_agent_config():
         _assert_load_general_agent_config(tmp_path)
 
 
+def test_load_general_agent_config_appends_skill_markdown():
+    with local_test_dir("config_skill") as tmp_path:
+        skill_dir = tmp_path / "skills" / "math_review"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\ndescription: Review proofs.\n---\n\nCheck hidden assumptions carefully.",
+            encoding="utf-8",
+        )
+        config_path = tmp_path / "agent.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "version: 1",
+                    "agent:",
+                    "  name: demo",
+                    "  system_prompt: Base prompt",
+                    "  skills:",
+                    "    - math_review",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        config = load_general_agent_config(config_path)
+
+        assert config.skills == ["math_review"]
+        assert "Base prompt" in config.system_prompt
+        assert "# Skills" in config.system_prompt
+        assert "## math_review" in config.system_prompt
+        assert "Check hidden assumptions carefully." in config.system_prompt
+
+
 def _assert_load_general_agent_config(tmp_path):
     config_path = tmp_path / "agent.json"
     config_path.write_text(
