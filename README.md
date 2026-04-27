@@ -168,6 +168,9 @@ alphasolve --config ./my_config/
 # 跳过 Wolfram 探测（加快启动）
 alphasolve --no_wolfram_prime
 
+# 启用调试日志（在 logs/ 下记录每个 agent 的详细行为 trace）
+alphasolve --debug
+
 # 关闭实时终端面板
 alphasolve --no_dashboard
 
@@ -186,6 +189,7 @@ alphasolve --demo
 | `--max_verify_rounds` | 来自 agents.yaml | 每个命题最大验证-修正轮数 |
 | `--verifier_scaling_factor` | 来自 agents.yaml | 每轮独立验证次数 |
 | `--subagent_max_depth` | 来自 agents.yaml | subagent 最大递归深度 |
+| `--debug` | false | 启用调试日志，在 `logs/` 下记录每个 agent 的详细行为 trace |
 | `--tool_executor_size` | 4 | Python 执行进程池大小 |
 | `--no_wolfram_prime` | false | 跳过启动时的 Wolfram 探测 |
 | `--no_dashboard` | false | 关闭实时终端面板 |
@@ -219,10 +223,17 @@ workspace/
     verified_propositions/    # 所有通过验证的命题
     knowledge/          # 运行过程知识摘要（log.md + 按主题整理的知识条目）
 solution.md             # 最终解决方案（问题解决时生成）
-logs/
-    startup.json            # 启动配置快照
-    orchestrator_trace.json # Orchestrator 完整 LLM trace
-    worker_results.json     # 所有 worker 结果
+```
+
+使用 `--debug` 运行时，`logs/` 目录下会额外记录每个 agent 的实时行为 trace：
+
+```
+logs/{run_id}/
+    orchestrator.log        # Orchestrator 的每一次 LLM 调用、工具使用
+    digests/                # 每次 knowledge_digest chat session 一个文件
+        20260428_153045.log
+    workers/
+        worker_{hash}.log   # 每个 worker 的完整 生成→验证→修正 流水线
 ```
 
 ## 致谢与相关工作
