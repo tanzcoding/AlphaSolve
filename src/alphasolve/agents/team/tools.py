@@ -519,7 +519,7 @@ class SubagentService:
         wolfram_session = {"session": None}
 
         registry.register(
-            name="Bash",
+            name="RunPython",
             description="Executes Python code in a persistent in-memory environment without filesystem access.\n\nUsage:\n- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n- The Python environment persists across calls within the same session.\n- No filesystem access is permitted; use file tools separately if needed.",
             parameters={
                 "type": "object",

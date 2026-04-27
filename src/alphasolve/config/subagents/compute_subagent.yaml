@@ -6,5 +6,8 @@ agent:
   max_turns: 40
   when_to_use: Concrete symbolic or numeric computation and verification.
   tools:
-    - Bash
+    - RunPython
     - RunWolfram
+    - Read
+    - Glob
+    - Grep
