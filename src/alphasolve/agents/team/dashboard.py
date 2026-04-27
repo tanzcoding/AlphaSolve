@@ -79,7 +79,7 @@ def make_orchestrator_event_sink(renderer: PropositionTeamRenderer | None) -> Ag
 def make_worker_event_sink(
     renderer: PropositionTeamRenderer | None,
     *,
-    worker_id: int,
+    worker_id: str,
     role: str,
 ) -> AgentEventHandler | None:
     if renderer is None:

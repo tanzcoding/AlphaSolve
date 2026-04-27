@@ -165,7 +165,7 @@ class TimelineEvent:
 
 @dataclass
 class WorkerRenderState:
-    worker_id: int
+    worker_id: str
     color: str
     status: str = "queued"
     phase: str = "starting"
@@ -186,6 +186,7 @@ class WorkerRenderState:
     # Output buffer (accumulates assistant output, flushed to timeline on completion)
     output_buffer: str = ""
     result_summary: str = ""
+    model: str = ""
 
 
 @dataclass
@@ -332,7 +333,7 @@ class PropositionTeamRenderer:
         self._min_refresh_interval = 1.0 / max(0.1, float(refresh_per_second))
         self.max_log_lines = max_log_lines
         self.screen = screen
-        self._workers: dict[int, WorkerRenderState] = {}
+        self._workers: dict[str, WorkerRenderState] = {}
         self._orchestrator = OrchestratorRenderState()
         self._lock = threading.RLock()
         self._live: _LineDiffLive | None = None
@@ -401,7 +402,7 @@ class PropositionTeamRenderer:
 
     def register_worker(
         self,
-        worker_id: int,
+        worker_id: str,
         *,
         verified_ctx_size: int = 0,
         remaining_capacity: int = 0,
@@ -414,7 +415,7 @@ class PropositionTeamRenderer:
             state.phase = "spawned"
             state.updated_at = time.time()
             if created:
-                self._append_team_log_locked(f"@worker-{worker_id:02d} spawned")
+                self._append_team_log_locked(f"@worker-{worker_id} spawned")
             self._refresh_locked(force=True)
 
     def record_commit(
@@ -437,12 +438,12 @@ class PropositionTeamRenderer:
             self._solved = self._solved or solved
             self._refresh_locked(force=True)
 
-    def remove_worker(self, worker_id: int) -> None:
+    def remove_worker(self, worker_id: str) -> None:
         with self._lock:
             self._workers.pop(worker_id, None)
             self._refresh_locked(force=True)
 
-    def clear_worker_text(self, worker_id: int) -> None:
+    def clear_worker_text(self, worker_id: str) -> None:
         """Clear output buffer for *worker_id* (e.g. between agents)."""
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -450,7 +451,13 @@ class PropositionTeamRenderer:
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def update_phase(self, worker_id: int, phase: str, *, status: str = "running") -> None:
+    def set_worker_model(self, worker_id: str, model: str) -> None:
+        with self._lock:
+            state = self._ensure_worker(worker_id)
+            state.model = model
+            self._refresh_locked()
+
+    def update_phase(self, worker_id: str, phase: str, *, status: str = "running") -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
             state.phase = phase
@@ -459,7 +466,7 @@ class PropositionTeamRenderer:
             self._refresh_locked()
 
     def update_thinking(
-        self, worker_id: int, *, module: str, thinking_text: str, elapsed: float
+        self, worker_id: str, *, module: str, thinking_text: str, elapsed: float
     ) -> None:
         del elapsed
         with self._lock:
@@ -476,7 +483,7 @@ class PropositionTeamRenderer:
             self._refresh_locked(force=True)
 
     def finish_thinking(
-        self, worker_id: int, *, module: str, elapsed: float, char_count: int
+        self, worker_id: str, *, module: str, elapsed: float, char_count: int
     ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -494,7 +501,7 @@ class PropositionTeamRenderer:
             state.thinking_text = ""
             self._refresh_locked(force=True)
 
-    def append_output(self, worker_id: int, text: str) -> None:
+    def append_output(self, worker_id: str, text: str) -> None:
         if not text:
             return
         with self._lock:
@@ -505,7 +512,7 @@ class PropositionTeamRenderer:
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def flush_output(self, worker_id: int) -> None:
+    def flush_output(self, worker_id: str) -> None:
         """Flush accumulated assistant output into the timeline."""
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -524,7 +531,7 @@ class PropositionTeamRenderer:
 
     def reset_stream(
         self,
-        worker_id: int,
+        worker_id: str,
         *,
         content_chars: int = 0,
         reasoning_chars: int = 0,
@@ -546,7 +553,7 @@ class PropositionTeamRenderer:
             self._refresh_locked(force=True)
 
     def update_tool_start(
-        self, worker_id: int, *, module: str, name: str, arg_preview: str
+        self, worker_id: str, *, module: str, name: str, arg_preview: str
     ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -557,7 +564,7 @@ class PropositionTeamRenderer:
             state.updated_at = time.time()
             self._refresh_locked(force=True)
 
-    def update_tool_done(self, worker_id: int, *, name: str, is_error: bool = False) -> None:
+    def update_tool_done(self, worker_id: str, *, name: str, is_error: bool = False) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
             args = state.active_tool_args if state.active_tool == name else ""
@@ -574,11 +581,11 @@ class PropositionTeamRenderer:
             state.active_tool_args = ""
             state.status = "running"
             state.updated_at = time.time()
-            self._append_team_log_locked(f"@worker-{worker_id:02d} {marker} {name}")
+            self._append_team_log_locked(f"@worker-{worker_id} {marker} {name}")
             self._refresh_locked(force=True)
 
     def finish_worker(
-        self, worker_id: int, *, status: str, solved: bool = False, summary: str = ""
+        self, worker_id: str, *, status: str, solved: bool = False, summary: str = ""
     ) -> None:
         with self._lock:
             state = self._ensure_worker(worker_id)
@@ -599,12 +606,12 @@ class PropositionTeamRenderer:
                 f"finished: {state.status}",
                 style="bold green" if solved else "grey50",
             )
-            self._append_team_log_locked(f"@worker-{worker_id:02d} finished: {state.status}")
+            self._append_team_log_locked(f"@worker-{worker_id} finished: {state.status}")
             self._refresh_locked(force=True)
 
     def log(
         self,
-        worker_id: int | None,
+        worker_id: str | None,
         message: str,
         *,
         module: str | None = None,
@@ -635,7 +642,7 @@ class PropositionTeamRenderer:
             style = "yellow" if level == "WARNING" else ("red" if level == "ERROR" else "grey60")
             self._append_event(state, event_type, line, style=style)
             state.updated_at = time.time()
-            self._append_team_log_locked(f"@worker-{worker_id:02d} {line}")
+            self._append_team_log_locked(f"@worker-{worker_id} {line}")
             self._refresh_locked()
 
     # -- Orchestrator --------------------------------------------------------
@@ -835,7 +842,7 @@ class PropositionTeamRenderer:
                 icon, style = _STATUS_ICON.get(state.status, ("○", "grey50"))
                 line = Text(no_wrap=True, overflow="ellipsis")
                 line.append(f"{icon} ", style)
-                line.append(f"@worker-{state.worker_id:02d}", state.color)
+                line.append(f"@worker-{state.worker_id}", state.color)
                 line.append(f" {_truncate(state.phase, max(4, width - 20))}", "grey60")
                 lines.append(line)
 
@@ -901,7 +908,7 @@ class PropositionTeamRenderer:
                 row_renderables.append(
                     self._render_agent_panel(
                         state,
-                        title=f"@worker-{state.worker_id:02d}",
+                        title=f"@worker-{state.worker_id}",
                         color=state.color,
                         width=tile_width,
                         height=tile_height,
@@ -926,9 +933,12 @@ class PropositionTeamRenderer:
         lines: list[Text] = []
 
         # Header line
+        model_label = getattr(state, "model", "") or ""
         status = Text(no_wrap=True, overflow="ellipsis")
         status.append(f"{icon} ", icon_style)
         status.append(_truncate(state.phase, max(6, content_width - 20)), "bold")
+        if model_label:
+            status.append(f"  {model_label}", "bright_black")
         status.append(f"  {_fmt_elapsed(elapsed)}", "grey50")
         status.append(f"  ↑{_fmt_count(state.char_count)}", "grey50")
         lines.append(status)
@@ -1024,11 +1034,11 @@ class PropositionTeamRenderer:
                 return "[red]last tool failed[/]" if last.meta.get("is_error") else "[green]last tool ok[/]"
         return "[grey50]live[/]"
 
-    def _ensure_worker(self, worker_id: int) -> WorkerRenderState:
+    def _ensure_worker(self, worker_id: str) -> WorkerRenderState:
         if worker_id not in self._workers:
             self._workers[worker_id] = WorkerRenderState(
                 worker_id=worker_id,
-                color=_TEAM_COLORS[worker_id % len(_TEAM_COLORS)],
+                color=_TEAM_COLORS[hash(worker_id) % len(_TEAM_COLORS)],
             )
             self._worker_started += 1
         return self._workers[worker_id]

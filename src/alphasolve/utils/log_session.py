@@ -32,10 +32,10 @@ class LogSession:
             console_renderer=console_renderer,
         )
 
-    def worker_logger(self, worker_id: int, *, print_to_console: bool = False, console_renderer=None) -> Logger:
-        filename = os.path.join(self.workers_dir, f"worker_{worker_id:03d}.log")
+    def worker_logger(self, worker_id: str, *, print_to_console: bool = False, console_renderer=None) -> Logger:
+        filename = os.path.join(self.workers_dir, f"worker_{worker_id}.log")
         return Logger(
-            name=f"worker_{worker_id:03d}",
+            name=f"worker_{worker_id}",
             log_dir=self.workers_dir,
             print_to_console=print_to_console,
             log_filename=filename,

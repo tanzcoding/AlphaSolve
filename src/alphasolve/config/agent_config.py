@@ -53,6 +53,13 @@ class AlphaSolveConfig:
         "timeout": 180,
         "params": {"extra_body": {"thinking": {"type": "enabled"}}},
     }
+    VOLCANO_DS_CONFIG = {
+        "base_url": "https://ark.cn-beijing.volces.com/api/v3",
+        "api_key": lambda: os.getenv("ARK_API_KEY"),
+        "model": "deepseek-v3-2-251201",
+        "timeout": 180,
+        "params": {"extra_body": {"thinking": {"type": "enabled"}}},
+    }
     DASHSCOPE_CONFIG = {
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "api_key": lambda: os.getenv("DASHSCOPE_API_KEY"),
@@ -78,9 +85,9 @@ class AlphaSolveConfig:
     }
 
     # Default model configs referenced by agents.yaml
-    GENERATOR_CONFIG = {**DEEPSEEK_CONFIG}
-    VERIFIER_CONFIG = {**DEEPSEEK_CONFIG}
-    REVISER_CONFIG = {**DEEPSEEK_CONFIG}
+    GENERATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}
+    VERIFIER_CONFIG = {**DEEPSEEK_PRO_CONFIG}
+    REVISER_CONFIG = {**DEEPSEEK_PRO_CONFIG}
     COMPUTE_SUBAGENT_CONFIG = {**DEEPSEEK_CONFIG}
     PROOF_SUBAGENT_CONFIG = {**DEEPSEEK_CONFIG}
     ORCHESTRATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}

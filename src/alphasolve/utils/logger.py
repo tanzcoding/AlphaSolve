@@ -26,7 +26,7 @@ class Logger:
         timestamp: Optional[str] = None,
         log_filename: Optional[str] = None,
         console_renderer: Any = None,
-        console_worker_id: Optional[int] = None,
+        console_worker_id: Optional[str] = None,
     ) -> None:
         self.name = name
         self.log_dir = log_dir

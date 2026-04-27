@@ -118,7 +118,7 @@ def _reset_directory(path: Path) -> None:
 
 @dataclass(frozen=True)
 class WorkerRunResult:
-    worker_id: int
+    worker_id: str
     worker_dir: Path
     status: str
     summary: str
@@ -139,7 +139,7 @@ class VerifierWorkflowResult:
 
 
 class GeneratorDigestContext:
-    def __init__(self, *, worker_id: int, worker_rel: str) -> None:
+    def __init__(self, *, worker_id: str, worker_rel: str) -> None:
         self.worker_id = worker_id
         self.worker_rel = worker_rel
         self._reasoning_since_last_subagent: list[dict[str, Any]] = []
@@ -178,7 +178,6 @@ class Worker:
         layout: ProjectLayout,
         suite,
         client_factory: ClientFactory,
-        worker_id: int,
         worker_hint: str | None = None,
         max_verify_rounds: int = 2,
         verifier_scaling_factor: int = 1,
@@ -191,13 +190,14 @@ class Worker:
         self.layout = layout
         self.suite = suite
         self.client_factory = client_factory
-        self.worker_id = worker_id
+        prop_hash = uuid.uuid4().hex[:8]
+        self.worker_id = prop_hash
         self.worker_hint = worker_hint
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.workspace = Workspace(layout.workspace_dir)
-        self.worker_dir = layout.unverified_dir / f"prop-{uuid.uuid4().hex[:8]}"
+        self.worker_dir = layout.unverified_dir / f"prop-{prop_hash}"
         self.worker_rel = self.worker_dir.relative_to(layout.workspace_dir).as_posix()
         self.trace: list[dict[str, Any]] = []
         self.renderer = renderer
@@ -286,8 +286,8 @@ class Worker:
             return self._finish("failed", str(exc))
 
     def _run_generator(self) -> Path | None:
-        self._set_phase("generator", status="thinking")
         config = self.suite.agents["generator"]
+        self._set_phase("generator", status="thinking", model=self._model_name(config))
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
@@ -361,9 +361,9 @@ class Worker:
 
     def _run_verifier_attempt_agent(self, proposition_file: Path, *, workflow_index: int, attempt_index: int, config_name: str) -> str:
         role = f"verifier_attempt w{workflow_index}.{attempt_index}"
-        self._set_phase(role, status="thinking")
-        all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
         config = self._verifier_attempt_config(config_name)
+        self._set_phase(role, status="thinking", model=self._model_name(config))
+        all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
@@ -430,8 +430,8 @@ class Worker:
 
     def _run_theorem_checker(self, verified_file: Path, *, attempt_index: int) -> str:
         role = "theorem_checker"
-        self._set_phase(role, status="thinking")
         config = self.suite.agents["theorem_checker"]
+        self._set_phase(role, status="thinking", model=self._model_name(config))
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
@@ -467,8 +467,8 @@ class Worker:
 
     def _run_reviser(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> None:
         role = f"reviser w{workflow_index}"
-        self._set_phase(role, status="thinking")
         config = self.suite.agents["reviser"]
+        self._set_phase(role, status="thinking", model=self._model_name(config))
         exact_rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
@@ -500,7 +500,6 @@ class Worker:
 
     def _run_review_verdict_judge(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
         role = f"review_verdict_judge w{workflow_index}.{attempt_index}"
-        self._set_phase(role, status="thinking")
         base_config = self.suite.agents.get("verifier") or self.suite.agents[self._verifier_config_names()[0]]
         config = GeneralAgentConfig(
             name="review_verdict_judge",
@@ -509,6 +508,7 @@ class Worker:
             max_turns=base_config.max_turns,
             model_config=base_config.model_config,
         )
+        self._set_phase(role, status="thinking", model=self._model_name(config))
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
@@ -729,9 +729,11 @@ class Worker:
 
         return sink
 
-    def _set_phase(self, phase: str, *, status: str) -> None:
+    def _set_phase(self, phase: str, *, status: str, model: str = "") -> None:
         if self.renderer is not None:
             self.renderer.clear_worker_text(self.worker_id)
+            if model:
+                self.renderer.set_worker_model(self.worker_id, model)
             self.renderer.update_phase(self.worker_id, phase, status=status)
 
     def _should_stop(self) -> bool:
@@ -756,6 +758,20 @@ class Worker:
         if tools == config.tools:
             return config
         return replace(config, tools=tools)
+
+    def _model_name(self, config: GeneralAgentConfig) -> str:
+        ref = str(config.model_config or "").strip()
+        if not ref:
+            return ""
+        if ref in self.suite.models:
+            return str(self.suite.models[ref].get("model", ref))
+        preset = ref.upper()
+        if not preset.endswith("_CONFIG"):
+            preset += "_CONFIG"
+        cfg = getattr(AlphaSolveConfig, preset, None)
+        if isinstance(cfg, dict):
+            return str(cfg.get("model", ref))
+        return ref
 
 
 def _parse_review_verdict(text: str) -> str:

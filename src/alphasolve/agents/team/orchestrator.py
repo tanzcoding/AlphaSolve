@@ -55,9 +55,8 @@ class WorkerManager:
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.subagent_max_depth = subagent_max_depth
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
-        self.active: dict[concurrent.futures.Future, int] = {}
+        self.active: dict[concurrent.futures.Future, str] = {}
         self.results: list[WorkerRunResult] = []
-        self.next_worker_id = 0
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
@@ -80,19 +79,10 @@ class WorkerManager:
                 "active_workers": sorted(self.active.values()),
                 "max_workers": self.max_workers,
             }
-        worker_id = self.next_worker_id
-        self.next_worker_id += 1
-        if self.renderer is not None:
-            self.renderer.register_worker(
-                worker_id,
-                verified_ctx_size=self._verified_count(),
-                remaining_capacity=max(0, self.max_workers - len(self.active) - 1),
-            )
         worker = Worker(
             layout=self.layout,
             suite=self.suite,
             client_factory=self.client_factory,
-            worker_id=worker_id,
             worker_hint=hint,
             max_verify_rounds=self.max_verify_rounds,
             verifier_scaling_factor=self.verifier_scaling_factor,
@@ -102,6 +92,13 @@ class WorkerManager:
             digest_queue=self.digest_queue,
             stop_event=self.stop_event,
         )
+        worker_id = worker.worker_id
+        if self.renderer is not None:
+            self.renderer.register_worker(
+                worker_id,
+                verified_ctx_size=self._verified_count(),
+                remaining_capacity=max(0, self.max_workers - len(self.active) - 1),
+            )
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
         return {
