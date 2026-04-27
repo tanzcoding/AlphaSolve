@@ -37,6 +37,7 @@ class AlphaSolve:
         tool_executor_size: int = 2,
         execution_gateway: ExecutionGateway | None = None,
         max_orchestrator_restarts: int = 5,
+        debug: bool = False,
     ) -> None:
         self.layout = ProjectLayout.create(project_dir, problem=problem, hint=hint)
         self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "config"
@@ -50,6 +51,7 @@ class AlphaSolve:
         self.tool_executor_size = max(1, int(tool_executor_size))
         self.execution_gateway_override = execution_gateway
         self.max_orchestrator_restarts = max(1, int(max_orchestrator_restarts))
+        self.debug = debug
 
     def run(self) -> OrchestratorRunResult:
         renderer = PropositionTeamRenderer(screen=False) if self.print_to_console else None
@@ -61,7 +63,7 @@ class AlphaSolve:
             renderer.update_orchestrator_phase("startup", status="running")
         try:
             self.layout.ensure()
-            log_session = LogSession(base_dir=str(self.layout.logs_dir))
+            log_session = LogSession(base_dir=str(self.layout.logs_dir)) if self.debug else None
             startup: dict[str, Any] = {
                 "project_root": str(self.layout.project_root),
                 "workspace": str(self.layout.workspace_dir),

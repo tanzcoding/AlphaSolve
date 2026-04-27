@@ -33,6 +33,8 @@ def main():
                         help="Independent verifier attempts per verifier round (default: from agents.yaml)")
     parser.add_argument("--subagent_max_depth", type=int, default=None,
                         help="Maximum recursive depth for subagents (default: from agents.yaml)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Produce detailed per-agent trace logs under logs/")
     parser.add_argument("--demo", action="store_true",
                         help="Run a deterministic local demo without calling an LLM API")
     parser.add_argument("--no_wolfram_prime", action="store_true",
@@ -78,6 +80,7 @@ def main():
             print_to_console=not args.no_dashboard,
             tool_executor_size=args.tool_executor_size,
             max_orchestrator_restarts=max_orchestrator_restarts,
+            debug=args.debug,
         ).run()
     except KeyboardInterrupt:
         print("\nInterrupted.")
