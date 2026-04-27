@@ -412,6 +412,7 @@ class SubagentService:
         session_prefix: str = "subagent",
         digest_queue: "Any | None" = None,
         digest_context_provider: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
+        log_session: "Any | None" = None,
     ) -> None:
         self.suite = suite
         self.client_factory = client_factory
@@ -422,6 +423,7 @@ class SubagentService:
         self.session_prefix = session_prefix
         self.digest_queue = digest_queue
         self.digest_context_provider = digest_context_provider
+        self.log_session = log_session
 
     def available_types(self) -> list[str]:
         return sorted(self.suite.subagents)
@@ -477,12 +479,18 @@ class SubagentService:
                 system_prompt_args=config.system_prompt_args,
                 metadata=config.metadata,
             )
-        agent = GeneralPurposeAgent(
-            config=config,
-            client=self.client_factory(config),
-            tool_registry=registry,
-        )
-        result = agent.run(task)
+        subagent_sink = self.log_session.create_subagent_sink(agent_type) if self.log_session is not None else None
+        try:
+            agent = GeneralPurposeAgent(
+                config=config,
+                client=self.client_factory(config),
+                tool_registry=registry,
+                event_sink=subagent_sink,
+            )
+            result = agent.run(task)
+        finally:
+            if subagent_sink is not None:
+                subagent_sink.close()
         out = {
             "type": agent_type,
             "session_id": session_id,
@@ -491,7 +499,7 @@ class SubagentService:
             "trace": result.trace,
         }
         # Submit trace to digest queue unless we ARE the digest agent (avoid recursion)
-        if self.digest_queue is not None and not self.session_prefix.startswith("knowledge_digest"):
+        if self.digest_queue is not None and not self.session_prefix.startswith("knowledge_digest") and not self.session_prefix.startswith("orchestrator"):
             from .knowledge_digest import DigestTask
             caller_context = None
             if self.digest_context_provider is not None:

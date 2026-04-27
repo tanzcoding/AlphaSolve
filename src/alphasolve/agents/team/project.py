@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -54,6 +55,7 @@ class ProjectLayout:
             self.verified_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.problem_path, self.workspace_dir / "problem.md")
 
     def read_problem(self) -> str:
         return self.problem_path.read_text(encoding="utf-8")
