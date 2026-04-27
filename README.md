@@ -11,6 +11,142 @@ AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明
 - **知识摘要**：后台 `knowledge_digest` agent 持续将运行 trace 摘要写入 `workspace/knowledge/`，供 Orchestrator 参考
 - **多 LLM 提供商**：支持 DeepSeek、火山引擎、Moonshot、DashScope、LongCat、Parasail、OpenRouter、MIMO 等
 
+## 快速开始
+
+> 本节面向**没有编程经验**的数学工作者和数学系学生。即使你从未打开过终端（命令行），跟着下面每一步操作，10 分钟内就能让 AlphaSolve 开始帮你证明数学问题。
+
+### 前提条件
+
+- 一台能联网的电脑（Windows / macOS / Linux 均可）
+- 一个 LLM 提供商的 API 密钥（推荐 DeepSeek，注册即送额度，国内手机号可直接注册）
+
+### 第一步：安装 Python
+
+AlphaSolve 需要 Python 3.12 或更新版本。
+
+<details>
+<summary><b>Windows</b>（点击展开）</summary>
+
+1. 打开浏览器，访问 https://www.python.org/downloads/
+2. 点击黄色的 **Download Python 3.x** 按钮，下载安装程序
+3. **重要**：运行安装程序时，勾选底部的 **「Add Python to PATH」**（把 Python 加入系统路径），再点击 **Install Now**
+4. 安装完成后，关闭安装窗口
+
+**验证安装**：按键盘 `Win + R`，输入 `cmd` 回车，在黑色窗口中输入：
+
+```
+python --version
+```
+
+如果显示 `Python 3.12.x` 或 `Python 3.13.x`，说明安装成功。
+</details>
+
+<details>
+<summary><b>macOS</b>（点击展开）</summary>
+
+1. 打开浏览器，访问 https://www.python.org/downloads/
+2. 点击黄色的 **Download Python 3.x** 按钮，下载 macOS 安装程序
+3. 双击下载的 `.pkg` 文件，一路点击「继续」完成安装
+
+**验证安装**：按 `Cmd + 空格`，输入 `Terminal` 回车，在终端窗口中输入：
+
+```
+python3 --version
+```
+
+如果显示 `Python 3.12.x` 或 `Python 3.13.x`，说明安装成功。
+</details>
+
+### 第二步：获取 API 密钥
+
+AlphaSolve 需要调用大语言模型进行推理。推荐使用 **DeepSeek**（国内可直接注册，新用户有免费额度）。
+
+1. 打开浏览器，访问 https://platform.deepseek.com/
+2. 用手机号注册账号
+3. 进入「API Keys」页面，点击 **创建 API Key**，复制生成的密钥（格式类似 `sk-xxxxxxxxxxxxxxxx`）
+4. **妥善保存这个密钥**，它只会显示一次
+
+### 第三步：安装 AlphaSolve
+
+打开终端：
+
+- **Windows**：按 `Win + R`，输入 `cmd` 回车
+- **macOS**：按 `Cmd + 空格`，输入 `Terminal` 回车
+
+在终端中逐行输入以下命令（输完一行按一次回车）：
+
+```bash
+# 1. 安装 uv（Python 包管理器）
+#    Windows 用户：复制下面这行，粘贴到终端，回车
+powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+#    macOS / Linux 用户：复制下面这行
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# 2. 关闭终端，重新打开一个新终端（让 uv 生效）
+
+# 3. 下载 AlphaSolve
+git clone https://github.com/tanzcoding/AlphaSolve.git
+cd AlphaSolve
+
+# 4. 安装
+uv tool install -e .
+```
+
+### 第四步：设置 API 密钥
+
+在终端中输入以下命令（把 `你的密钥` 替换为第二步获取的实际密钥）：
+
+```bash
+# Windows（命令提示符 cmd）
+set DEEPSEEK_API_KEY=你的密钥
+
+# macOS / Linux（终端 Terminal）
+export DEEPSEEK_API_KEY=你的密钥
+```
+
+> 每次重新打开终端运行 AlphaSolve 之前，都需要重新设置这个环境变量。如果觉得麻烦，可以搜索「如何永久设置环境变量」。
+
+### 第五步：运行你的第一个数学问题
+
+1. 创建一个新文件夹作为工作目录，进入其中：
+
+```bash
+mkdir my_first_problem
+cd my_first_problem
+```
+
+2. 创建一个问题文件。用记事本（Windows）或文本编辑（macOS）新建一个文件，命名为 `problem.md`，写入你想让 AlphaSolve 证明的数学问题（支持 LaTeX 公式）：
+
+```
+证明：对于任意正整数 n，前 n 个正整数的立方和等于前 n 个正整数和的平方，即
+$$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
+```
+
+3. 在终端中运行 AlphaSolve：
+
+```bash
+alphasolve
+```
+
+你会看到一个实时更新的面板，显示 Orchestrator 和各个 Worker 的工作进展。不要关闭终端，让它在后台运行即可。
+
+### 第六步：查看结果
+
+运行结束后，在当前目录下会生成：
+
+- **`solution.md`** — 如果问题被解决，这里就是完整证明
+- **`workspace/verified_propositions/`** — 所有已验证的中间命题（可以阅读每个 `.md` 文件）
+- **`workspace/knowledge/`** — 运行过程中积累的数学知识和思路
+
+如果运行中途你想停止，按 `Ctrl + C` 即可。已产生的中间结果不会丢失。
+
+### 下一步
+
+- 如果遇到问题，用 `--debug` 运行（`alphasolve --debug`），`logs/` 目录下会生成详细的诊断日志
+- 想调整证明策略？见[使用方法](#使用方法)
+- 想换个模型？见[配置](#配置)
+
 ## 系统架构
 
 ```
