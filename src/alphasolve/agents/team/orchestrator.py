@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import AgentRunError, GeneralPurposeAgent, Workspace
 from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
+from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.utils.event_logger import compose_event_sinks
 
 from .dashboard import make_orchestrator_event_sink
@@ -274,6 +275,9 @@ class Orchestrator:
             try:
                 registry = self._build_registry(manager, subagents=subagents)
                 config = self.suite.agents["orchestrator"]
+                if self.renderer is not None:
+                    model_name = self._model_name(config)
+                    self.renderer.set_orchestrator_model(model_name)
                 agent = GeneralPurposeAgent(
                     config=config,
                     client=self.client_factory(config),
@@ -306,6 +310,20 @@ class Orchestrator:
             worker_results=list(manager.results),
             solution_path=manager.solution_path,
         )
+
+    def _model_name(self, config) -> str:
+        ref = str(config.model_config or "").strip()
+        if not ref:
+            return ""
+        if ref in self.suite.models:
+            return str(self.suite.models[ref].get("model", ref))
+        preset = ref.upper()
+        if not preset.endswith("_CONFIG"):
+            preset += "_CONFIG"
+        cfg = getattr(AlphaSolveConfig, preset, None)
+        if isinstance(cfg, dict):
+            return str(cfg.get("model", ref))
+        return ref
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
         access = RoleWorkspaceAccess(workspace=Workspace(self.layout.workspace_dir))

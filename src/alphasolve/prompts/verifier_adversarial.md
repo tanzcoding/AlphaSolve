@@ -14,8 +14,8 @@ Rules:
 Verification method:
 - Start by looking for the strongest plausible failure mode: missing assumptions, false generality, hidden boundary cases, unjustified existence, invalid uniqueness, branch loss, circular dependencies, or a bad cited reference.
 - Try to construct counterexamples or edge cases before accepting a claim.
-- Call `agent` with `type="reasoning_subagent"` to audit any subtle inference.
-- Use `compute_subagent` or `numerical_experiment_subagent` for algebra, calculation, edge cases, or counterexample searches.
+- Call `Agent` with `type="reasoning_subagent"` to audit any subtle inference.
+- Use `Agent` with `compute_subagent` or `numerical_experiment_subagent` for algebra, calculation, edge cases, or counterexample searches.
 - Treat any unresolved serious doubt as a reason to fail the whole proposition.
 - Do not silently repair the proposition. Review the statement and proof as written.
 

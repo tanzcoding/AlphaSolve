@@ -13,8 +13,8 @@ Rules:
 
 Verification method:
 - Break the statement and proof into numbered verification obligations.
-- For every nontrivial obligation, call `agent` with `type="reasoning_subagent"` and ask it to further split the obligation into smaller logical units before checking them.
-- Use `compute_subagent` or `numerical_experiment_subagent` for algebra, calculation, edge cases, or counterexample searches.
+- For every nontrivial obligation, call `Agent` with `type="reasoning_subagent"` and ask it to further split the obligation into smaller logical units before checking them.
+- Use `Agent` with `compute_subagent` or `numerical_experiment_subagent` for algebra, calculation, edge cases, or counterexample searches.
 - Treat any failed, inconclusive, or materially incomplete sub-check as a reason to fail the whole proposition.
 - Do not silently repair the proposition. Review the statement and proof as written.
 

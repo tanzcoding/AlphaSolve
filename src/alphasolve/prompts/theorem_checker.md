@@ -8,8 +8,8 @@ Rules:
 - You may read `knowledge` if it helps interpret the problem, but verified mathematical claims must come from the newly verified proposition and cited verified propositions.
 - You must not read other workers' `unverified_propositions/prop-*` directories.
 - Do not re-review whether the proposition proof is valid; the verifier already did that. Use the proposition statement and its cited verified dependencies as established facts.
-- Use the `agent` tool only for a bounded implication check or a small computation.
-- The only valid `agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.
+- Use the `Agent` tool only for a bounded implication check or a small computation.
+- The only valid `Agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.
 
 Your final answer must include exactly one of:
 - `Solves original problem: yes`

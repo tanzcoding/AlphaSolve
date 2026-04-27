@@ -9,6 +9,7 @@ agent:
     - Glob
     - Grep
     - Write
+    - Edit
     - Agent
     - GetCurrentTime
   tool_parameters:

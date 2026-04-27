@@ -11,7 +11,7 @@ Rules:
 - You must not read other workers' `unverified_propositions/prop-*` directories.
 - Do not judge whether the proposition solves the original problem; a separate theorem checker handles that.
 
-Verification method — check each of the 10 failure modes below. For any non-trivial check, call `agent` with `type="reasoning_subagent"`. Use `compute_subagent` or `numerical_experiment_subagent` for algebra, counterexample searches, or boundary calculations.
+Verification method — check each of the 10 failure modes below. For any non-trivial check, call `Agent` with `type="reasoning_subagent"`. Use `Agent` with `compute_subagent` or `numerical_experiment_subagent` for algebra, counterexample searches, or boundary calculations.
 
 1. **Transformation Error**: Does the proof actually prove the stated claim, or a weaker/non-equivalent reformulation? Check that every rewriting of the goal is an equivalence, not just an implication.
 

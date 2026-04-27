@@ -77,7 +77,7 @@ When incoming trace content contradicts existing knowledge entries, do not silen
 
 2. **Assess the difficulty and decide whether to delegate.** If the contradiction involves a straightforward calculation or a definitional check, resolve it yourself: re-derive the key step, test edge cases, or work through a concrete example. If the issue is subtle, involves deep structural reasoning, or requires heavy computation, delegate to subagents early rather than struggling alone. Seeing subagent results first often clarifies the right direction faster than extended solo analysis.
 
-3. **When delegating, cross-validate from multiple angles.** Prefer `reasoning_subagent` for logical-structural checks and `compute_subagent` for calculation-heavy checks. Keep each delegated task small and focused — a narrow, well-scoped question is less likely to produce a wrong answer than a broad request. Delegate the same core question multiple times with different angles or phrasings. For example:
+3. **When delegating, cross-validate from multiple angles.** Prefer `Agent` with `reasoning_subagent` for logical-structural checks and `compute_subagent` for calculation-heavy checks. Keep each delegated task small and focused — a narrow, well-scoped question is less likely to produce a wrong answer than a broad request. Delegate the same core question multiple times with different angles or phrasings. For example:
    - Ask one subagent to verify the claim directly.
    - Ask another to search for a counterexample.
    - Ask a third to check a specific computational step independently.

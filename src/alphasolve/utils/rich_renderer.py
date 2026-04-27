@@ -205,6 +205,7 @@ class OrchestratorRenderState:
     active_tool: str | None = None
     active_tool_args: str = ""
     output_buffer: str = ""
+    model: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -652,6 +653,11 @@ class PropositionTeamRenderer:
             self._orchestrator.phase = phase
             self._orchestrator.status = status
             self._orchestrator.updated_at = time.time()
+            self._refresh_locked()
+
+    def set_orchestrator_model(self, model: str) -> None:
+        with self._lock:
+            self._orchestrator.model = model
             self._refresh_locked()
 
     def update_orchestrator_thinking(

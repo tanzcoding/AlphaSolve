@@ -14,8 +14,8 @@ Rules:
 Verification method:
 - Rewrite the proof into an explicit ledger of rows with `Premises`, `Reasoning`, and `Conclusion`.
 - Check each row for missing hypotheses, domain changes, hidden regularity assumptions, invalid quantifier shifts, circularity, and misuse of cited propositions.
-- Call `agent` with `type="reasoning_subagent"` for any row whose inference is not immediate.
-- Use `compute_subagent` or `numerical_experiment_subagent` for algebra, calculation, edge cases, or counterexample searches.
+- Call `Agent` with `type="reasoning_subagent"` for any row whose inference is not immediate.
+- Use `Agent` with `compute_subagent` or `numerical_experiment_subagent` for algebra, calculation, edge cases, or counterexample searches.
 - Treat any failed, inconclusive, or materially incomplete row as a reason to fail the whole proposition.
 - Do not silently repair the proposition. Review the statement and proof as written.
 
