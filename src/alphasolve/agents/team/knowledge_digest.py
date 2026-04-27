@@ -87,6 +87,7 @@ class KnowledgeDigestQueue:
             max_depth=1,
             execution_gateway=self.execution_gateway,
             session_prefix="knowledge_digest",
+            log_session=self.log_session,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=_make_workspace(self.workspace_dir),
                 read_root_rel="knowledge",

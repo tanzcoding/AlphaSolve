@@ -265,6 +265,7 @@ class Orchestrator:
                 max_depth=0,  # research_reviewer must not delegate further
                 execution_gateway=self.execution_gateway,
                 session_prefix="orchestrator",
+                log_session=self.log_session,
                 file_access_factory=lambda: RoleWorkspaceAccess(
                     workspace=Workspace(self.layout.workspace_dir),
                     deny_read_rel="unverified_propositions",

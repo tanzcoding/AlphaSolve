@@ -207,6 +207,7 @@ class Worker:
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
         self.stop_event = stop_event
+        self.log_session = log_session
         self._worker_log_sink = log_session.create_worker_sink(prop_hash) if log_session is not None else None
 
     def run(self) -> WorkerRunResult:
@@ -311,6 +312,7 @@ class Worker:
             session_prefix=f"{self.worker_dir.name}/generator",
             digest_queue=self.digest_queue,
             digest_context_provider=digest_context.consume,
+            log_session=self.log_session,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -385,6 +387,7 @@ class Worker:
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
+            log_session=self.log_session,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -453,6 +456,7 @@ class Worker:
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/theorem-checker",
             digest_queue=self.digest_queue,
+            log_session=self.log_session,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -493,6 +497,7 @@ class Worker:
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/reviser-workflow-{workflow_index}",
             digest_queue=self.digest_queue,
+            log_session=self.log_session,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,

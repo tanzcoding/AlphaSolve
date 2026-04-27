@@ -17,6 +17,11 @@ class LogSession:
             digests/
               20260428_153045_123.log
               20260428_153102_456.log
+            subagents/
+              research_reviewer/
+                20260428_153045_789.log
+              knowledge_digest/
+                20260428_153102_012.log
             workers/
               worker_{hash}.log
     """
@@ -52,4 +57,13 @@ class LogSession:
         return EventLogWriter(
             log_path=digest_dir / f"{ts}.log",
             scope="knowledge_digest",
+        )
+
+    def create_subagent_sink(self, agent_type: str) -> EventLogWriter:
+        subagent_dir = self.run_dir / "subagents" / agent_type
+        subagent_dir.mkdir(parents=True, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        return EventLogWriter(
+            log_path=subagent_dir / f"{ts}.log",
+            scope=f"subagent:{agent_type}",
         )
