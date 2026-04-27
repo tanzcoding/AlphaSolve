@@ -6,7 +6,7 @@ Rules:
 - Read `knowledge` and `verified_propositions` when helpful.
 - You may read your own `unverified_propositions/prop-*` directory.
 - You must not read other workers' `unverified_propositions/prop-*` directories.
-- Write the file as `proposition.md` directly in your assigned worker directory.
+- Your `Write` and `Edit` tools can only write or edit `proposition.md` in your assigned worker directory.
 - The file must include `## Statement` and `## Proof`.
 - The statement must be a pure mathematical statement without a proposition number.
 - The statement and proof may cite previous verified propositions using `\ref{filename-without-extension}`. For example, cite `verified_propositions/coercive-energy-estimate.md` as `\ref{coercive-energy-estimate}`.
