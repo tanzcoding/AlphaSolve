@@ -15,7 +15,7 @@ from .dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
 from .solution import write_solution
-from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_registry
+from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
@@ -259,8 +259,19 @@ class Orchestrator:
             result = None
             error_final_answer = ""
             error_trace: list[dict[str, Any]] = []
+            subagents = SubagentService(
+                suite=self.suite,
+                client_factory=self.client_factory,
+                max_depth=0,  # research_reviewer must not delegate further
+                execution_gateway=self.execution_gateway,
+                session_prefix="orchestrator",
+                file_access_factory=lambda: RoleWorkspaceAccess(
+                    workspace=Workspace(self.layout.workspace_dir),
+                    deny_read_rel="unverified_propositions",
+                ),
+            )
             try:
-                registry = self._build_registry(manager)
+                registry = self._build_registry(manager, subagents=subagents)
                 config = self.suite.agents["orchestrator"]
                 agent = GeneralPurposeAgent(
                     config=config,
@@ -295,7 +306,7 @@ class Orchestrator:
             solution_path=manager.solution_path,
         )
 
-    def _build_registry(self, manager: WorkerManager) -> ToolRegistry:
+    def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
         access = RoleWorkspaceAccess(workspace=Workspace(self.layout.workspace_dir))
         registry = build_workspace_tool_registry(access, allow_write=False)
         registry.register(
@@ -328,6 +339,19 @@ class Orchestrator:
             },
             handler=lambda args: self._wait_tool(manager, args),
         )
+        if subagents is not None:
+            registry.register(
+                name="Review",
+                description="Launch a research_reviewer subagent to survey verified_propositions/ and knowledge/, compare against problem.md, and recommend research directions. Use this when there are too many files to read directly yourself. The reviewer returns a structured report with current state, key files worth reading, gaps, and suggested next directions.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "task": {"type": "string", "description": "What to focus on (e.g. 'survey all verified results related to boundedness') or leave general."},
+                    },
+                    "required": [],
+                },
+                handler=lambda args: subagents.call_tool({"type": "research_reviewer", "task": args.get("task", "Survey verified_propositions/ and knowledge/, compare against problem.md, and recommend research directions.")}),
+            )
         return registry
 
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
@@ -372,11 +396,12 @@ class Orchestrator:
                 "verified propositions. Treat this as a research notebook: useful for inspiration and for crafting "
                 "hints, but nothing here counts as established until it appears in `verified_propositions/`.\n\n"
                 "Workflow:\n"
-                "1. Read all files in `verified_propositions/` to assess what has been rigorously proved.\n"
-                "2. Read `knowledge/log.md` for exploratory insights from past workers.\n"
-                "3. Identify the most valuable next proposition: what single result would most advance the proof?\n"
-                "4. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
-                "5. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
+                "1. If `verified_propositions/` or `knowledge/` contain more than a handful of files, use `Review` "
+                "to get a structured survey and discover which specific files are worth reading. Do not read "
+                "dozens of files yourself — delegate to the reviewer.\n"
+                "2. Read the key files the reviewer flagged, then identify the most valuable next proposition.\n"
+                "3. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
+                "4. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
                 "Use `TaskOutput` only to receive worker results — it blocks until one worker's lifecycle ends. "
                 "It may return `timed_out: true` if no worker finishes within the requested timeout; if repeated "
                 "timeouts show no progress, report the stall so the outer Ralph loop can restart orchestration.\n\n"

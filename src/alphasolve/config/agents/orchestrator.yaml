@@ -10,6 +10,7 @@ agent:
     - Read
     - Agent
     - TaskOutput
+    - Review
     - GetCurrentTime
   tool_parameters:
     Agent:
