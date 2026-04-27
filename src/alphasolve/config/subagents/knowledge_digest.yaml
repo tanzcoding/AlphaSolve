@@ -11,6 +11,7 @@ agent:
     - Edit
     - Glob
     - Grep
+    - Bash
     - Agent
     - GetCurrentTime
   tool_parameters:

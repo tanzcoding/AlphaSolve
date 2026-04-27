@@ -8,6 +8,7 @@ agent:
     - Read
     - Glob
     - Grep
+    - Bash
     - Write
     - Edit
     - Agent

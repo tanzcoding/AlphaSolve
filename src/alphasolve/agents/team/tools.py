@@ -4,6 +4,8 @@ import datetime
 import json
 import os
 import re
+import shlex
+import subprocess
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -394,6 +396,51 @@ def build_workspace_tool_registry(
         handler=lambda _args: ToolResult(
             json.dumps({"datetime": datetime.datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False)
         ),
+    )
+
+    def _run_bash(args: dict[str, Any]) -> ToolResult:
+        command = str(args.get("command") or "")
+        if not command.strip():
+            return ToolResult("[error] empty command", is_error=True)
+        try:
+            argv = shlex.split(command)
+        except ValueError:
+            return ToolResult("[error] malformed command; could not parse", is_error=True)
+        if not argv:
+            return ToolResult("[error] empty command", is_error=True)
+        # Safety: only allow ls
+        cmd_name = Path(argv[0]).name
+        if cmd_name != "ls":
+            return ToolResult("[error] only `ls` is allowed for safety", is_error=True)
+        try:
+            result = subprocess.run(
+                argv,
+                cwd=str(access.workspace.root),
+                shell=False,
+                text=True,
+                capture_output=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired:
+            return ToolResult("[error] command timed out after 30 seconds", is_error=True)
+        parts = [f"[exit_code]\n{result.returncode}"]
+        if result.stdout:
+            parts.append(f"[stdout]\n{result.stdout}")
+        if result.stderr:
+            parts.append(f"[stderr]\n{result.stderr}")
+        return ToolResult("\n".join(parts), is_error=result.returncode != 0)
+
+    registry.register(
+        name="Bash",
+        description="Executes a bash command at the workspace root. Only `ls` is allowed for safety. Use this to verify directory contents (e.g. `ls verified_propositions/`) when Glob returns an empty or unexpected result.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The bash command to execute. Only `ls` is permitted."},
+            },
+            "required": ["command"],
+        },
+        handler=_run_bash,
     )
 
     return registry

@@ -10,7 +10,7 @@ Use `Review` to launch a research_reviewer subagent that surveys verified_propos
 
 A good orchestration loop is:
 1. If verified_propositions/ or knowledge/ contain many files, call `Review` to get a survey and file recommendations.
-2. Read the key files the reviewer flagged, plus any other files you need.
+2. Read the key files the reviewer flagged, plus any other files you need. Use `Bash ls <dir>` to confirm directory contents when Glob returns an empty or unexpected result (e.g., to distinguish an empty directory from a pattern mismatch).
 3. Spawn one or more workers with diverse hints.
 4. Wait for worker results.
 5. If a worker returns a useful verified proposition, decide which direction to explore next.

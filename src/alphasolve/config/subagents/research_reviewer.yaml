@@ -9,3 +9,4 @@ agent:
     - Read
     - Glob
     - Grep
+    - Bash

@@ -8,6 +8,7 @@ agent:
     - Grep
     - Glob
     - Read
+    - Bash
     - Agent
     - TaskOutput
     - Review
