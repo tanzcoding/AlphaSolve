@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
+from alphasolve.utils.event_logger import EventLogWriter, compose_event_sinks
 
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
@@ -20,6 +21,7 @@ from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_wo
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
+    from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .knowledge_digest import KnowledgeDigestQueue
 
@@ -186,6 +188,7 @@ class Worker:
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
         stop_event: threading.Event | None = None,
+        log_session: LogSession | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -204,6 +207,7 @@ class Worker:
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
         self.stop_event = stop_event
+        self._worker_log_sink = log_session.create_worker_sink(prop_hash) if log_session is not None else None
 
     def run(self) -> WorkerRunResult:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
@@ -214,76 +218,80 @@ class Worker:
             (self.worker_dir / "worker_hint.md").write_text(self.worker_hint, encoding="utf-8")
 
         try:
-            proposition_file = self._run_generator()
-            if self._should_stop():
-                return self._finish(
-                    "cancelled",
-                    "worker cancelled because another worker solved the problem",
-                    proposition_file=proposition_file,
-                )
-            if proposition_file is None:
-                return self._finish("rejected", "generator did not produce a proposition markdown file")
-
-            final_review_file: Path | None = None
-            last_review_text = ""
-            for workflow_index in range(1, self.max_verify_rounds + 1):
+            try:
+                proposition_file = self._run_generator()
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
                         "worker cancelled because another worker solved the problem",
                         proposition_file=proposition_file,
                     )
-                workflow_result = self._run_verifier_workflow(proposition_file, workflow_index=workflow_index)
-                last_review_text = workflow_result.review_text
-                final_review_file = workflow_result.review_file
-                if self._should_stop():
-                    return self._finish(
-                        "cancelled",
-                        "worker cancelled because another worker solved the problem",
-                        proposition_file=proposition_file,
-                    )
-                if workflow_result.passed:
-                    if self._should_stop():
-                        return self._finish(
-                            "cancelled",
-                            "worker cancelled because another worker solved the problem",
-                            proposition_file=proposition_file,
-                        )
-                    verified = self._copy_to_verified(proposition_file)
-                    solved_problem, theorem_check_text = self._run_theorem_checks(verified)
-                    theorem_check_file = None
-                    if solved_problem:
-                        theorem_check_file = self.worker_dir / "theorem_check.md"
-                        theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
-                    return self._finish(
-                        "verified",
-                        "Successfully produced a verified proposition. Statement: "
-                        + _extract_statement(proposition_file.read_text(encoding="utf-8")),
-                        proposition_file=proposition_file,
-                        verified_file=verified,
-                        review_file=final_review_file,
-                        theorem_check_file=theorem_check_file,
-                        solved_problem=solved_problem,
-                    )
-                if workflow_index < self.max_verify_rounds:
-                    self._run_reviser(proposition_file, workflow_result.review_text, workflow_index=workflow_index)
-                    if self._should_stop():
-                        return self._finish(
-                            "cancelled",
-                            "worker cancelled because another worker solved the problem",
-                            proposition_file=proposition_file,
-                        )
+                if proposition_file is None:
+                    return self._finish("rejected", "generator did not produce a proposition markdown file")
 
-            summary = "Failed to produce a verified proposition."
-            if proposition_file.exists():
-                summary += "\n\n" + proposition_file.read_text(encoding="utf-8")[:4000]
-            if last_review_text and (final_review_file is None or not final_review_file.exists()):
-                final_review_file = self._write_final_review(last_review_text)
-            if final_review_file is not None and final_review_file.exists():
-                summary += "\n\nFinal review:\n" + final_review_file.read_text(encoding="utf-8")[:4000]
-            return self._finish("rejected", summary, proposition_file=proposition_file, review_file=final_review_file)
-        except Exception as exc:
-            return self._finish("failed", str(exc))
+                final_review_file: Path | None = None
+                last_review_text = ""
+                for workflow_index in range(1, self.max_verify_rounds + 1):
+                    if self._should_stop():
+                        return self._finish(
+                            "cancelled",
+                            "worker cancelled because another worker solved the problem",
+                            proposition_file=proposition_file,
+                        )
+                    workflow_result = self._run_verifier_workflow(proposition_file, workflow_index=workflow_index)
+                    last_review_text = workflow_result.review_text
+                    final_review_file = workflow_result.review_file
+                    if self._should_stop():
+                        return self._finish(
+                            "cancelled",
+                            "worker cancelled because another worker solved the problem",
+                            proposition_file=proposition_file,
+                        )
+                    if workflow_result.passed:
+                        if self._should_stop():
+                            return self._finish(
+                                "cancelled",
+                                "worker cancelled because another worker solved the problem",
+                                proposition_file=proposition_file,
+                            )
+                        verified = self._copy_to_verified(proposition_file)
+                        solved_problem, theorem_check_text = self._run_theorem_checks(verified)
+                        theorem_check_file = None
+                        if solved_problem:
+                            theorem_check_file = self.worker_dir / "theorem_check.md"
+                            theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
+                        return self._finish(
+                            "verified",
+                            "Successfully produced a verified proposition. Statement: "
+                            + _extract_statement(proposition_file.read_text(encoding="utf-8")),
+                            proposition_file=proposition_file,
+                            verified_file=verified,
+                            review_file=final_review_file,
+                            theorem_check_file=theorem_check_file,
+                            solved_problem=solved_problem,
+                        )
+                    if workflow_index < self.max_verify_rounds:
+                        self._run_reviser(proposition_file, workflow_result.review_text, workflow_index=workflow_index)
+                        if self._should_stop():
+                            return self._finish(
+                                "cancelled",
+                                "worker cancelled because another worker solved the problem",
+                                proposition_file=proposition_file,
+                            )
+
+                summary = "Failed to produce a verified proposition."
+                if proposition_file.exists():
+                    summary += "\n\n" + proposition_file.read_text(encoding="utf-8")[:4000]
+                if last_review_text and (final_review_file is None or not final_review_file.exists()):
+                    final_review_file = self._write_final_review(last_review_text)
+                if final_review_file is not None and final_review_file.exists():
+                    summary += "\n\nFinal review:\n" + final_review_file.read_text(encoding="utf-8")[:4000]
+                return self._finish("rejected", summary, proposition_file=proposition_file, review_file=final_review_file)
+            except Exception as exc:
+                return self._finish("failed", str(exc))
+        finally:
+            if self._worker_log_sink is not None:
+                self._worker_log_sink.close()
 
     def _run_generator(self) -> Path | None:
         config = self.suite.agents["generator"]
@@ -717,7 +725,10 @@ class Worker:
         )
 
     def _event_sink(self, role: str):
-        return make_worker_event_sink(self.renderer, worker_id=self.worker_id, role=role)
+        return compose_event_sinks(
+            make_worker_event_sink(self.renderer, worker_id=self.worker_id, role=role),
+            self._worker_log_sink,
+        )
 
     def _generator_event_sink(self, digest_context: GeneratorDigestContext):
         worker_sink = self._event_sink("generator")

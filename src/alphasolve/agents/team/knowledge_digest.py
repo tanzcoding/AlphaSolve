@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from alphasolve.agents.general import GeneralAgentConfig
     from alphasolve.execution import ExecutionGateway
+    from alphasolve.utils.log_session import LogSession
     from .tools import ClientFactory, SubagentService
 
 
@@ -32,12 +33,14 @@ class KnowledgeDigestQueue:
         suite,
         client_factory: "ClientFactory",
         execution_gateway: "ExecutionGateway | None" = None,
+        log_session: "LogSession | None" = None,
     ) -> None:
         self.knowledge_dir = knowledge_dir
         self.workspace_dir = workspace_dir
         self.suite = suite
         self.client_factory = client_factory
         self.execution_gateway = execution_gateway
+        self.log_session = log_session
         self._queue: queue.Queue[DigestTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="knowledge-digest")
         self._started = False
@@ -129,12 +132,18 @@ class KnowledgeDigestQueue:
             "Append a one-line topic-based entry to `knowledge/log.md` when done."
         )
 
-        agent = GeneralPurposeAgent(
-            config=config,
-            client=self.client_factory(config),
-            tool_registry=registry,
-        )
-        agent.run(task_prompt)
+        digest_sink = self.log_session.create_digest_sink() if self.log_session is not None else None
+        try:
+            agent = GeneralPurposeAgent(
+                config=config,
+                client=self.client_factory(config),
+                tool_registry=registry,
+                event_sink=digest_sink,
+            )
+            agent.run(task_prompt)
+        finally:
+            if digest_sink is not None:
+                digest_sink.close()
         _update_entry_metadata(self.knowledge_dir)
 
 

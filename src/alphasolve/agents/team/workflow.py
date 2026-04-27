@@ -10,6 +10,7 @@ from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, OpenAIC
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
+from alphasolve.utils.log_session import LogSession
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer
 
 from .knowledge_digest import KnowledgeDigestQueue, init_knowledge_base
@@ -60,6 +61,7 @@ class AlphaSolve:
             renderer.update_orchestrator_phase("startup", status="running")
         try:
             self.layout.ensure()
+            log_session = LogSession(base_dir=str(self.layout.logs_dir))
             startup: dict[str, Any] = {
                 "project_root": str(self.layout.project_root),
                 "workspace": str(self.layout.workspace_dir),
@@ -116,6 +118,7 @@ class AlphaSolve:
                     suite=suite,
                     client_factory=client_factory,
                     execution_gateway=execution_gateway,
+                    log_session=log_session,
                 )
                 digest_queue.start()
 
@@ -140,6 +143,7 @@ class AlphaSolve:
                     renderer=renderer,
                     execution_gateway=execution_gateway,
                     digest_queue=digest_queue,
+                    log_session=log_session,
                 )
                 result = orchestrator.run()
                 all_worker_results.extend(result.worker_results)

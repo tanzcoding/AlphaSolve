@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import AgentRunError, GeneralPurposeAgent, Workspace
 from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
+from alphasolve.utils.event_logger import compose_event_sinks
 
 from .dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
@@ -18,6 +19,7 @@ from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_regi
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
+    from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .knowledge_digest import KnowledgeDigestQueue
 
@@ -46,6 +48,7 @@ class WorkerManager:
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
+        log_session: LogSession | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -60,6 +63,7 @@ class WorkerManager:
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
+        self.log_session = log_session
         self.stop_event = threading.Event()
         self.solution_path: Path | None = None
         self.solved_result: WorkerRunResult | None = None
@@ -91,6 +95,7 @@ class WorkerManager:
             execution_gateway=self.execution_gateway,
             digest_queue=self.digest_queue,
             stop_event=self.stop_event,
+            log_session=self.log_session,
         )
         worker_id = worker.worker_id
         if self.renderer is not None:
@@ -216,6 +221,7 @@ class Orchestrator:
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
+        log_session: LogSession | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -227,41 +233,53 @@ class Orchestrator:
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
+        self.log_session = log_session
 
     def run(self) -> OrchestratorRunResult:
         if self.renderer is not None:
             self.renderer.update_pool(verified_count=self._verified_count())
             self.renderer.update_orchestrator_phase("starting", status="running")
-        manager = WorkerManager(
-            layout=self.layout,
-            suite=self.suite,
-            client_factory=self.client_factory,
-            max_workers=self.max_workers,
-            max_verify_rounds=self.max_verify_rounds,
-            verifier_scaling_factor=self.verifier_scaling_factor,
-            subagent_max_depth=self.subagent_max_depth,
-            renderer=self.renderer,
-            execution_gateway=self.execution_gateway,
-            digest_queue=self.digest_queue,
-        )
-        result = None
-        error_final_answer = ""
-        error_trace: list[dict[str, Any]] = []
+        orchestrator_log_sink = None
+        if self.log_session is not None:
+            orchestrator_log_sink = self.log_session.create_orchestrator_sink()
         try:
-            registry = self._build_registry(manager)
-            config = self.suite.agents["orchestrator"]
-            agent = GeneralPurposeAgent(
-                config=config,
-                client=self.client_factory(config),
-                tool_registry=registry,
-                event_sink=make_orchestrator_event_sink(self.renderer),
+            manager = WorkerManager(
+                layout=self.layout,
+                suite=self.suite,
+                client_factory=self.client_factory,
+                max_workers=self.max_workers,
+                max_verify_rounds=self.max_verify_rounds,
+                verifier_scaling_factor=self.verifier_scaling_factor,
+                subagent_max_depth=self.subagent_max_depth,
+                renderer=self.renderer,
+                execution_gateway=self.execution_gateway,
+                digest_queue=self.digest_queue,
+                log_session=self.log_session,
             )
-            result = agent.run(self._task())
-        except AgentRunError as exc:
-            error_final_answer = str(exc)
-            error_trace = exc.trace
+            result = None
+            error_final_answer = ""
+            error_trace: list[dict[str, Any]] = []
+            try:
+                registry = self._build_registry(manager)
+                config = self.suite.agents["orchestrator"]
+                agent = GeneralPurposeAgent(
+                    config=config,
+                    client=self.client_factory(config),
+                    tool_registry=registry,
+                    event_sink=compose_event_sinks(
+                        make_orchestrator_event_sink(self.renderer),
+                        orchestrator_log_sink,
+                    ),
+                )
+                result = agent.run(self._task())
+            except AgentRunError as exc:
+                error_final_answer = str(exc)
+                error_trace = exc.trace
+            finally:
+                manager.close()
         finally:
-            manager.close()
+            if orchestrator_log_sink is not None:
+                orchestrator_log_sink.close()
 
         if result is None:
             return OrchestratorRunResult(
