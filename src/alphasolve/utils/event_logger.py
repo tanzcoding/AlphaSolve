@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -76,72 +77,70 @@ class EventLogWriter:
     # -- human-readable event handlers ---------------------------------------
 
     def _handle_run_start(self, event: dict[str, Any]) -> None:
-        import time as _time
-        self._agent_start = _time.time()
+        self._agent_start = time.time()
         self._phase = str(event.get("agent") or "")
         self._emit_header(self._phase)
         tools = event.get("enabled_tools") or event.get("tools") or []
         if tools:
-            tool_names = ", ".join(tools)
-            self._log.write(f"  tools: {tool_names}\n\n")
+            self._log.write(f"  tools: {', '.join(tools)}\n\n")
         else:
             self._log.write("\n")
+        self._log.flush()
 
     def _handle_model_request(self, event: dict[str, Any]) -> None:
-        import time as _time
-        self._turn_start = _time.time()
+        self._turn_start = time.time()
         self._turn = int(event.get("turn") or self._turn + 1)
 
     def _handle_model_retry(self, event: dict[str, Any]) -> None:
         attempt = event.get("attempt", "?")
         error = str(event.get("error") or event.get("error_detail") or "")
         self._write_indented(f"[retry] attempt {attempt}: {error}\n")
+        self._log.flush()
 
     def _handle_thinking(self, event: dict[str, Any]) -> None:
         content = str(event.get("content") or "")
         if not content.strip():
             return
         self._write_section("thinking", content, char_limit=_TRUNCATE_THINKING_CHARS)
+        self._log.flush()
 
     def _handle_assistant_message(self, event: dict[str, Any]) -> None:
         content = str(event.get("content") or "")
         tool_count = int(event.get("tool_call_count") or 0)
-        # Only log free-text assistant content when there are no tool calls
-        # (pure text response) — otherwise the thinking already covers intent.
         if not tool_count and content.strip():
             self._write_section("message", content, char_limit=_TRUNCATE_CONTENT_CHARS)
+            self._log.flush()
 
     def _handle_tool_call(self, event: dict[str, Any]) -> None:
-        import time as _time
         name = str(event.get("name") or "?")
         args = event.get("arguments")
         raw = event.get("raw_arguments")
         tool_id = event.get("tool_call_id") or name
-        self._tool_times[tool_id] = _time.time()
+        self._tool_times[tool_id] = time.time()
         self._log.write(f"  [tool] {name}\n")
         arg_str = _format_args(args, raw)
         if arg_str:
             self._log.write(f"    args: {arg_str}\n")
+        self._log.flush()
 
     def _handle_tool_result(self, event: dict[str, Any]) -> None:
-        import time as _time
         name = str(event.get("name") or "?")
         tool_id = event.get("tool_call_id") or name
         elapsed = ""
         started = self._tool_times.pop(tool_id, None)
         if started is not None:
-            elapsed = f"{_time.time() - started:.1f}s, "
+            elapsed = f"{time.time() - started:.1f}s, "
         is_error = bool(event.get("is_error"))
         content = str(event.get("content") or "")
         tag = "error" if is_error else "result"
         short = _truncate_result(content)
         self._log.write(f"    {tag} ({elapsed}{len(content)} bytes): {short}\n\n")
+        self._log.flush()
 
     def _handle_run_finish(self, event: dict[str, Any]) -> None:
-        import time as _time
         elapsed_str = ""
         if self._agent_start is not None:
-            elapsed_str = f" · {_time.time() - self._agent_start:.1f}s"
+            elapsed_str = f" · {time.time() - self._agent_start:.1f}s"
         answer = str(event.get("final_answer") or "")
         reason = event.get("reason")
         self._log.write(f"  [done]{elapsed_str}\n")
@@ -152,6 +151,7 @@ class EventLogWriter:
         self._log.write("\n")
         self._agent_start = None
         self._phase = ""
+        self._log.flush()
 
     def _handle_run_error(self, event: dict[str, Any]) -> None:
         error_type = str(event.get("error_type") or "Error")
@@ -160,6 +160,7 @@ class EventLogWriter:
         if detail:
             self._write_indented_block("", detail, char_limit=_TRUNCATE_CONTENT_CHARS)
         self._log.write("\n")
+        self._log.flush()
 
     # -- helpers --------------------------------------------------------------
 
