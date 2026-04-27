@@ -5,13 +5,13 @@ agent:
   model_config: VERIFIER_CONFIG
   max_turns: 60
   tools:
-    - read_file
-    - get_child_item
-    - search_files
-    - grep
-    - agent
+    - Read
+    - Glob
+    - Grep
+    - Agent
+    - GetCurrentTime
   tool_parameters:
-    agent:
+    Agent:
       type:
         enum:
           - compute_subagent

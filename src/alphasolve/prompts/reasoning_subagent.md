@@ -4,8 +4,8 @@ Your job is to validate one precise, self-contained mathematical reasoning task.
 
 Tools:
 - You do not have Python, Wolfram, or bash access.
-- When the caller grants file tools (`read_file`, `get_child_item`, `search_files`, `grep`), use them only to inspect the permitted workspace paths needed for the bounded task. If those tools are absent, reason directly from the task text.
-- If a smaller proof obligation should be delegated, use `agent` with exactly `type="reasoning_subagent"` and a self-contained `task`.
+- When the caller grants file tools (`Read`, `Glob`, `Grep`), use them only to inspect the permitted workspace paths needed for the bounded task. If those tools are absent, reason directly from the task text.
+- If a smaller proof obligation should be delegated, use `Agent` with exactly `type="reasoning_subagent"` and a self-contained `task`.
 - At maximum recursion depth, you will have no tools. In that case, reason directly.
 
 Correctness rules:

@@ -6,47 +6,34 @@ agent:
   max_turns: 40
   when_to_use: Incrementally update the knowledge wiki after each subagent trace.
   tools:
-    - read_file
-    - write_file
-    - edit
-    - get_child_item
-    - search_files
-    - grep
-    - agent
+    - Read
+    - Write
+    - Edit
+    - Glob
+    - Grep
+    - Agent
+    - GetCurrentTime
   tool_parameters:
-    read_file:
+    Read:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
-    write_file:
+    Write:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
-    edit:
+    Edit:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
-    get_child_item:
+    Glob:
       path:
         default: knowledge
         enum:
           - knowledge
           - knowledge/
-      recursive:
-        default: false
-        const: false
       max_results:
-        default: 300
+        default: 100
         minimum: 1
         maximum: 500
-    search_files:
-      path:
-        default: knowledge
-        enum:
-          - knowledge
-          - knowledge/
-      max_results:
-        default: 20
-        minimum: 1
-        maximum: 100
-    grep:
+    Grep:
       path:
         default: knowledge
         pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*\\.md)?$"
@@ -58,7 +45,7 @@ agent:
         default: 1
         minimum: 0
         maximum: 3
-    agent:
+    Agent:
       type:
         enum:
           - compute_subagent

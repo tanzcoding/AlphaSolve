@@ -5,18 +5,18 @@ agent:
   model_config: ORCHESTRATOR_CONFIG
   max_turns: 80
   tools:
-    - grep
-    - search_files
-    - get_child_item
-    - read_file
-    - spawn_worker
-    - wait
+    - Grep
+    - Glob
+    - Read
+    - Agent
+    - TaskOutput
+    - GetCurrentTime
   tool_parameters:
-    spawn_worker:
+    Agent:
       hint:
         type: string
         maxLength: 4000
-    wait:
+    TaskOutput:
       seconds:
         type: number
         minimum: 0

@@ -5,14 +5,14 @@ agent:
   model_config: REVISER_CONFIG
   max_turns: 80
   tools:
-    - read_file
-    - get_child_item
-    - search_files
-    - grep
-    - write_file
-    - agent
+    - Read
+    - Glob
+    - Grep
+    - Write
+    - Agent
+    - GetCurrentTime
   tool_parameters:
-    agent:
+    Agent:
       type:
         enum:
           - compute_subagent

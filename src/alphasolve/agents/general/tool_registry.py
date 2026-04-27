@@ -211,13 +211,13 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
     registry = ToolRegistry()
 
     registry.register(
-        name="read_file",
-        description="Read a UTF-8 text file inside the workspace.",
+        name="Read",
+        description="Reads a file from the local filesystem inside the workspace.",
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "max_chars": {"type": "integer", "default": 20000},
+                "path": {"type": "string", "description": "The path to the file to read."},
+                "max_chars": {"type": "integer", "default": 20000, "description": "Maximum characters to read."},
             },
             "required": ["path"],
         },
@@ -225,13 +225,13 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
     )
 
     registry.register(
-        name="write_file",
-        description="Write a UTF-8 text file inside the workspace, creating parent directories if needed.",
+        name="Write",
+        description="Writes a file to the local filesystem inside the workspace, creating parent directories if needed.",
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "content": {"type": "string"},
+                "path": {"type": "string", "description": "The path to the file to write."},
+                "content": {"type": "string", "description": "The content to write to the file."},
             },
             "required": ["path", "content"],
         },
@@ -239,27 +239,14 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
     )
 
     registry.register(
-        name="list_dir",
-        description="List files and directories inside a workspace directory.",
+        name="Glob",
+        description="Fast file pattern matching tool. Supports glob patterns like ``**/*.py`` or ``*`` to list directory contents.",
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "default": "."},
-            },
-            "required": [],
-        },
-        handler=lambda args: ToolResult(json.dumps(workspace.list_dir(args.get("path", ".")), ensure_ascii=False)),
-    )
-
-    registry.register(
-        name="search_files",
-        description="Find files by glob pattern inside the workspace.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string", "default": "."},
-                "max_results": {"type": "integer", "default": 50},
+                "pattern": {"type": "string", "description": "The glob pattern to match files against."},
+                "path": {"type": "string", "default": ".", "description": "The directory to search in."},
+                "max_results": {"type": "integer", "default": 100, "description": "Maximum results to return."},
             },
             "required": ["pattern"],
         },
@@ -268,7 +255,7 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
                 workspace.search_files(
                     args["pattern"],
                     path=args.get("path", "."),
-                    max_results=int(args.get("max_results", 50)),
+                    max_results=int(args.get("max_results", 100)),
                 ),
                 ensure_ascii=False,
             )
@@ -300,8 +287,8 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
         return ToolResult("\n".join(parts), is_error=result.returncode != 0)
 
     registry.register(
-        name="bash",
-        description="Run a shell command with the workspace root as the working directory.",
+        name="Bash",
+        description="Executes a given bash command with the workspace root as the working directory.",
         parameters={
             "type": "object",
             "properties": {

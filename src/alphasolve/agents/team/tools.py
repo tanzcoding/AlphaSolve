@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -98,36 +99,29 @@ class RoleWorkspaceAccess:
                 break
         return out
 
-    def search_files(self, fragment: str, *, path: str = ".", max_results: int = 50) -> list[str]:
-        if not fragment:
-            raise ValueError("fragment must not be empty")
-        root = self.workspace.resolve(path)
-        self._ensure_under_read_root(root)
-        self._ensure_not_other_worker_path(root)
-        if not root.is_dir():
+    def glob(self, pattern: str, *, path: str = ".", max_results: int = 100) -> list[str]:
+        """Fast file pattern matching, e.g. ``*.md`` or ``**/*.py``."""
+        target = self.workspace.resolve(path)
+        self._ensure_under_read_root(target)
+        self._ensure_not_other_worker_path(target)
+        if not target.is_dir():
             raise ValueError(f"not a directory: {path}")
 
-        needle = fragment.lower()
-        matches: list[str] = []
-        for current, dirs, files in os.walk(root):
-            current_path = Path(current)
-            dirs[:] = [
-                name
-                for name in dirs
-                if name not in {".git", "__pycache__", ".venv", "node_modules"}
-                and not self._is_other_worker_path(current_path / name)
-            ]
-            for filename in files:
-                file_path = current_path / filename
-                if self._is_other_worker_path(file_path):
-                    continue
-                if self._is_denied_read_file(file_path):
-                    continue
-                if needle in filename.lower() and self._extension_allowed(file_path):
-                    matches.append(self._rel(file_path))
-                    if len(matches) >= max_results:
-                        return matches
-        return matches
+        out: list[str] = []
+        recursive = "**" in pattern
+        match_func = target.rglob if recursive else target.glob
+        for child_path in sorted(match_func(pattern)):
+            if self._is_other_worker_path(child_path):
+                continue
+            if self._is_denied_read_file(child_path):
+                continue
+            if child_path.is_file() and self._extension_allowed(child_path):
+                out.append(self._rel(child_path))
+            elif child_path.is_dir() and not child_path.name.startswith("."):
+                out.append(self._rel(child_path) + "/")
+            if len(out) >= max_results:
+                break
+        return out
 
     def grep(
         self,
@@ -272,13 +266,13 @@ def build_workspace_tool_registry(
     registry = ToolRegistry()
 
     registry.register(
-        name="read_file",
-        description="Read a .md, .py, or .lean file inside the permitted workspace.",
+        name="Read",
+        description="Reads a file from the local filesystem. You can access any file directly by using this tool.\n\nUsage:\n- You can optionally specify a max_chars (especially handy for long files), but it's recommended to read the whole file.",
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string"},
-                "max_chars": {"type": "integer", "default": access.max_read_chars},
+                "path": {"type": "string", "description": "The path to the file to read (must be absolute or workspace-relative)."},
+                "max_chars": {"type": "integer", "default": access.max_read_chars, "description": "Maximum characters to read."},
             },
             "required": ["path"],
         },
@@ -288,30 +282,32 @@ def build_workspace_tool_registry(
     )
     if allow_write:
         registry.register(
-            name="write_file",
-            description="Write a UTF-8 text file in the permitted write area.",
+            name="Write",
+            description="Writes a file to the local filesystem.\n\nUsage:\n- This tool will overwrite the existing file if there is one at the provided path.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
+                    "path": {"type": "string", "description": "The path to the file to write."},
+                    "content": {"type": "string", "description": "The content to write to the file."},
                 },
                 "required": ["path", "content"],
             },
             handler=lambda args: ToolResult(json.dumps({"path": access.write_text(args["path"], args["content"])}, ensure_ascii=False)),
         )
         registry.register(
-            name="edit",
+            name="Edit",
             description=(
-                "Replace an exact substring in a file. "
-                "old_str must match exactly once; use write_file for full rewrites."
+                "Performs exact string replacements in files.\n\n"
+                "Usage:\n"
+                "- The edit will FAIL if old_string is not unique in the file.\n"
+                "- Provide a larger string with more surrounding context to make it unique."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string"},
-                    "old_str": {"type": "string"},
-                    "new_str": {"type": "string"},
+                    "path": {"type": "string", "description": "The path to the file to modify."},
+                    "old_str": {"type": "string", "description": "The text to replace."},
+                    "new_str": {"type": "string", "description": "The text to replace it with (must be different from old_string)."},
                 },
                 "required": ["path", "old_str", "new_str"],
             },
@@ -321,62 +317,39 @@ def build_workspace_tool_registry(
         )
 
     registry.register(
-        name="get_child_item",
-        description="List files and directories, similar to PowerShell Get-ChildItem.",
+        name="Glob",
+        description="Fast file pattern matching tool that works with any codebase size. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.",
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "default": "."},
-                "recursive": {"type": "boolean", "default": False},
-                "max_results": {"type": "integer", "default": 200},
+                "pattern": {"type": "string", "description": "The glob pattern to match files against."},
+                "path": {"type": "string", "description": "The directory to search in. Defaults to workspace root.", "default": "."},
+                "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 100},
             },
-            "required": [],
+            "required": ["pattern"],
         },
         handler=lambda args: ToolResult(
             json.dumps(
-                access.list_dir(
-                    args.get("path", "."),
-                    recursive=bool(args.get("recursive", False)),
-                    max_results=int(args.get("max_results", 200)),
-                ),
-                ensure_ascii=False,
-            )
-        ),
-    )
-    registry.register(
-        name="search_files",
-        description="Find permitted .md, .py, or .lean files whose filename contains a text fragment.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "fragment": {"type": "string"},
-                "path": {"type": "string", "default": "."},
-                "max_results": {"type": "integer", "default": 50},
-            },
-            "required": ["fragment"],
-        },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                access.search_files(
-                    args["fragment"],
+                access.glob(
+                    args["pattern"],
                     path=args.get("path", "."),
-                    max_results=int(args.get("max_results", 50)),
+                    max_results=int(args.get("max_results", 100)),
                 ),
                 ensure_ascii=False,
             )
         ),
     )
     registry.register(
-        name="grep",
-        description="Search permitted .md, .py, or .lean files and return matching line numbers.",
+        name="Grep",
+        description="A powerful search tool built on ripgrep. Search specific text (in the pattern parameter) under a specific directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches. Whenever possible, use this instead of terminal grep/rg. This tool is faster and respects .gitignore.\n- Supports full regex syntax and file type filtering.",
         parameters={
             "type": "object",
             "properties": {
-                "pattern": {"type": "string"},
-                "path": {"type": "string", "default": "."},
-                "regex": {"type": "boolean", "default": False},
-                "max_results": {"type": "integer", "default": 50},
-                "context_lines": {"type": "integer", "default": 0},
+                "pattern": {"type": "string", "description": "The regular expression pattern to search for in file contents."},
+                "path": {"type": "string", "description": "File or directory to search in (rg PATH). Defaults to current working directory.", "default": "."},
+                "regex": {"type": "boolean", "description": "Treat pattern as a regex (default: substring match).", "default": False},
+                "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 50},
+                "context_lines": {"type": "integer", "description": "Number of context lines around each match.", "default": 0},
             },
             "required": ["pattern"],
         },
@@ -397,18 +370,31 @@ def build_workspace_tool_registry(
     if subagent_service is not None:
         subagent_types = subagent_service.available_types()
         registry.register(
-            name="agent",
-            description="Call a configured mathematical subagent by type with a self-contained task.",
+            name="Agent",
+            description="Launch a new agent to handle complex, multi-step tasks autonomously.\n\nThe Agent tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.\n\nAvailable agent types and their purposes:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- numerical_experiment_subagent: Bounded exploration, branch checks, and local numerical experiments.\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "type": {"type": "string", "enum": subagent_types},
-                    "task": {"type": "string"},
+                    "type": {"type": "string", "enum": subagent_types, "description": "The type of specialized agent to use for this task."},
+                    "task": {"type": "string", "description": "The task for the agent to perform."},
                 },
                 "required": ["type", "task"],
             },
             handler=lambda args: subagent_service.call_tool(args),
         )
+
+    registry.register(
+        name="GetCurrentTime",
+        description="Returns the current date and time in ISO 8601 format.",
+        parameters={
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+        handler=lambda _args: ToolResult(
+            json.dumps({"datetime": datetime.datetime.now().isoformat(timespec="seconds")}, ensure_ascii=False)
+        ),
+    )
 
     return registry
 
@@ -460,23 +446,23 @@ class SubagentService:
         registry = self._build_subagent_registry(depth=depth, session_id=session_id)
         enabled_tools = list(config.tools)
         if self.file_access_factory is not None:
-            for name in ("read_file", "get_child_item", "search_files", "grep"):
+            for name in ("Read", "Glob", "Grep"):
                 if name not in enabled_tools:
                     enabled_tools.append(name)
             if self.file_allow_write:
-                for name in ("write_file", "edit"):
+                for name in ("Write", "Edit"):
                     if name not in enabled_tools:
                         enabled_tools.append(name)
             else:
-                enabled_tools = [name for name in enabled_tools if name not in {"write_file", "edit"}]
+                enabled_tools = [name for name in enabled_tools if name not in {"Write", "Edit"}]
         else:
             enabled_tools = [
                 name
                 for name in enabled_tools
-                if name not in {"read_file", "write_file", "edit", "get_child_item", "search_files", "grep"}
+                if name not in {"Read", "Write", "Edit", "Glob", "Grep"}
             ]
-        if depth >= self.max_depth and "agent" in enabled_tools:
-            enabled_tools = [name for name in enabled_tools if name != "agent"]
+        if depth >= self.max_depth and "Agent" in enabled_tools:
+            enabled_tools = [name for name in enabled_tools if name != "Agent"]
         if enabled_tools != list(config.tools):
             config = GeneralAgentConfig(
                 name=config.name,
@@ -533,11 +519,13 @@ class SubagentService:
         wolfram_session = {"session": None}
 
         registry.register(
-            name="run_python",
-            description="Execute Python code in a persistent in-memory environment without filesystem access.",
+            name="Bash",
+            description="Executes Python code in a persistent in-memory environment without filesystem access.\n\nUsage:\n- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n- The Python environment persists across calls within the same session.\n- No filesystem access is permitted; use file tools separately if needed.",
             parameters={
                 "type": "object",
-                "properties": {"code": {"type": "string"}},
+                "properties": {
+                    "code": {"type": "string", "description": "The Python code to execute."},
+                },
                 "required": ["code"],
             },
             handler=lambda args: _python_tool(
@@ -548,11 +536,13 @@ class SubagentService:
             ),
         )
         registry.register(
-            name="run_wolfram",
-            description="Execute Wolfram Language code in a short-lived Wolfram session.",
+            name="RunWolfram",
+            description="Execute Wolfram Language code in a short-lived Wolfram session when Wolfram is available.",
             parameters={
                 "type": "object",
-                "properties": {"code": {"type": "string"}},
+                "properties": {
+                    "code": {"type": "string", "description": "The Wolfram Language code to execute."},
+                },
                 "required": ["code"],
             },
             handler=lambda args: _wolfram_tool(
@@ -574,13 +564,13 @@ class SubagentService:
                 )
         if depth < self.max_depth:
             registry.register(
-                name="agent",
-                description="Call another configured subagent. Recursive depth is bounded.",
+                name="Agent",
+                description="Launch a new agent to handle complex, multi-step tasks autonomously. Recursive depth is bounded.",
                 parameters={
                     "type": "object",
                     "properties": {
-                        "type": {"type": "string", "enum": self.available_types()},
-                        "task": {"type": "string"},
+                        "type": {"type": "string", "enum": self.available_types(), "description": "The type of specialized agent to use."},
+                        "task": {"type": "string", "description": "The task for the agent to perform."},
                     },
                     "required": ["type", "task"],
                 },

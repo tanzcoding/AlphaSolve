@@ -754,7 +754,7 @@ class Worker:
 
     def _verifier_attempt_config(self, config_name: str) -> GeneralAgentConfig:
         config = self.suite.agents[config_name]
-        tools = [name for name in config.tools if name not in {"write_file", "edit"}]
+        tools = [name for name in config.tools if name not in {"Write", "Edit"}]
         if tools == config.tools:
             return config
         return replace(config, tools=tools)

@@ -6,13 +6,13 @@ agent:
   max_turns: 40
   when_to_use: Bounded proof and mathematical reasoning obligations.
   tools:
-    - agent
-    - read_file
-    - get_child_item
-    - search_files
-    - grep
+    - Agent
+    - Read
+    - Glob
+    - Grep
+    - GetCurrentTime
   tool_parameters:
-    agent:
+    Agent:
       type:
         enum:
           - reasoning_subagent

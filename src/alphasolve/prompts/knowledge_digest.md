@@ -49,20 +49,20 @@ If an existing entry still has older frontmatter such as `sources`, do not add s
 
 ## Required Workflow
 
-1. First call `get_child_item` on `knowledge/` to see the current entry files. Do this before deciding whether any new file is needed.
+1. First call `Glob` on `knowledge/` to see the current entry files. Do this before deciding whether any new file is needed.
 2. Read `knowledge/index.md` to understand the current entry map.
 3. Analyze the new trace segment and extract a short list of concrete mathematical keywords: objects, estimates, norms, decompositions, cancellations, inequalities, failure patterns, named methods, and distinctive formula fragments.
 4. Before creating any new entry, search for candidate existing entries:
-   - Use `search_files` on filename-style keywords.
-   - Use `grep` on mathematical phrases, theorem names, and distinctive claims.
+   - Use `Glob` on filename-style keywords.
+   - Use `Grep` on mathematical phrases, theorem names, and distinctive claims.
    - Read the most relevant candidate entries, not just their index lines.
 5. Decide where the content belongs:
    - Update an existing entry when the topic is already covered.
    - Create a new entry only after the directory listing plus keyword searches show that no suitable existing entry covers the topic.
    - If several entries overlap, add a short cross-reference instead of duplicating a long explanation.
 6. Edit carefully:
-   - Prefer `edit` for targeted updates.
-   - Use `write_file` only for genuinely new `.md` entries or a deliberate full rewrite of a small file.
+   - Prefer `Edit` for targeted updates.
+   - Use `Write` only for genuinely new `.md` entries or a deliberate full rewrite of a small file.
    - Keep `knowledge/index.md` compact. Do not turn one index line into a chronological history of every verification or revision.
 7. Append one line to `knowledge/log.md` in this format:
    `- [<timestamp>] <topic>: <one-sentence summary of the mathematical update>`

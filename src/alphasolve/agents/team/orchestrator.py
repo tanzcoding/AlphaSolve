@@ -281,20 +281,20 @@ class Orchestrator:
         access = RoleWorkspaceAccess(workspace=Workspace(self.layout.workspace_dir))
         registry = build_workspace_tool_registry(access, allow_write=False)
         registry.register(
-            name="spawn_worker",
-            description="Spawn one worker with an optional orchestrator hint. This call returns immediately.",
+            name="Agent",
+            description="Spawn one worker with an optional orchestrator hint. This call returns immediately. The worker attempts to prove a proposition and verify it.",
             parameters={
                 "type": "object",
                 "properties": {
-                    "hint": {"type": "string"},
+                    "hint": {"type": "string", "description": "A targeted hint suggesting a direction, method, branch, or local target for this worker."},
                 },
                 "required": [],
             },
             handler=lambda args: self._spawn_tool(manager, args),
         )
         registry.register(
-            name="wait",
-            description="Wait until any one active worker finishes, returning its lifecycle result.",
+            name="TaskOutput",
+            description="Wait until any one active worker finishes, returning its lifecycle result. Blocks until a worker completes or timeout is reached.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -357,13 +357,13 @@ class Orchestrator:
                 "1. Read all files in `verified_propositions/` to assess what has been rigorously proved.\n"
                 "2. Read `knowledge/log.md` for exploratory insights from past workers.\n"
                 "3. Identify the most valuable next proposition: what single result would most advance the proof?\n"
-                "4. Spawn workers with specific, well-motivated hints based on your analysis.\n"
-                "5. Call `wait` to block until a worker finishes, then read its output and repeat.\n\n"
-                "Use `wait` only to receive worker results — it blocks until one worker's lifecycle ends. "
+                "4. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
+                "5. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
+                "Use `TaskOutput` only to receive worker results — it blocks until one worker's lifecycle ends. "
                 "It may return `timed_out: true` if no worker finishes within the requested timeout; if repeated "
                 "timeouts show no progress, report the stall so the outer Ralph loop can restart orchestration.\n\n"
                 "You may issue multiple tool calls in a single turn: for example, read several proposition files "
-                "in parallel, or spawn multiple workers at once with distinct hints targeting different "
+                "in parallel, or call `Agent` multiple times at once with distinct hints targeting different "
                 "sub-problems. Avoid spawning workers with redundant or near-identical hints."
             ),
             f"Maximum concurrent workers: {self.max_workers}",

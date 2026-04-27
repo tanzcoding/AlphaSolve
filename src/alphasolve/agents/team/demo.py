@@ -47,7 +47,7 @@ class DemoChatClient:
                         "id": "spawn_demo_worker",
                         "type": "function",
                         "function": {
-                            "name": "spawn_worker",
+                            "name": "Agent",
                             "arguments": json.dumps({"hint": "Produce a small self-contained demo proposition."}),
                         },
                     }
@@ -62,7 +62,7 @@ class DemoChatClient:
                         "id": "wait_demo_worker",
                         "type": "function",
                         "function": {
-                            "name": "wait",
+                            "name": "TaskOutput",
                             "arguments": json.dumps({"seconds": 5}),
                         },
                     }
@@ -84,7 +84,7 @@ class DemoChatClient:
                         "id": "write_demo_proposition",
                         "type": "function",
                         "function": {
-                            "name": "write_file",
+                            "name": "Write",
                             "arguments": json.dumps(
                                 {
                                     "path": f"{worker_dir}/proposition.md",
