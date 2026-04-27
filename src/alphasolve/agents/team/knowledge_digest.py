@@ -78,6 +78,7 @@ class KnowledgeDigestQueue:
 
         access = RoleWorkspaceAccess(
             workspace=_make_workspace(self.workspace_dir),
+            read_root_rel="knowledge",
             write_root_rel="knowledge",
         )
         subagent_svc = SubagentService(
