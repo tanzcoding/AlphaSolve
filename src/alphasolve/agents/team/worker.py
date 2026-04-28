@@ -376,11 +376,14 @@ class Worker:
         config = self._verifier_attempt_config(config_name)
         self._set_phase(role, status="thinking", model=self._model_name(config))
         all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
+        deny_read_rels = (all_verifier_ws_rel,)
+        if config_name == "verifier_citation":
+            deny_read_rels = ("knowledge", *deny_read_rels)
         access = RoleWorkspaceAccess(
             workspace=self.workspace,
             worker_rel=self.worker_rel,
             deny_other_unverified=True,
-            deny_read_rel=all_verifier_ws_rel,
+            deny_read_rels=deny_read_rels,
             deny_read_file_names=("review.md",),
         )
         subagents = SubagentService(
@@ -395,7 +398,7 @@ class Worker:
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
                 deny_other_unverified=True,
-                deny_read_rel=all_verifier_ws_rel,
+                deny_read_rels=deny_read_rels,
                 deny_read_file_names=("review.md",),
             ),
             digest_queue=self.digest_queue,
@@ -663,14 +666,28 @@ class Worker:
         config_name: str,
     ) -> str:
         rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
+        if config_name == "verifier_citation":
+            review_instruction = (
+                "Read the candidate proposition in `proposition.md` and perform only the citation/reference audit. "
+                "Your final answer must include `Verdict: pass` or `Verdict: fail`. "
+                "Check every `\\ref{...}` and every textual dependency claim: each valid citation must refer to an existing "
+                "file in `verified_propositions` by filename without the `.md` extension. The proposition must not cite, "
+                "depend on, or present as established any proposition from `knowledge/`."
+            )
+        else:
+            review_instruction = (
+                "Read the candidate proposition in `proposition.md` and write a rigorous review of the statement and proof. "
+                "Your final answer must include `Verdict: pass` or `Verdict: fail`. "
+                "Focus on mathematical correctness, completeness, hidden assumptions, and logical rigor. "
+                "A separate first verifier attempt audits `\\ref{...}` targets and `knowledge/` misuse."
+            )
         return (
             "# Problem\n"
             + self.layout.read_problem()
             + "\n\n# Candidate Proposition File\n"
             + rel
-            + "\n\nRead the candidate proposition in `proposition.md` and write a rigorous review of the proof. Your final answer must include `Verdict: pass` "
-            "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified proposition "
-            "filename without the `.md` extension. "
+            + "\n\n"
+            + review_instruction
             + f"\n\nVerifier workflow: {workflow_index}\n"
             + f"Independent verification attempt: {attempt_index} of {attempt_total}\n"
             + f"Verifier config: {config_name}"

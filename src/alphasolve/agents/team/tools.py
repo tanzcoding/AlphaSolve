@@ -35,6 +35,7 @@ class RoleWorkspaceAccess:
     read_root_rel: str | None = None
     write_root_rel: str | None = None
     deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
+    deny_read_rels: tuple[str, ...] = ()
     deny_read_file_names: tuple[str, ...] = ()
     exact_write_rel: str | None = None
     single_proposition_file: bool = False
@@ -252,9 +253,9 @@ class RoleWorkspaceAccess:
     def _ensure_under_read_root(self, path: Path) -> None:
         if self.read_root_rel is not None:
             self._ensure_under_root(path, self.read_root_rel, kind="read")
-        if self.deny_read_rel is not None:
-            if self._is_denied_read_path(path):
-                raise ValueError(f"read access to {self.deny_read_rel} is denied for this agent")
+        for deny_rel in self._denied_read_roots():
+            if self._is_under_rel(path, deny_rel):
+                raise ValueError(f"read access to {deny_rel} is denied for this agent")
 
     def _is_other_worker_path(self, path: Path) -> bool:
         if not self.deny_other_unverified:
@@ -269,13 +270,20 @@ class RoleWorkspaceAccess:
         return not (rel == worker_rel or rel.startswith(worker_rel + "/") or rel == "unverified_propositions")
 
     def _is_denied_read_path(self, path: Path) -> bool:
-        if self.deny_read_rel is None:
-            return False
-        deny_root = self.workspace.resolve(self.deny_read_rel)
-        return path == deny_root or deny_root in path.parents
+        return any(self._is_under_rel(path, deny_rel) for deny_rel in self._denied_read_roots())
 
     def _is_denied_read_file(self, path: Path) -> bool:
         return path.is_file() and path.name in set(self.deny_read_file_names)
+
+    def _denied_read_roots(self) -> tuple[str, ...]:
+        roots = list(self.deny_read_rels)
+        if self.deny_read_rel is not None:
+            roots.append(self.deny_read_rel)
+        return tuple(root for root in roots if root)
+
+    def _is_under_rel(self, path: Path, root_rel: str) -> bool:
+        root = self.workspace.resolve(root_rel)
+        return path == root or root in path.parents
 
 
 def build_workspace_tool_registry(

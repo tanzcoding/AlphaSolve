@@ -10,6 +10,7 @@ Rules:
 - The file must include `## Statement` and `## Proof`.
 - The statement must be a pure mathematical statement without a proposition number.
 - The statement and proof may cite previous verified propositions using `\ref{filename-without-extension}`. For example, cite `verified_propositions/coercive-energy-estimate.md` as `\ref{coercive-energy-estimate}`.
+- Do not cite `knowledge/` files with `\ref{...}` or treat them as established propositions; they are planning summaries only.
 - Every dependency on a previous verified proposition must be cited explicitly in the statement or proof with this exact `\ref{...}` format, because `solution.md` is assembled mechanically from those references.
 - Use the `Agent` tool for bounded reasoning, computation, or numerical exploration instead of doing heavy local work in your own context.
 - The only valid `Agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`.
