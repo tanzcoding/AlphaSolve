@@ -68,6 +68,12 @@ class EventLogWriter:
         if handler is not None:
             handler(self, event)
 
+    def __enter__(self) -> "EventLogWriter":
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
+
     def close(self) -> None:
         if not self._opened:
             return

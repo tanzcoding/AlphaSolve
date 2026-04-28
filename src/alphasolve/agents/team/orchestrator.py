@@ -205,7 +205,12 @@ class WorkerManager:
             with (self.layout.logs_dir / "worker_results.jsonl").open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
         except Exception:
-            pass
+            import sys
+            print(
+                f"[worker_results] failed to write result for {payload.get('worker_id', '?')}: "
+                f"{payload.get('status', '?')}",
+                file=sys.stderr,
+            )
 
 
 class Orchestrator:
