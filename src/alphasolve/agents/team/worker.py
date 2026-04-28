@@ -313,6 +313,7 @@ class Worker:
             digest_queue=self.digest_queue,
             digest_context_provider=digest_context.consume,
             log_session=self.log_session,
+            stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -324,6 +325,7 @@ class Worker:
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
             event_sink=self._generator_event_sink(digest_context),
+            stop_event=self.stop_event,
         )
         result = agent.run(self._generator_task())
         self.trace.append({"role": "generator", "trace": result.trace, "final_answer": result.final_answer})
@@ -388,6 +390,7 @@ class Worker:
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
             log_session=self.log_session,
+            stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -402,6 +405,7 @@ class Worker:
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
             event_sink=self._event_sink(role),
+            stop_event=self.stop_event,
         )
         result = agent.run(
             self._verifier_task(
@@ -457,6 +461,7 @@ class Worker:
             session_prefix=f"{self.worker_dir.name}/theorem-checker",
             digest_queue=self.digest_queue,
             log_session=self.log_session,
+            stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -469,6 +474,7 @@ class Worker:
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
             event_sink=self._event_sink(role),
+            stop_event=self.stop_event,
         )
         result = agent.run(self._theorem_checker_task(verified_file, attempt_index=attempt_index))
         self.trace.append({
@@ -498,6 +504,7 @@ class Worker:
             session_prefix=f"{self.worker_dir.name}/reviser-workflow-{workflow_index}",
             digest_queue=self.digest_queue,
             log_session=self.log_session,
+            stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
@@ -509,6 +516,7 @@ class Worker:
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
             event_sink=self._event_sink(role),
+            stop_event=self.stop_event,
         )
         result = agent.run(self._reviser_task(proposition_file, review_text, workflow_index=workflow_index))
         self.trace.append({"role": "reviser", "workflow": workflow_index, "trace": result.trace, "final_answer": result.final_answer})
@@ -536,6 +544,7 @@ class Worker:
                 allow_write=False,
             ),
             event_sink=self._event_sink(role),
+            stop_event=self.stop_event,
         )
         result = agent.run(self._review_verdict_task(review_text, workflow_index=workflow_index, attempt_index=attempt_index))
         verdict = _parse_review_verdict(result.final_answer)

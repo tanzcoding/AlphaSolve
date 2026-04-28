@@ -161,6 +161,9 @@ class _PythonWorkerPool:
             if process.is_alive():
                 process.terminate()
 
+        self._out_queue.put(None)
+        self._dispatcher.join(timeout=2)
+
     def _worker_for_session(self, session_id: str) -> int:
         with self._lock:
             if session_id not in self._session_worker:
@@ -171,9 +174,12 @@ class _PythonWorkerPool:
     def _dispatch_results(self) -> None:
         while True:
             try:
-                data = self._out_queue.get()
+                data = self._out_queue.get(timeout=0.5)
             except Exception:
-                return
+                with self._lock:
+                    if self._closed:
+                        return
+                continue
             if data is None:
                 return
             request_id = data.get("id")

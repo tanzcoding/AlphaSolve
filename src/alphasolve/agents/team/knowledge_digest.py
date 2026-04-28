@@ -34,6 +34,7 @@ class KnowledgeDigestQueue:
         client_factory: "ClientFactory",
         execution_gateway: "ExecutionGateway | None" = None,
         log_session: "LogSession | None" = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.knowledge_dir = knowledge_dir
         self.workspace_dir = workspace_dir
@@ -41,6 +42,7 @@ class KnowledgeDigestQueue:
         self.client_factory = client_factory
         self.execution_gateway = execution_gateway
         self.log_session = log_session
+        self.stop_event = stop_event
         self._queue: queue.Queue[DigestTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="knowledge-digest")
         self._started = False
@@ -88,6 +90,7 @@ class KnowledgeDigestQueue:
             execution_gateway=self.execution_gateway,
             session_prefix="knowledge_digest",
             log_session=self.log_session,
+            stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
                 workspace=_make_workspace(self.workspace_dir),
                 read_root_rel="knowledge",
@@ -141,6 +144,7 @@ class KnowledgeDigestQueue:
                 client=self.client_factory(config),
                 tool_registry=registry,
                 event_sink=digest_sink,
+                stop_event=self.stop_event,
             )
             agent.run(task_prompt)
         finally:

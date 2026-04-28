@@ -50,6 +50,7 @@ class WorkerManager:
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
         log_session: LogSession | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -65,7 +66,7 @@ class WorkerManager:
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
         self.log_session = log_session
-        self.stop_event = threading.Event()
+        self.stop_event = stop_event or threading.Event()
         self.solution_path: Path | None = None
         self.solved_result: WorkerRunResult | None = None
 
@@ -228,6 +229,7 @@ class Orchestrator:
         execution_gateway: ExecutionGateway | None = None,
         digest_queue: KnowledgeDigestQueue | None = None,
         log_session: LogSession | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -240,6 +242,7 @@ class Orchestrator:
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
         self.log_session = log_session
+        self.stop_event = stop_event
 
     def run(self) -> OrchestratorRunResult:
         if self.renderer is not None:
@@ -261,6 +264,7 @@ class Orchestrator:
                 execution_gateway=self.execution_gateway,
                 digest_queue=self.digest_queue,
                 log_session=self.log_session,
+                stop_event=self.stop_event,
             )
             result = None
             error_final_answer = ""
@@ -276,6 +280,7 @@ class Orchestrator:
                     workspace=Workspace(self.layout.workspace_dir),
                     deny_read_rel="unverified_propositions",
                 ),
+                stop_event=self.stop_event,
             )
             try:
                 registry = self._build_registry(manager, subagents=subagents)
@@ -291,6 +296,7 @@ class Orchestrator:
                         make_orchestrator_event_sink(self.renderer),
                         orchestrator_log_sink,
                     ),
+                    stop_event=self.stop_event,
                 )
                 result = agent.run(self._task())
             except AgentRunError as exc:

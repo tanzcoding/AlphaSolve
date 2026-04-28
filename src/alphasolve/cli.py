@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import argparse
-import os
+import signal
 import sys
 from pathlib import Path
 
@@ -14,8 +14,22 @@ if sys.platform == "win32":
 from alphasolve.agents.team import AlphaSolve
 from alphasolve.agents.team.demo import make_demo_client_factory
 
+_app: AlphaSolve | None = None
 
-def main():
+
+def _on_interrupt(_signum: int, _frame: object) -> None:
+    if _app is not None:
+        _app.cancel()
+    # Restore default handler so a second Ctrl+C kills the process hard
+    # if the current API call / blocking operation hasn't finished yet.
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
+    print("\nInterrupted — finishing current work… (press Ctrl+C again to force exit)",
+          file=sys.stderr)
+
+
+def main() -> None:
+    global _app
+
     default_max_workers = 4
 
     parser = argparse.ArgumentParser(description="Run AlphaSolve.")
@@ -65,8 +79,9 @@ def main():
         else int(suite_settings.get("max_orchestrator_restarts", 5))
     )
 
+    signal.signal(signal.SIGINT, _on_interrupt)
     try:
-        result = AlphaSolve(
+        _app = AlphaSolve(
             project_dir=Path.cwd(),
             problem=args.problem,
             hint=args.hint,
@@ -81,7 +96,8 @@ def main():
             tool_executor_size=args.tool_executor_size,
             max_orchestrator_restarts=max_orchestrator_restarts,
             debug=args.debug,
-        ).run()
+        )
+        result = _app.run()
     except KeyboardInterrupt:
         print("\nInterrupted.")
         sys.exit(130)
