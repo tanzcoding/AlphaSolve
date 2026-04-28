@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import io
+import textwrap
 import threading
 import time
-import textwrap
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -14,7 +14,6 @@ from rich.cells import cell_len, set_cell_size
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.rule import Rule
-from rich.spinner import Spinner
 from rich.table import Table
 from rich.text import Text
 
@@ -288,6 +287,8 @@ class _LineDiffLive:
             self._move_to_top(len(self._last_lines))
             self._clear_lines(len(self._last_lines))
             self._move_to_top(len(self._last_lines))
+        else:
+            self._write("\x1b[H") # we need to manually trig it here when started.
         for index, line in enumerate(lines):
             self._write("\x1b[2K\r" + line)
             if index != len(lines) - 1:
@@ -370,6 +371,7 @@ class PropositionTeamRenderer:
             if self._live is not None:
                 return
             self._live = _LineDiffLive(console=self.console, screen=self.screen)
+            time.sleep(0.05) # We need to wait for Windows console subsystem here.
             self._last_seen_size = self._console_size()
             self._watch_stop.clear()
             self._live.start(refresh=False)
@@ -1355,7 +1357,7 @@ class PropositionTeamRenderer:
 
     def _console_size(self) -> tuple[int, int]:
         size = self.console.size
-        return (max(80, size.width), max(24, size.height))
+        return max(80, size.width), max(24, size.height)
 
     def _watch_terminal_loop(self) -> None:
         while not self._watch_stop.wait(_RESIZE_POLL_INTERVAL):
