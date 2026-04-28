@@ -76,6 +76,73 @@ def make_orchestrator_event_sink(renderer: PropositionTeamRenderer | None) -> Ag
     return sink
 
 
+def make_digest_event_sink(renderer: PropositionTeamRenderer | None) -> AgentEventHandler | None:
+    if renderer is None:
+        return None
+
+    def sink(event: dict[str, Any]) -> None:
+        event_type = event.get("type")
+        if event_type == "run_start":
+            renderer.update_digest_phase("knowledge_digest", status="running")
+            renderer.log_digest("knowledge digest started", module="knowledge_digest")
+        elif event_type == "model_request":
+            renderer.update_digest_phase("thinking", status="thinking")
+        elif event_type == "model_retry":
+            renderer.reset_digest_stream(
+                content_chars=int(event.get("content_chars") or 0),
+                reasoning_chars=int(event.get("reasoning_chars") or 0),
+            )
+            renderer.log_digest(_event_retry(event), module="knowledge_digest", level="WARNING")
+        elif event_type == "thinking_delta":
+            content = str(event.get("content") or "")
+            if content:
+                renderer.update_digest_thinking(
+                    module="knowledge_digest",
+                    thinking_text=content,
+                    elapsed=float(event.get("elapsed") or 0),
+                )
+        elif event_type == "thinking":
+            content = str(event.get("content") or "")
+            if content:
+                if not event.get("streamed"):
+                    renderer.update_digest_thinking(module="knowledge_digest", thinking_text=content, elapsed=0)
+                renderer.finish_digest_thinking(
+                    module="knowledge_digest",
+                    elapsed=float(event.get("elapsed") or 0),
+                    char_count=len(content),
+                )
+        elif event_type == "assistant_delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                renderer.append_digest_output(delta)
+        elif event_type == "assistant_message":
+            content = str(event.get("content") or "")
+            if content and not event.get("streamed_content"):
+                renderer.append_digest_output(content)
+            if event.get("streamed_content"):
+                renderer.flush_digest_output()
+        elif event_type == "tool_call":
+            renderer.update_digest_tool_start(
+                module="knowledge_digest",
+                name=str(event.get("name") or ""),
+                arg_preview=_event_args_preview(event),
+            )
+        elif event_type == "tool_result":
+            is_error = bool(event.get("is_error"))
+            name = str(event.get("name") or "")
+            renderer.update_digest_tool_done(name=name, is_error=is_error)
+            if is_error:
+                renderer.log_digest(_content_preview(event), module=name, level="ERROR")
+        elif event_type == "run_finish":
+            renderer.flush_digest_output()
+            renderer.update_digest_phase("complete", status="complete")
+        elif event_type == "run_error":
+            renderer.update_digest_phase("error", status="failed")
+            renderer.log_digest(_event_error(event), module="knowledge_digest", level="ERROR")
+
+    return sink
+
+
 def make_worker_event_sink(
     renderer: PropositionTeamRenderer | None,
     *,

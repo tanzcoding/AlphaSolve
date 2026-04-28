@@ -40,10 +40,12 @@ class RoleWorkspaceAccess:
     exact_write_rel: str | None = None
     single_proposition_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
+    destructive_protected_file_names: tuple[str, ...] = ()
     max_read_chars: int = 20000
 
     def __post_init__(self) -> None:
         self._locked_proposition_rel: str | None = None
+        self._touched_paths: set[Path] = set()
 
     def read_text(self, path: str, *, max_chars: int | None = None) -> str:
         target = self._resolve_readable_file(path)
@@ -53,21 +55,52 @@ class RoleWorkspaceAccess:
             return text[:limit] + "\n[truncated]"
         return text
 
-    def write_text(self, path: str, content: str) -> str:
+    def write_text(self, path: str, content: str, *, mode: str = "overwrite") -> str:
         target = self._resolve_writable_file(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(str(content), encoding="utf-8")
+        text = str(content)
+        if mode == "overwrite":
+            target.write_text(text, encoding="utf-8")
+        elif mode == "append":
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(text)
+        else:
+            raise ValueError("write mode must be either 'overwrite' or 'append'")
+        self._record_touch(target)
         return self._rel(target)
 
     def edit(self, path: str, old_str: str, new_str: str) -> str:
-        target = self._resolve_writable_file(path)
+        target = self._resolve_writable_file(path, must_exist=True)
         text = target.read_text(encoding="utf-8")
         if old_str not in text:
             raise ValueError(f"old_str not found in {path}")
         if text.count(old_str) > 1:
             raise ValueError(f"old_str matches multiple locations in {path}; make it more specific")
         target.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
+        self._record_touch(target)
         return self._rel(target)
+
+    def rename_path(self, old_path: str, new_path: str) -> dict[str, str]:
+        source = self._resolve_writable_file(old_path, must_exist=True, destructive=True)
+        target = self._resolve_writable_file(new_path, destructive=True)
+        old_rel = self._rel(source)
+        if source == target:
+            return {"old_path": old_rel, "path": self._rel(target)}
+        if target.exists():
+            raise ValueError(f"target already exists: {new_path}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(target)
+        self._record_touch(target)
+        return {"old_path": old_rel, "path": self._rel(target)}
+
+    def delete_file(self, path: str) -> str:
+        target = self._resolve_writable_file(path, must_exist=True, destructive=True)
+        rel = self._rel(target)
+        target.unlink()
+        return rel
+
+    def touched_paths(self) -> tuple[Path, ...]:
+        return tuple(sorted(self._touched_paths, key=lambda item: item.as_posix()))
 
     def list_dir(self, path: str = ".", *, recursive: bool = False, max_results: int = 200) -> list[str]:
         target = self.workspace.resolve(path)
@@ -197,13 +230,24 @@ class RoleWorkspaceAccess:
             raise ValueError(f"file extension is not allowed: {path}")
         return target
 
-    def _resolve_writable_file(self, path: str) -> Path:
+    def _resolve_writable_file(
+        self,
+        path: str,
+        *,
+        must_exist: bool = False,
+        destructive: bool = False,
+    ) -> Path:
         target = self.workspace.resolve(path)
         if self.exact_write_rel is not None:
             exact = self.workspace.resolve(self.exact_write_rel)
             if target != exact:
                 raise ValueError(f"write_file can only rewrite {self.exact_write_rel}")
-            return target
+            return self._finalize_writable_target(
+                target,
+                path=path,
+                must_exist=must_exist,
+                destructive=destructive,
+            )
 
         if self.single_proposition_file:
             if self.worker_rel is None:
@@ -213,12 +257,43 @@ class RoleWorkspaceAccess:
             if target != proposition_path:
                 raise ValueError("generator can only write proposition.md in its own directory")
             self._locked_proposition_rel = self._rel(proposition_path)
-            return target
+            return self._finalize_writable_target(
+                target,
+                path=path,
+                must_exist=must_exist,
+                destructive=destructive,
+            )
 
         if self.write_root_rel is None:
             raise ValueError("write_file is not enabled for this agent")
         self._ensure_under_root(target, self.write_root_rel, kind="write")
+        return self._finalize_writable_target(
+            target,
+            path=path,
+            must_exist=must_exist,
+            destructive=destructive,
+        )
+
+    def _finalize_writable_target(
+        self,
+        target: Path,
+        *,
+        path: str,
+        must_exist: bool,
+        destructive: bool,
+    ) -> Path:
+        if destructive and target.name in set(self.destructive_protected_file_names):
+            raise ValueError(f"destructive operations are not allowed on {target.name}")
+        if must_exist and not target.is_file():
+            raise ValueError(f"not a file: {path}")
+        if target.exists() and not target.is_file():
+            raise ValueError(f"not a file: {path}")
+        if not self._extension_allowed(target):
+            raise ValueError(f"file extension is not allowed: {path}")
         return target
+
+    def _record_touch(self, path: Path) -> None:
+        self._touched_paths.add(path.resolve())
 
     def _iter_text_files(self, root: Path):
         for current, dirs, files in os.walk(root):
@@ -290,6 +365,7 @@ def build_workspace_tool_registry(
     access: RoleWorkspaceAccess,
     *,
     allow_write: bool = False,
+    allow_manage: bool = False,
     subagent_service: "SubagentService | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
@@ -312,16 +388,33 @@ def build_workspace_tool_registry(
     if allow_write:
         registry.register(
             name="Write",
-            description="Writes a file to the local filesystem.\n\nUsage:\n- This tool will overwrite the existing file if there is one at the provided path.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
+            description="Writes a file to the local filesystem.\n\nUsage:\n- Use `mode=\"overwrite\"` to replace the whole file.\n- Use `mode=\"append\"` to append content to the end of the file.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
             parameters={
                 "type": "object",
                 "properties": {
                     "path": {"type": "string", "description": "The path to the file to write."},
                     "content": {"type": "string", "description": "The content to write to the file."},
+                    "mode": {
+                        "type": "string",
+                        "enum": ["overwrite", "append"],
+                        "default": "overwrite",
+                        "description": "Whether to overwrite the whole file or append to the end.",
+                    },
                 },
                 "required": ["path", "content"],
             },
-            handler=lambda args: ToolResult(json.dumps({"path": access.write_text(args["path"], args["content"])}, ensure_ascii=False)),
+            handler=lambda args: ToolResult(
+                json.dumps(
+                    {
+                        "path": access.write_text(
+                            args["path"],
+                            args["content"],
+                            mode=str(args.get("mode", "overwrite")),
+                        )
+                    },
+                    ensure_ascii=False,
+                )
+            ),
         )
         registry.register(
             name="Edit",
@@ -344,6 +437,36 @@ def build_workspace_tool_registry(
                 json.dumps({"path": access.edit(args["path"], args["old_str"], args["new_str"])}, ensure_ascii=False)
             ),
         )
+        if allow_manage:
+            registry.register(
+                name="Rename",
+                description="Renames a file within the writable workspace area.\n\nUsage:\n- Use this to promote a clearer topic filename without rewriting file contents.\n- This tool fails if the target path already exists.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "old_path": {"type": "string", "description": "Existing file path to rename."},
+                        "new_path": {"type": "string", "description": "New file path after renaming."},
+                    },
+                    "required": ["old_path", "new_path"],
+                },
+                handler=lambda args: ToolResult(
+                    json.dumps(access.rename_path(args["old_path"], args["new_path"]), ensure_ascii=False)
+                ),
+            )
+            registry.register(
+                name="Delete",
+                description="Deletes a file from the writable workspace area.\n\nUsage:\n- Only delete files that are obsolete after you have consolidated their useful content elsewhere.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "The file path to delete."},
+                    },
+                    "required": ["path"],
+                },
+                handler=lambda args: ToolResult(
+                    json.dumps({"path": access.delete_file(args["path"])}, ensure_ascii=False)
+                ),
+            )
 
     registry.register(
         name="Glob",

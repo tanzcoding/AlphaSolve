@@ -3,15 +3,20 @@ from __future__ import annotations
 import json
 import queue
 import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+from alphasolve.config.agent_config import AlphaSolveConfig
+from alphasolve.utils.event_logger import compose_event_sinks
+
+from .dashboard import make_digest_event_sink
 
 if TYPE_CHECKING:
     from alphasolve.agents.general import GeneralAgentConfig
     from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.log_session import LogSession
+    from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .tools import ClientFactory, SubagentService
 
 
@@ -35,6 +40,7 @@ class KnowledgeDigestQueue:
         execution_gateway: "ExecutionGateway | None" = None,
         log_session: "LogSession | None" = None,
         stop_event: threading.Event | None = None,
+        renderer: "PropositionTeamRenderer | None" = None,
     ) -> None:
         self.knowledge_dir = knowledge_dir
         self.workspace_dir = workspace_dir
@@ -43,6 +49,7 @@ class KnowledgeDigestQueue:
         self.execution_gateway = execution_gateway
         self.log_session = log_session
         self.stop_event = stop_event
+        self.renderer = renderer
         self._queue: queue.Queue[DigestTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="knowledge-digest")
         self._started = False
@@ -50,6 +57,8 @@ class KnowledgeDigestQueue:
     def start(self) -> None:
         if not self._started:
             self._started = True
+            if self.renderer is not None:
+                self.renderer.update_digest_phase("idle", status="idle")
             self._thread.start()
 
     def stop(self, timeout: float = 60.0) -> None:
@@ -58,6 +67,8 @@ class KnowledgeDigestQueue:
 
     def submit(self, task: DigestTask) -> None:
         if self._started:
+            if self.renderer is not None:
+                self.renderer.enqueue_digest_task(task.source_label)
             self._queue.put(task)
 
     def _worker(self) -> None:
@@ -82,6 +93,7 @@ class KnowledgeDigestQueue:
             workspace=_make_workspace(self.workspace_dir),
             read_root_rel="knowledge",
             write_root_rel="knowledge",
+            destructive_protected_file_names=("index.md", "common-errors.md"),
         )
         subagent_svc = SubagentService(
             suite=self.suite,
@@ -96,7 +108,12 @@ class KnowledgeDigestQueue:
                 read_root_rel="knowledge",
             ),
         )
-        registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagent_svc)
+        registry = build_workspace_tool_registry(
+            access,
+            allow_write=True,
+            allow_manage=True,
+            subagent_service=subagent_svc,
+        )
 
         trace_kind = _trace_kind(task.source_label)
         is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
@@ -114,8 +131,8 @@ class KnowledgeDigestQueue:
         if is_verifier_final:
             extra = (
                 "This trace contains a verifier's final review of a generator's proposition. "
-                "In addition to normal knowledge updates, carefully read the verifier's review, "
-                "then read the generator's `proposition.md` to understand what mistake was made. "
+                "In addition to normal knowledge updates, carefully read the verifier's review "
+                "to understand what mistake was made. "
                 "Append up to 3 general error patterns to `knowledge/common-errors.md` when useful. "
                 "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
                 "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
@@ -131,26 +148,36 @@ class KnowledgeDigestQueue:
             "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
             "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
             "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
-            "Follow the required directory-listing and candidate-search workflow from the system prompt. "
-            "Create or update topic-based wiki entries. "
+            "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
+            "and carefully organized topic pages. "
             f"{extra} "
-            "Append a one-line topic-based entry to `knowledge/log.md` when done."
+            "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately."
         )
 
         digest_sink = self.log_session.create_digest_sink() if self.log_session is not None else None
+        digest_success = False
+        if self.renderer is not None:
+            self.renderer.set_digest_model(_model_name(config, suite=self.suite))
+            self.renderer.start_digest_task(task.source_label)
         try:
             agent = GeneralPurposeAgent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
-                event_sink=digest_sink,
+                event_sink=compose_event_sinks(
+                    make_digest_event_sink(self.renderer),
+                    digest_sink,
+                ),
                 stop_event=self.stop_event,
             )
             agent.run(task_prompt)
+            digest_success = True
         finally:
             if digest_sink is not None:
                 digest_sink.close()
-        _update_entry_metadata(self.knowledge_dir)
+            if self.renderer is not None:
+                self.renderer.finish_digest_task(success=digest_success)
+        _update_entry_metadata(access.touched_paths())
 
 
 def _make_workspace(workspace_dir: Path):
@@ -166,6 +193,21 @@ def _trace_kind(source_label: str) -> str:
     return "subagent"
 
 
+def _model_name(config: "GeneralAgentConfig", *, suite) -> str:
+    ref = str(config.model_config or "").strip()
+    if not ref:
+        return ""
+    if ref in suite.models:
+        return str(suite.models[ref].get("model", ref))
+    preset = ref.upper()
+    if not preset.endswith("_CONFIG"):
+        preset += "_CONFIG"
+    model_config = getattr(AlphaSolveConfig, preset, None)
+    if isinstance(model_config, dict):
+        return str(model_config.get("model", ref))
+    return ref
+
+
 def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
     """Return True if the trace segment contains a verifier's final response.
 
@@ -179,59 +221,71 @@ def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
     )
 
 
-def _update_entry_metadata(knowledge_dir: Path) -> None:
-    """Increment modification_count in frontmatter of recently modified .md files."""
-    now = time.time()
-    for md_file in knowledge_dir.glob("*.md"):
-        if md_file.name in {"index.md", "log.md"}:
+def _update_entry_metadata(touched_paths: tuple[Path, ...]) -> None:
+    """统一维护普通词条的 modification_count frontmatter。"""
+    for md_file in touched_paths:
+        if md_file.name in {"index.md", "common-errors.md"}:
             continue
-        if now - md_file.stat().st_mtime > 10:
+        if not md_file.exists() or not md_file.is_file() or md_file.suffix.lower() != ".md":
             continue
         _increment_modification_count(md_file)
 
 
 def _increment_modification_count(path: Path) -> None:
     text = path.read_text(encoding="utf-8")
-    if not text.startswith("---"):
-        return
-    end = text.find("\n---", 3)
+    count = 1
+    body = text
+    if text.startswith("---"):
+        end = text.find("\n---", 3)
+        if end != -1:
+            frontmatter = text[3:end]
+            body = text[end + 4:]
+            for line in frontmatter.splitlines():
+                if not line.startswith("modification_count:"):
+                    continue
+                try:
+                    count = int(line.split(":", 1)[1].strip()) + 1
+                except ValueError:
+                    count = 1
+                break
+    if not body.startswith("\n"):
+        body = "\n" + body
+    path.write_text(f"---\nmodification_count: {count}\n---{body}", encoding="utf-8")
+
+
+def _remove_problem_section_from_index(text: str) -> str:
+    problem_marker = "\n## Problem\n"
+    entries_marker = "\n## Entries\n"
+    start = text.find(problem_marker)
+    if start == -1:
+        return text
+    end = text.find(entries_marker, start)
     if end == -1:
-        return
-    frontmatter = text[3:end]
-    rest = text[end + 4:]
-    lines = frontmatter.splitlines()
-    new_lines = []
-    found = False
-    for line in lines:
-        if line.startswith("modification_count:"):
-            try:
-                count = int(line.split(":", 1)[1].strip()) + 1
-            except ValueError:
-                count = 1
-            new_lines.append(f"modification_count: {count}")
-            found = True
-        else:
-            new_lines.append(line)
-    if not found:
-        new_lines.append("modification_count: 1")
-    path.write_text("---" + "\n".join(new_lines) + "\n---" + rest, encoding="utf-8")
+        return text
+    prefix = text[:start].rstrip("\n")
+    suffix = text[end + 1:].lstrip("\n")
+    return prefix + "\n\n" + suffix
 
 
 def init_knowledge_base(knowledge_dir: Path, problem_text: str) -> None:
-    """Create index.md and log.md if they don't exist."""
+    """Initialize the knowledge wiki skeleton."""
+    del problem_text
     index = knowledge_dir / "index.md"
     if not index.exists():
         index.write_text(
             "# Knowledge Index\n\n"
-            "## Problem\n\n"
-            f"{problem_text.strip()}\n\n"
             "## Entries\n\n"
             "_No entries yet._\n",
             encoding="utf-8",
         )
+    else:
+        current = index.read_text(encoding="utf-8")
+        normalized = _remove_problem_section_from_index(current)
+        if normalized != current:
+            index.write_text(normalized, encoding="utf-8")
     log = knowledge_dir / "log.md"
-    if not log.exists():
-        log.write_text("# Knowledge Log\n\n", encoding="utf-8")
+    if log.is_file():
+        log.unlink()
     errors = knowledge_dir / "common-errors.md"
     if not errors.exists():
         errors.write_text("# Common Proof Errors\n\n", encoding="utf-8")

@@ -1,17 +1,27 @@
 import json
+import io
 import os
 import pathlib
 import re
 import shutil
 import sys
+import threading
+import time
 from contextlib import contextmanager
+
+from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agents.general import GeneralAgentConfig, Workspace, load_agent_suite_config  # noqa: E402
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
-from alphasolve.agents.team.knowledge_digest import DigestTask, KnowledgeDigestQueue  # noqa: E402
+from alphasolve.agents.team.knowledge_digest import (  # noqa: E402
+    DigestTask,
+    KnowledgeDigestQueue,
+    _update_entry_metadata,
+    init_knowledge_base,
+)
 from alphasolve.agents.team.worker import Worker  # noqa: E402
 from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
 from alphasolve.agents.team.solution import write_solution  # noqa: E402
@@ -19,6 +29,7 @@ from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService  #
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.execution import ExecutionGateway  # noqa: E402
+from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
 
 
 @contextmanager
@@ -71,7 +82,12 @@ def test_default_agent_suite_loads_yaml_roles():
     assert digest.tool_parameters["get_child_item"]["path"] == {"default": "knowledge", "enum": ["knowledge", "knowledge/"]}
     assert digest.tool_parameters["get_child_item"]["recursive"]["const"] is False
     assert digest.tool_parameters["write_file"]["path"]["pattern"].endswith("\\.md$")
+    assert digest.tool_parameters["write_file"]["mode"]["enum"] == ["overwrite", "append"]
+    assert any("rename" in name.lower() for name in digest.tools)
+    assert any("delete" in name.lower() for name in digest.tools)
+    assert not any(name.lower() in {"get_current_time", "getcurrenttime"} for name in digest.tools)
     assert "not a transcript archive" in digest.system_prompt
+    assert "There is no maintenance log file." in digest.system_prompt
     assert "<source_label>" not in digest.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
@@ -122,6 +138,90 @@ def test_knowledge_digest_task_prompt_hides_source_labels():
         assert "verifier-r6" not in task_text
         assert '"trace_kind": "verifier"' in task_text
         assert "private triage" in task_text
+        assert "log.md" not in task_text
+        assert "proposition.md" not in task_text
+
+
+def test_init_knowledge_base_removes_log_and_omits_problem_section():
+    with local_project_dir("knowledge_init") as project_dir:
+        knowledge_dir = project_dir / "workspace" / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+        (knowledge_dir / "index.md").write_text(
+            "# Knowledge Index\n\n"
+            "## Problem\n\n"
+            "Legacy statement.\n\n"
+            "## Entries\n\n"
+            "_No entries yet._\n",
+            encoding="utf-8",
+        )
+        (knowledge_dir / "log.md").write_text("# Legacy Log\n", encoding="utf-8")
+
+        init_knowledge_base(knowledge_dir, "# Problem\n\nLegacy text.\n")
+
+        index_text = (knowledge_dir / "index.md").read_text(encoding="utf-8")
+        assert "## Problem" not in index_text
+        assert "## Entries" in index_text
+        assert not (knowledge_dir / "log.md").exists()
+        assert (knowledge_dir / "common-errors.md").is_file()
+
+
+def test_knowledge_digest_queue_updates_renderer_state(tmp_path):
+    class Suite:
+        subagents = {}
+        models = {}
+
+    workspace_dir = tmp_path / "workspace"
+    knowledge_dir = workspace_dir / "knowledge"
+    knowledge_dir.mkdir(parents=True)
+    renderer = PropositionTeamRenderer(
+        console=Console(file=io.StringIO(), width=124, height=34, force_terminal=False, color_system=None),
+        screen=False,
+    )
+    queue = KnowledgeDigestQueue(
+        knowledge_dir=knowledge_dir,
+        workspace_dir=workspace_dir,
+        suite=Suite(),
+        client_factory=lambda config: None,
+        renderer=renderer,
+    )
+    started = threading.Event()
+    release = threading.Event()
+
+    def fake_run_digest(task):
+        assert task.source_label == "prop-0001/verifier"
+        renderer.start_digest_task(task.source_label)
+        started.set()
+        release.wait(timeout=1)
+        renderer.finish_digest_task(success=True)
+
+    queue._run_digest = fake_run_digest
+
+    queue.start()
+    try:
+        queue.submit(
+            DigestTask(
+                trace_segment=[{"role": "assistant", "content": "digest me"}],
+                source_label="prop-0001/verifier",
+            )
+        )
+
+        assert started.wait(timeout=1)
+        assert renderer._digest_current_label == "prop-0001/verifier"
+        assert renderer._digest_pending == 0
+        assert renderer._digest.status == "running"
+
+        release.set()
+        deadline = time.time() + 1
+        while time.time() < deadline and renderer._digest_processed < 1:
+            time.sleep(0.01)
+
+        assert renderer._digest_processed == 1
+        assert renderer._digest_current_label == ""
+        assert renderer._digest_last_label == "prop-0001/verifier"
+        assert renderer._digest.status == "idle"
+    finally:
+        release.set()
+        queue.stop(timeout=1)
 
 
 def test_agent_team_demo_creates_workspace_and_verified_proposition():
@@ -749,6 +849,70 @@ def test_role_workspace_access_can_restrict_reads_to_verifier_workspace():
             assert "read path must stay under" in str(exc)
         else:
             raise AssertionError("subagent file reads should stay inside verifier_workspace")
+
+
+def test_role_workspace_access_supports_append_rename_delete_and_protects_special_files():
+    with local_project_dir("knowledge_manage") as project_dir:
+        workspace_root = project_dir / "workspace"
+        knowledge_dir = workspace_root / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+        (knowledge_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+
+        access = RoleWorkspaceAccess(
+            workspace=Workspace(workspace_root),
+            read_root_rel="knowledge",
+            write_root_rel="knowledge",
+            destructive_protected_file_names=("index.md", "common-errors.md"),
+        )
+
+        access.write_text("knowledge/entry.md", "# Entry\n")
+        access.write_text("knowledge/entry.md", "\n## Detail\n", mode="append")
+        assert access.read_text("knowledge/entry.md") == "# Entry\n\n## Detail\n"
+
+        renamed = access.rename_path("knowledge/entry.md", "knowledge/renamed-entry.md")
+        assert renamed == {
+            "old_path": "knowledge/entry.md",
+            "path": "knowledge/renamed-entry.md",
+        }
+        assert (knowledge_dir / "renamed-entry.md").is_file()
+
+        access.write_text("knowledge/obsolete.md", "old\n")
+        deleted = access.delete_file("knowledge/obsolete.md")
+        assert deleted == "knowledge/obsolete.md"
+        assert not (knowledge_dir / "obsolete.md").exists()
+
+        try:
+            access.delete_file("knowledge/index.md")
+        except Exception as exc:
+            assert "destructive operations" in str(exc)
+        else:
+            raise AssertionError("special knowledge files should not be deletable")
+
+
+def test_update_entry_metadata_normalizes_frontmatter_to_modification_count_only():
+    with local_project_dir("knowledge_metadata") as project_dir:
+        knowledge_dir = project_dir / "workspace" / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+        entry = knowledge_dir / "energy-estimate.md"
+        entry.write_text(
+            "---\n"
+            "created: 2026-01-01T00:00:00\n"
+            "updated: 2026-01-02T00:00:00\n"
+            "topics: [energy]\n"
+            "---\n\n"
+            "# Energy Estimate\n",
+            encoding="utf-8",
+        )
+
+        _update_entry_metadata((entry,))
+        once = entry.read_text(encoding="utf-8")
+        assert once.startswith("---\nmodification_count: 1\n---\n\n# Energy Estimate\n")
+        assert "created:" not in once
+        assert "updated:" not in once
+        assert "topics:" not in once
+
+        _update_entry_metadata((entry,))
+        assert entry.read_text(encoding="utf-8").startswith("---\nmodification_count: 2\n---\n\n# Energy Estimate\n")
 
 
 def test_generator_digest_submits_reasoning_slice_with_each_subagent_trace():

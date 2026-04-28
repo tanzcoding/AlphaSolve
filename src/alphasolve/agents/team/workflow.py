@@ -127,6 +127,7 @@ class AlphaSolve:
                     execution_gateway=execution_gateway,
                     log_session=log_session,
                     stop_event=self._stop_event,
+                    renderer=renderer,
                 )
                 digest_queue.start()
 

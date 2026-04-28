@@ -3,17 +3,18 @@ agent:
   name: knowledge_digest
   prompt_path: ../../prompts/knowledge_digest.md
   model_config: GENERATOR_CONFIG
-  max_turns: 40
+  max_turns: 80
   when_to_use: Incrementally update the knowledge wiki after each subagent trace.
   tools:
     - Read
     - Write
     - Edit
+    - Rename
+    - Delete
     - ListDir
     - Glob
     - Grep
     - Agent
-    - GetCurrentTime
   tool_parameters:
     Read:
       path:
@@ -21,9 +22,21 @@ agent:
     Write:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+      mode:
+        enum:
+          - overwrite
+          - append
     Edit:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+    Rename:
+      old_path:
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+      new_path:
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+    Delete:
+      path:
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
     ListDir:
       path:
         default: knowledge

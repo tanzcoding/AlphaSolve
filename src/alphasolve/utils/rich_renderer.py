@@ -135,6 +135,13 @@ def _text_line(text: str, style: str = "", *, no_wrap: bool = True) -> Text:
     return Text(text, style=style, no_wrap=no_wrap, overflow="ellipsis")
 
 
+def _worker_label(worker_id: str) -> str:
+    text = str(worker_id)
+    if text.isdigit():
+        return text.zfill(2)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # Timeline event model (kimi-cli style)
 # ---------------------------------------------------------------------------
@@ -336,6 +343,7 @@ class PropositionTeamRenderer:
         self.screen = screen
         self._workers: dict[str, WorkerRenderState] = {}
         self._orchestrator = OrchestratorRenderState()
+        self._digest = OrchestratorRenderState(status="idle", phase="idle")
         self._lock = threading.RLock()
         self._live: _LineDiffLive | None = None
         self._started_at = time.time()
@@ -352,6 +360,10 @@ class PropositionTeamRenderer:
         self._failed = 0
         self._solved = False
         self._team_log: list[str] = []
+        self._digest_pending = 0
+        self._digest_processed = 0
+        self._digest_current_label = ""
+        self._digest_last_label = ""
 
     def start(self) -> None:
         with self._lock:
@@ -646,6 +658,86 @@ class PropositionTeamRenderer:
             self._append_team_log_locked(f"@worker-{worker_id} {line}")
             self._refresh_locked()
 
+    def log_digest(
+        self,
+        message: str,
+        *,
+        module: str | None = None,
+        level: str = "INFO",
+    ) -> None:
+        if not message:
+            return
+        line = self._fmt_log(message, module=module, level=level)
+        with self._lock:
+            event_type = EventType.WARNING if level == "WARNING" else EventType.LOG
+            style = "yellow" if level == "WARNING" else ("red" if level == "ERROR" else "grey60")
+            self._append_event(self._digest, event_type, line, style=style)
+            self._digest.updated_at = time.time()
+            self._append_team_log_locked(f"digest {line}")
+            self._refresh_locked()
+
+    # -- Digest --------------------------------------------------------------
+
+    def enqueue_digest_task(self, source_label: str) -> None:
+        label = _clean_inline(source_label) or "digest task"
+        with self._lock:
+            self._digest_pending += 1
+            self._digest_last_label = label
+            if not self._digest_current_label:
+                self._digest.phase = "queued"
+                self._digest.status = "queued"
+            self._append_event(self._digest, EventType.LOG, f"queued {label}", style="grey60")
+            self._digest.updated_at = time.time()
+            self._append_team_log_locked(f"digest queued {label}")
+            self._refresh_locked(force=True)
+
+    def start_digest_task(self, source_label: str) -> None:
+        label = _clean_inline(source_label) or "digest task"
+        with self._lock:
+            self._digest_pending = max(0, self._digest_pending - 1)
+            self._digest_current_label = label
+            self._digest_last_label = label
+            self._digest.started_at = time.time()
+            self._digest.updated_at = time.time()
+            self._digest.phase = "knowledge_digest"
+            self._digest.status = "running"
+            self._digest.char_count = 0
+            self._digest.thinking_started_at = 0.0
+            self._digest.thinking_token_count = 0
+            self._digest.thinking_text = ""
+            self._digest.active_tool = None
+            self._digest.active_tool_args = ""
+            self._digest.output_buffer = ""
+            self._append_event(self._digest, EventType.PHASE, f"digesting {label}", style="grey50")
+            self._append_team_log_locked(f"digest started {label}")
+            self._refresh_locked(force=True)
+
+    def finish_digest_task(self, *, success: bool) -> None:
+        with self._lock:
+            label = self._digest_current_label or self._digest_last_label
+            if label:
+                self._digest_last_label = label
+            self._digest_current_label = ""
+            self._digest_processed += 1
+            self._digest.active_tool = None
+            self._digest.active_tool_args = ""
+            self._digest.output_buffer = ""
+            if self._digest_pending > 0:
+                self._digest.phase = "queued"
+                self._digest.status = "queued"
+            elif success:
+                self._digest.phase = "idle"
+                self._digest.status = "idle"
+            else:
+                self._digest.phase = "digest error"
+                self._digest.status = "failed"
+            self._digest.updated_at = time.time()
+            self._append_team_log_locked(
+                f"digest finished {'ok' if success else 'failed'}"
+                + (f" {label}" if label else "")
+            )
+            self._refresh_locked(force=True)
+
     # -- Orchestrator --------------------------------------------------------
 
     def update_orchestrator_phase(self, phase: str, *, status: str = "running") -> None:
@@ -659,6 +751,120 @@ class PropositionTeamRenderer:
         with self._lock:
             self._orchestrator.model = model
             self._refresh_locked()
+
+    def update_digest_phase(self, phase: str, *, status: str = "running") -> None:
+        with self._lock:
+            self._digest.phase = phase
+            self._digest.status = status
+            self._digest.updated_at = time.time()
+            self._refresh_locked()
+
+    def set_digest_model(self, model: str) -> None:
+        with self._lock:
+            self._digest.model = model
+            self._refresh_locked()
+
+    def update_digest_thinking(
+        self, *, module: str, thinking_text: str, elapsed: float
+    ) -> None:
+        del elapsed
+        with self._lock:
+            state = self._digest
+            state.phase = module
+            state.status = "thinking"
+            if state.thinking_started_at == 0:
+                state.thinking_started_at = time.time()
+            delta = max(0, len(thinking_text) - state.thinking_token_count)
+            state.thinking_token_count = len(thinking_text)
+            state.thinking_text = _tail_chars(thinking_text)
+            state.char_count += delta
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def finish_digest_thinking(
+        self, *, module: str, elapsed: float, char_count: int
+    ) -> None:
+        with self._lock:
+            state = self._digest
+            state.phase = module
+            state.status = "running"
+            state.updated_at = time.time()
+            self._append_event(
+                state,
+                EventType.THOUGHT,
+                f"Thought for {elapsed:.1f}s {_DOT} {_fmt_count(char_count)} chars",
+                style="grey50 italic",
+            )
+            state.thinking_started_at = 0.0
+            state.thinking_token_count = 0
+            state.thinking_text = ""
+            self._refresh_locked(force=True)
+
+    def append_digest_output(self, text: str) -> None:
+        if not text:
+            return
+        with self._lock:
+            state = self._digest
+            state.output_buffer = _tail_chars(state.output_buffer + text)
+            state.char_count += len(text)
+            state.status = "writing"
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def flush_digest_output(self) -> None:
+        with self._lock:
+            state = self._digest
+            buf = state.output_buffer.strip()
+            if buf:
+                preview = _clean_inline(buf)
+                self._append_event(state, EventType.CONTENT, preview, style="grey70")
+            state.output_buffer = ""
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def reset_digest_stream(self, *, content_chars: int = 0, reasoning_chars: int = 0) -> None:
+        with self._lock:
+            state = self._digest
+            if content_chars:
+                state.output_buffer = state.output_buffer[:-content_chars] if content_chars < len(state.output_buffer) else ""
+            if reasoning_chars:
+                state.thinking_started_at = 0.0
+                state.thinking_token_count = 0
+                state.thinking_text = ""
+            state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
+            state.status = "thinking"
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def update_digest_tool_start(self, *, module: str, name: str, arg_preview: str) -> None:
+        with self._lock:
+            state = self._digest
+            state.phase = module
+            state.status = "tool"
+            state.active_tool = name
+            state.active_tool_args = arg_preview
+            state.updated_at = time.time()
+            self._refresh_locked(force=True)
+
+    def update_digest_tool_done(self, *, name: str, is_error: bool = False) -> None:
+        with self._lock:
+            state = self._digest
+            args = state.active_tool_args if state.active_tool == name else ""
+            marker = _CROSS if is_error else _CHECK
+            style = "red" if is_error else "green"
+            self._append_event(
+                state,
+                EventType.TOOL_DONE,
+                f"{marker} {name}  {args}".rstrip(),
+                style=style,
+                meta={"is_error": is_error},
+            )
+            state.active_tool = None
+            state.active_tool_args = ""
+            state.status = "running"
+            state.updated_at = time.time()
+            self._append_team_log_locked(f"digest {marker} {name}")
+            self._refresh_locked(force=True)
 
     def update_orchestrator_thinking(
         self, *, module: str, thinking_text: str, elapsed: float
@@ -830,7 +1036,15 @@ class PropositionTeamRenderer:
         text = "grey CoT tails  |  tool status ✓/✗  |  Ctrl+C to stop"
         return Text(_truncate(text, width), style="grey50")
 
-    def _render_sidebar(self, *, width: int, height: int) -> Panel:
+    def _render_sidebar(self, *, width: int, height: int) -> "RenderableType":
+        team_height, digest_height = self._sidebar_heights(height)
+        sidebar = Table.grid(expand=True)
+        sidebar.add_column(ratio=1)
+        sidebar.add_row(self._render_team_sidebar(width=width, height=team_height))
+        sidebar.add_row(self._render_digest_sidebar(width=width, height=digest_height))
+        return sidebar
+
+    def _render_team_sidebar(self, *, width: int, height: int) -> Panel:
         workers = sorted(self._workers.values(), key=lambda s: s.worker_id)
         lines: list[Text] = []
 
@@ -848,7 +1062,7 @@ class PropositionTeamRenderer:
                 icon, style = _STATUS_ICON.get(state.status, ("○", "grey50"))
                 line = Text(no_wrap=True, overflow="ellipsis")
                 line.append(f"{icon} ", style)
-                line.append(f"@worker-{state.worker_id}", state.color)
+                line.append(f"@worker-{_worker_label(state.worker_id)}", state.color)
                 line.append(f" {_truncate(state.phase, max(4, width - 20))}", "grey60")
                 lines.append(line)
 
@@ -865,6 +1079,15 @@ class PropositionTeamRenderer:
             border_style="grey35",
             box=box.ROUNDED,
             padding=(0, 1),
+            height=height,
+        )
+
+    def _render_digest_sidebar(self, *, width: int, height: int) -> Panel:
+        return self._render_agent_panel(
+            self._digest,
+            title="@knowledge-digest",
+            color="bright_blue",
+            width=width,
             height=height,
         )
 
@@ -914,7 +1137,7 @@ class PropositionTeamRenderer:
                 row_renderables.append(
                     self._render_agent_panel(
                         state,
-                        title=f"@worker-{state.worker_id}",
+                        title=f"@worker-{_worker_label(state.worker_id)}",
                         color=state.color,
                         width=tile_width,
                         height=tile_height,
@@ -1026,9 +1249,33 @@ class PropositionTeamRenderer:
             if state.active_tool_args:
                 line.append("  " + _truncate(state.active_tool_args, max(4, width - cell_len(line.plain) - 2)), "grey50")
             lines.append(line)
+        if state is self._digest:
+            if self._digest_current_label:
+                lines.append(_text_line(_truncate(f"Source {self._digest_current_label}", width), "grey50"))
+            elif self._digest_last_label:
+                lines.append(_text_line(_truncate(f"Last {self._digest_last_label}", width), "grey50"))
+            queue_line = Text(no_wrap=True, overflow="ellipsis")
+            queue_line.append("Queue ", "grey50")
+            queue_line.append(str(self._digest_pending), "cyan" if self._digest_pending else "grey50")
+            queue_line.append(" pending", "grey50")
+            queue_line.append("  done ", "grey50")
+            queue_line.append(str(self._digest_processed), "green" if self._digest_processed else "grey50")
+            lines.append(queue_line)
         return lines
 
     def _panel_subtitle(self, state: WorkerRenderState | OrchestratorRenderState) -> str:
+        if state is self._digest:
+            status = "[red]last run failed[/]" if state.status == "failed" else "[grey50]live[/]"
+            if state.active_tool:
+                status = "[yellow]tool running[/]"
+            elif state.status == "queued":
+                status = "[grey50]queued[/]"
+            elif state.status == "idle":
+                status = "[grey50]idle[/]"
+            return (
+                f"{status} [grey35]|[/] [grey50]queue {self._digest_pending}[/] "
+                f"[grey35]|[/] [grey50]done {self._digest_processed}[/]"
+            )
         if state.active_tool:
             return "[yellow]tool running[/]"
         if state.status in _TERMINAL_STATUSES:
@@ -1093,6 +1340,11 @@ class PropositionTeamRenderer:
         if width < 100:
             return 0
         return max(28, min(42, width // 4))
+
+    def _sidebar_heights(self, height: int) -> tuple[int, int]:
+        digest_height = max(8, min(12, height // 3))
+        team_height = max(8, height - digest_height)
+        return team_height, max(8, height - team_height)
 
     def _worker_columns(self, width: int, count: int) -> int:
         if count <= 1 or width < 86:

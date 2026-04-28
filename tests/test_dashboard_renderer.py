@@ -7,7 +7,7 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agents.team.dashboard import make_worker_event_sink  # noqa: E402
+from alphasolve.agents.team.dashboard import make_digest_event_sink, make_worker_event_sink  # noqa: E402
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
 
 
@@ -263,3 +263,55 @@ def test_dashboard_wraps_long_error_logs_in_agent_panel():
     assert "RemoteProtocolError" in text
     # In timeline mode long logs are truncated to a single line
     assert "peer closed connection" in text
+
+
+def test_dashboard_sidebar_reserves_digest_panel_space():
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=124,
+        height=34,
+        record=True,
+        force_terminal=False,
+        color_system=None,
+    )
+    renderer = PropositionTeamRenderer(console=console, screen=False)
+
+    console.print(renderer.render())
+    text = console.export_text()
+
+    assert "@knowledge-digest" in text
+    assert "Queue 0 pending" in text
+    assert "done 0" in text
+
+
+def test_dashboard_digest_sink_updates_digest_panel_state():
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=124,
+        height=34,
+        record=True,
+        force_terminal=False,
+        color_system=None,
+    )
+    renderer = PropositionTeamRenderer(console=console, screen=False)
+    sink = make_digest_event_sink(renderer)
+    assert sink is not None
+
+    renderer.enqueue_digest_task("prop-0001/verifier")
+    renderer.start_digest_task("prop-0001/verifier")
+    sink({"type": "thinking_delta", "content": "summarize the verified proposition", "delta": "summarize"})
+    sink({"type": "tool_call", "name": "write_file", "arguments": {"path": "knowledge/index.md"}})
+    sink({"type": "tool_result", "name": "write_file", "is_error": False, "content": "ok"})
+    sink({"type": "assistant_delta", "content": "updated digest", "delta": "updated digest"})
+    sink({"type": "assistant_message", "content": "updated digest", "streamed_content": True})
+    sink({"type": "run_finish"})
+
+    console.print(renderer.render())
+    text = console.export_text()
+
+    assert "@knowledge-digest" in text
+    assert "prop-0001/verifier" in text
+    assert "write_file" in text
+    assert "updated digest" in text

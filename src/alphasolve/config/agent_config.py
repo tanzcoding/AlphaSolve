@@ -22,7 +22,7 @@ class AlphaSolveConfig:
         "api_key": lambda: os.getenv("DEEPSEEK_API_KEY"),
         "model": "deepseek-v4-pro",
         "timeout": 3600,
-        "params": {},
+        "params": {"extra_body": {"reasoning": {"effort": "max"}}},
     }
     PARASAIL_CONFIG = {
         "base_url": "https://api.parasail.io/v1",
