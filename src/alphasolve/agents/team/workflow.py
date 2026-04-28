@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import traceback
 from pathlib import Path
 from typing import Any, Callable
@@ -52,6 +53,10 @@ class AlphaSolve:
         self.execution_gateway_override = execution_gateway
         self.max_orchestrator_restarts = max(1, int(max_orchestrator_restarts))
         self.debug = debug
+        self._stop_event = threading.Event()
+
+    def cancel(self) -> None:
+        self._stop_event.set()
 
     def run(self) -> OrchestratorRunResult:
         renderer = PropositionTeamRenderer(screen=False) if self.print_to_console else None
@@ -121,12 +126,15 @@ class AlphaSolve:
                     client_factory=client_factory,
                     execution_gateway=execution_gateway,
                     log_session=log_session,
+                    stop_event=self._stop_event,
                 )
                 digest_queue.start()
 
             result = None
             all_worker_results = []
             for restart_index in range(self.max_orchestrator_restarts):
+                if self._stop_event.is_set():
+                    break
                 if restart_index > 0 and renderer is not None:
                     renderer.log(
                         None,
@@ -146,6 +154,7 @@ class AlphaSolve:
                     execution_gateway=execution_gateway,
                     digest_queue=digest_queue,
                     log_session=log_session,
+                    stop_event=self._stop_event,
                 )
                 result = orchestrator.run()
                 all_worker_results.extend(result.worker_results)

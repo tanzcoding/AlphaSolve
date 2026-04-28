@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import threading
 import time
 import traceback
 from dataclasses import dataclass
@@ -181,12 +182,14 @@ class GeneralPurposeAgent:
         client: ChatClient,
         tool_registry: ToolRegistry,
         event_sink: AgentEventSink | None = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.config = config
         self.client = client
         self.tool_registry = tool_registry
         self.last_trace: list[dict[str, Any]] = []
         self.event_sink = event_sink
+        self.stop_event = stop_event
 
     def run(self, task: str, *, extra_messages: list[dict[str, Any]] | None = None) -> AgentRunResult:
         messages: list[dict[str, Any]] = [
@@ -211,6 +214,18 @@ class GeneralPurposeAgent:
         self._emit(trace[-1])
 
         for turn in range(1, self.config.max_turns + 1):
+            if self.stop_event is not None and self.stop_event.is_set():
+                trace.append(
+                    {"type": "run_stopped", "turn": turn, "reason": "stop_event set"}
+                )
+                self.last_trace = trace
+                self._emit(trace[-1])
+                return AgentRunResult(
+                    final_answer="",
+                    messages=messages,
+                    trace=trace,
+                    turns=turn - 1,
+                )
             turn_start = time.time()
             trace.append({"type": "model_request", "agent": self.config.name, "turn": turn})
             self._emit(trace[-1])

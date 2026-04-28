@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import subprocess
+import threading
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -42,7 +43,7 @@ class RoleWorkspaceAccess:
         target = self._resolve_readable_file(path)
         text = target.read_text(encoding="utf-8")
         limit = self.max_read_chars if max_chars is None else int(max_chars)
-        if limit > 0 and len(text) > limit:
+        if 0 < limit < len(text):
             return text[:limit] + "\n[truncated]"
         return text
 
@@ -460,6 +461,7 @@ class SubagentService:
         digest_queue: "Any | None" = None,
         digest_context_provider: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         log_session: "Any | None" = None,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.suite = suite
         self.client_factory = client_factory
@@ -471,6 +473,7 @@ class SubagentService:
         self.digest_queue = digest_queue
         self.digest_context_provider = digest_context_provider
         self.log_session = log_session
+        self.stop_event = stop_event
 
     def available_types(self) -> list[str]:
         return sorted(self.suite.subagents)
@@ -533,6 +536,7 @@ class SubagentService:
                 client=self.client_factory(config),
                 tool_registry=registry,
                 event_sink=subagent_sink,
+                stop_event=self.stop_event,
             )
             result = agent.run(task)
         finally:
