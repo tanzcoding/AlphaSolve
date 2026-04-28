@@ -68,6 +68,7 @@ class OpenAIChatClient:
             api_key=resolve(config.get("api_key")),
             base_url=resolve(config.get("base_url")),
             timeout=self.timeout,
+            max_retries=6,
         )
 
     def complete(
