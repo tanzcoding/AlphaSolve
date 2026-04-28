@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .workspace import Workspace
+from alphasolve.utils.shell import has_bash, run_bash_command, run_powershell_command
 
 
 ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
@@ -262,41 +263,84 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
         ),
     )
 
-    def run_bash(args: dict[str, Any]) -> ToolResult:
-        command = str(args.get("command") or "")
-        if not command.strip():
-            return ToolResult("[error] empty command", is_error=True)
+    if has_bash():
+        def run_bash(args: dict[str, Any]) -> ToolResult:
+            command = str(args.get("command") or "")
+            if not command.strip():
+                return ToolResult("[error] empty command", is_error=True)
 
-        try:
-            argv = shlex.split(command)
-        except ValueError:
-            return ToolResult("[error] malformed command; could not parse", is_error=True)
-        result = subprocess.run(
-            argv,
-            cwd=str(workspace.root),
-            shell=False,
-            text=True,
-            capture_output=True,
-            timeout=bash_timeout_seconds,
-        )
-        parts = [f"[exit_code]\n{result.returncode}"]
-        if result.stdout:
-            parts.append(f"[stdout]\n{result.stdout}")
-        if result.stderr:
-            parts.append(f"[stderr]\n{result.stderr}")
-        return ToolResult("\n".join(parts), is_error=result.returncode != 0)
+            try:
+                shlex.split(command)
+            except ValueError:
+                return ToolResult("[error] malformed command; could not parse", is_error=True)
+            try:
+                result = run_bash_command(
+                    command,
+                    cwd=str(workspace.root),
+                    timeout=bash_timeout_seconds,
+                )
+            except subprocess.TimeoutExpired:
+                return ToolResult("[error] command timed out after 30 seconds", is_error=True)
+            parts = [f"[exit_code]\n{result.returncode}"]
+            if result.stdout:
+                parts.append(f"[stdout]\n{result.stdout}")
+            if result.stderr:
+                parts.append(f"[stderr]\n{result.stderr}")
+            return ToolResult("\n".join(parts), is_error=result.returncode != 0)
 
-    registry.register(
-        name="Bash",
-        description="Executes a given bash command with the workspace root as the working directory.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string"},
+        registry.register(
+            name="Bash",
+            description="Executes a given bash command with the workspace root as the working directory.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                },
+                "required": ["command"],
             },
-            "required": ["command"],
-        },
-        handler=run_bash,
-    )
+            handler=run_bash,
+        )
+    else:
+        # Windows without Git Bash — provide PowerShell-backed shell tool.
+        def run_shell(args: dict[str, Any]) -> ToolResult:
+            command = str(args.get("command") or "")
+            if not command.strip():
+                return ToolResult("[error] empty command", is_error=True)
+            try:
+                result = run_powershell_command(
+                    command,
+                    cwd=str(workspace.root),
+                    timeout=bash_timeout_seconds,
+                )
+            except FileNotFoundError as exc:
+                return ToolResult(f"[error] {exc}", is_error=True)
+            except subprocess.TimeoutExpired:
+                return ToolResult("[error] command timed out after 30 seconds", is_error=True)
+            parts = [f"[exit_code]\n{result.returncode}"]
+            if result.stdout:
+                parts.append(f"[stdout]\n{result.stdout}")
+            if result.stderr:
+                parts.append(f"[stderr]\n{result.stderr}")
+            return ToolResult("\n".join(parts), is_error=result.returncode != 0)
+
+        registry.register(
+            name="Shell",
+            description=(
+                "Executes a PowerShell command at the workspace root. "
+                "Git Bash is not available on this system.\n\n"
+                "Prefer dedicated tools for file operations: "
+                "Glob (NOT Get-ChildItem -Recurse), Read (NOT Get-Content), "
+                "Write (NOT Set-Content/Out-File), Edit.\n\n"
+                "Common aliases: ls (Get-ChildItem), cd (Set-Location), cat (Get-Content), rm (Remove-Item)"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string"},
+                },
+                "required": ["command"],
+            },
+            handler=run_shell,
+        )
 
     return registry

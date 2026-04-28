@@ -13,6 +13,11 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
 from alphasolve.execution.runners import run_python, run_wolfram
+from alphasolve.utils.shell import (
+    has_bash,
+    run_bash_command,
+    run_powershell_command,
+)
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
@@ -413,12 +418,9 @@ def build_workspace_tool_registry(
         if cmd_name != "ls":
             return ToolResult("[error] only `ls` is allowed for safety", is_error=True)
         try:
-            result = subprocess.run(
-                argv,
+            result = run_bash_command(
+                command,
                 cwd=str(access.workspace.root),
-                shell=False,
-                text=True,
-                capture_output=True,
                 timeout=30,
             )
         except subprocess.TimeoutExpired:
@@ -430,18 +432,67 @@ def build_workspace_tool_registry(
             parts.append(f"[stderr]\n{result.stderr}")
         return ToolResult("\n".join(parts), is_error=result.returncode != 0)
 
-    registry.register(
-        name="Bash",
-        description="Executes a bash command at the workspace root. Only `ls` is allowed for safety. Use this to verify directory contents (e.g. `ls verified_propositions/`) when Glob returns an empty or unexpected result.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "command": {"type": "string", "description": "The bash command to execute. Only `ls` is permitted."},
+
+    if has_bash():
+        registry.register(
+            name="Bash",
+            description="Executes a bash command at the workspace root. Only `ls` is allowed for safety. "
+            "Use this to verify directory contents (e.g. `ls verified_propositions/`) when Glob returns an empty or unexpected result.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The bash command to execute. Only `ls` is permitted."},
+                },
+                "required": ["command"],
             },
-            "required": ["command"],
-        },
-        handler=_run_bash,
-    )
+            handler=_run_bash,
+        )
+    else:
+        # Windows without Git Bash — provide a PowerShell-backed shell tool.
+        def _run_shell(args: dict[str, Any]) -> ToolResult:
+            command = str(args.get("command") or "")
+            if not command.strip():
+                return ToolResult("[error] empty command", is_error=True)
+            try:
+                result = run_powershell_command(
+                    command,
+                    cwd=str(access.workspace.root),
+                    timeout=60,
+                )
+            except FileNotFoundError as exc:
+                return ToolResult(f"[error] {exc}", is_error=True)
+            except subprocess.TimeoutExpired:
+                return ToolResult("[error] command timed out after 60 seconds", is_error=True)
+            parts = [f"[exit_code]\n{result.returncode}"]
+            if result.stdout:
+                parts.append(f"[stdout]\n{result.stdout}")
+            if result.stderr:
+                parts.append(f"[stderr]\n{result.stderr}")
+            return ToolResult("\n".join(parts), is_error=result.returncode != 0)
+
+        registry.register(
+            name="Shell",
+            description=(
+                "Executes a PowerShell command at the workspace root. "
+                "Each call is a fresh shell; state does not persist.\n\n"
+                "Git Bash is not available on this system, so this is the primary shell tool.\n\n"
+                "IMPORTANT: Prefer dedicated tools for file operations:\n"
+                "- File search: Use Glob (NOT Get-ChildItem -Recurse)\n"
+                "- Content search: Use Grep (NOT Select-String)\n"
+                "- Read files: Use Read (NOT Get-Content)\n"
+                "- Edit files: Use Edit\n"
+                "- Write files: Use Write (NOT Set-Content/Out-File)\n\n"
+                "Common aliases: ls (Get-ChildItem), cd (Set-Location), cat (Get-Content), rm (Remove-Item)"
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "The PowerShell command to execute."},
+                },
+                "required": ["command"],
+            },
+            handler=_run_shell,
+        )
 
     return registry
 
