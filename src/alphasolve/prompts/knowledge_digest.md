@@ -49,7 +49,7 @@ If an existing entry still has older frontmatter such as `sources`, do not add s
 
 ## Required Workflow
 
-1. First call `Glob` on `knowledge/` to see the current entry files. Do this before deciding whether any new file is needed. If Glob returns an empty result, use `Bash ls knowledge/` to confirm the directory is genuinely empty rather than a pattern mismatch.
+1. First call `Glob` on `knowledge/` to see the current entry files. Do this before deciding whether any new file is needed. If Glob returns an empty result, use `ListDir` on `knowledge/` to confirm the directory is genuinely empty rather than a pattern mismatch.
 2. Read `knowledge/index.md` to understand the current entry map.
 3. Analyze the new trace segment and extract a short list of concrete mathematical keywords: objects, estimates, norms, decompositions, cancellations, inequalities, failure patterns, named methods, and distinctive formula fragments.
 4. Before creating any new entry, search for candidate existing entries:

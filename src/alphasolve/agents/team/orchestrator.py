@@ -3,6 +3,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import threading
+import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -61,7 +62,9 @@ class WorkerManager:
         self.subagent_max_depth = subagent_max_depth
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.active: dict[concurrent.futures.Future, str] = {}
+        self.active_info: dict[str, dict[str, Any]] = {}
         self.results: list[WorkerRunResult] = []
+        self.completed_backlog: list[dict[str, Any]] = []
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.digest_queue = digest_queue
@@ -77,13 +80,13 @@ class WorkerManager:
                 "spawned": False,
                 "reason": "problem_already_solved",
                 "solution_path": str(self.solution_path) if self.solution_path else None,
+                **self._pool_status(),
             }
         if len(self.active) >= self.max_workers:
             return {
                 "spawned": False,
                 "reason": "parallelism_limit_reached",
-                "active_workers": sorted(self.active.values()),
-                "max_workers": self.max_workers,
+                **self._pool_status(),
             }
         worker = Worker(
             layout=self.layout,
@@ -108,17 +111,26 @@ class WorkerManager:
             )
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
+        self.active_info[worker_id] = {
+            "worker_id": worker_id,
+            "worker_dir": str(worker.worker_dir),
+            "hint": (hint or "").strip() or None,
+            "started_at": time.time(),
+        }
         return {
             "spawned": True,
             "worker_id": worker_id,
-            "active_count": len(self.active),
-            "max_workers": self.max_workers,
+            **self._pool_status(),
         }
 
     def wait(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         self._collect_done()
+        if self.completed_backlog:
+            completed = list(self.completed_backlog)
+            self.completed_backlog.clear()
+            return self._wait_payload(completed)
         if not self.active:
-            return {"completed": [], "active_workers": [], "message": "no active workers"}
+            return {"completed": [], **self._pool_status(), "message": "no active workers"}
         timeout = self.DEFAULT_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else max(300.0, float(timeout_seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
@@ -128,21 +140,12 @@ class WorkerManager:
         if not done:
             return {
                 "completed": [],
-                "active_workers": sorted(self.active.values()),
                 "timed_out": True,
                 "timeout_seconds": timeout,
                 "message": f"no worker finished within {timeout:g} seconds",
+                **self._pool_status(),
             }
-        completed = self._consume_done(done)
-        payload = {
-            "completed": completed,
-            "active_workers": sorted(self.active.values()),
-        }
-        if self.solved_result is not None:
-            payload["solved"] = True
-            payload["solution_path"] = str(self.solution_path) if self.solution_path else None
-            payload["message"] = "problem solved; orchestration should stop"
-        return payload
+        return self._wait_payload(self._consume_done(done))
 
     def close(self, *, timeout: float = 5.0) -> None:
         self.stop_event.set()
@@ -158,7 +161,7 @@ class WorkerManager:
 
     def _collect_done(self) -> None:
         done = [future for future in self.active if future.done()]
-        self._consume_done(done)
+        self.completed_backlog.extend(self._consume_done(done))
 
     def _consume_done(self, done) -> list[dict[str, Any]]:
         completed: list[dict[str, Any]] = []
@@ -166,6 +169,7 @@ class WorkerManager:
             worker_id = self.active.pop(future, None)
             if worker_id is None:
                 continue
+            self.active_info.pop(worker_id, None)
             try:
                 result = future.result()
             except Exception as exc:
@@ -196,6 +200,43 @@ class WorkerManager:
             self._append_worker_result_log(payload)
             completed.append(payload)
         return completed
+
+    def _wait_payload(self, completed: list[dict[str, Any]]) -> dict[str, Any]:
+        payload = {
+            "completed": completed,
+            **self._pool_status(),
+        }
+        if self.solved_result is not None:
+            payload["solved"] = True
+            payload["solution_path"] = str(self.solution_path) if self.solution_path else None
+            payload["message"] = "problem solved; orchestration should stop"
+        return payload
+
+    def _pool_status(self) -> dict[str, Any]:
+        active_workers = [
+            self._active_worker_payload(worker_id)
+            for worker_id in sorted(self.active.values())
+        ]
+        return {
+            "active_count": len(active_workers),
+            "active_worker_ids": [item["worker_id"] for item in active_workers],
+            "active_workers": active_workers,
+            "max_workers": self.max_workers,
+            "available_worker_slots": max(0, self.max_workers - len(active_workers)),
+        }
+
+    def _active_worker_payload(self, worker_id: str) -> dict[str, Any]:
+        info = self.active_info.get(worker_id, {})
+        hint = info.get("hint")
+        elapsed = max(0.0, time.time() - float(info.get("started_at") or time.time()))
+        progress = f"running for {elapsed:.0f}s"
+        if hint:
+            progress += f"; hint: {_short_summary(str(hint), limit=120)}"
+        return {
+            "worker_id": worker_id,
+            "worker_dir": info.get("worker_dir"),
+            "progress": progress,
+        }
 
     def _verified_count(self) -> int:
         return verified_count(self.layout.verified_dir)
@@ -341,7 +382,11 @@ class Orchestrator:
         registry = build_workspace_tool_registry(access, allow_write=False)
         registry.register(
             name="Agent",
-            description="Spawn one worker with an optional orchestrator hint. This call returns immediately. The worker attempts to prove a proposition and verify it.",
+            description=(
+                "Spawn one worker with an optional orchestrator hint. This call returns immediately. "
+                "The worker attempts to prove a proposition and verify it. The result includes the current "
+                "active worker count, active worker IDs, and a short progress snapshot for each active worker."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -353,7 +398,11 @@ class Orchestrator:
         )
         registry.register(
             name="TaskOutput",
-            description="Wait until any one active worker finishes, returning its lifecycle result. Blocks until a worker completes or timeout is reached.",
+            description=(
+                "Wait until any one active worker finishes, returning its lifecycle result plus the current "
+                "active worker count, active worker IDs, and short progress snapshots for still-active workers. "
+                "Blocks until a worker completes or timeout is reached."
+            ),
             parameters={
                 "type": "object",
                 "properties": {
@@ -433,6 +482,8 @@ class Orchestrator:
                 "3. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
                 "4. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
                 "Use `TaskOutput` only to receive worker results — it blocks until one worker's lifecycle ends. "
+                "Both `Agent` and `TaskOutput` return `active_count`, `active_worker_ids`, and `active_workers`; "
+                "use those fields to keep the number of active workers at or below the maximum. "
                 "It may return `timed_out: true` if no worker finishes within the requested timeout; if repeated "
                 "timeouts show no progress, report the stall so the outer Ralph loop can restart orchestration.\n\n"
                 "You may issue multiple tool calls in a single turn: for example, read several proposition files "

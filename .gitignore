@@ -20,6 +20,7 @@ env/
 *.env
 
 # AI coding tools
+.agents/
 .claude/
 .kiro/
 .cursor/

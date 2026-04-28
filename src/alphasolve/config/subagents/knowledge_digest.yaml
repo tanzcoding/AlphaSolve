@@ -9,9 +9,9 @@ agent:
     - Read
     - Write
     - Edit
+    - ListDir
     - Glob
     - Grep
-    - Bash
     - Agent
     - GetCurrentTime
   tool_parameters:
@@ -24,6 +24,18 @@ agent:
     Edit:
       path:
         pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+    ListDir:
+      path:
+        default: knowledge
+        enum:
+          - knowledge
+          - knowledge/
+      recursive:
+        const: false
+      max_results:
+        default: 100
+        minimum: 1
+        maximum: 500
     Glob:
       path:
         default: knowledge

@@ -9,5 +9,6 @@ agent:
     - RunPython
     - RunWolfram
     - Read
+    - ListDir
     - Glob
     - Grep

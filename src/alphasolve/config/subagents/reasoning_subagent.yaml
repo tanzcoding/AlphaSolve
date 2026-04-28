@@ -8,6 +8,7 @@ agent:
   tools:
     - Agent
     - Read
+    - ListDir
     - Glob
     - Grep
     - GetCurrentTime

@@ -6,11 +6,18 @@ agent:
   max_turns: 60
   tools:
     - Read
+    - ListDir
     - Glob
     - Grep
     - Agent
     - GetCurrentTime
   tool_parameters:
+    ListDir:
+      path:
+        default: verified_propositions
+        enum:
+          - verified_propositions
+          - verified_propositions/
     Agent:
       type:
         enum:

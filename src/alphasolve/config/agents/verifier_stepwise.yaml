@@ -6,9 +6,9 @@ agent:
   max_turns: 80
   tools:
     - Read
+    - ListDir
     - Glob
     - Grep
-    - Bash
     - Agent
     - GetCurrentTime
   tool_parameters:

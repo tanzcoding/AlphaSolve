@@ -646,7 +646,7 @@ class Worker:
                 (
                     "Create a file named `proposition.md` directly in your own directory "
                     f"`{self.worker_rel}`. The file must contain "
-                    "a Statement section and a Proof section. You may reference verified propositions with "
+                    "a Statement section and a Proof section. You may reference verified propositions that have been established in `verified_propositions` directory with "
                     "\\ref{filename-without-extension}."
                 ),
             ]
@@ -668,10 +668,9 @@ class Worker:
             + self.layout.read_problem()
             + "\n\n# Candidate Proposition File\n"
             + rel
-            + "\n\nRead the candidate proposition and write a rigorous review. Your final answer must include `Verdict: pass` "
+            + "\n\nRead the candidate proposition in `proposition.md` and write a rigorous review of the proof. Your final answer must include `Verdict: pass` "
             "or `Verdict: fail`. Check that every `\\ref{...}` points to an existing verified proposition "
-            "filename without the `.md` extension. Do not judge whether this proposition solves the original problem; "
-            "that is handled by a separate theorem checker."
+            "filename without the `.md` extension. "
             + f"\n\nVerifier workflow: {workflow_index}\n"
             + f"Independent verification attempt: {attempt_index} of {attempt_total}\n"
             + f"Verifier config: {config_name}"

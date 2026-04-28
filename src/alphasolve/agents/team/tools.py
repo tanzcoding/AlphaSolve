@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING, Any, Callable
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
 from alphasolve.execution.runners import run_python, run_wolfram
 from alphasolve.utils.shell import (
+    find_bash_path,
     has_bash,
-    run_bash_command,
     run_powershell_command,
 )
 
@@ -79,19 +79,24 @@ class RoleWorkspaceAccess:
         if recursive:
             for current, dirs, files in os.walk(target):
                 current_path = Path(current)
-                dirs[:] = [
+                dirs[:] = sorted([
                     name
                     for name in dirs
                     if name not in {".git", "__pycache__", ".venv", "node_modules"}
                     and not self._is_other_worker_path(current_path / name)
-                ]
-                for name in sorted(dirs):
+                    and not self._is_denied_read_path(current_path / name)
+                ])
+                for name in dirs:
                     out.append(self._rel(current_path / name) + "/")
                     if len(out) >= max_results:
                         return out
                 for name in sorted(files):
                     file_path = current_path / name
-                    if not self._is_other_worker_path(file_path) and not self._is_denied_read_file(file_path):
+                    if (
+                        not self._is_other_worker_path(file_path)
+                        and not self._is_denied_read_path(file_path)
+                        and not self._is_denied_read_file(file_path)
+                    ):
                         out.append(self._rel(file_path))
                         if len(out) >= max_results:
                             return out
@@ -99,6 +104,8 @@ class RoleWorkspaceAccess:
 
         for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
             if self._is_other_worker_path(child):
+                continue
+            if self._is_denied_read_path(child):
                 continue
             if self._is_denied_read_file(child):
                 continue
@@ -220,10 +227,11 @@ class RoleWorkspaceAccess:
                 for name in dirs
                 if name not in {".git", "__pycache__", ".venv", "node_modules"}
                 and not self._is_other_worker_path(current_path / name)
+                and not self._is_denied_read_path(current_path / name)
             ]
             for filename in files:
                 file_path = current_path / filename
-                if not self._is_denied_read_file(file_path):
+                if not self._is_denied_read_path(file_path) and not self._is_denied_read_file(file_path):
                     yield file_path
 
     def _extension_allowed(self, path: Path) -> bool:
@@ -245,8 +253,7 @@ class RoleWorkspaceAccess:
         if self.read_root_rel is not None:
             self._ensure_under_root(path, self.read_root_rel, kind="read")
         if self.deny_read_rel is not None:
-            deny_root = self.workspace.resolve(self.deny_read_rel)
-            if path == deny_root or deny_root in path.parents:
+            if self._is_denied_read_path(path):
                 raise ValueError(f"read access to {self.deny_read_rel} is denied for this agent")
 
     def _is_other_worker_path(self, path: Path) -> bool:
@@ -260,6 +267,12 @@ class RoleWorkspaceAccess:
             return True
         worker_rel = self.worker_rel.strip("/")
         return not (rel == worker_rel or rel.startswith(worker_rel + "/") or rel == "unverified_propositions")
+
+    def _is_denied_read_path(self, path: Path) -> bool:
+        if self.deny_read_rel is None:
+            return False
+        deny_root = self.workspace.resolve(self.deny_read_rel)
+        return path == deny_root or deny_root in path.parents
 
     def _is_denied_read_file(self, path: Path) -> bool:
         return path.is_file() and path.name in set(self.deny_read_file_names)
@@ -348,6 +361,35 @@ def build_workspace_tool_registry(
         ),
     )
     registry.register(
+        name="ListDir",
+        description=(
+            "Lists files and directories under a workspace directory without invoking a shell.\n\n"
+            "Usage:\n"
+            "- Prefer this over Bash/Shell for checking directory contents.\n"
+            "- Use recursive=true only for small, well-scoped directories.\n"
+            "- The result respects this agent's workspace access restrictions."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Directory to list. Defaults to workspace root.", "default": "."},
+                "recursive": {"type": "boolean", "description": "Whether to recursively list descendants.", "default": False},
+                "max_results": {"type": "integer", "description": "Maximum entries to return.", "default": 200},
+            },
+            "required": [],
+        },
+        handler=lambda args: ToolResult(
+            json.dumps(
+                access.list_dir(
+                    args.get("path", "."),
+                    recursive=bool(args.get("recursive", False)),
+                    max_results=int(args.get("max_results", 200)),
+                ),
+                ensure_ascii=False,
+            )
+        ),
+    )
+    registry.register(
         name="Grep",
         description="A powerful search tool built on ripgrep. Search specific text (in the pattern parameter) under a specific directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches. Whenever possible, use this instead of terminal grep/rg. This tool is faster and respects .gitignore.\n- Supports full regex syntax and file type filtering.",
         parameters={
@@ -419,9 +461,14 @@ def build_workspace_tool_registry(
         if cmd_name != "ls":
             return ToolResult("[error] only `ls` is allowed for safety", is_error=True)
         try:
-            result = run_bash_command(
-                command,
+            bash_path = find_bash_path()
+            if bash_path is None:
+                return ToolResult("[error] bash not found", is_error=True)
+            result = subprocess.run(
+                [str(bash_path), "-c", 'exec ls "$@"', "alphasolve-ls", *argv[1:]],
                 cwd=str(access.workspace.root),
+                text=True,
+                capture_output=True,
                 timeout=30,
             )
         except subprocess.TimeoutExpired:
@@ -437,8 +484,8 @@ def build_workspace_tool_registry(
     if has_bash():
         registry.register(
             name="Bash",
-            description="Executes a bash command at the workspace root. Only `ls` is allowed for safety. "
-            "Use this to verify directory contents (e.g. `ls verified_propositions/`) when Glob returns an empty or unexpected result.",
+            description="Executes a bash command at the workspace root. Only `ls` is currently allowed for safety. "
+            "Prefer ListDir for directory listings and Glob/Grep/Read for file inspection.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -478,6 +525,7 @@ def build_workspace_tool_registry(
                 "Each call is a fresh shell; state does not persist.\n\n"
                 "Git Bash is not available on this system, so this is the primary shell tool.\n\n"
                 "IMPORTANT: Prefer dedicated tools for file operations:\n"
+                "- Directory listing: Use ListDir (NOT ls/Get-ChildItem)\n"
                 "- File search: Use Glob (NOT Get-ChildItem -Recurse)\n"
                 "- Content search: Use Grep (NOT Select-String)\n"
                 "- Read files: Use Read (NOT Get-Content)\n"
@@ -549,7 +597,7 @@ class SubagentService:
         registry = self._build_subagent_registry(depth=depth, session_id=session_id)
         enabled_tools = list(config.tools)
         if self.file_access_factory is not None:
-            for name in ("Read", "Glob", "Grep"):
+            for name in ("Read", "ListDir", "Glob", "Grep"):
                 if name not in enabled_tools:
                     enabled_tools.append(name)
             if self.file_allow_write:
@@ -562,7 +610,7 @@ class SubagentService:
             enabled_tools = [
                 name
                 for name in enabled_tools
-                if name not in {"Read", "Write", "Edit", "Glob", "Grep"}
+                if name not in {"Read", "Write", "Edit", "ListDir", "Glob", "Grep"}
             ]
         if depth >= self.max_depth and "Agent" in enabled_tools:
             enabled_tools = [name for name in enabled_tools if name != "Agent"]
