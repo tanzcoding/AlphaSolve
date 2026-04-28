@@ -13,8 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
-from alphasolve.utils.event_logger import EventLogWriter, compose_event_sinks
-
+from alphasolve.utils.event_logger import compose_event_sinks
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry

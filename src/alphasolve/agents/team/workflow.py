@@ -5,7 +5,7 @@ import os
 import threading
 import traceback
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, OpenAIChatClient, load_agent_suite_config
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
@@ -13,7 +13,6 @@ from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
 from alphasolve.utils.log_session import LogSession
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer
-
 from .knowledge_digest import KnowledgeDigestQueue, init_knowledge_base
 from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count
 from .project import ProjectLayout

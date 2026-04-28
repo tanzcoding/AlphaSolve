@@ -27,7 +27,7 @@ class Workspace:
         if not target.is_file():
             raise WorkspaceError(f"not a file: {path}")
         text = target.read_text(encoding="utf-8")
-        if max_chars > 0 and len(text) > max_chars:
+        if 0 < max_chars < len(text):
             return text[:max_chars] + "\n[truncated]"
         return text
 
