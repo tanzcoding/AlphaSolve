@@ -53,9 +53,13 @@ class AlphaSolve:
         self.max_orchestrator_restarts = max(1, int(max_orchestrator_restarts))
         self.debug = debug
         self._stop_event = threading.Event()
+        # 这是“用户准备退出整个程序”时使用的一次性 worker 停止信号。
+        # 一旦置位，就不保证同一个 AlphaSolve 实例还能继续发起新一轮 worker。
+        self._worker_stop_event = threading.Event()
 
     def cancel(self) -> None:
         self._stop_event.set()
+        self._worker_stop_event.set()
 
     def run(self) -> OrchestratorRunResult:
         renderer = PropositionTeamRenderer(screen=False) if self.print_to_console else None
@@ -155,6 +159,7 @@ class AlphaSolve:
                     digest_queue=digest_queue,
                     log_session=log_session,
                     stop_event=self._stop_event,
+                    worker_stop_event=self._worker_stop_event,
                 )
                 result = orchestrator.run()
                 all_worker_results.extend(result.worker_results)

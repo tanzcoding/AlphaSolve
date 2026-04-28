@@ -20,11 +20,13 @@ _app: AlphaSolve | None = None
 def _on_interrupt(_signum: int, _frame: object) -> None:
     if _app is not None:
         _app.cancel()
-    # Restore default handler so a second Ctrl+C kills the process hard
-    # if the current API call / blocking operation hasn't finished yet.
+    # 第一次 Ctrl+C 会通知编排器停止，并通知当前 worker 退出。
+    # 还原默认处理器后，第二次 Ctrl+C 会立即终止整个进程。
     signal.signal(signal.SIGINT, signal.SIG_DFL)
-    print("\nInterrupted — finishing current work… (press Ctrl+C again to force exit)",
-          file=sys.stderr)
+    print(
+        "\nInterrupted: stopping workers and shutting down. Press Ctrl+C again to force exit immediately.",
+        file=sys.stderr,
+    )
 
 
 def main() -> None:
