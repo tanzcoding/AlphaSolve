@@ -279,6 +279,18 @@ class GeneralPurposeAgent:
             )
             self._emit(trace[-1])
 
+            if self.stop_event is not None and self.stop_event.is_set():
+                trace.append(
+                    {"type": "run_stopped", "turn": turn, "reason": "stop_event set after model response"}
+                )
+                self.last_trace = trace
+                self._emit(trace[-1])
+                return AgentRunResult(
+                    final_answer="",
+                    messages=messages,
+                    trace=trace,
+                    turns=turn,
+                )
             tool_calls = assistant_message.get("tool_calls") or []
             if not tool_calls:
                 final_answer = str(assistant_message.get("content") or "")
@@ -293,6 +305,18 @@ class GeneralPurposeAgent:
                 return AgentRunResult(final_answer=final_answer, messages=messages, trace=trace, turns=turn)
 
             for tool_call in tool_calls:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    trace.append(
+                        {"type": "run_stopped", "turn": turn, "reason": "stop_event set before tool execution"}
+                    )
+                    self.last_trace = trace
+                    self._emit(trace[-1])
+                    return AgentRunResult(
+                        final_answer="",
+                        messages=messages,
+                        trace=trace,
+                        turns=turn,
+                    )
                 function = tool_call.get("function") or {}
                 name = str(function.get("name") or "")
                 raw_args = function.get("arguments") or "{}"

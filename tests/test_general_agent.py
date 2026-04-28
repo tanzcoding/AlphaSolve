@@ -3,6 +3,7 @@ import os
 import pathlib
 import shutil
 import sys
+import threading
 from contextlib import contextmanager
 
 import httpx
@@ -178,6 +179,56 @@ def test_general_agent_resets_stream_state_on_retry_delta():
     assistant_deltas = [event["content"] for event in events if event["type"] == "assistant_delta"]
     assert thinking_deltas == ["stale reasoning", "fresh reasoning"]
     assert assistant_deltas == ["stale answer", "fresh answer"]
+
+
+def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_model_response():
+    stop_event = threading.Event()
+    tool_calls = []
+
+    class InterruptingClient:
+        def complete(self, *, messages, tools):
+            del messages, tools
+            stop_event.set()
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_side_effect",
+                        "type": "function",
+                        "function": {
+                            "name": "side_effect",
+                            "arguments": "{}",
+                        },
+                    }
+                ],
+            }
+
+    registry = ToolRegistry()
+    registry.register(
+        name="side_effect",
+        description="Record a side effect.",
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=lambda _args: tool_calls.append("called") or ToolResult("done"),
+    )
+    agent = GeneralPurposeAgent(
+        config=GeneralAgentConfig(
+            name="interruptible",
+            system_prompt="Use a tool.",
+            tools=["side_effect"],
+            max_turns=1,
+        ),
+        client=InterruptingClient(),
+        tool_registry=registry,
+        stop_event=stop_event,
+    )
+
+    result = agent.run("Call the tool.")
+
+    assert tool_calls == []
+    assert result.final_answer == ""
+    assert result.trace[-1]["type"] == "run_stopped"
+    assert result.trace[-1]["reason"] == "stop_event set after model response"
 
 
 def test_openai_chat_client_reconstructs_streaming_tool_calls():

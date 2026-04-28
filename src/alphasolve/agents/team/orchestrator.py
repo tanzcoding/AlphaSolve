@@ -147,7 +147,20 @@ class WorkerManager:
             }
         return self._wait_payload(self._consume_done(done))
 
-    def close(self, *, timeout: float = 5.0) -> None:
+    def close(self, *, timeout: float = 5.0, graceful: bool = False) -> None:
+        if graceful:
+            self.executor.shutdown(wait=False, cancel_futures=False)
+            if self.active:
+                done, _ = concurrent.futures.wait(
+                    list(self.active.keys()),
+                    timeout=None,
+                    return_when=concurrent.futures.ALL_COMPLETED,
+                )
+                self._consume_done(done)
+            self._collect_done()
+            self.executor.shutdown(wait=True, cancel_futures=False)
+            return
+
         self.stop_event.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
         if self.active and timeout > 0:
@@ -293,6 +306,7 @@ class Orchestrator:
         if self.log_session is not None:
             orchestrator_log_sink = self.log_session.create_orchestrator_sink()
         try:
+            worker_stop_event = threading.Event()
             manager = WorkerManager(
                 layout=self.layout,
                 suite=self.suite,
@@ -305,7 +319,7 @@ class Orchestrator:
                 execution_gateway=self.execution_gateway,
                 digest_queue=self.digest_queue,
                 log_session=self.log_session,
-                stop_event=self.stop_event,
+                stop_event=worker_stop_event,
             )
             result = None
             error_final_answer = ""
@@ -344,7 +358,12 @@ class Orchestrator:
                 error_final_answer = str(exc)
                 error_trace = exc.trace
             finally:
-                manager.close()
+                user_requested_stop = (
+                    self.stop_event is not None
+                    and self.stop_event.is_set()
+                    and manager.solved_result is None
+                )
+                manager.close(graceful=user_requested_stop)
         finally:
             if orchestrator_log_sink is not None:
                 orchestrator_log_sink.close()
