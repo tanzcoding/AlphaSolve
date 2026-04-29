@@ -15,9 +15,7 @@ agent:
     ListDir:
       path:
         default: verified_propositions
-        enum:
-          - verified_propositions
-          - verified_propositions/
+        pattern: "^(?:verified_propositions|knowledge)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
     Agent:
       type:
         enum:

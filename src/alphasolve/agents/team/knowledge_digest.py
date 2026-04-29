@@ -150,6 +150,8 @@ class KnowledgeDigestQueue:
             "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
             "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
             "and carefully organized topic pages. "
+            "At the start of the task, read `knowledge/index.md` before browsing or editing other wiki entries. "
+            "If an entry is becoming too long for useful LLM reads, split it into focused subtopic pages or folders. "
             f"{extra} "
             "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately."
         )

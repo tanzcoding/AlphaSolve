@@ -81,8 +81,12 @@ class RoleWorkspaceAccess:
         return self._rel(target)
 
     def rename_path(self, old_path: str, new_path: str) -> dict[str, str]:
-        source = self._resolve_writable_file(old_path, must_exist=True, destructive=True)
-        target = self._resolve_writable_file(new_path, destructive=True)
+        source = self._resolve_manageable_path(old_path, must_exist=True, destructive=True)
+        target = self._resolve_manageable_path(
+            new_path,
+            destructive=True,
+            expect_dir=source.is_dir(),
+        )
         old_rel = self._rel(source)
         if source == target:
             return {"old_path": old_rel, "path": self._rel(target)}
@@ -92,6 +96,11 @@ class RoleWorkspaceAccess:
         source.rename(target)
         self._record_touch(target)
         return {"old_path": old_rel, "path": self._rel(target)}
+
+    def make_dir(self, path: str) -> str:
+        target = self._resolve_writable_directory(path)
+        target.mkdir(parents=True, exist_ok=True)
+        return self._rel(target)
 
     def delete_file(self, path: str) -> str:
         target = self._resolve_writable_file(path, must_exist=True, destructive=True)
@@ -274,6 +283,48 @@ class RoleWorkspaceAccess:
             destructive=destructive,
         )
 
+    def _resolve_manageable_path(
+        self,
+        path: str,
+        *,
+        must_exist: bool = False,
+        destructive: bool = False,
+        expect_dir: bool | None = None,
+    ) -> Path:
+        target = self.workspace.resolve(path)
+        if self.write_root_rel is None:
+            raise ValueError("write_file is not enabled for this agent")
+        self._ensure_under_root(target, self.write_root_rel, kind="write")
+        if target == self.workspace.resolve(self.write_root_rel):
+            raise ValueError("cannot rename the writable root directory")
+        if destructive and target.name in set(self.destructive_protected_file_names):
+            raise ValueError(f"destructive operations are not allowed on {target.name}")
+        if must_exist and not target.exists():
+            raise ValueError(f"path does not exist: {path}")
+        if target.exists():
+            if not (target.is_file() or target.is_dir()):
+                raise ValueError(f"not a file or directory: {path}")
+            if expect_dir is True and not target.is_dir():
+                raise ValueError(f"not a directory: {path}")
+            if expect_dir is False and not target.is_file():
+                raise ValueError(f"not a file: {path}")
+            if target.is_file() and not self._extension_allowed(target):
+                raise ValueError(f"file extension is not allowed: {path}")
+        elif expect_dir is not True and not self._extension_allowed(target):
+            raise ValueError(f"file extension is not allowed: {path}")
+        return target
+
+    def _resolve_writable_directory(self, path: str) -> Path:
+        target = self.workspace.resolve(path)
+        if self.write_root_rel is None:
+            raise ValueError("write_file is not enabled for this agent")
+        self._ensure_under_root(target, self.write_root_rel, kind="write")
+        if target == self.workspace.resolve(self.write_root_rel):
+            raise ValueError("cannot create the writable root directory")
+        if target.exists() and not target.is_dir():
+            raise ValueError(f"not a directory: {path}")
+        return target
+
     def _finalize_writable_target(
         self,
         target: Path,
@@ -372,7 +423,7 @@ def build_workspace_tool_registry(
 
     registry.register(
         name="Read",
-        description="Reads a file from the local filesystem. You can access any file directly by using this tool.\n\nUsage:\n- You can optionally specify a max_chars (especially handy for long files), but it's recommended to read the whole file.",
+        description="Reads a file from the local filesystem within this agent's allowed read area.\n\nUsage:\n- You can optionally specify a max_chars value for long files.\n- Access restrictions are enforced by role.",
         parameters={
             "type": "object",
             "properties": {
@@ -388,7 +439,7 @@ def build_workspace_tool_registry(
     if allow_write:
         registry.register(
             name="Write",
-            description="Writes a file to the local filesystem.\n\nUsage:\n- Use `mode=\"overwrite\"` to replace the whole file.\n- Use `mode=\"append\"` to append content to the end of the file.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
+            description="Writes a file within this agent's allowed write area.\n\nUsage:\n- Use `mode=\"overwrite\"` to replace the whole file.\n- Use `mode=\"append\"` to append content to the end of the file.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
             parameters={
                 "type": "object",
                 "properties": {
@@ -439,13 +490,27 @@ def build_workspace_tool_registry(
         )
         if allow_manage:
             registry.register(
-                name="Rename",
-                description="Renames a file within the writable workspace area.\n\nUsage:\n- Use this to promote a clearer topic filename without rewriting file contents.\n- This tool fails if the target path already exists.",
+                name="MakeDir",
+                description="Creates a directory within the writable workspace area, including parent directories when needed.",
                 parameters={
                     "type": "object",
                     "properties": {
-                        "old_path": {"type": "string", "description": "Existing file path to rename."},
-                        "new_path": {"type": "string", "description": "New file path after renaming."},
+                        "path": {"type": "string", "description": "Directory path to create."},
+                    },
+                    "required": ["path"],
+                },
+                handler=lambda args: ToolResult(
+                    json.dumps({"path": access.make_dir(args["path"])}, ensure_ascii=False)
+                ),
+            )
+            registry.register(
+                name="Rename",
+                description="Renames a file or directory within the writable workspace area.\n\nUsage:\n- Use this to promote clearer topic filenames or reorganize topic folders without rewriting file contents.\n- This tool fails if the target path already exists.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "old_path": {"type": "string", "description": "Existing file or directory path to rename."},
+                        "new_path": {"type": "string", "description": "New file or directory path after renaming."},
                     },
                     "required": ["old_path", "new_path"],
                 },
@@ -475,7 +540,7 @@ def build_workspace_tool_registry(
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "The glob pattern to match files against."},
-                "path": {"type": "string", "description": "The directory to search in. Defaults to workspace root.", "default": "."},
+                "path": {"type": "string", "description": "The directory to search in. Defaults to this agent's configured search root.", "default": "."},
                 "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 100},
             },
             "required": ["pattern"],
@@ -503,7 +568,7 @@ def build_workspace_tool_registry(
         parameters={
             "type": "object",
             "properties": {
-                "path": {"type": "string", "description": "Directory to list. Defaults to workspace root.", "default": "."},
+                "path": {"type": "string", "description": "Directory to list. Defaults to this agent's configured read root.", "default": "."},
                 "recursive": {"type": "boolean", "description": "Whether to recursively list descendants.", "default": False},
                 "max_results": {"type": "integer", "description": "Maximum entries to return.", "default": 200},
             },
@@ -522,12 +587,12 @@ def build_workspace_tool_registry(
     )
     registry.register(
         name="Grep",
-        description="A powerful search tool built on ripgrep. Search specific text (in the pattern parameter) under a specific directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches. Whenever possible, use this instead of terminal grep/rg. This tool is faster and respects .gitignore.\n- Supports full regex syntax and file type filtering.",
+        description="Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- Set regex=true to treat pattern as a regular expression.\n- Results respect this agent's workspace access restrictions.",
         parameters={
             "type": "object",
             "properties": {
-                "pattern": {"type": "string", "description": "The regular expression pattern to search for in file contents."},
-                "path": {"type": "string", "description": "File or directory to search in (rg PATH). Defaults to current working directory.", "default": "."},
+                "pattern": {"type": "string", "description": "The text or regular expression pattern to search for in file contents."},
+                "path": {"type": "string", "description": "File or directory to search in. Defaults to this agent's configured search root.", "default": "."},
                 "regex": {"type": "boolean", "description": "Treat pattern as a regex (default: substring match).", "default": False},
                 "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 50},
                 "context_lines": {"type": "integer", "description": "Number of context lines around each match.", "default": 0},

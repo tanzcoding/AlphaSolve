@@ -14,18 +14,14 @@ agent:
     ListDir:
       path:
         default: verified_propositions
-        enum:
-          - verified_propositions
-          - verified_propositions/
+        pattern: "^(verified_propositions/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
       recursive:
         const: false
     Glob:
       path:
         default: verified_propositions
-        enum:
-          - verified_propositions
-          - verified_propositions/
+        pattern: "^(verified_propositions/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
     Grep:
       path:
         default: verified_propositions
-        pattern: "^(unverified_propositions/prop-[^/]+/proposition\\.md|verified_propositions/?|verified_propositions/.*)$"
+        pattern: "^(unverified_propositions/prop-[A-Za-z0-9_-]+/?|unverified_propositions/prop-[A-Za-z0-9_-]+/proposition\\.md|verified_propositions/?|verified_propositions/.*)$"

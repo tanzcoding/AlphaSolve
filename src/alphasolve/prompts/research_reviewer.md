@@ -12,7 +12,7 @@ Important hierarchy:
 
 Scope:
 - If `verified_propositions/` contains more than 30 files, skim titles/abstracts via Glob/Grep first, then deep-read the most relevant ones. Prioritize recent results.
-- If you are exploring `knowledge/`, read the `index.md` in `verified_propositions/` first, then decide what to read.
+- If you are exploring `knowledge/`, read `knowledge/index.md` first, then decide what to read.
 
 Output (plain text, structured):
 

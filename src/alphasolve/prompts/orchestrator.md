@@ -8,9 +8,11 @@ Use `TaskOutput` to wait for worker lifecycle results. It returns any completed 
 
 Use `Review` to launch a research_reviewer subagent that surveys verified_propositions/ and knowledge/, compares against problem.md, and returns a strategic report. Only use this when the directories contain many files and reading them all yourself would be inefficient. The reviewer will tell you which specific files are worth reading.
 
+When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
+
 A good orchestration loop is:
 1. If verified_propositions/ or knowledge/ contain many files, call `Review` to get a survey and file recommendations.
-2. Read the key files the reviewer flagged, plus any other files you need. Use `ListDir` to confirm directory contents when Glob returns an empty or unexpected result (e.g., to distinguish an empty directory from a pattern mismatch).
+2. Read the key files the reviewer flagged, plus any other files you need. If those files are in `knowledge/`, start from `knowledge/index.md`. Use `ListDir` to confirm directory contents when Glob returns an empty or unexpected result (e.g., to distinguish an empty directory from a pattern mismatch).
 3. Spawn one or more workers with diverse hints.
 4. Wait for worker results.
 5. If a worker returns a useful verified proposition, decide which direction to explore next.

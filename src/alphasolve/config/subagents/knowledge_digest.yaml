@@ -9,6 +9,7 @@ agent:
     - Read
     - Write
     - Edit
+    - MakeDir
     - Rename
     - Delete
     - ListDir
@@ -18,33 +19,32 @@ agent:
   tool_parameters:
     Read:
       path:
-        pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
     Write:
       path:
-        pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
       mode:
         enum:
           - overwrite
           - append
     Edit:
       path:
-        pattern: "^knowledge/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
+    MakeDir:
+      path:
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
     Rename:
       old_path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       new_path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
     Delete:
       path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*\\.md$"
     ListDir:
       path:
         default: knowledge
-        enum:
-          - knowledge
-          - knowledge/
-      recursive:
-        const: false
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       max_results:
         default: 100
         minimum: 1
@@ -52,9 +52,7 @@ agent:
     Glob:
       path:
         default: knowledge
-        enum:
-          - knowledge
-          - knowledge/
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       max_results:
         default: 100
         minimum: 1
@@ -62,7 +60,7 @@ agent:
     Grep:
       path:
         default: knowledge
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*\\.md)?$"
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
       max_results:
         default: 20
         minimum: 1

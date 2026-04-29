@@ -15,7 +15,7 @@ class AlphaSolveConfig:
         "api_key": lambda: os.getenv("DEEPSEEK_API_KEY"),
         "model": "deepseek-v4-flash",
         "timeout": 3600,
-        "params": {},
+        "params": {"extra_body": {"reasoning": {"effort": "max"}}},
     }
     DEEPSEEK_PRO_CONFIG = {
         "base_url": "https://api.deepseek.com",
