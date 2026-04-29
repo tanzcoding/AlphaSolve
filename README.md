@@ -282,7 +282,7 @@ alphasolve
 **续跑机制：**
 
 - `workspace/verified_propositions/` 中已验证的命题会被新的 Orchestrator 自动读取，作为已知知识直接复用
-- `workspace/knowledge/log.md` 中积累的知识管理同样供 Orchestrator 参考
+- `workspace/knowledge/index.md` 是知识库路线图，Orchestrator 会据此选择要阅读的主题条目或专题文件夹
 - 新产生的 worker 目录命名为 `prop-{hash}`，不含序号，不会与上次运行的目录冲突
 
 **人工添加命题：**
@@ -296,7 +296,7 @@ alphasolve
 ```
 workspace/
     verified_propositions/    # 所有通过验证的命题
-    knowledge/          # 运行过程知识管理（log.md + 按主题整理的知识条目）
+    knowledge/          # 运行过程知识管理（index.md 路线图 + 按主题整理的知识条目/文件夹）
 solution.md             # 最终解决方案（问题解决时生成）
 ```
 

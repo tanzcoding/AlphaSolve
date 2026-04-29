@@ -17,8 +17,10 @@ from alphasolve.agents.general import GeneralAgentConfig, Workspace, load_agent_
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
 from alphasolve.agents.team.curator import (  # noqa: E402
+    CURATOR_HEALTH_CHECK_INTERVAL,
     CuratorTask,
     CuratorQueue,
+    _health_check_prompt,
     _update_entry_metadata,
     init_knowledge_base,
 )
@@ -166,6 +168,22 @@ def test_init_knowledge_base_removes_log_and_omits_problem_section():
         assert (knowledge_dir / "common-errors.md").is_file()
 
 
+def test_init_knowledge_base_creates_route_map_index():
+    with local_project_dir("knowledge_route_map_init") as project_dir:
+        knowledge_dir = project_dir / "workspace" / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+
+        init_knowledge_base(knowledge_dir, "# Problem\n\nLegacy text.\n")
+
+        index_text = (knowledge_dir / "index.md").read_text(encoding="utf-8")
+        assert "## Start Here" in index_text
+        assert "## Current Bottlenecks" in index_text
+        assert "## Main Routes" in index_text
+        assert "## Failed Routes And Pitfalls" in index_text
+        assert "## Tools And Lemmas" in index_text
+        assert "## All Entries" in index_text
+
+
 def test_knowledge_curator_queue_updates_renderer_state(tmp_path):
     class Suite:
         subagents = {}
@@ -223,6 +241,48 @@ def test_knowledge_curator_queue_updates_renderer_state(tmp_path):
     finally:
         release.set()
         queue.stop(timeout=1)
+
+
+def test_curator_queue_enqueues_periodic_health_check(tmp_path):
+    class Suite:
+        subagents = {}
+        models = {}
+
+    workspace_dir = tmp_path / "workspace"
+    knowledge_dir = workspace_dir / "knowledge"
+    knowledge_dir.mkdir(parents=True)
+    queue = CuratorQueue(
+        knowledge_dir=knowledge_dir,
+        workspace_dir=workspace_dir,
+        suite=Suite(),
+        client_factory=lambda config: None,
+    )
+    queue._started = True
+
+    for index in range(CURATOR_HEALTH_CHECK_INTERVAL):
+        queue.submit(
+            CuratorTask(
+                trace_segment=[{"role": "assistant", "content": f"digest {index}"}],
+                source_label=f"prop-{index}/generator",
+            )
+        )
+
+    queued = [queue._queue.get_nowait() for _ in range(CURATOR_HEALTH_CHECK_INTERVAL + 1)]
+    assert [task.task_kind for task in queued[:-1]] == ["digest"] * CURATOR_HEALTH_CHECK_INTERVAL
+    assert queued[-1].task_kind == "health_check"
+    assert queued[-1].trace_segment == []
+    assert queued[-1].source_label == "knowledge-health-check"
+
+
+def test_curator_health_check_prompt_is_navigation_focused():
+    prompt = _health_check_prompt()
+
+    assert "Knowledge Base Health Check" in prompt
+    assert "route map" in prompt
+    assert "topic folders" in prompt
+    assert "giant flat summary list" in prompt
+    assert "prop-000" not in prompt
+    assert "worker_id" not in prompt
 
 
 def test_agent_team_demo_creates_workspace_and_verified_proposition():

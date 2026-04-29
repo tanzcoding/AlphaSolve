@@ -25,6 +25,10 @@ class CuratorTask:
     trace_segment: list[dict[str, Any]]
     source_label: str  # 调度用来源标签，不应原样写入知识库。
     caller_context: dict[str, Any] | None = None
+    task_kind: str = "digest"
+
+
+CURATOR_HEALTH_CHECK_INTERVAL = 4
 
 
 class CuratorQueue:
@@ -53,6 +57,7 @@ class CuratorQueue:
         self._queue: queue.Queue[CuratorTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="curator")
         self._started = False
+        self._digest_tasks_since_health_check = 0
 
     def start(self) -> None:
         if not self._started:
@@ -70,6 +75,18 @@ class CuratorQueue:
             if self.renderer is not None:
                 self.renderer.enqueue_curator_task(task.source_label)
             self._queue.put(task)
+            if task.task_kind == "digest":
+                self._digest_tasks_since_health_check += 1
+                if self._digest_tasks_since_health_check >= CURATOR_HEALTH_CHECK_INTERVAL:
+                    self._digest_tasks_since_health_check = 0
+                    health_task = CuratorTask(
+                        trace_segment=[],
+                        source_label="knowledge-health-check",
+                        task_kind="health_check",
+                    )
+                    if self.renderer is not None:
+                        self.renderer.enqueue_curator_task(health_task.source_label)
+                    self._queue.put(health_task)
 
     def _worker(self) -> None:
         while True:
@@ -115,46 +132,50 @@ class CuratorQueue:
             subagent_service=subagent_svc,
         )
 
-        trace_kind = _trace_kind(task.source_label)
-        is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
-        payload: Any = {
-            "trace_kind": trace_kind,
-            "trace": task.trace_segment,
-        }
-        if task.caller_context:
-            payload = {
-                "trace_kind": trace_kind,
-                "caller_context": task.caller_context,
-                "subagent_trace": task.trace_segment,
-            }
-        trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
-        if is_verifier_final:
-            extra = (
-                "This trace contains a verifier's final review of a generator's proposition. "
-                "In addition to normal knowledge updates, carefully read the verifier's review "
-                "to understand what mistake was made. "
-                "Append up to 3 general error patterns to `knowledge/common-errors.md` when useful. "
-                "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
-                "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
-                "Keep patterns general enough to apply across different problems. "
-                "Do not add bullets for issues already covered."
-            )
+        if task.task_kind == "health_check":
+            task_prompt = _health_check_prompt()
         else:
-            extra = "Do not modify `knowledge/common-errors.md`."
-        task_prompt = (
-            "# Trace Segment for Knowledge Base\n\n"
-            f"```json\n{trace_text}\n```\n\n"
-            "Update the knowledge base in `knowledge/` based on this trace segment. "
-            "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
-            "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
-            "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
-            "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
-            "and carefully organized topic pages. "
-            "At the start of the task, read `knowledge/index.md` before browsing or editing other wiki entries. "
-            "If an entry is becoming too long for useful LLM reads, split it into focused subtopic pages or folders. "
-            f"{extra} "
-            "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately."
-        )
+            trace_kind = _trace_kind(task.source_label)
+            is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
+            payload: Any = {
+                "trace_kind": trace_kind,
+                "trace": task.trace_segment,
+            }
+            if task.caller_context:
+                payload = {
+                    "trace_kind": trace_kind,
+                    "caller_context": task.caller_context,
+                    "subagent_trace": task.trace_segment,
+                }
+            trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
+            if is_verifier_final:
+                extra = (
+                    "This trace contains a verifier's final review of a generator's proposition. "
+                    "In addition to normal knowledge updates, carefully read the verifier's review "
+                    "to understand what mistake was made. "
+                    "Append up to 3 general error patterns to `knowledge/common-errors.md` when useful. "
+                    "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
+                    "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
+                    "Keep patterns general enough to apply across different problems. "
+                    "Do not add bullets for issues already covered."
+                )
+            else:
+                extra = "Do not modify `knowledge/common-errors.md`."
+            task_prompt = (
+                "# Trace Segment for Knowledge Base\n\n"
+                f"```json\n{trace_text}\n```\n\n"
+                "Update the knowledge base in `knowledge/` based on this trace segment. "
+                "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
+                "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
+                "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
+                "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
+                "and carefully organized topic pages. "
+                "At the start of the task, read `knowledge/index.md` before browsing or editing other wiki entries. "
+                "If an entry is becoming too long for useful LLM reads, split it into a topic folder with focused subtopic pages "
+                "and a local `index.md`, rather than scattering fragments in the knowledge root. "
+                f"{extra} "
+                "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately as a route map."
+            )
 
         curator_sink = self.log_session.create_curator_sink() if self.log_session is not None else None
         curator_success = False
@@ -223,6 +244,28 @@ def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
     )
 
 
+def _health_check_prompt() -> str:
+    return (
+        "# Knowledge Base Health Check\n\n"
+        "Perform a focused maintenance pass on `knowledge/`. This task is not based on a new mathematical trace.\n\n"
+        "Read `knowledge/index.md` first, then inspect the directory shape with ListDir/Glob and targeted reads. "
+        "Keep the pass practical: make small organization fixes immediately, but only do larger splits or renames "
+        "when the current structure is clearly making the wiki hard to navigate.\n\n"
+        "Check these items:\n"
+        "- `knowledge/index.md` should be a route map with sections like Start Here, Current Bottlenecks, Main Routes, "
+        "Failed Routes And Pitfalls, Tools And Lemmas, and All Entries. It should not be a giant flat summary list.\n"
+        "- The knowledge root should stay quiet. Broad or oversized topics should live in topic folders with their own "
+        "local `index.md`; do not scatter many sibling fragments at the root.\n"
+        "- If an entry is too long for useful later reads, split it into a topic folder with focused subtopic files and "
+        "preserve cross-links. Files above about 700 lines deserve scrutiny; files above 1000 lines usually need splitting.\n"
+        "- Check for stale links, missing entries in the root route map, confusing names, redundant pages, and obvious duplicates.\n"
+        "- Do not modify `knowledge/common-errors.md` unless you are only fixing organization, duplicates, or readability; "
+        "do not add new error patterns in this health check.\n\n"
+        "Do not record source labels, worker names, proposition IDs, round numbers, attempts, or session IDs. "
+        "Before finishing, make sure `knowledge/index.md` accurately describes the current live structure."
+    )
+
+
 def _update_entry_metadata(touched_paths: tuple[Path, ...]) -> None:
     """统一维护普通词条的 modification_count frontmatter。"""
     for md_file in touched_paths:
@@ -276,7 +319,17 @@ def init_knowledge_base(knowledge_dir: Path, problem_text: str) -> None:
     if not index.exists():
         index.write_text(
             "# Knowledge Index\n\n"
-            "## Entries\n\n"
+            "## Start Here\n\n"
+            "_No entries yet._\n\n"
+            "## Current Bottlenecks\n\n"
+            "_No entries yet._\n\n"
+            "## Main Routes\n\n"
+            "_No entries yet._\n\n"
+            "## Failed Routes And Pitfalls\n\n"
+            "_No entries yet._\n\n"
+            "## Tools And Lemmas\n\n"
+            "_No entries yet._\n\n"
+            "## All Entries\n\n"
             "_No entries yet._\n",
             encoding="utf-8",
         )

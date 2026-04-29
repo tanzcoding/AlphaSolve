@@ -64,8 +64,12 @@ You are maintaining a wiki, not merely appending notes. Always consider whether 
 - Create a new entry only when the knowledge does not fit naturally into an existing page.
 - Prefer stable, topic-based filenames over narrow episode-based filenames.
 - If new material belongs under a broader topic, move it there instead of creating a tiny fragment page.
-- Keep individual topic files reasonably sized for later LLM reads. If a page becomes oversized, split it into focused subtopic pages, preserve cross-links, and update `knowledge/index.md`.
+- Keep the knowledge root quiet. The root should contain `index.md`, `common-errors.md`, and a small number of global or genuinely standalone entries. Do not scatter many sibling fragments in the root.
 - Use folders for broad topic families when that keeps the wiki easier to scan. You may create folders and rename topic folders when reorganizing.
+- When splitting an oversized topic, prefer a topic folder over a hub-and-spoke cluster in the root. For example, split `knowledge/fourier-frequency-cutoff.md` into `knowledge/fourier-frequency-cutoff/index.md`, `knowledge/fourier-frequency-cutoff/energy-identity.md`, and `knowledge/fourier-frequency-cutoff/low-frequency-transfer.md`.
+- A topic folder's local `index.md` should be the route map for that topic. The root `knowledge/index.md` should point to the topic folder and summarize why to enter it; it should not expand every leaf page.
+- Use path-aware wiki links for folder entries, such as `[[fourier-frequency-cutoff/index]]` or `[[fourier-frequency-cutoff/low-frequency-transfer]]`.
+- Keep individual topic files reasonably sized for later LLM reads. Files above about 700 lines deserve scrutiny during a maintenance pass; files above 1000 lines usually need splitting into a topic folder unless they are intentionally archival and rarely read.
 - If two entries overlap too much, use your tools to reorganize the wiki: rewrite, append, create folders, rename files or folders, or delete obsolete pages after preserving their useful content elsewhere.
 - Cross-reference related pages instead of duplicating long arguments.
 
@@ -73,7 +77,33 @@ When the wiki feels cluttered, redundant, poorly named, hard to navigate, or too
 
 ## Index Maintenance
 
-`knowledge/index.md` should stay compact. A typical entry is one short line: wiki link plus a stable topic summary.
+`knowledge/index.md` should be a compact route map, not a flat database of long summaries. A future agent should be able to read it and decide which few files or topic folders to inspect next.
+
+Prefer this shape:
+
+```md
+# Knowledge Index
+
+## Start Here
+- [[entry-or-topic/index]] — why this is the best first stop.
+
+## Current Bottlenecks
+- [[entry-or-topic/index]] — the central open gap or obstruction.
+
+## Main Routes
+- [[entry-or-topic/index]] — active proof strategy or family of methods.
+
+## Failed Routes And Pitfalls
+- [[entry-or-topic/index]] — useful negative result, failed closure, or common trap.
+
+## Tools And Lemmas
+- [[entry-name]] — reusable estimate, identity, or lemma.
+
+## All Entries
+- [[entry-or-topic/index]] — one short line only.
+```
+
+Keep root index bullets short: link plus a stable topic summary, usually one line. Put detailed derivations, caveats, and long summaries inside the topic file or topic folder's local `index.md`.
 
 After every curator task, check whether `knowledge/index.md` still accurately describes the current live entries. Fix stale names, stale summaries, dead links, and missing entries.
 
