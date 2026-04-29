@@ -27,9 +27,11 @@ _DISPLAY_CHAR_LIMIT = 16000
 _MAX_TEAM_LOG_LINES = 80
 _ORCHESTRATOR_LOG_LINES = 30
 _RESIZE_POLL_INTERVAL = 0.10
+_WATCH_POLL_MIN_INTERVAL = 0.02
 _TERMINAL_STATUSES = {"verified", "rejected", "failed", "solved", "cancelled"}
 _MAX_TIMELINE_EVENTS = 40
 _WORKER_RETENTION_SECONDS = 600
+_STREAM_REFRESH_FLOOR = 15.0
 
 _TEAM_COLORS = (
     "cyan",
@@ -334,12 +336,21 @@ class PropositionTeamRenderer:
         *,
         console: Console = RICH_CONSOLE,
         refresh_per_second: float = 2.0,
+        stream_refresh_per_second: float | None = None,
         max_log_lines: int = 6,
         screen: bool = True,
     ) -> None:
         self.console = console
         self.refresh_per_second = refresh_per_second
         self._min_refresh_interval = 1.0 / max(0.1, float(refresh_per_second))
+        if stream_refresh_per_second is None:
+            stream_refresh_per_second = max(float(refresh_per_second), _STREAM_REFRESH_FLOOR)
+        self.stream_refresh_per_second = float(stream_refresh_per_second)
+        self._stream_min_refresh_interval = 1.0 / max(0.1, self.stream_refresh_per_second)
+        self._watch_poll_interval = max(
+            _WATCH_POLL_MIN_INTERVAL,
+            min(_RESIZE_POLL_INTERVAL, self._stream_min_refresh_interval),
+        )
         self.max_log_lines = max_log_lines
         self.screen = screen
         self._workers: dict[str, WorkerRenderState] = {}
@@ -350,6 +361,7 @@ class PropositionTeamRenderer:
         self._started_at = time.time()
         self._last_refresh_at = 0.0
         self._refresh_pending = False
+        self._next_refresh_at: float | None = None
         self._last_seen_size: tuple[int, int] | None = None
         self._watch_stop = threading.Event()
         self._watch_thread: threading.Thread | None = None
@@ -373,6 +385,8 @@ class PropositionTeamRenderer:
             self._live = _LineDiffLive(console=self.console, screen=self.screen)
             time.sleep(0.05) # We need to wait for Windows console subsystem here.
             self._last_seen_size = self._console_size()
+            self._refresh_pending = False
+            self._next_refresh_at = None
             self._watch_stop.clear()
             self._live.start(refresh=False)
             self._live.update(self.render(), refresh=True)
@@ -395,6 +409,7 @@ class PropositionTeamRenderer:
             if live is not None and self._refresh_pending:
                 live.update(self.render(), refresh=True)
                 self._refresh_pending = False
+                self._next_refresh_at = None
             self._live = None
             self._watch_thread = None
         if live is not None:
@@ -495,7 +510,7 @@ class PropositionTeamRenderer:
             state.thinking_text = _tail_chars(thinking_text)
             state.char_count += delta
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def finish_thinking(
         self, worker_id: str, *, module: str, elapsed: float, char_count: int
@@ -525,7 +540,7 @@ class PropositionTeamRenderer:
             state.char_count += len(text)
             state.status = "writing"
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def flush_output(self, worker_id: str) -> None:
         """Flush accumulated assistant output into the timeline."""
@@ -565,7 +580,7 @@ class PropositionTeamRenderer:
                 state.phase = phase
             state.status = "thinking"
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def update_tool_start(
         self, worker_id: str, *, module: str, name: str, arg_preview: str
@@ -781,7 +796,7 @@ class PropositionTeamRenderer:
             state.thinking_text = _tail_chars(thinking_text)
             state.char_count += delta
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def finish_digest_thinking(
         self, *, module: str, elapsed: float, char_count: int
@@ -811,7 +826,7 @@ class PropositionTeamRenderer:
             state.char_count += len(text)
             state.status = "writing"
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def flush_digest_output(self) -> None:
         with self._lock:
@@ -836,7 +851,7 @@ class PropositionTeamRenderer:
             state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
             state.status = "thinking"
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def update_digest_tool_start(self, *, module: str, name: str, arg_preview: str) -> None:
         with self._lock:
@@ -883,7 +898,7 @@ class PropositionTeamRenderer:
             state.thinking_text = _tail_chars(thinking_text)
             state.char_count += delta
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def finish_orchestrator_thinking(
         self, *, module: str, elapsed: float, char_count: int
@@ -913,7 +928,7 @@ class PropositionTeamRenderer:
             state.char_count += len(text)
             state.status = "writing"
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def flush_orchestrator_output(self) -> None:
         with self._lock:
@@ -940,7 +955,7 @@ class PropositionTeamRenderer:
             state.char_count = max(0, state.char_count - content_chars - reasoning_chars)
             state.status = "thinking"
             state.updated_at = time.time()
-            self._refresh_locked(force=True)
+            self._refresh_stream_locked()
 
     def update_orchestrator_tool_start(
         self, *, module: str, name: str, arg_preview: str
@@ -1360,7 +1375,7 @@ class PropositionTeamRenderer:
         return max(80, size.width), max(24, size.height)
 
     def _watch_terminal_loop(self) -> None:
-        while not self._watch_stop.wait(_RESIZE_POLL_INTERVAL):
+        while not self._watch_stop.wait(self._watch_poll_interval):
             with self._lock:
                 self._refresh_for_resize_or_pending_locked()
 
@@ -1375,7 +1390,10 @@ class PropositionTeamRenderer:
             self._paint_now_locked(now=now)
             return
 
-        if self._refresh_pending and now - self._last_refresh_at >= self._min_refresh_interval:
+        deadline = self._next_refresh_at
+        if deadline is None:
+            deadline = self._last_refresh_at + self._min_refresh_interval
+        if self._refresh_pending and now >= deadline:
             self._paint_now_locked(now=now)
 
     def _paint_now_locked(self, *, now: float | None = None) -> None:
@@ -1384,7 +1402,11 @@ class PropositionTeamRenderer:
         self._last_seen_size = self._console_size()
         self._last_refresh_at = time.time() if now is None else now
         self._refresh_pending = False
+        self._next_refresh_at = None
         self._live.update(self.render(), refresh=True)
+
+    def _refresh_stream_locked(self) -> None:
+        self._schedule_refresh_locked(self._stream_min_refresh_interval)
 
     def _refresh_locked(self, *, force: bool = False) -> None:
         if self._live is None:
@@ -1393,10 +1415,19 @@ class PropositionTeamRenderer:
         if force:
             self._paint_now_locked(now=now)
             return
-        if now - self._last_refresh_at < self._min_refresh_interval:
-            self._refresh_pending = True
+        self._schedule_refresh_locked(self._min_refresh_interval, now=now)
+
+    def _schedule_refresh_locked(self, min_refresh_interval: float, *, now: float | None = None) -> None:
+        if self._live is None:
             return
-        self._paint_now_locked(now=now)
+        current = time.time() if now is None else now
+        if current - self._last_refresh_at >= min_refresh_interval:
+            self._paint_now_locked(now=current)
+            return
+        self._refresh_pending = True
+        deadline = self._last_refresh_at + min_refresh_interval
+        if self._next_refresh_at is None or deadline < self._next_refresh_at:
+            self._next_refresh_at = deadline
 
 
 # ---------------------------------------------------------------------------
