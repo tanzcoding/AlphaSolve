@@ -38,7 +38,7 @@ class FakeChatClient:
                         "id": "call_write",
                         "type": "function",
                         "function": {
-                            "name": "write_file",
+                            "name": "Write",
                             "arguments": json.dumps(
                                 {
                                     "path": "propositions/prop-0.md",
@@ -58,7 +58,7 @@ class FakeChatClient:
                         "id": "call_read",
                         "type": "function",
                         "function": {
-                            "name": "read_file",
+                            "name": "Read",
                             "arguments": json.dumps({"path": "propositions/prop-0.md"}),
                         },
                     }
@@ -179,6 +179,57 @@ def test_general_agent_resets_stream_state_on_retry_delta():
     assistant_deltas = [event["content"] for event in events if event["type"] == "assistant_delta"]
     assert thinking_deltas == ["stale reasoning", "fresh reasoning"]
     assert assistant_deltas == ["stale answer", "fresh answer"]
+
+
+def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
+    class AliasReasoningClient:
+        def __init__(self):
+            self.calls = 0
+            self.second_request_messages = None
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            if self.calls == 1:
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "reasoning": "use the edit tool",
+                    "tool_calls": [
+                        {
+                            "id": "call_side_effect",
+                            "type": "function",
+                            "function": {"name": "side_effect", "arguments": "{}"},
+                        }
+                    ],
+                }
+            self.second_request_messages = list(messages)
+            return {"role": "assistant", "content": "done"}
+
+    registry = ToolRegistry()
+    registry.register(
+        name="side_effect",
+        description="Record a side effect.",
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=lambda _args: ToolResult("ok"),
+    )
+    client = AliasReasoningClient()
+    agent = GeneralPurposeAgent(
+        config=GeneralAgentConfig(
+            name="alias-reasoning",
+            system_prompt="Use a tool.",
+            tools=["side_effect"],
+            max_turns=2,
+        ),
+        client=client,
+        tool_registry=registry,
+    )
+
+    result = agent.run("Call the tool.")
+
+    assert result.final_answer == "done"
+    assert client.second_request_messages[2]["reasoning"] == "use the edit tool"
+    assert client.second_request_messages[2]["reasoning_content"] == "use the edit tool"
 
 
 def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_model_response():
@@ -376,7 +427,7 @@ def _assert_agent_can_write_and_read_workspace_file(tmp_path):
     config = GeneralAgentConfig(
         name="demo",
         system_prompt="You are a demo agent.",
-        tools=["write_file", "read_file"],
+        tools=["Write", "Read"],
         max_turns=5,
     )
     agent = GeneralPurposeAgent(config=config, client=FakeChatClient(), tool_registry=registry)
@@ -391,7 +442,7 @@ def _assert_agent_can_write_and_read_workspace_file(tmp_path):
     assert result.trace[-1]["final_answer"] == "demo complete"
     tool_calls = [item for item in result.trace if item["type"] == "tool_call"]
     tool_results = [item for item in result.trace if item["type"] == "tool_result"]
-    assert [item["name"] for item in tool_calls] == ["write_file", "read_file"]
+    assert [item["name"] for item in tool_calls] == ["Write", "Read"]
     assert len(tool_results) == 2
     assert not any(item["is_error"] for item in tool_results)
 
@@ -404,7 +455,7 @@ def test_workspace_blocks_path_escape():
 def _assert_workspace_blocks_path_escape(tmp_path):
     workspace = Workspace(tmp_path)
     try:
-        workspace.read_text("../outside.txt")
+        workspace.read_text_page("../outside.txt")
     except Exception as exc:
         assert "escapes workspace" in str(exc)
     else:
@@ -455,7 +506,7 @@ def _assert_load_general_agent_config(tmp_path):
             {
                 "name": "demo",
                 "system_prompt": "Demo prompt",
-                "tools": ["read_file"],
+                "tools": ["Read"],
                 "skills": ["math_review"],
                 "max_turns": 7,
             }
@@ -466,7 +517,7 @@ def _assert_load_general_agent_config(tmp_path):
     config = load_general_agent_config(config_path)
 
     assert config.name == "demo"
-    assert config.tools == ["read_file"]
+    assert config.tools == ["Read"]
     assert config.skills == ["math_review"]
     assert config.max_turns == 7
 
@@ -488,11 +539,11 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
                     "  model_config: BASE_MODEL",
                     "  max_turns: 9",
                     "  tools:",
-                    "    - read_file",
-                    "    - write_file",
-                    "    - agent",
+                    "    - Read",
+                    "    - Write",
+                    "    - Agent",
                     "  tool_parameters:",
-                    "    agent:",
+                    "    Agent:",
                     "      type:",
                     "        enum:",
                     "          - reasoning_subagent",
@@ -512,9 +563,9 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
                     "  system_prompt_args:",
                     "    ROLE: child",
                     "  exclude_tools:",
-                    "    - write_file",
+                    "    - Write",
                     "  tool_parameters:",
-                    "    agent:",
+                    "    Agent:",
                     "      type:",
                     "        enum:",
                     "          - reasoning_subagent",
@@ -529,8 +580,8 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
         assert config.system_prompt == "Base child"
         assert config.model_config == "BASE_MODEL"
         assert config.max_turns == 9
-        assert config.tools == ["read_file", "agent"]
-        assert config.tool_parameters["agent"]["type"]["enum"] == ["reasoning_subagent"]
+        assert config.tools == ["Read", "Agent"]
+        assert config.tool_parameters["Agent"]["type"]["enum"] == ["reasoning_subagent"]
 
 
 def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
@@ -549,7 +600,7 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
                             "id": "blocked_tool",
                             "type": "function",
                             "function": {
-                                "name": "write_file",
+                                "name": "Write",
                                 "arguments": json.dumps({"path": "blocked.md", "content": "no"}),
                             },
                         }
@@ -564,8 +615,8 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
                             "id": "bad_arg",
                             "type": "function",
                             "function": {
-                                "name": "list_dir",
-                                "arguments": json.dumps({"path": "forbidden"}),
+                                "name": "Read",
+                                "arguments": json.dumps({"path": "forbidden.md"}),
                             },
                         }
                     ],
@@ -578,8 +629,8 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
         config = GeneralAgentConfig(
             name="guarded",
             system_prompt="You are a guarded agent.",
-            tools=["list_dir"],
-            tool_parameters={"list_dir": {"path": {"enum": ["."]}}},
+            tools=["Read"],
+            tool_parameters={"Read": {"path": {"enum": ["allowed.md"]}}},
             max_turns=5,
         )
         agent = GeneralPurposeAgent(config=config, client=InvalidToolClient(), tool_registry=registry)

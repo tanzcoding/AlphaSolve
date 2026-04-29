@@ -71,6 +71,6 @@ def test_citation_access_denies_knowledge_reads(tmp_path):
     access = RoleWorkspaceAccess(workspace=workspace, deny_read_rels=("knowledge",))
 
     assert "knowledge/" not in access.list_dir(".")
-    assert access.read_text("verified_propositions/lemma.md") == "verified"
+    assert "verified" in access.read_text_page("verified_propositions/lemma.md").output
     with pytest.raises(ValueError, match="knowledge"):
-        access.read_text("knowledge/summary.md")
+        access.read_text_page("knowledge/summary.md")

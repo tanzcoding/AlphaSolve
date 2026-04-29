@@ -182,19 +182,17 @@ def test_alphasolve_cancel_stops_orchestrator_and_current_workers(tmp_path, monk
     allow_return = threading.Event()
 
     class CapturingOrchestrator:
-        def __init__(self, *, stop_event, worker_stop_event, **_kwargs):
+        def __init__(self, *, stop_event, **_kwargs):
             captured["stop_event"] = stop_event
-            captured["worker_stop_event"] = worker_stop_event
 
         def run(self):
             started.set()
             deadline = time.time() + 2
             while time.time() < deadline:
-                if captured["stop_event"].is_set() and captured["worker_stop_event"].is_set():
+                if captured["stop_event"].is_set():
                     break
                 time.sleep(0.01)
             captured["stop_seen"] = captured["stop_event"].is_set()
-            captured["worker_stop_seen"] = captured["worker_stop_event"].is_set()
             allow_return.wait(timeout=1)
             return OrchestratorRunResult(final_answer="", trace=[], worker_results=[], solution_path=None)
 
@@ -225,16 +223,11 @@ def test_alphasolve_cancel_stops_orchestrator_and_current_workers(tmp_path, monk
         app.cancel()
         deadline = time.time() + 1
         while time.time() < deadline:
-            if captured.get("stop_seen") and captured.get("worker_stop_seen"):
+            if captured.get("stop_seen"):
                 break
             time.sleep(0.01)
-        assert captured["stop_event"] is not captured["worker_stop_event"]
         assert captured["stop_event"].is_set()
-        assert captured["worker_stop_event"].is_set()
         assert captured["stop_seen"] is True
-        assert captured["worker_stop_seen"] is True
-        # cancel() 的 worker 停止信号是退出专用的一次性开关，置位后保持为 True。
-        assert app._worker_stop_event.is_set()
     finally:
         allow_return.set()
         thread.join(timeout=2)

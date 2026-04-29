@@ -20,6 +20,7 @@ from rich.console import Console
 from alphasolve.agents.general.general_agent import (
     _first_text_delta,
     _object_to_dict,
+    _prepare_messages_for_request,
 )
 from alphasolve.agents.team.dashboard import make_worker_event_sink
 from alphasolve.utils.rich_renderer import (
@@ -178,14 +179,50 @@ class TestBug2_ReasoningContent:
 
     def test_first_text_delta_recognizes_reasoning_keys(self):
         """Verify which keys are checked for reasoning deltas."""
-        # Only these keys are checked
-        keys = ("reasoning_content", "reasoning", "reasoning_text")
+        keys = ("reasoning_content", "reasoning", "reasoning_text", "thinking")
 
         assert _first_text_delta({"reasoning_content": "r"}, keys) == "r"
         assert _first_text_delta({"reasoning": "r"}, keys) == "r"
         assert _first_text_delta({"reasoning_text": "r"}, keys) == "r"
-        # "thinking" is NOT checked — some providers use this key
-        assert _first_text_delta({"thinking": "r"}, keys) == ""
+        assert _first_text_delta({"thinking": "r"}, keys) == "r"
+
+    def test_object_to_dict_normalizes_reasoning_aliases(self):
+        """Provider-specific thinking fields are echoed as reasoning_content."""
+        class FakeThinkingMessage:
+            role = "assistant"
+            content = ""
+            thinking = "provider thinking"
+
+            def model_dump(self, exclude_none=False):
+                return {"role": self.role, "content": self.content, "thinking": self.thinking}
+
+        result = _object_to_dict(FakeThinkingMessage())
+
+        assert result["thinking"] == "provider thinking"
+        assert result["reasoning_content"] == "provider thinking"
+
+    def test_thinking_mode_tool_call_request_keeps_reasoning_content_key(self):
+        """Tool-call assistant messages must carry reasoning_content into the next request."""
+        messages = [
+            {"role": "user", "content": "revise"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_edit",
+                        "type": "function",
+                        "function": {"name": "edit_file", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_edit", "content": "ok"},
+        ]
+
+        prepared = _prepare_messages_for_request(messages, thinking_mode=True)
+
+        assert prepared[1]["reasoning_content"] == ""
+        assert "reasoning_content" not in messages[1]
 
     def test_streaming_message_preserves_reasoning_content(self):
         """Simulate the streaming path and verify the message structure."""
@@ -413,11 +450,10 @@ class TestRefreshBehavior:
             # Should NOT paint immediately (throttled)
             assert throttled_output == "" or "\x1b[2K" not in throttled_output
 
-            # Force call (update_thinking WITH force=True)
             renderer.update_thinking(0, module="generator",
                                      thinking_text="test", elapsed=0)
-            forced_output = stream.getvalue()
-            # SHOULD paint immediately
-            assert "Thinking" in forced_output or "\x1b[2K" in forced_output
+            state = renderer._workers[0]
+            assert state.phase == "generator"
+            assert state.thinking_token_count == len("test")
         finally:
             renderer.stop()

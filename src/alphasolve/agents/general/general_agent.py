@@ -17,6 +17,8 @@ from .tool_registry import ToolRegistry
 
 
 ChatDeltaSink = Callable[[dict[str, Any]], None]
+_REASONING_KEYS = ("reasoning_content", "reasoning", "reasoning_text", "thinking")
+_MISSING = object()
 
 
 class ChatClient(Protocol):
@@ -64,6 +66,7 @@ class OpenAIChatClient:
         self.temperature = resolve(config.get("temperature", 1.0))
         self.timeout = resolve(config.get("timeout", 3600))
         self.params = resolve(config.get("params", {})) or {}
+        self.thinking_mode = _config_enables_thinking(self.params)
         self.client = OpenAI(
             api_key=resolve(config.get("api_key")),
             base_url=resolve(config.get("base_url")),
@@ -80,7 +83,7 @@ class OpenAIChatClient:
     ) -> dict[str, Any]:
         request: dict[str, Any] = {
             "model": self.model,
-            "messages": messages,
+            "messages": _prepare_messages_for_request(messages, thinking_mode=self.thinking_mode),
             "temperature": self.temperature,
             **self.params,
         }
@@ -137,7 +140,7 @@ class OpenAIChatClient:
                 continue
 
             role = str(delta.get("role") or role)
-            reasoning_delta = _first_text_delta(delta, ("reasoning_content", "reasoning", "reasoning_text", "thinking"))
+            reasoning_delta = _first_text_delta(delta, _REASONING_KEYS)
             if reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
                 delta_sink({"type": "reasoning", "content": reasoning_delta})
@@ -234,6 +237,7 @@ class GeneralPurposeAgent:
             delta_sink = self._make_delta_sink(turn=turn, state=stream_state) if self.event_sink is not None else None
             try:
                 assistant_message = self._complete(messages=messages, tools=tools, delta_sink=delta_sink)
+                assistant_message = _normalize_message_reasoning(assistant_message)
             except KeyboardInterrupt:
                 trace.append(
                     {"type": "run_stopped", "turn": turn, "reason": "keyboard_interrupt"}
@@ -505,17 +509,69 @@ def _object_to_dict(value: Any) -> dict[str, Any]:
     if value is None:
         return {}
     if isinstance(value, dict):
-        return dict(value)
+        return _normalize_message_reasoning(dict(value))
     if hasattr(value, "model_dump"):
         result = value.model_dump(exclude_none=True)
-        for attr in ("reasoning_content", "reasoning", "reasoning_text", "thinking"):
+        for attr in _REASONING_KEYS:
             if attr in result or not hasattr(value, attr):
                 continue
             attr_value = getattr(value, attr)
-            if attr_value:
+            if attr_value is not None:
                 result[attr] = str(attr_value)
-        return result
-    return dict(value)
+        return _normalize_message_reasoning(result)
+    return _normalize_message_reasoning(dict(value))
+
+
+def _prepare_messages_for_request(
+    messages: list[dict[str, Any]],
+    *,
+    thinking_mode: bool,
+) -> list[dict[str, Any]]:
+    return [_normalize_message_for_request(message, thinking_mode=thinking_mode) for message in messages]
+
+
+def _normalize_message_for_request(message: dict[str, Any], *, thinking_mode: bool) -> dict[str, Any]:
+    normalized = _normalize_message_reasoning(message)
+    if (
+        thinking_mode
+        and normalized.get("role") == "assistant"
+        and normalized.get("tool_calls")
+        and "reasoning_content" not in normalized
+    ):
+        # thinking 模式下，部分兼容接口会要求工具调用前的 assistant 消息显式带回该字段。
+        normalized["reasoning_content"] = ""
+    return normalized
+
+
+def _normalize_message_reasoning(message: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(message)
+    reasoning = _first_present_reasoning_value(normalized)
+    if reasoning is not _MISSING and "reasoning_content" not in normalized:
+        normalized["reasoning_content"] = "" if reasoning is None else str(reasoning)
+    return normalized
+
+
+def _first_present_reasoning_value(message: dict[str, Any]) -> Any:
+    for key in _REASONING_KEYS:
+        if key in message:
+            return message[key]
+    return _MISSING
+
+
+def _config_enables_thinking(params: Mapping[str, Any]) -> bool:
+    extra_body = params.get("extra_body") if isinstance(params, Mapping) else None
+    if not isinstance(extra_body, Mapping):
+        return False
+    if extra_body.get("enable_thinking") is True:
+        return True
+    reasoning = extra_body.get("reasoning")
+    if isinstance(reasoning, Mapping) and reasoning:
+        return True
+    thinking = extra_body.get("thinking")
+    if isinstance(thinking, Mapping):
+        thinking_type = str(thinking.get("type") or "").lower()
+        return thinking_type in {"enabled", "enable", "on", "true"} or bool(thinking.get("enabled"))
+    return False
 
 
 def _first_text_delta(delta: dict[str, Any], keys: tuple[str, ...]) -> str:
