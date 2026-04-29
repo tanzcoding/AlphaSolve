@@ -281,6 +281,9 @@ def test_curator_health_check_prompt_is_navigation_focused():
     assert "route map" in prompt
     assert "topic folders" in prompt
     assert "giant flat summary list" in prompt
+    assert "common-errors.md" in prompt
+    assert "100 lines" in prompt
+    assert "shared failure mode" in prompt
     assert "prop-000" not in prompt
     assert "worker_id" not in prompt
 

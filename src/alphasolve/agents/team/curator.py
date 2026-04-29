@@ -259,8 +259,9 @@ def _health_check_prompt() -> str:
         "- If an entry is too long for useful later reads, split it into a topic folder with focused subtopic files and "
         "preserve cross-links. Files above about 700 lines deserve scrutiny; files above 1000 lines usually need splitting.\n"
         "- Check for stale links, missing entries in the root route map, confusing names, redundant pages, and obvious duplicates.\n"
-        "- Do not modify `knowledge/common-errors.md` unless you are only fixing organization, duplicates, or readability; "
-        "do not add new error patterns in this health check.\n\n"
+        "- Keep `knowledge/common-errors.md` concise. If it exceeds 100 lines or feels too long to scan, consolidate "
+        "overlapping bullets by abstracting their shared failure mode into one broader reusable pattern. Look for "
+        "entries that can be subsumed by a more general error pattern. Do not add new error patterns in this health check.\n\n"
         "Do not record source labels, worker names, proposition IDs, round numbers, attempts, or session IDs. "
         "Before finishing, make sure `knowledge/index.md` accurately describes the current live structure."
     )

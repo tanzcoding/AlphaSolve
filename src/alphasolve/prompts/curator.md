@@ -18,7 +18,7 @@ If a detail is only useful for debugging the AlphaSolve run, skip it. If it teac
 ## Knowledge Base Structure
 
 - `knowledge/index.md`: compact map of the current wiki. Keep it accurate and easy to scan.
-- `knowledge/common-errors.md`: reusable patterns of mistakes that the generator commonly makes when constructing propositions. Update this only when curating a verifier's final review.
+- `knowledge/common-errors.md`: reusable patterns of mistakes that the generator commonly makes when constructing propositions. Add new patterns only when curating a verifier's final review; during health checks, only reorganize or consolidate existing patterns.
 - `knowledge/<entry-name>.md` or `knowledge/<topic>/<entry-name>.md`: topic notes.
 
 There is no maintenance log file. Do not create one.
@@ -111,9 +111,11 @@ After every curator task, check whether `knowledge/index.md` still accurately de
 
 `knowledge/common-errors.md` is special.
 
-- Only update it when the incoming task is based on a verifier's final review.
+- Add new error patterns only when the incoming task is based on a verifier's final review.
+- During a health check, you may reorganize or consolidate `knowledge/common-errors.md`, but do not add new error patterns.
 - Each bullet should describe a reusable generator failure pattern, not a specific failed proposition or review episode.
 - Keep the wording general enough to transfer across different problems.
+- Keep the file short enough to scan. If it exceeds 100 lines or becomes repetitive, merge overlapping bullets by abstracting the shared failure mode into one broader reusable pattern. Also look for bullets that can be subsumed by a more general existing pattern.
 - Do not add duplicates.
 
 ## Contradictions and Uncertainty
