@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
-    from .knowledge_digest import KnowledgeDigestQueue
+    from .curator import CuratorQueue
 
 
 _REVIEW_VERDICT_PROMPT = """You are an AlphaSolve verifier-attempt verdict classifier.
@@ -139,7 +139,7 @@ class VerifierWorkflowResult:
     attempts_run: int
 
 
-class GeneratorDigestContext:
+class GeneratorCuratorContext:
     def __init__(self, *, worker_id: str, worker_rel: str) -> None:
         self.worker_id = worker_id
         self.worker_rel = worker_rel
@@ -185,7 +185,7 @@ class Worker:
         subagent_max_depth: int = 2,
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
-        digest_queue: KnowledgeDigestQueue | None = None,
+        curator_queue: CuratorQueue | None = None,
         stop_event: threading.Event | None = None,
         log_session: LogSession | None = None,
     ) -> None:
@@ -204,7 +204,7 @@ class Worker:
         self.trace: list[dict[str, Any]] = []
         self.renderer = renderer
         self.execution_gateway = execution_gateway
-        self.digest_queue = digest_queue
+        self.curator_queue = curator_queue
         self.stop_event = stop_event
         self.log_session = log_session
         self._worker_log_sink = log_session.create_worker_sink(prop_hash) if log_session is not None else None
@@ -302,15 +302,15 @@ class Worker:
             deny_other_unverified=True,
             single_proposition_file=True,
         )
-        digest_context = GeneratorDigestContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
+        curator_context = GeneratorCuratorContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
         subagents = SubagentService(
             suite=self.suite,
             client_factory=self.client_factory,
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/generator",
-            digest_queue=self.digest_queue,
-            digest_context_provider=digest_context.consume,
+            curator_queue=self.curator_queue,
+            curator_context_provider=curator_context.consume,
             log_session=self.log_session,
             stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
@@ -323,7 +323,7 @@ class Worker:
             config=config,
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
-            event_sink=self._generator_event_sink(digest_context),
+            event_sink=self._generator_event_sink(curator_context),
             stop_event=self.stop_event,
         )
         result = agent.run(self._generator_task())
@@ -400,7 +400,7 @@ class Worker:
                 deny_read_rels=deny_read_rels,
                 deny_read_file_names=("review.md",),
             ),
-            digest_queue=self.digest_queue,
+            curator_queue=self.curator_queue,
         )
         agent = GeneralPurposeAgent(
             config=config,
@@ -426,9 +426,9 @@ class Worker:
             "trace": result.trace,
             "final_answer": result.final_answer,
         })
-        if self.digest_queue is not None:
-            from .knowledge_digest import DigestTask
-            self.digest_queue.submit(DigestTask(
+        if self.curator_queue is not None:
+            from .curator import CuratorTask
+            self.curator_queue.submit(CuratorTask(
                 trace_segment=[{"role": "verifier_attempt", "content": result.final_answer}],
                 source_label=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
             ))
@@ -461,7 +461,7 @@ class Worker:
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/theorem-checker",
-            digest_queue=self.digest_queue,
+            curator_queue=self.curator_queue,
             log_session=self.log_session,
             stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
@@ -504,7 +504,7 @@ class Worker:
             max_depth=self.subagent_max_depth,
             execution_gateway=self.execution_gateway,
             session_prefix=f"{self.worker_dir.name}/reviser-workflow-{workflow_index}",
-            digest_queue=self.digest_queue,
+            curator_queue=self.curator_queue,
             log_session=self.log_session,
             stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
@@ -761,11 +761,11 @@ class Worker:
             self._worker_log_sink,
         )
 
-    def _generator_event_sink(self, digest_context: GeneratorDigestContext):
+    def _generator_event_sink(self, curator_context: GeneratorCuratorContext):
         worker_sink = self._event_sink("generator")
 
         def sink(event: dict[str, Any]) -> None:
-            digest_context.record_event(event)
+            curator_context.record_event(event)
             if worker_sink is not None:
                 worker_sink(event)
 

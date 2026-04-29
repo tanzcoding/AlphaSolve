@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
-    from .knowledge_digest import KnowledgeDigestQueue
+    from .curator import CuratorQueue
 
 
 @dataclass(frozen=True)
@@ -49,7 +49,7 @@ class WorkerManager:
         subagent_max_depth: int,
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
-        digest_queue: KnowledgeDigestQueue | None = None,
+        curator_queue: CuratorQueue | None = None,
         log_session: LogSession | None = None,
         stop_event: threading.Event | None = None,
     ) -> None:
@@ -67,7 +67,7 @@ class WorkerManager:
         self.completed_backlog: list[dict[str, Any]] = []
         self.renderer = renderer
         self.execution_gateway = execution_gateway
-        self.digest_queue = digest_queue
+        self.curator_queue = curator_queue
         self.log_session = log_session
         self.stop_event = stop_event or threading.Event()
         self.solution_path: Path | None = None
@@ -98,7 +98,7 @@ class WorkerManager:
             subagent_max_depth=self.subagent_max_depth,
             renderer=self.renderer,
             execution_gateway=self.execution_gateway,
-            digest_queue=self.digest_queue,
+            curator_queue=self.curator_queue,
             stop_event=self.stop_event,
             log_session=self.log_session,
         )
@@ -300,7 +300,7 @@ class Orchestrator:
         subagent_max_depth: int,
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
-        digest_queue: KnowledgeDigestQueue | None = None,
+        curator_queue: CuratorQueue | None = None,
         log_session: LogSession | None = None,
         stop_event: threading.Event | None = None,
         worker_stop_event: threading.Event | None = None,
@@ -314,7 +314,7 @@ class Orchestrator:
         self.subagent_max_depth = subagent_max_depth
         self.renderer = renderer
         self.execution_gateway = execution_gateway
-        self.digest_queue = digest_queue
+        self.curator_queue = curator_queue
         self.log_session = log_session
         self.stop_event = stop_event
         self.worker_stop_event = worker_stop_event or threading.Event()
@@ -337,7 +337,7 @@ class Orchestrator:
                 subagent_max_depth=self.subagent_max_depth,
                 renderer=self.renderer,
                 execution_gateway=self.execution_gateway,
-                digest_queue=self.digest_queue,
+                curator_queue=self.curator_queue,
                 log_session=self.log_session,
                 stop_event=self.worker_stop_event,
             )

@@ -13,7 +13,7 @@ from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
 from alphasolve.utils.log_session import LogSession
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer
-from .knowledge_digest import KnowledgeDigestQueue, init_knowledge_base
+from .curator import CuratorQueue, init_knowledge_base
 from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count
 from .project import ProjectLayout
 from .tools import ClientFactory
@@ -63,7 +63,7 @@ class AlphaSolve:
         self._renderer = renderer
         execution_gateway: ExecutionGateway | None = None
         owns_gateway = self.execution_gateway_override is None
-        digest_queue: KnowledgeDigestQueue | None = None
+        curator_queue: CuratorQueue | None = None
         if renderer is not None:
             renderer.start()
             renderer.update_orchestrator_phase("startup", status="running")
@@ -118,9 +118,9 @@ class AlphaSolve:
             verifier_scaling_factor = max(1, verifier_scaling_factor)
             client_factory = self.client_factory_override or make_openai_client_factory(suite)
 
-            if "knowledge_digest" in suite.subagents:
+            if "curator" in suite.subagents:
                 init_knowledge_base(self.layout.knowledge_dir, self.layout.read_problem())
-                digest_queue = KnowledgeDigestQueue(
+                curator_queue = CuratorQueue(
                     knowledge_dir=self.layout.knowledge_dir,
                     workspace_dir=self.layout.workspace_dir,
                     suite=suite,
@@ -130,7 +130,7 @@ class AlphaSolve:
                     stop_event=self._stop_event,
                     renderer=renderer,
                 )
-                digest_queue.start()
+                curator_queue.start()
 
             result = None
             all_worker_results = []
@@ -154,7 +154,7 @@ class AlphaSolve:
                     subagent_max_depth=self.subagent_max_depth,
                     renderer=renderer,
                     execution_gateway=execution_gateway,
-                    digest_queue=digest_queue,
+                    curator_queue=curator_queue,
                     log_session=log_session,
                     stop_event=self._stop_event,
                 )
@@ -179,8 +179,8 @@ class AlphaSolve:
             self._write_error(exc)
             raise
         finally:
-            if digest_queue is not None:
-                digest_queue.stop()
+            if curator_queue is not None:
+                curator_queue.stop()
             if owns_gateway and execution_gateway is not None:
                 execution_gateway.close()
             if renderer is not None:

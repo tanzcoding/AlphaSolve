@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.utils.event_logger import compose_event_sinks
 
-from .dashboard import make_digest_event_sink
+from .dashboard import make_curator_event_sink
 
 if TYPE_CHECKING:
     from alphasolve.agents.general import GeneralAgentConfig
@@ -21,14 +21,14 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class DigestTask:
+class CuratorTask:
     trace_segment: list[dict[str, Any]]
     source_label: str  # 调度用来源标签，不应原样写入知识库。
     caller_context: dict[str, Any] | None = None
 
 
-class KnowledgeDigestQueue:
-    """Serializes digest agent runs in a background thread."""
+class CuratorQueue:
+    """Serializes curator agent runs in a background thread."""
 
     def __init__(
         self,
@@ -50,25 +50,25 @@ class KnowledgeDigestQueue:
         self.log_session = log_session
         self.stop_event = stop_event
         self.renderer = renderer
-        self._queue: queue.Queue[DigestTask | None] = queue.Queue()
-        self._thread = threading.Thread(target=self._worker, daemon=True, name="knowledge-digest")
+        self._queue: queue.Queue[CuratorTask | None] = queue.Queue()
+        self._thread = threading.Thread(target=self._worker, daemon=True, name="curator")
         self._started = False
 
     def start(self) -> None:
         if not self._started:
             self._started = True
             if self.renderer is not None:
-                self.renderer.update_digest_phase("idle", status="idle")
+                self.renderer.update_curator_phase("idle", status="idle")
             self._thread.start()
 
     def stop(self, timeout: float = 60.0) -> None:
         self._queue.put(None)
         self._thread.join(timeout=timeout)
 
-    def submit(self, task: DigestTask) -> None:
+    def submit(self, task: CuratorTask) -> None:
         if self._started:
             if self.renderer is not None:
-                self.renderer.enqueue_digest_task(task.source_label)
+                self.renderer.enqueue_curator_task(task.source_label)
             self._queue.put(task)
 
     def _worker(self) -> None:
@@ -77,12 +77,12 @@ class KnowledgeDigestQueue:
             if task is None:
                 break
             try:
-                self._run_digest(task)
+                self._run_curator(task)
             except Exception:
                 pass
 
-    def _run_digest(self, task: DigestTask) -> None:
-        config: GeneralAgentConfig | None = self.suite.subagents.get("knowledge_digest")
+    def _run_curator(self, task: CuratorTask) -> None:
+        config: GeneralAgentConfig | None = self.suite.subagents.get("curator")
         if config is None:
             return
 
@@ -100,7 +100,7 @@ class KnowledgeDigestQueue:
             client_factory=self.client_factory,
             max_depth=1,
             execution_gateway=self.execution_gateway,
-            session_prefix="knowledge_digest",
+            session_prefix="curator",
             log_session=self.log_session,
             stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess(
@@ -142,7 +142,7 @@ class KnowledgeDigestQueue:
         else:
             extra = "Do not modify `knowledge/common-errors.md`."
         task_prompt = (
-            "# Trace Segment for Knowledge Digest\n\n"
+            "# Trace Segment for Knowledge Base\n\n"
             f"```json\n{trace_text}\n```\n\n"
             "Update the knowledge base in `knowledge/` based on this trace segment. "
             "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
@@ -156,29 +156,29 @@ class KnowledgeDigestQueue:
             "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately."
         )
 
-        digest_sink = self.log_session.create_digest_sink() if self.log_session is not None else None
-        digest_success = False
+        curator_sink = self.log_session.create_curator_sink() if self.log_session is not None else None
+        curator_success = False
         if self.renderer is not None:
-            self.renderer.set_digest_model(_model_name(config, suite=self.suite))
-            self.renderer.start_digest_task(task.source_label)
+            self.renderer.set_curator_model(_model_name(config, suite=self.suite))
+            self.renderer.start_curator_task(task.source_label)
         try:
             agent = GeneralPurposeAgent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
                 event_sink=compose_event_sinks(
-                    make_digest_event_sink(self.renderer),
-                    digest_sink,
+                    make_curator_event_sink(self.renderer),
+                    curator_sink,
                 ),
                 stop_event=self.stop_event,
             )
             agent.run(task_prompt)
-            digest_success = True
+            curator_success = True
         finally:
-            if digest_sink is not None:
-                digest_sink.close()
+            if curator_sink is not None:
+                curator_sink.close()
             if self.renderer is not None:
-                self.renderer.finish_digest_task(success=digest_success)
+                self.renderer.finish_curator_task(success=curator_success)
         _update_entry_metadata(access.touched_paths())
 
 

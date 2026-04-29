@@ -14,13 +14,13 @@ class LogSession:
         {base_dir}/
           {run_id}/
             orchestrator.log
-            digests/
+            curator/
               20260428_153045_123.log
               20260428_153102_456.log
             subagents/
               research_reviewer/
                 20260428_153045_789.log
-              knowledge_digest/
+              curator/
                 20260428_153102_012.log
             workers/
               worker_{hash}.log
@@ -50,13 +50,13 @@ class LogSession:
             scope=f"worker:{worker_id}",
         )
 
-    def create_digest_sink(self) -> EventLogWriter:
-        digest_dir = self.run_dir / "digests"
-        digest_dir.mkdir(parents=True, exist_ok=True)
+    def create_curator_sink(self) -> EventLogWriter:
+        curator_dir = self.run_dir / "curator"
+        curator_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
         return EventLogWriter(
-            log_path=digest_dir / f"{ts}.log",
-            scope="knowledge_digest",
+            log_path=curator_dir / f"{ts}.log",
+            scope="curator",
         )
 
     def create_subagent_sink(self, agent_type: str) -> EventLogWriter:

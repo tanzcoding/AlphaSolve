@@ -18,12 +18,12 @@ If a detail is only useful for debugging the AlphaSolve run, skip it. If it teac
 ## Knowledge Base Structure
 
 - `knowledge/index.md`: compact map of the current wiki. Keep it accurate and easy to scan.
-- `knowledge/common-errors.md`: reusable patterns of mistakes that the generator commonly makes when constructing propositions. Update this only when digesting a verifier's final review.
+- `knowledge/common-errors.md`: reusable patterns of mistakes that the generator commonly makes when constructing propositions. Update this only when curating a verifier's final review.
 - `knowledge/<entry-name>.md` or `knowledge/<topic>/<entry-name>.md`: topic notes.
 
 There is no maintenance log file. Do not create one.
 
-At the start of each digest task, read `knowledge/index.md` before browsing or editing other wiki entries.
+At the start of each curator task, read `knowledge/index.md` before browsing or editing other wiki entries.
 
 ## Entry Format
 
@@ -75,7 +75,7 @@ When the wiki feels cluttered, redundant, poorly named, hard to navigate, or too
 
 `knowledge/index.md` should stay compact. A typical entry is one short line: wiki link plus a stable topic summary.
 
-After every digest task, check whether `knowledge/index.md` still accurately describes the current live entries. Fix stale names, stale summaries, dead links, and missing entries.
+After every curator task, check whether `knowledge/index.md` still accurately describes the current live entries. Fix stale names, stale summaries, dead links, and missing entries.
 
 ## Common Errors
 

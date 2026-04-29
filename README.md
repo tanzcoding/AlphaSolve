@@ -4,11 +4,11 @@ AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明
 
 ## 核心特性
 
-- **Orchestrator 驱动**：LLM Orchestrator 读取已验证命题和 knowledge/ 下的知识摘要，动态决定何时 spawn 新 worker 以及使用什么提示
+- **Orchestrator 驱动**：LLM Orchestrator 读取已验证命题和 knowledge/ 下的知识管理，动态决定何时 spawn 新 worker 以及使用什么提示
 - **并行 Worker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser 流水线
 - **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，一次不通过则视为不通过。支持通过 YAML 自行配置 Verifier 的工作方式，支持为 Verifier 添加 SKILLS
 - **Subagent 系统**：Generator、Verifier、Reviser 可调用 compute subagent（Python / Wolfram）和 reasoning subagent 辅助探索；Orchestrator 可调用 research_reviewer 综述已有知识并推荐研究方向
-- **知识摘要**：后台 `knowledge_digest` agent 持续将运行 trace 摘要写入 `workspace/knowledge/`，供 Orchestrator 参考
+- **知识管理**：后台 `curator` agent 持续将运行 trace 知识写入 `workspace/knowledge/`，供 Orchestrator 参考
 - **多 LLM 提供商**：支持 DeepSeek、火山引擎、Moonshot、DashScope、LongCat、Parasail、OpenRouter、MIMO 等
 
 ## 快速开始
@@ -91,7 +91,7 @@ CLI (alphasolve)
     └── AlphaSolve.run()                        [workflow.py]
             ├── Wolfram 内核探测
             ├── ExecutionGateway (Python / Wolfram 进程池)
-            ├── KnowledgeDigestQueue (后台知识摘要 agent)
+            ├── CuratorQueue (后台知识管理 agent)
             └── Orchestrator.run()              [orchestrator.py]
                     └── WorkerManager
                             └── Worker × N (线程)  [worker.py]
@@ -138,7 +138,7 @@ verified_propositions/   ←  通过验证的命题（供所有 worker 和 Orche
 | **reasoning subagent** | 纯数学推理 subagent（无计算工具） |
 | **numerical experiment subagent** | 有界探索、分支检查与局部数值实验 |
 | **research_reviewer** | 综述 `verified_propositions/` 和 `knowledge/`，对比 `problem.md` 给出研究方向建议 |
-| **knowledge_digest** | 后台 agent，将 trace 中的数学知识提取摘要写入 `knowledge/`，处理知识冲突并进行交叉验证 |
+| **curator** | 后台 agent，将 trace 中的数学知识提取整理写入 `knowledge/`，处理知识冲突并进行交叉验证 |
 
 ## 安装
 
@@ -282,7 +282,7 @@ alphasolve
 **续跑机制：**
 
 - `workspace/verified_propositions/` 中已验证的命题会被新的 Orchestrator 自动读取，作为已知知识直接复用
-- `workspace/knowledge/log.md` 中积累的知识摘要同样供 Orchestrator 参考
+- `workspace/knowledge/log.md` 中积累的知识管理同样供 Orchestrator 参考
 - 新产生的 worker 目录命名为 `prop-{hash}`，不含序号，不会与上次运行的目录冲突
 
 **人工添加命题：**
@@ -296,7 +296,7 @@ alphasolve
 ```
 workspace/
     verified_propositions/    # 所有通过验证的命题
-    knowledge/          # 运行过程知识摘要（log.md + 按主题整理的知识条目）
+    knowledge/          # 运行过程知识管理（log.md + 按主题整理的知识条目）
 solution.md             # 最终解决方案（问题解决时生成）
 ```
 
@@ -305,7 +305,7 @@ solution.md             # 最终解决方案（问题解决时生成）
 ```
 logs/{run_id}/
     orchestrator.log        # Orchestrator 的每一次 LLM 调用、工具使用
-    digests/                # 每次 knowledge_digest chat session 一个文件
+    curator/                # 每次 curator chat session 一个文件
         20260428_153045.log
     workers/
         worker_{hash}.log   # 每个 worker 的完整 生成→验证→修正 流水线
