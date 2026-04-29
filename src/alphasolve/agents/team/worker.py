@@ -453,6 +453,7 @@ class Worker:
             workspace=self.workspace,
             worker_rel=self.worker_rel,
             deny_other_unverified=True,
+            read_root_rel="verified_propositions",
         )
         subagents = SubagentService(
             suite=self.suite,
@@ -467,6 +468,7 @@ class Worker:
                 workspace=self.workspace,
                 worker_rel=self.worker_rel,
                 deny_other_unverified=True,
+                read_root_rel="verified_propositions",
             ),
         )
         agent = GeneralPurposeAgent(

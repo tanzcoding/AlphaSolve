@@ -12,10 +12,21 @@ agent:
     - Agent
     - GetCurrentTime
   tool_parameters:
+    Read:
+      path:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*\\.md$"
     ListDir:
       path:
         default: verified_propositions
-        pattern: "^(?:verified_propositions|knowledge)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+    Glob:
+      path:
+        default: verified_propositions
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+    Grep:
+      path:
+        default: verified_propositions
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
     Agent:
       type:
         enum:
