@@ -340,8 +340,10 @@ class PropositionTeamRenderer:
         max_log_lines: int = 6,
         screen: bool = True,
         stop_event: threading.Event | None = None,
+        problem_name: str = "",
     ) -> None:
         self.console = console
+        self._problem_name = problem_name
         self.refresh_per_second = refresh_per_second
         self._min_refresh_interval = 1.0 / max(0.1, float(refresh_per_second))
         if stream_refresh_per_second is None:
@@ -1062,6 +1064,8 @@ class PropositionTeamRenderer:
     def _render_header(self, *, elapsed: float, active: int, width: int) -> Text:
         t = Text(no_wrap=True, overflow="ellipsis")
         t.append("AlphaSolve", "bold green" if self._solved else "bold white")
+        if self._problem_name:
+            t.append(f"  {self._problem_name}  ", "bold yellow")
         t.append("  native dashboard  ", "grey50")
         self._append_stat(t, "running", str(active), "cyan")
         self._append_stat(t, "done", str(self._worker_finished), "green" if self._worker_finished else "grey50")
