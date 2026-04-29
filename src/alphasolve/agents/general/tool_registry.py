@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from .workspace import Workspace
+from .workspace import READ_PAGE_DEFAULT_LINES, Workspace
 from alphasolve.utils.shell import has_bash, run_bash_command, run_powershell_command
 
 
@@ -211,18 +211,57 @@ def _matches_json_type(value: Any, schema_type: str) -> bool:
 def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: int = 120) -> ToolRegistry:
     registry = ToolRegistry()
 
+    def run_read(args: dict[str, Any]) -> ToolResult:
+        try:
+            result = workspace.read_text_page(
+                args["path"],
+                line_offset=int(args.get("line_offset", 1)),
+                n_lines=int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
+            )
+        except Exception as exc:
+            return ToolResult(f"<system>ERROR: {exc}</system>", is_error=True)
+        return ToolResult(result.to_tool_content())
+
     registry.register(
         name="Read",
-        description="Reads a file from the local filesystem inside the workspace.",
+        description=(
+            "Read text content from a file.\n\n"
+            "Tips:\n"
+            "- A `<system>` tag will be given before the read file content.\n"
+            "- The system will notify you when there is anything wrong when reading the file.\n"
+            "- This tool is typically worth using in parallel when you need to inspect multiple files.\n"
+            "- If you want to search for a certain content or pattern, prefer Grep over Read.\n"
+            "- Content will be returned with a line number before each line like `cat -n` format.\n"
+            "- Use `line_offset` and `n_lines` when you only need part of a file.\n"
+            f"- The maximum number of lines that can be read at once is {READ_PAGE_DEFAULT_LINES}."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "The path to the file to read."},
-                "max_chars": {"type": "integer", "default": 20000, "description": "Maximum characters to read."},
+                "line_offset": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "description": (
+                        "The line number to start reading from. "
+                        "By default read from the beginning of the file. "
+                        "Set this when the file is too large to read at once."
+                    ),
+                },
+                "n_lines": {
+                    "type": "integer",
+                    "default": READ_PAGE_DEFAULT_LINES,
+                    "minimum": 1,
+                    "description": (
+                        f"The number of lines to read. By default read up to {READ_PAGE_DEFAULT_LINES} lines, "
+                        "which is the max allowed value. Set this value when the file is too large to read at once."
+                    ),
+                },
             },
             "required": ["path"],
         },
-        handler=lambda args: ToolResult(workspace.read_text(args["path"], max_chars=int(args.get("max_chars", 20000)))),
+        handler=run_read,
     )
 
     registry.register(

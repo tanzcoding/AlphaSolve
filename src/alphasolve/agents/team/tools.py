@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
+from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, PagedReadResult, read_text_page
 from alphasolve.execution.runners import run_python, run_wolfram
 from alphasolve.utils.shell import (
     find_bash_path,
@@ -41,19 +42,20 @@ class RoleWorkspaceAccess:
     single_proposition_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
     destructive_protected_file_names: tuple[str, ...] = ()
-    max_read_chars: int = 20000
 
     def __post_init__(self) -> None:
         self._locked_proposition_rel: str | None = None
         self._touched_paths: set[Path] = set()
 
-    def read_text(self, path: str, *, max_chars: int | None = None) -> str:
+    def read_text_page(
+        self,
+        path: str,
+        *,
+        line_offset: int = 1,
+        n_lines: int = READ_PAGE_DEFAULT_LINES,
+    ) -> PagedReadResult:
         target = self._resolve_readable_file(path)
-        text = target.read_text(encoding="utf-8")
-        limit = self.max_read_chars if max_chars is None else int(max_chars)
-        if 0 < limit < len(text):
-            return text[:limit] + "\n[truncated]"
-        return text
+        return read_text_page(target, line_offset=line_offset, n_lines=n_lines)
 
     def write_text(self, path: str, content: str, *, mode: str = "overwrite") -> str:
         target = self._resolve_writable_file(path)
@@ -421,20 +423,58 @@ def build_workspace_tool_registry(
 ) -> ToolRegistry:
     registry = ToolRegistry()
 
+    def run_read(args: dict[str, Any]) -> ToolResult:
+        try:
+            result = access.read_text_page(
+                args["path"],
+                line_offset=int(args.get("line_offset", 1)),
+                n_lines=int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
+            )
+        except Exception as exc:
+            return ToolResult(f"<system>ERROR: {exc}</system>", is_error=True)
+        return ToolResult(result.to_tool_content())
+
     registry.register(
         name="Read",
-        description="Reads a file from the local filesystem within this agent's allowed read area.\n\nUsage:\n- You can optionally specify a max_chars value for long files.\n- Access restrictions are enforced by role.",
+        description=(
+            "Read text content from a file.\n\n"
+            "Tips:\n"
+            "- A `<system>` tag will be given before the read file content.\n"
+            "- The system will notify you when there is anything wrong when reading the file.\n"
+            "- This tool is typically worth using in parallel when you need to inspect multiple files.\n"
+            "- If you want to search for a certain content or pattern, prefer Grep over Read.\n"
+            "- Content will be returned with a line number before each line like `cat -n` format.\n"
+            "- Use `line_offset` and `n_lines` when you only need part of a file.\n"
+            f"- The maximum number of lines that can be read at once is {READ_PAGE_DEFAULT_LINES}.\n"
+            "- Results respect this agent's workspace access restrictions."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "The path to the file to read (must be absolute or workspace-relative)."},
-                "max_chars": {"type": "integer", "default": access.max_read_chars, "description": "Maximum characters to read."},
+                "line_offset": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "description": (
+                        "The line number to start reading from. "
+                        "By default read from the beginning of the file. "
+                        "Set this when the file is too large to read at once."
+                    ),
+                },
+                "n_lines": {
+                    "type": "integer",
+                    "default": READ_PAGE_DEFAULT_LINES,
+                    "minimum": 1,
+                    "description": (
+                        f"The number of lines to read. By default read up to {READ_PAGE_DEFAULT_LINES} lines, "
+                        "which is the max allowed value. Set this value when the file is too large to read at once."
+                    ),
+                },
             },
             "required": ["path"],
         },
-        handler=lambda args: ToolResult(
-            access.read_text(args["path"], max_chars=int(args.get("max_chars", access.max_read_chars)))
-        ),
+        handler=run_read,
     )
     if allow_write:
         registry.register(
