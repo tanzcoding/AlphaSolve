@@ -148,29 +148,48 @@ class WorkerManager:
         return self._wait_payload(self._consume_done(done))
 
     def close(self, *, timeout: float = 5.0, graceful: bool = False) -> None:
+        wait_timeout = max(0.0, float(timeout))
         if graceful:
             self.executor.shutdown(wait=False, cancel_futures=False)
-            if self.active:
-                done, _ = concurrent.futures.wait(
-                    list(self.active.keys()),
-                    timeout=None,
-                    return_when=concurrent.futures.ALL_COMPLETED,
-                )
-                self._consume_done(done)
+            done, not_done = self._wait_for_active(timeout=wait_timeout)
+            self._consume_done(done)
+            if not_done:
+                if self.renderer is not None:
+                    remaining = ", ".join(self.active.get(future, "unknown") for future in sorted(not_done, key=id))
+                    self.renderer.log(
+                        None,
+                        "graceful worker shutdown timed out; leaving unfinished workers to unwind in background: "
+                        + remaining,
+                        module="shutdown",
+                        level="WARNING",
+                    )
+                # 优雅关闭只等有限时间，超时后转入强制收尾，避免某个挂起的调用把整个退出流程永久卡死。
+                self.stop_event.set()
+                self.executor.shutdown(wait=False, cancel_futures=True)
+                self._collect_done()
+                return
             self._collect_done()
             self.executor.shutdown(wait=True, cancel_futures=False)
             return
 
         self.stop_event.set()
         self.executor.shutdown(wait=False, cancel_futures=True)
-        if self.active and timeout > 0:
-            done, _ = concurrent.futures.wait(
-                list(self.active.keys()),
-                timeout=timeout,
-                return_when=concurrent.futures.ALL_COMPLETED,
-            )
-            self._consume_done(done)
+        done, _ = self._wait_for_active(timeout=wait_timeout)
+        self._consume_done(done)
         self._collect_done()
+
+    def _wait_for_active(
+        self,
+        *,
+        timeout: float,
+    ) -> tuple[set[concurrent.futures.Future], set[concurrent.futures.Future]]:
+        if not self.active:
+            return set(), set()
+        return concurrent.futures.wait(
+            list(self.active.keys()),
+            timeout=timeout,
+            return_when=concurrent.futures.ALL_COMPLETED,
+        )
 
     def _collect_done(self) -> None:
         done = [future for future in self.active if future.done()]
@@ -284,6 +303,7 @@ class Orchestrator:
         digest_queue: KnowledgeDigestQueue | None = None,
         log_session: LogSession | None = None,
         stop_event: threading.Event | None = None,
+        worker_stop_event: threading.Event | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -297,6 +317,7 @@ class Orchestrator:
         self.digest_queue = digest_queue
         self.log_session = log_session
         self.stop_event = stop_event
+        self.worker_stop_event = worker_stop_event or threading.Event()
 
     def run(self) -> OrchestratorRunResult:
         if self.renderer is not None:
@@ -306,7 +327,6 @@ class Orchestrator:
         if self.log_session is not None:
             orchestrator_log_sink = self.log_session.create_orchestrator_sink()
         try:
-            worker_stop_event = threading.Event()
             manager = WorkerManager(
                 layout=self.layout,
                 suite=self.suite,
@@ -319,7 +339,7 @@ class Orchestrator:
                 execution_gateway=self.execution_gateway,
                 digest_queue=self.digest_queue,
                 log_session=self.log_session,
-                stop_event=worker_stop_event,
+                stop_event=self.worker_stop_event,
             )
             result = None
             error_final_answer = ""

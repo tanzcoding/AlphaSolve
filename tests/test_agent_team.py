@@ -1057,6 +1057,35 @@ def test_execution_gateway_keeps_sessions_isolated_and_blocks_filesystem():
         gateway.close()
 
 
+def test_execution_gateway_close_session_resets_python_env_and_workdir():
+    gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
+    try:
+        first_dir = gateway.run_python(
+            session_id="alpha",
+            code="import os\nos.getcwd()",
+            timeout_seconds=5,
+            allow_filesystem=True,
+        )
+        gateway.run_python(session_id="alpha", code="x = 41")
+
+        gateway.close_session("alpha")
+
+        second_dir = gateway.run_python(
+            session_id="alpha",
+            code="import os\nos.getcwd()",
+            timeout_seconds=5,
+            allow_filesystem=True,
+        )
+        cleared = gateway.run_python(session_id="alpha", code="'x' in globals()")
+
+        assert "[stdout]" in first_dir.tool_content
+        assert "[stdout]" in second_dir.tool_content
+        assert first_dir.tool_content != second_dir.tool_content
+        assert "False" in cleared.tool_content
+    finally:
+        gateway.close()
+
+
 def test_subagent_service_uses_strict_types_and_gateway_python_tool():
     suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
     gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
@@ -1101,5 +1130,53 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
 
         max_depth_registry = service._build_subagent_registry(depth=1, session_id="pytest/deep")
         assert "agent" not in [tool.name for tool in max_depth_registry.registered_tools()]
+    finally:
+        gateway.close()
+
+
+def test_subagent_service_cleans_up_gateway_session_after_return():
+    class SessionClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del messages, tools
+            self.calls += 1
+            if self.role == "compute_subagent" and self.calls == 1:
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "run_python_once",
+                            "type": "function",
+                            "function": {
+                                "name": "RunPython",
+                                "arguments": json.dumps({"code": "x = 6 * 7\nx"}),
+                            },
+                        }
+                    ],
+                }
+            return {"role": "assistant", "content": "done"}
+
+    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
+    service = SubagentService(
+        suite=suite,
+        client_factory=lambda config: SessionClient(config.name),
+        max_depth=1,
+        execution_gateway=gateway,
+        session_prefix="pytest-cleanup",
+    )
+    try:
+        result = service.call("compute_subagent", "Use Python once and finish.")
+
+        pool = gateway._python_pool
+        assert pool is not None
+        assert result["session_id"] not in pool._session_worker
+
+        rerun = gateway.run_python(session_id=result["session_id"], code="'x' in globals()")
+        assert "False" in rerun.tool_content
     finally:
         gateway.close()

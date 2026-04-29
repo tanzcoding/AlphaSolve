@@ -1,6 +1,6 @@
 # AlphaSolve
 
-AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用 **Orchestrator 驱动、多 worker 并行**的架构，通过 Generator → Verifier → Reviser 的迭代循环，逐步构建完整的数学证明。
+AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用 **Orchestrator 驱动、多 worker 并行**的架构，通过 Generator → Verifier → Reviser 的迭代循环，逐步构建完整的**自然语言**数学证明。
 
 ## 核心特性
 

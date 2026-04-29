@@ -150,7 +150,45 @@ def test_dashboard_repaints_when_terminal_size_changes():
         renderer.stop()
 
 
-def test_dashboard_thinking_tokens_bypass_refresh_throttle():
+def test_dashboard_stream_updates_are_micro_batched_before_repaint():
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=100,
+        height=28,
+        record=True,
+        force_terminal=True,
+        color_system=None,
+    )
+    renderer = PropositionTeamRenderer(console=console, screen=False, stream_refresh_per_second=20.0)
+
+    class DummyLive:
+        def __init__(self):
+            self.update_calls = 0
+
+        def update(self, renderable, *, refresh=True):
+            del renderable, refresh
+            self.update_calls += 1
+
+    renderer._live = DummyLive()
+    renderer._last_seen_size = renderer._console_size()
+    renderer._last_refresh_at = time.time()
+
+    renderer.update_thinking(0, module="worker", thinking_text="first token", elapsed=0)
+
+    assert renderer._live.update_calls == 0
+    assert renderer._refresh_pending is True
+    assert renderer._next_refresh_at is not None
+    assert renderer._next_refresh_at <= renderer._last_refresh_at + renderer._stream_min_refresh_interval + 0.01
+
+    renderer._next_refresh_at = time.time() - 0.001
+    with renderer._lock:
+        renderer._refresh_for_resize_or_pending_locked()
+
+    assert renderer._live.update_calls == 1
+
+
+def test_dashboard_tool_status_still_bypasses_refresh_throttle():
     stream = io.StringIO()
     console = Console(
         file=stream,
@@ -168,11 +206,11 @@ def test_dashboard_thinking_tokens_bypass_refresh_throttle():
         stream.truncate(0)
 
         renderer._last_refresh_at = time.time()
-        renderer.update_thinking(0, module="worker", thinking_text="first token", elapsed=0)
+        renderer.update_tool_start(0, module="worker", name="run_python", arg_preview="{}")
 
-        token_delta = stream.getvalue()
-        assert "Thinking" in token_delta
-        assert "\x1b[2K" in token_delta
+        tool_delta = stream.getvalue()
+        assert "Using run_python" in tool_delta
+        assert "\x1b[2K" in tool_delta
     finally:
         renderer.stop()
 

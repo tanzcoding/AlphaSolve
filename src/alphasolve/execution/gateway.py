@@ -74,6 +74,11 @@ class ExecutionGateway:
             return ExecutionOutput("[error]\nWolfram kernel is not available in this run", [])
         return self._wolfram.execute(session_id, code, timeout_seconds)
 
+    def close_session(self, session_id: str) -> None:
+        if self._python_pool is not None:
+            self._python_pool.close_session(session_id)
+        self._wolfram.close_session(session_id)
+
     def close(self) -> None:
         if self._python_pool is not None:
             self._python_pool.close()
@@ -164,6 +169,30 @@ class _PythonWorkerPool:
         self._out_queue.put(None)
         self._dispatcher.join(timeout=2)
 
+    def close_session(self, session_id: str, *, timeout_seconds: float = 10.0) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            worker_idx = self._session_worker.pop(session_id, None)
+            if worker_idx is None:
+                return
+            request_id = uuid.uuid4().hex
+            result_box: "queue.Queue[dict]" = queue.Queue(maxsize=1)
+            self._pending[request_id] = result_box
+
+        self._in_queues[worker_idx].put(
+            {
+                "id": request_id,
+                "action": "close_session",
+                "session_id": session_id,
+            }
+        )
+        try:
+            result_box.get(timeout=max(0.1, float(timeout_seconds)))
+        except queue.Empty:
+            with self._lock:
+                self._pending.pop(request_id, None)
+
     def _worker_for_session(self, session_id: str) -> int:
         with self._lock:
             if session_id not in self._session_worker:
@@ -221,6 +250,16 @@ class _WolframSessionRegistry:
             except Exception:
                 pass
 
+    def close_session(self, session_id: str) -> None:
+        with self._lock:
+            session = self._sessions.pop(session_id, None)
+            self._session_locks.pop(session_id, None)
+        if session is not None:
+            try:
+                session.terminate()
+            except Exception:
+                pass
+
     def _get_session(self, session_id: str):
         with self._lock:
             session = self._sessions.get(session_id)
@@ -260,6 +299,23 @@ def _python_worker_loop(worker_idx: int, in_queue, out_queue, sandbox_root: str)
             return
 
         request_id = request["id"]
+        action = request.get("action", "execute")
+        if action == "close_session":
+            session_id = request["session_id"]
+            envs.pop(session_id, None)
+            session_dir = session_dirs.pop(session_id, None)
+            if session_dir is not None:
+                shutil.rmtree(session_dir, ignore_errors=True)
+            out_queue.put(
+                {
+                    "id": request_id,
+                    "worker_idx": worker_idx,
+                    "tool_content": "",
+                    "log_parts": [],
+                }
+            )
+            continue
+
         session_id = request["session_id"]
         code = request.get("code", "")
         timeout_seconds = int(request.get("timeout_seconds", 300))
