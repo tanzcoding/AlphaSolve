@@ -772,6 +772,8 @@ class SubagentService:
         finally:
             if subagent_sink is not None:
                 subagent_sink.close()
+            if self.execution_gateway is not None:
+                self.execution_gateway.close_session(session_id)
         out = {
             "type": agent_type,
             "session_id": session_id,
