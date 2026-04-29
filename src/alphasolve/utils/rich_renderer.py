@@ -1399,7 +1399,7 @@ class PropositionTeamRenderer:
         return max(80, size.width), max(24, size.height)
 
     def _watch_terminal_loop(self) -> None:
-        while not self._watch_stop.wait(_RESIZE_POLL_INTERVAL):
+        while not self._watch_stop.wait(self._watch_poll_interval):
             # Check the external stop-event (signaled by Ctrl+C) *before*
             # acquiring the paint lock so we never get stuck behind a held
             # lock when the user has already requested an interrupt.
@@ -1407,10 +1407,14 @@ class PropositionTeamRenderer:
                 with self._lock:
                     self._interrupted = True
                     if self._live is not None:
+                        # Invalidate cached size so _paint_full is used
+                        # instead of _paint_diff, which guarantees every
+                        # line of the old dashboard is cleared before the
+                        # interrupt frame is drawn.
+                        self._live._last_size = None
                         self._live.update(self._render_interrupted(), refresh=True)
                 self._watch_stop.set()
                 return
-        while not self._watch_stop.wait(self._watch_poll_interval):
             with self._lock:
                 self._refresh_for_resize_or_pending_locked()
 
@@ -1441,6 +1445,8 @@ class PropositionTeamRenderer:
         self._live.update(self.render(), refresh=True)
 
     def _refresh_stream_locked(self) -> None:
+        if self._interrupted:
+            return
         self._schedule_refresh_locked(self._stream_min_refresh_interval)
 
     def _refresh_locked(self, *, force: bool = False) -> None:
@@ -1453,7 +1459,7 @@ class PropositionTeamRenderer:
         self._schedule_refresh_locked(self._min_refresh_interval, now=now)
 
     def _schedule_refresh_locked(self, min_refresh_interval: float, *, now: float | None = None) -> None:
-        if self._live is None:
+        if self._live is None or self._interrupted:
             return
         current = time.time() if now is None else now
         if current - self._last_refresh_at >= min_refresh_interval:
