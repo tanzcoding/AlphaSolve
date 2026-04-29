@@ -640,9 +640,9 @@ class Worker:
             for part in [
                 "# Problem",
                 self.layout.read_problem(),
-                "# User Hint",
+                "# General Hint",
                 self.layout.read_hint(),
-                "# Worker Hint",
+                "# Task Guidance",
                 self.worker_hint,
                 "# Output",
                 (
