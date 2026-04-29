@@ -234,6 +234,18 @@ class GeneralPurposeAgent:
             delta_sink = self._make_delta_sink(turn=turn, state=stream_state) if self.event_sink is not None else None
             try:
                 assistant_message = self._complete(messages=messages, tools=tools, delta_sink=delta_sink)
+            except KeyboardInterrupt:
+                trace.append(
+                    {"type": "run_stopped", "turn": turn, "reason": "keyboard_interrupt"}
+                )
+                self.last_trace = trace
+                self._emit(trace[-1])
+                return AgentRunResult(
+                    final_answer="",
+                    messages=messages,
+                    trace=trace,
+                    turns=turn - 1,
+                )
             except Exception as exc:
                 trace.append(
                     {

@@ -53,12 +53,14 @@ class AlphaSolve:
         self.max_orchestrator_restarts = max(1, int(max_orchestrator_restarts))
         self.debug = debug
         self._stop_event = threading.Event()
+        self._renderer: PropositionTeamRenderer | None = None
 
     def cancel(self) -> None:
         self._stop_event.set()
 
     def run(self) -> OrchestratorRunResult:
-        renderer = PropositionTeamRenderer(screen=False) if self.print_to_console else None
+        renderer = PropositionTeamRenderer(screen=False, stop_event=self._stop_event) if self.print_to_console else None
+        self._renderer = renderer
         execution_gateway: ExecutionGateway | None = None
         owns_gateway = self.execution_gateway_override is None
         digest_queue: KnowledgeDigestQueue | None = None

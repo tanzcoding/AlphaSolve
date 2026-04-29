@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import os
 import signal
 import sys
 from pathlib import Path
@@ -15,20 +17,94 @@ from alphasolve.agents.team import AlphaSolve
 from alphasolve.agents.team.demo import make_demo_client_factory
 
 _app: AlphaSolve | None = None
+_interrupt_count = 0
 
+# ---------------------------------------------------------------------------
+# Windows console control handler (bypasses Python's signal module entirely
+# because signal.signal(SIGINT, ...) can silently stop working when the main
+# thread is blocked in Winsock I/O and another thread is doing heavy console
+# output).
+# ---------------------------------------------------------------------------
 
-def _on_interrupt(_signum: int, _frame: object) -> None:
-    if _app is not None:
-        _app.cancel()
-    # Restore default handler so a second Ctrl+C kills the process hard
-    # if the current API call / blocking operation hasn't finished yet.
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-    print("\nInterrupted — finishing current work… (press Ctrl+C again to force exit)",
-          file=sys.stderr)
+if sys.platform == "win32":
+    _kernel32 = ctypes.windll.kernel32
+    _STD_ERROR_HANDLE = ctypes.c_ulong(0xFFFFFFF4)  # STD_ERROR_HANDLE
+
+    # Console control handler callback type
+    _PHANDLER_ROUTINE = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_ulong)
+
+    def _win_write_stderr(text: bytes) -> None:
+        """Write raw bytes to stderr via the Windows console API.
+        This bypasses Python's I/O stack and works from any thread."""
+        written = ctypes.c_ulong(0)
+        handle = _kernel32.GetStdHandle(_STD_ERROR_HANDLE)
+        _kernel32.WriteFile(
+            handle,
+            text,
+            ctypes.c_ulong(len(text)),
+            ctypes.byref(written),
+            None,
+        )
+
+    @_PHANDLER_ROUTINE
+    def _win_ctrl_handler(ctrl_type: int) -> int:
+        """Windows console control handler — called in a dedicated thread."""
+        if ctrl_type != 0:  # CTRL_C_EVENT
+            return 0  # FALSE — pass to next handler
+        global _interrupt_count
+        _interrupt_count += 1
+        if _interrupt_count == 1:
+            if _app is not None:
+                _app.cancel()  # sets threading.Event (always non-blocking)
+            _win_write_stderr(
+                b"\r\nInterrupted -- finishing current work..."
+                b" (press Ctrl+C again to force exit)\r\n"
+            )
+            return 1  # TRUE — event handled
+        # Second Ctrl+C
+        _win_write_stderr(b"\x1b[?25h\r\nForce quit.\r\n")
+        os._exit(130)
+
+    def _install_console_handler() -> None:
+        """Register our handler.  Returns True on success."""
+        ok = _kernel32.SetConsoleCtrlHandler(_win_ctrl_handler, 1)
+        if not ok:
+            _win_write_stderr(
+                b"WARNING: SetConsoleCtrlHandler failed (error %d)\r\n"
+                % _kernel32.GetLastError()
+            )
+
+else:  # Unix
+    def _on_interrupt(_signum: int, _frame: object) -> None:
+        global _interrupt_count
+        _interrupt_count += 1
+        if _interrupt_count == 1:
+            if _app is not None:
+                _app.cancel()
+            print(
+                "\nInterrupted — finishing current work…"
+                " (press Ctrl+C again to force exit)",
+                file=sys.stderr,
+            )
+            return
+        # Second Ctrl+C
+        if _app is not None and _app._renderer is not None:
+            try:
+                _app._renderer.stop()
+            except Exception:
+                pass
+        sys.stderr.write("\nForce quit.\n")
+        sys.stderr.flush()
+        os._exit(130)
 
 
 def main() -> None:
     global _app
+
+    if sys.platform == "win32":
+        _install_console_handler()
+    else:
+        signal.signal(signal.SIGINT, _on_interrupt)
 
     default_max_workers = 4
 
@@ -79,7 +155,6 @@ def main() -> None:
         else int(suite_settings.get("max_orchestrator_restarts", 5))
     )
 
-    signal.signal(signal.SIGINT, _on_interrupt)
     try:
         _app = AlphaSolve(
             project_dir=Path.cwd(),

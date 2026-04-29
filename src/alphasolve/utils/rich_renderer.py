@@ -336,6 +336,7 @@ class PropositionTeamRenderer:
         refresh_per_second: float = 2.0,
         max_log_lines: int = 6,
         screen: bool = True,
+        stop_event: threading.Event | None = None,
     ) -> None:
         self.console = console
         self.refresh_per_second = refresh_per_second
@@ -365,6 +366,8 @@ class PropositionTeamRenderer:
         self._digest_processed = 0
         self._digest_current_label = ""
         self._digest_last_label = ""
+        self._external_stop_event = stop_event  # signalled by Ctrl+C handler
+        self._interrupted = False
 
     def start(self) -> None:
         with self._lock:
@@ -392,7 +395,7 @@ class PropositionTeamRenderer:
 
         with self._lock:
             live = self._live
-            if live is not None and self._refresh_pending:
+            if live is not None and self._refresh_pending and not self._interrupted:
                 live.update(self.render(), refresh=True)
                 self._refresh_pending = False
             self._live = None
@@ -977,6 +980,27 @@ class PropositionTeamRenderer:
 
     # -- Rendering -----------------------------------------------------------
 
+    def _render_interrupted(self) -> "RenderableType":
+        """Minimal frame shown when the external stop-event is tripped."""
+        width = max(80, self.console.size.width)
+        elapsed = time.time() - self._started_at
+        header = Text(no_wrap=True, overflow="ellipsis")
+        header.append("AlphaSolve", "bold red")
+        header.append("  ", "")
+        header.append("INTERRUPTED — finishing current work…", "bold yellow")
+        header.append("  ", "")
+        header.append(_fmt_elapsed(elapsed), "grey50")
+        return Panel(
+            Group(
+                header,
+                Text(""),
+                Text("Press Ctrl+C again to force exit", "grey50"),
+            ),
+            border_style="red",
+            box=box.ROUNDED,
+            padding=(1, 2),
+        )
+
     def render(self) -> "RenderableType":
         with self._lock:
             # 清理超过 10 分钟的已完成 worker
@@ -1361,11 +1385,21 @@ class PropositionTeamRenderer:
 
     def _watch_terminal_loop(self) -> None:
         while not self._watch_stop.wait(_RESIZE_POLL_INTERVAL):
+            # Check the external stop-event (signaled by Ctrl+C) *before*
+            # acquiring the paint lock so we never get stuck behind a held
+            # lock when the user has already requested an interrupt.
+            if self._external_stop_event is not None and self._external_stop_event.is_set():
+                with self._lock:
+                    self._interrupted = True
+                    if self._live is not None:
+                        self._live.update(self._render_interrupted(), refresh=True)
+                self._watch_stop.set()
+                return
             with self._lock:
                 self._refresh_for_resize_or_pending_locked()
 
     def _refresh_for_resize_or_pending_locked(self) -> None:
-        if self._live is None:
+        if self._live is None or self._interrupted:
             return
 
         now = time.time()
@@ -1387,7 +1421,7 @@ class PropositionTeamRenderer:
         self._live.update(self.render(), refresh=True)
 
     def _refresh_locked(self, *, force: bool = False) -> None:
-        if self._live is None:
+        if self._live is None or self._interrupted:
             return
         now = time.time()
         if force:
