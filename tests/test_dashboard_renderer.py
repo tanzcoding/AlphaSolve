@@ -7,7 +7,7 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agents.team.dashboard import make_digest_event_sink, make_worker_event_sink  # noqa: E402
+from alphasolve.agents.team.dashboard import make_curator_event_sink, make_worker_event_sink  # noqa: E402
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
 
 
@@ -303,7 +303,7 @@ def test_dashboard_wraps_long_error_logs_in_agent_panel():
     assert "peer closed connection" in text
 
 
-def test_dashboard_sidebar_reserves_digest_panel_space():
+def test_dashboard_sidebar_reserves_curator_panel_space():
     stream = io.StringIO()
     console = Console(
         file=stream,
@@ -318,12 +318,12 @@ def test_dashboard_sidebar_reserves_digest_panel_space():
     console.print(renderer.render())
     text = console.export_text()
 
-    assert "@knowledge-digest" in text
+    assert "@curator" in text
     assert "Queue 0 pending" in text
     assert "done 0" in text
 
 
-def test_dashboard_digest_sink_updates_digest_panel_state():
+def test_dashboard_curator_sink_updates_curator_panel_state():
     stream = io.StringIO()
     console = Console(
         file=stream,
@@ -334,22 +334,22 @@ def test_dashboard_digest_sink_updates_digest_panel_state():
         color_system=None,
     )
     renderer = PropositionTeamRenderer(console=console, screen=False)
-    sink = make_digest_event_sink(renderer)
+    sink = make_curator_event_sink(renderer)
     assert sink is not None
 
-    renderer.enqueue_digest_task("prop-0001/verifier")
-    renderer.start_digest_task("prop-0001/verifier")
+    renderer.enqueue_curator_task("prop-0001/verifier")
+    renderer.start_curator_task("prop-0001/verifier")
     sink({"type": "thinking_delta", "content": "summarize the verified proposition", "delta": "summarize"})
     sink({"type": "tool_call", "name": "write_file", "arguments": {"path": "knowledge/index.md"}})
     sink({"type": "tool_result", "name": "write_file", "is_error": False, "content": "ok"})
-    sink({"type": "assistant_delta", "content": "updated digest", "delta": "updated digest"})
-    sink({"type": "assistant_message", "content": "updated digest", "streamed_content": True})
+    sink({"type": "assistant_delta", "content": "updated curator", "delta": "updated curator"})
+    sink({"type": "assistant_message", "content": "updated curator", "streamed_content": True})
     sink({"type": "run_finish"})
 
     console.print(renderer.render())
     text = console.export_text()
 
-    assert "@knowledge-digest" in text
+    assert "@curator" in text
     assert "prop-0001/verifier" in text
     assert "write_file" in text
-    assert "updated digest" in text
+    assert "updated curator" in text
