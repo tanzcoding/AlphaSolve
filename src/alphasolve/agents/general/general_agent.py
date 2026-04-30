@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 import json
 import random
+import socket
 import threading
 import time
 import traceback
@@ -76,6 +77,8 @@ class OpenAIChatClient:
             http_client=http_client,
         )
 
+    _STREAMING_MAX_RETRIES = 3  # after this many streaming failures, fall back to non-streaming
+
     def complete(
         self,
         *,
@@ -94,14 +97,34 @@ class OpenAIChatClient:
 
         max_retries = 8
         delay = 5.0
+        streaming_failures = 0
+        use_streaming = delta_sink is not None
+
         for attempt in range(max_retries + 1):
             try:
-                if delta_sink is not None:
+                if use_streaming:
                     return self._complete_streaming(request, delta_sink=delta_sink)
-                return self._complete_non_streaming(request)
+                return self._complete_non_streaming(request, delta_sink=delta_sink)
             except _RETRYABLE_EXCEPTIONS as exc:
                 if attempt == max_retries:
                     raise
+                if use_streaming:
+                    streaming_failures += 1
+                    if streaming_failures >= self._STREAMING_MAX_RETRIES:
+                        use_streaming = False
+                        if delta_sink is not None:
+                            delta_sink(
+                                {
+                                    "type": "retry",
+                                    "attempt": attempt + 1,
+                                    "error_type": type(exc).__name__,
+                                    "error": str(exc),
+                                    "error_detail": _format_exception_detail(exc),
+                                    "fallback": "non_streaming",
+                                }
+                            )
+                        delay = 5.0  # reset backoff for non-streaming
+                        continue
                 if delta_sink is not None:
                     delta_sink(
                         {
@@ -117,10 +140,19 @@ class OpenAIChatClient:
 
         raise RuntimeError("unreachable OpenAI retry state")
 
-    def _complete_non_streaming(self, request: dict[str, Any]) -> dict[str, Any]:
+    def _complete_non_streaming(
+        self, request: dict[str, Any], *, delta_sink: ChatDeltaSink | None = None
+    ) -> dict[str, Any]:
         response = self.client.chat.completions.create(**request)
-        message = response.choices[0].message
-        return _object_to_dict(message)
+        message = _object_to_dict(response.choices[0].message)
+        if delta_sink is not None:
+            reasoning = str(message.get("reasoning_content") or "")
+            if reasoning:
+                delta_sink({"type": "reasoning", "content": reasoning})
+            content = str(message.get("content") or "")
+            if content:
+                delta_sink({"type": "content", "content": content})
+        return message
 
     def _complete_streaming(self, request: dict[str, Any], *, delta_sink: ChatDeltaSink) -> dict[str, Any]:
         stream_request = dict(request)

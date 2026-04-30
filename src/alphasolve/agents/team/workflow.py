@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import platform
+import socket
 import threading
 import traceback
 from pathlib import Path
@@ -232,6 +234,33 @@ def run_alphasolve(**kwargs) -> OrchestratorRunResult:
     return AlphaSolve(**kwargs).run()
 
 
+def _build_keepalive_transport() -> httpx.HTTPTransport:
+    """Build an HTTP transport with TCP keepalive to survive long-thinking non-streaming requests.
+
+    During non-streaming requests the wire is silent while the model thinks
+    (potentially minutes).  Stateful firewalls, NAT gateways, and load
+    balancers may drop idle connections.  TCP keepalive sends periodic
+    zero-byte probes at the OS level, keeping the connection alive without
+    any application-level traffic.
+    """
+    options: list[tuple[int, int, int]] = [
+        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+    ]
+    # Per-platform idle / interval / count tuning
+    if hasattr(socket, "TCP_KEEPIDLE"):
+        # Linux 2.4+, Windows 10+ (requires Python ≥3.10 on Windows)
+        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60))
+    elif hasattr(socket, "TCP_KEEPALIVE"):
+        # macOS / BSD
+        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60))
+    if hasattr(socket, "TCP_KEEPINTVL"):
+        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15))
+    if hasattr(socket, "TCP_KEEPCNT"):
+        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5))
+
+    return httpx.HTTPTransport(socket_options=options)
+
+
 class _SharedHTTPXClient(httpx.Client):
     """A thread-safe httpx.Client whose ``close()`` is a no-op.
 
@@ -246,6 +275,7 @@ class _SharedHTTPXClient(httpx.Client):
 
 def make_openai_client_factory(suite) -> ClientFactory:
     _shared_http_client = _SharedHTTPXClient(
+        transport=_build_keepalive_transport(),
         limits=httpx.Limits(
             max_keepalive_connections=40,
             max_connections=200,
