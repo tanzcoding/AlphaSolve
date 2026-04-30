@@ -7,6 +7,8 @@ import traceback
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, OpenAIChatClient, load_agent_suite_config
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.execution import ExecutionGateway
@@ -230,9 +232,38 @@ def run_alphasolve(**kwargs) -> OrchestratorRunResult:
     return AlphaSolve(**kwargs).run()
 
 
+class _SharedHTTPXClient(httpx.Client):
+    """A thread-safe httpx.Client whose ``close()`` is a no-op.
+
+    The OpenAI SDK calls ``close()`` on its internal http client when the
+    ``OpenAI`` object is garbage-collected.  Since we share one connection
+    pool across every agent, individual agents must not tear down the pool.
+    """
+
+    def close(self) -> None:
+        pass  # lifecycle managed by the factory, not by individual OpenAI clients
+
+
 def make_openai_client_factory(suite) -> ClientFactory:
+    _shared_http_client = _SharedHTTPXClient(
+        limits=httpx.Limits(
+            max_keepalive_connections=40,
+            max_connections=200,
+            keepalive_expiry=60.0,
+        ),
+        timeout=httpx.Timeout(
+            connect=30.0,
+            read=None,   # no read timeout — model thinking can take minutes
+            write=60.0,
+            pool=None,   # wait indefinitely for a connection from the pool
+        ),
+    )
+
     def factory(config: GeneralAgentConfig):
-        return OpenAIChatClient(_resolve_model_config(config.model_config, suite=suite))
+        return OpenAIChatClient(
+            _resolve_model_config(config.model_config, suite=suite),
+            http_client=_shared_http_client,
+        )
 
     return factory
 

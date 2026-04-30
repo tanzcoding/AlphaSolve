@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import random
 import threading
 import time
 import traceback
@@ -58,7 +59,7 @@ _RETRYABLE_EXCEPTIONS = (
 
 
 class OpenAIChatClient:
-    def __init__(self, config: Mapping[str, Any]):
+    def __init__(self, config: Mapping[str, Any], *, http_client: httpx.Client | None = None):
         def resolve(value: Any) -> Any:
             return value() if callable(value) else value
 
@@ -72,6 +73,7 @@ class OpenAIChatClient:
             base_url=resolve(config.get("base_url")),
             timeout=self.timeout,
             max_retries=6,
+            http_client=http_client,
         )
 
     def complete(
@@ -110,7 +112,7 @@ class OpenAIChatClient:
                             "error_detail": _format_exception_detail(exc),
                         }
                     )
-                time.sleep(delay)
+                time.sleep(delay + random.uniform(0, delay * 0.5))
                 delay = min(delay * 2, 300.0)
 
         raise RuntimeError("unreachable OpenAI retry state")
