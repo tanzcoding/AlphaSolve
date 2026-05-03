@@ -9,11 +9,21 @@ agent:
     - Glob
     - Read
     - ListDir
+    - MakeDir
+    - Rename
     - Agent
     - TaskOutput
     - Review
     - GetCurrentTime
   tool_parameters:
+    MakeDir:
+      path:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
+    Rename:
+      old_path:
+        pattern: "^verified_propositions/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
+      new_path:
+        pattern: "^verified_propositions/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
     Agent:
       hint:
         type: string

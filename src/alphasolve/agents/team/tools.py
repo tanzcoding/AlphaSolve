@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
-from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, PagedReadResult, read_text_page
+from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, PagedReadResult, read_text_page
 from alphasolve.execution.runners import run_python, run_wolfram
 from alphasolve.utils.shell import (
     find_bash_path,
@@ -42,6 +42,7 @@ class RoleWorkspaceAccess:
     single_proposition_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
     destructive_protected_file_names: tuple[str, ...] = ()
+    preserve_markdown_file_names_on_rename: bool = False
 
     def __post_init__(self) -> None:
         self._locked_proposition_rel: str | None = None
@@ -53,9 +54,10 @@ class RoleWorkspaceAccess:
         *,
         line_offset: int = 1,
         n_lines: int = READ_PAGE_DEFAULT_LINES,
+        read_all: bool = False,
     ) -> PagedReadResult:
         target = self._resolve_readable_file(path)
-        return read_text_page(target, line_offset=line_offset, n_lines=n_lines)
+        return read_text_page(target, line_offset=line_offset, n_lines=n_lines, read_all=read_all)
 
     def write_text(self, path: str, content: str, *, mode: str = "overwrite") -> str:
         target = self._resolve_writable_file(path)
@@ -92,6 +94,13 @@ class RoleWorkspaceAccess:
         old_rel = self._rel(source)
         if source == target:
             return {"old_path": old_rel, "path": self._rel(target)}
+        if (
+            self.preserve_markdown_file_names_on_rename
+            and source.is_file()
+            and source.suffix.lower() == ".md"
+            and source.name != target.name
+        ):
+            raise ValueError("cannot rename .md files; move them without changing the file name")
         if target.exists():
             raise ValueError(f"target already exists: {new_path}")
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -429,6 +438,7 @@ def build_workspace_tool_registry(
                 args["path"],
                 line_offset=int(args.get("line_offset", 1)),
                 n_lines=int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
+                read_all=bool(args.get("read_all", False)),
             )
         except Exception as exc:
             return ToolResult(f"<system>ERROR: {exc}</system>", is_error=True)
@@ -444,8 +454,11 @@ def build_workspace_tool_registry(
             "- This tool is typically worth using in parallel when you need to inspect multiple files.\n"
             "- If you want to search for a certain content or pattern, prefer Grep over Read.\n"
             "- Content will be returned with a line number before each line like `cat -n` format.\n"
-            "- Use `line_offset` and `n_lines` when you only need part of a file.\n"
-            f"- The maximum number of lines that can be read at once is {READ_PAGE_DEFAULT_LINES}.\n"
+            f"- By default, Read returns {READ_PAGE_DEFAULT_LINES} lines.\n"
+            "- `line_offset` is the first line to return.\n"
+            f"- `n_lines` is how many lines to return in this call; default is {READ_PAGE_DEFAULT_LINES}.\n"
+            "- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n"
+            f"- Without `read_all`, the maximum `n_lines` value is {READ_PAGE_MAX_LINES}.\n"
             "- Results respect this agent's workspace access restrictions."
         ),
         parameters={
@@ -466,10 +479,16 @@ def build_workspace_tool_registry(
                     "type": "integer",
                     "default": READ_PAGE_DEFAULT_LINES,
                     "minimum": 1,
+                    "maximum": READ_PAGE_MAX_LINES,
                     "description": (
-                        f"The number of lines to read. By default read up to {READ_PAGE_DEFAULT_LINES} lines, "
-                        "which is the max allowed value. Set this value when the file is too large to read at once."
+                        f"How many lines to return in this Read call. Defaults to {READ_PAGE_DEFAULT_LINES}. "
+                        f"At most {READ_PAGE_MAX_LINES} unless `read_all` is true."
                     ),
+                },
+                "read_all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, ignore n_lines and return every line from line_offset through the end of the file.",
                 },
             },
             "required": ["path"],
@@ -528,36 +547,48 @@ def build_workspace_tool_registry(
                 json.dumps({"path": access.edit(args["path"], args["old_str"], args["new_str"])}, ensure_ascii=False)
             ),
         )
-        if allow_manage:
-            registry.register(
-                name="MakeDir",
-                description="Creates a directory within the writable workspace area, including parent directories when needed.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string", "description": "Directory path to create."},
-                    },
-                    "required": ["path"],
+    if allow_manage:
+        registry.register(
+            name="MakeDir",
+            description="Creates a directory within the writable workspace area, including parent directories when needed.",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path to create."},
                 },
-                handler=lambda args: ToolResult(
-                    json.dumps({"path": access.make_dir(args["path"])}, ensure_ascii=False)
-                ),
-            )
-            registry.register(
-                name="Rename",
-                description="Renames a file or directory within the writable workspace area.\n\nUsage:\n- Use this to promote clearer topic filenames or reorganize topic folders without rewriting file contents.\n- This tool fails if the target path already exists.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "old_path": {"type": "string", "description": "Existing file or directory path to rename."},
-                        "new_path": {"type": "string", "description": "New file or directory path after renaming."},
-                    },
-                    "required": ["old_path", "new_path"],
+                "required": ["path"],
+            },
+            handler=lambda args: ToolResult(
+                json.dumps({"path": access.make_dir(args["path"])}, ensure_ascii=False)
+            ),
+        )
+        registry.register(
+            name="Rename",
+            description=(
+                "Renames or moves a file or directory within the writable workspace area.\n\n"
+                "Usage:\n"
+                "- Use this to promote clearer topic folders or reorganize files without rewriting file contents.\n"
+                "- This tool fails if the target path already exists.\n\n"
+                "Examples:\n"
+                "- Rename a folder: old_path=\"verified_propositions/bootstrap-A\", "
+                "new_path=\"verified_propositions/bootstrap-attempt-A\".\n"
+                "- Move a verified Markdown file without renaming it: "
+                "old_path=\"verified_propositions/bootstrap-lemma.md\", "
+                "new_path=\"verified_propositions/bootstrap-attempt-A/bootstrap-lemma.md\"."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "old_path": {"type": "string", "description": "Existing file or directory path to rename or move."},
+                    "new_path": {"type": "string", "description": "New file or directory path after renaming or moving."},
                 },
-                handler=lambda args: ToolResult(
-                    json.dumps(access.rename_path(args["old_path"], args["new_path"]), ensure_ascii=False)
-                ),
-            )
+                "required": ["old_path", "new_path"],
+            },
+            handler=lambda args: ToolResult(
+                json.dumps(access.rename_path(args["old_path"], args["new_path"]), ensure_ascii=False)
+            ),
+        )
+        if allow_write:
             registry.register(
                 name="Delete",
                 description="Deletes a file from the writable workspace area.\n\nUsage:\n- Only delete files that are obsolete after you have consolidated their useful content elsewhere.",

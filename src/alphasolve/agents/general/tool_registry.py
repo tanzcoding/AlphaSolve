@@ -8,7 +8,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from .workspace import READ_PAGE_DEFAULT_LINES, Workspace
+from .workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, Workspace
 from alphasolve.utils.shell import has_bash, run_bash_command, run_powershell_command
 
 
@@ -217,6 +217,7 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
                 args["path"],
                 line_offset=int(args.get("line_offset", 1)),
                 n_lines=int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
+                read_all=bool(args.get("read_all", False)),
             )
         except Exception as exc:
             return ToolResult(f"<system>ERROR: {exc}</system>", is_error=True)
@@ -232,8 +233,11 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
             "- This tool is typically worth using in parallel when you need to inspect multiple files.\n"
             "- If you want to search for a certain content or pattern, prefer Grep over Read.\n"
             "- Content will be returned with a line number before each line like `cat -n` format.\n"
-            "- Use `line_offset` and `n_lines` when you only need part of a file.\n"
-            f"- The maximum number of lines that can be read at once is {READ_PAGE_DEFAULT_LINES}."
+            f"- By default, Read returns {READ_PAGE_DEFAULT_LINES} lines.\n"
+            "- `line_offset` is the first line to return.\n"
+            f"- `n_lines` is how many lines to return in this call; default is {READ_PAGE_DEFAULT_LINES}.\n"
+            "- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n"
+            f"- Without `read_all`, the maximum `n_lines` value is {READ_PAGE_MAX_LINES}."
         ),
         parameters={
             "type": "object",
@@ -253,10 +257,16 @@ def build_default_tool_registry(workspace: Workspace, *, bash_timeout_seconds: i
                     "type": "integer",
                     "default": READ_PAGE_DEFAULT_LINES,
                     "minimum": 1,
+                    "maximum": READ_PAGE_MAX_LINES,
                     "description": (
-                        f"The number of lines to read. By default read up to {READ_PAGE_DEFAULT_LINES} lines, "
-                        "which is the max allowed value. Set this value when the file is too large to read at once."
+                        f"How many lines to return in this Read call. Defaults to {READ_PAGE_DEFAULT_LINES}. "
+                        f"At most {READ_PAGE_MAX_LINES} unless `read_all` is true."
                     ),
+                },
+                "read_all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, ignore n_lines and return every line from line_offset through the end of the file.",
                 },
             },
             "required": ["path"],

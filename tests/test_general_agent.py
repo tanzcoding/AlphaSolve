@@ -21,6 +21,7 @@ from alphasolve.agents.general import (  # noqa: E402
     build_default_tool_registry,
     load_general_agent_config,
 )
+from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES  # noqa: E402
 
 
 class FakeChatClient:
@@ -84,6 +85,39 @@ def local_test_dir(name):
 def test_general_agent_can_write_and_read_workspace_file():
     with local_test_dir("write_read") as tmp_path:
         _assert_agent_can_write_and_read_workspace_file(tmp_path)
+
+
+def test_default_read_tool_defaults_to_30_lines_reports_total_and_supports_read_all():
+    with local_test_dir("read_pages") as tmp_path:
+        (tmp_path / "long.md").write_text(
+            "".join(f"line {index}\n" for index in range(1, 36)),
+            encoding="utf-8",
+        )
+        registry = build_default_tool_registry(Workspace(tmp_path))
+        tool = registry.openai_tools(["Read"])[0]["function"]
+        props = tool["parameters"]["properties"]
+
+        assert props["n_lines"]["default"] == READ_PAGE_DEFAULT_LINES == 30
+        assert props["n_lines"]["maximum"] == READ_PAGE_MAX_LINES
+        assert "How many lines to return in this Read call" in props["n_lines"]["description"]
+        assert props["read_all"]["default"] is False
+        assert "ignore n_lines" in props["read_all"]["description"]
+
+        default = registry.execute("Read", {"path": "long.md"}).content
+        assert default.startswith("<system>")
+        assert "30 lines read from file starting from line 1. File has 35 total lines." in default
+        assert "Requested n_lines=30 reached; more lines remain." in default
+        assert "    30\tline 30" in default
+        assert "    31\tline 31" not in default
+
+        explicit = registry.execute("Read", {"path": "long.md", "n_lines": 32}).content
+        assert "32 lines read from file starting from line 1. File has 35 total lines." in explicit
+        assert "    32\tline 32" in explicit
+
+        full = registry.execute("Read", {"path": "long.md", "read_all": True}).content
+        assert "35 lines read from file starting from line 1. File has 35 total lines." in full
+        assert "End of file reached." in full
+        assert "    35\tline 35" in full
 
 
 def test_general_agent_emits_streaming_delta_events():

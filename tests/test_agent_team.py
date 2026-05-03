@@ -24,10 +24,11 @@ from alphasolve.agents.team.curator import (  # noqa: E402
     _update_entry_metadata,
     init_knowledge_base,
 )
+from alphasolve.agents.team.orchestrator import Orchestrator  # noqa: E402
 from alphasolve.agents.team.worker import Worker  # noqa: E402
 from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
 from alphasolve.agents.team.solution import write_solution  # noqa: E402
-from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService  # noqa: E402
+from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry  # noqa: E402
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.execution import ExecutionGateway  # noqa: E402
@@ -64,6 +65,14 @@ def test_default_agent_suite_loads_yaml_roles():
     } <= set(suite.agents)
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
     assert "Agent" in suite.agents["orchestrator"].tools
+    assert "MakeDir" in suite.agents["orchestrator"].tools
+    assert "Rename" in suite.agents["orchestrator"].tools
+    assert "Write" not in suite.agents["orchestrator"].tools
+    assert "Delete" not in suite.agents["orchestrator"].tools
+    assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
+    assert "Examples:" in suite.agents["orchestrator"].system_prompt
+    assert "bootstrap-assumption-A" in suite.agents["orchestrator"].system_prompt
+    assert "that would rename the `.md` file" in suite.agents["orchestrator"].system_prompt
     assert "Agent" in suite.agents["generator"].tools
     assert suite.agents["generator"].tool_parameters["Agent"]["type"]["enum"] == [
         "compute_subagent",
@@ -908,6 +917,112 @@ def test_role_workspace_access_can_restrict_reads_to_verifier_workspace():
             assert "read path must stay under" in str(exc)
         else:
             raise AssertionError("subagent file reads should stay inside verifier_workspace")
+
+
+def test_workspace_read_tool_defaults_to_30_lines_and_can_read_all():
+    with local_project_dir("team_read_pages") as project_dir:
+        workspace_root = project_dir / "workspace"
+        workspace_root.mkdir(parents=True)
+        (workspace_root / "notes.md").write_text(
+            "".join(f"line {index}\n" for index in range(1, 34)),
+            encoding="utf-8",
+        )
+        access = RoleWorkspaceAccess(workspace=Workspace(workspace_root))
+        registry = build_workspace_tool_registry(access)
+        read_schema = registry.openai_tools(["Read"])[0]["function"]["parameters"]["properties"]
+        assert "How many lines to return in this Read call" in read_schema["n_lines"]["description"]
+        assert "ignore n_lines" in read_schema["read_all"]["description"]
+
+        default = registry.execute("Read", {"path": "notes.md"}).content
+        assert "30 lines read from file starting from line 1. File has 33 total lines." in default
+        assert "    30\tline 30" in default
+        assert "    31\tline 31" not in default
+
+        full = registry.execute("Read", {"path": "notes.md", "read_all": True}).content
+        assert "33 lines read from file starting from line 1. File has 33 total lines." in full
+        assert "    33\tline 33" in full
+
+
+def test_orchestrator_can_organize_verified_propositions_without_renaming_markdown_files():
+    with local_project_dir("orchestrator_verified_manage") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nOrganize verified propositions.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        (layout.verified_dir / "bootstrap-lemma.md").write_text("# Bootstrap Lemma\n", encoding="utf-8")
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        orchestrator = Orchestrator(
+            layout=layout,
+            suite=suite,
+            client_factory=make_demo_client_factory(),
+            max_workers=1,
+            max_verify_rounds=1,
+            verifier_scaling_factor=1,
+            subagent_max_depth=0,
+        )
+        config = suite.agents["orchestrator"]
+
+        class DummyReviewService:
+            def call_tool(self, args):
+                return args
+
+        registry = orchestrator._build_registry(manager=object(), subagents=DummyReviewService())
+
+        openai_tools = registry.openai_tools(config.tools, config.tool_parameters)
+        tool_names = [tool["function"]["name"] for tool in openai_tools]
+        assert "MakeDir" in tool_names
+        assert "Rename" in tool_names
+        assert "Write" not in tool_names
+        assert "Delete" not in tool_names
+        assert "Delete" not in [tool.name for tool in registry.registered_tools()]
+        rename_description = next(
+            tool["function"]["description"]
+            for tool in openai_tools
+            if tool["function"]["name"] == "Rename"
+        )
+        assert "Rename a folder" in rename_description
+        assert "Move a verified Markdown file without renaming it" in rename_description
+
+        made = registry.execute(
+            "MakeDir",
+            {"path": "verified_propositions/bootstrap-A"},
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not made.is_error
+        assert (layout.verified_dir / "bootstrap-A").is_dir()
+
+        moved = registry.execute(
+            "Rename",
+            {
+                "old_path": "verified_propositions/bootstrap-lemma.md",
+                "new_path": "verified_propositions/bootstrap-A/bootstrap-lemma.md",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not moved.is_error
+        assert (layout.verified_dir / "bootstrap-A" / "bootstrap-lemma.md").is_file()
+
+        renamed_file = registry.execute(
+            "Rename",
+            {
+                "old_path": "verified_propositions/bootstrap-A/bootstrap-lemma.md",
+                "new_path": "verified_propositions/bootstrap-A/renamed-lemma.md",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert renamed_file.is_error
+        assert "cannot rename .md files" in renamed_file.content
+
+        outside = registry.execute(
+            "MakeDir",
+            {"path": "knowledge/bootstrap-A"},
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert outside.is_error
+        assert "must match pattern" in outside.content
 
 
 def test_role_workspace_access_supports_append_rename_delete_and_protects_special_files():

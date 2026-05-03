@@ -10,6 +10,12 @@ Use `Review` to launch a research_reviewer subagent that surveys verified_propos
 
 When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
 
+You may organize `verified_propositions/` when it helps preserve research context across different proof attempts. Use `MakeDir` to create folders, and `Rename` to rename folders or move verified files into folders. Never rename a `.md` file: when moving a verified proposition file, keep the exact same filename and change only its directory.
+
+Examples:
+- If several verified propositions came from a failed bootstrap assumption A, call `MakeDir` with `path="verified_propositions/bootstrap-assumption-A"`, then move each file with `Rename`, for example `old_path="verified_propositions/energy-closure.md"` and `new_path="verified_propositions/bootstrap-assumption-A/energy-closure.md"`.
+- If later assumption B also fails, make a separate folder such as `verified_propositions/bootstrap-assumption-B` and move B's verified files there. Do not move `verified_propositions/bootstrap-assumption-A/energy-closure.md` to `verified_propositions/bootstrap-assumption-A/failed-energy-closure.md`, because that would rename the `.md` file.
+
 A good orchestration loop is:
 1. If verified_propositions/ or knowledge/ contain many files, call `Review` to get a survey and file recommendations.
 2. Read the key files the reviewer flagged, plus any other files you need. If those files are in `knowledge/`, start from `knowledge/index.md`. Use `ListDir` to confirm directory contents when Glob returns an empty or unexpected result (e.g., to distinguish an empty directory from a pattern mismatch).

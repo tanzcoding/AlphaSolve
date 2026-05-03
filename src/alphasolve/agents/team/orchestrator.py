@@ -417,8 +417,12 @@ class Orchestrator:
         return ref
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
-        access = RoleWorkspaceAccess(workspace=Workspace(self.layout.workspace_dir))
-        registry = build_workspace_tool_registry(access, allow_write=False)
+        access = RoleWorkspaceAccess(
+            workspace=Workspace(self.layout.workspace_dir),
+            write_root_rel="verified_propositions",
+            preserve_markdown_file_names_on_rename=True,
+        )
+        registry = build_workspace_tool_registry(access, allow_write=False, allow_manage=True)
         registry.register(
             name="Agent",
             description=(
@@ -508,7 +512,9 @@ class Orchestrator:
                 "Workspace layout:\n"
                 "- `verified_propositions/` — the ground truth of current progress. Every `.md` file here is a "
                 "rigorously verified mathematical result you can build on. Read these to understand exactly "
-                "what has been proved and what remains.\n"
+                "what has been proved and what remains. You may organize this directory by creating folders, "
+                "renaming folders, and moving verified files into folders. Never rename a `.md` file: keep the "
+                "same filename when moving it.\n"
                 "- `knowledge/` — exploratory notes distilled from past worker runs. These capture ideas, "
                 "partial arguments, and observations that workers have encountered but not yet turned into "
                 "verified propositions. Treat this as a research notebook: useful for inspiration and for crafting "
