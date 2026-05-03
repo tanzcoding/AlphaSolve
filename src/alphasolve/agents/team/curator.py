@@ -158,7 +158,10 @@ class CuratorQueue:
                     "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
                     "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
                     "Keep patterns general enough to apply across different problems. "
-                    "Do not add bullets for issues already covered."
+                    "Do not add bullets for issues already covered. "
+                    "`knowledge/common-errors.md` must contain at most 15 error patterns; if it already has 15 patterns "
+                    "and a genuinely new one should be added, first merge, compress, or abstract existing related patterns "
+                    "so the final file still has no more than 15."
                 )
             else:
                 extra = "Do not modify `knowledge/common-errors.md`."
@@ -260,9 +263,10 @@ def _health_check_prompt() -> str:
         "- If an entry is too long for useful later reads, split it into a topic folder with focused subtopic files and "
         "preserve cross-links. Files above about 700 lines deserve scrutiny; files above 1000 lines usually need splitting.\n"
         "- Check for stale links, missing entries in the root route map, confusing names, redundant pages, and obvious duplicates.\n"
-        "- Keep `knowledge/common-errors.md` concise. If it exceeds 100 lines or feels too long to scan, consolidate "
-        "overlapping bullets by abstracting their shared failure mode into one broader reusable pattern. Look for "
-        "entries that can be subsumed by a more general error pattern. Do not add new error patterns in this health check.\n\n"
+        "- Keep `knowledge/common-errors.md` concise and capped at 15 error patterns. If it has more than 15 bullets, "
+        "or if several bullets describe similar mistakes, consolidate them by abstracting their shared failure mode "
+        "into one broader reusable pattern. Look for entries that can be subsumed by a more general error pattern. "
+        "Do not add new error patterns in this health check.\n\n"
         "Do not record source labels, worker names, proposition IDs, round numbers, attempts, or session IDs. "
         "Before finishing, make sure `knowledge/index.md` accurately describes the current live structure."
     )

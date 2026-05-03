@@ -1,6 +1,18 @@
 # AlphaSolve
 
-AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它采用 **Orchestrator 驱动、多 worker 并行**的架构，通过 Generator → Verifier → Reviser 的迭代循环，逐步构建完整的**自然语言**数学证明。
+> 一个面向数学研究的多智能体证明工作台：让 LLM 像研究小组一样并行提出想法、审查漏洞、修正证明，并把有价值的中间知识沉淀下来。
+
+把一个 `problem.md` 放进空文件夹，运行 `alphasolve`。AlphaSolve 会启动 Orchestrator、多个 Worker、Verifier、Reviser 和 Curator，在自然语言证明空间里持续探索，直到产出可复用的已验证命题，或把失败路径整理成下一轮研究的线索。
+
+<p align="center">
+  <img src="docs/assets/alphasolve-dashboard.png" alt="AlphaSolve 实时多智能体证明面板" width="100%">
+</p>
+
+## 这是什么？
+
+AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它不是单次问答式的 proof generator，而是一套可持续运行的研究流程：Orchestrator 负责规划方向，多个 Worker 并行尝试证明，Verifier 从不同角度审查，Reviser 修复失败证明，Curator 将探索过程中形成的知识整理进 `workspace/knowledge/`，供后续继续使用。
+
+它特别适合那些需要长时间探索、反复试错、积累中间引理和失败经验的数学问题。
 
 ## 核心特性
 

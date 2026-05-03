@@ -162,6 +162,54 @@ def test_knowledge_curator_task_prompt_hides_source_labels():
         assert "proposition.md" not in task_text
 
 
+def test_final_verifier_curator_prompt_caps_common_errors():
+    class CapturingClient:
+        def __init__(self):
+            self.messages = []
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.messages = messages
+            return {"role": "assistant", "content": "done"}
+
+    class Suite:
+        models = {}
+
+        def __init__(self):
+            self.subagents = {
+                "curator": GeneralAgentConfig(
+                    name="curator",
+                    system_prompt="Curator prompt",
+                    tools=[],
+                    max_turns=1,
+                )
+            }
+
+    with local_project_dir("curator_common_errors_cap") as project_dir:
+        workspace_dir = project_dir / "workspace"
+        knowledge_dir = workspace_dir / "knowledge"
+        knowledge_dir.mkdir(parents=True)
+        client = CapturingClient()
+        queue = CuratorQueue(
+            knowledge_dir=knowledge_dir,
+            workspace_dir=workspace_dir,
+            suite=Suite(),
+            client_factory=lambda config: client,
+        )
+
+        queue._run_curator(
+            CuratorTask(
+                trace_segment=[{"role": "verifier_attempt", "content": "Verdict: fail\n\nThe proof repeats an old trap."}],
+                source_label="prop-demo/verifier",
+            )
+        )
+
+        task_text = client.messages[1]["content"]
+        assert "Append up to 3 general error patterns" in task_text
+        assert "at most 15 error patterns" in task_text
+        assert "final file still has no more than 15" in task_text
+
+
 def test_init_knowledge_base_removes_log_and_omits_problem_section():
     with local_project_dir("knowledge_init") as project_dir:
         knowledge_dir = project_dir / "workspace" / "knowledge"
@@ -299,7 +347,7 @@ def test_curator_health_check_prompt_is_navigation_focused():
     assert "topic folders" in prompt
     assert "giant flat summary list" in prompt
     assert "common-errors.md" in prompt
-    assert "100 lines" in prompt
+    assert "15 error patterns" in prompt
     assert "shared failure mode" in prompt
     assert "prop-000" not in prompt
     assert "worker_id" not in prompt

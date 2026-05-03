@@ -18,7 +18,7 @@ If a detail is only useful for debugging the AlphaSolve run, skip it. If it teac
 ## Knowledge Base Structure
 
 - `knowledge/index.md`: compact map of the current wiki. Keep it accurate and easy to scan.
-- `knowledge/common-errors.md`: reusable patterns of mistakes that the generator commonly makes when constructing propositions. Add new patterns only when curating a verifier's final review; during health checks, only reorganize or consolidate existing patterns.
+- `knowledge/common-errors.md`: reusable patterns of mistakes that the generator commonly makes when constructing propositions. Add new patterns only when curating a verifier's final review; during health checks, only reorganize or consolidate existing patterns. Keep it capped at 15 error patterns.
 - `knowledge/<entry-name>.md` or `knowledge/<topic>/<entry-name>.md`: topic notes.
 
 There is no maintenance log file. Do not create one.
@@ -115,7 +115,8 @@ After every curator task, check whether `knowledge/index.md` still accurately de
 - During a health check, you may reorganize or consolidate `knowledge/common-errors.md`, but do not add new error patterns.
 - Each bullet should describe a reusable generator failure pattern, not a specific failed proposition or review episode.
 - Keep the wording general enough to transfer across different problems.
-- Keep the file short enough to scan. If it exceeds 100 lines or becomes repetitive, merge overlapping bullets by abstracting the shared failure mode into one broader reusable pattern. Also look for bullets that can be subsumed by a more general existing pattern.
+- Keep the file short enough to scan: it must contain no more than 15 error patterns. If it already has 15 patterns and a genuinely new one should be added, first merge, compress, or abstract existing related patterns so the final file still has no more than 15.
+- If several bullets describe similar mistakes, merge them by abstracting the shared failure mode into one broader reusable pattern. Also look for bullets that can be subsumed by a more general existing pattern.
 - Do not add duplicates.
 
 ## Contradictions and Uncertainty
