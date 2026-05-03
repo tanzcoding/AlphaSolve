@@ -129,6 +129,7 @@ class CuratorQueue:
             access,
             allow_write=True,
             allow_manage=True,
+            allow_delete=True,
             subagent_service=subagent_svc,
         )
 

@@ -25,6 +25,7 @@ from alphasolve.agents.team.curator import (  # noqa: E402
     init_knowledge_base,
 )
 from alphasolve.agents.team.orchestrator import Orchestrator  # noqa: E402
+from alphasolve.agents.team.orchestrator import verified_count  # noqa: E402
 from alphasolve.agents.team.worker import Worker  # noqa: E402
 from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
 from alphasolve.agents.team.solution import write_solution  # noqa: E402
@@ -65,12 +66,19 @@ def test_default_agent_suite_loads_yaml_roles():
     } <= set(suite.agents)
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
     assert "Agent" in suite.agents["orchestrator"].tools
+    assert "Write" in suite.agents["orchestrator"].tools
+    assert "Edit" in suite.agents["orchestrator"].tools
     assert "MakeDir" in suite.agents["orchestrator"].tools
     assert "Rename" in suite.agents["orchestrator"].tools
-    assert "Write" not in suite.agents["orchestrator"].tools
     assert "Delete" not in suite.agents["orchestrator"].tools
+    assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["const"] == "verified_propositions/index.md"
+    assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["const"] == "verified_propositions/index.md"
     assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
     assert "Examples:" in suite.agents["orchestrator"].system_prompt
+    assert "Verified Propositions Index" in suite.agents["orchestrator"].system_prompt
+    assert "Current Progress And Insights" in suite.agents["orchestrator"].system_prompt
+    assert "Current Progress And Insights section" in suite.agents["orchestrator"].system_prompt
+    assert "less than 50 lines" in suite.agents["orchestrator"].system_prompt
     assert "bootstrap-assumption-A" in suite.agents["orchestrator"].system_prompt
     assert "that would rename the `.md` file" in suite.agents["orchestrator"].system_prompt
     assert "Agent" in suite.agents["generator"].tools
@@ -971,7 +979,8 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         tool_names = [tool["function"]["name"] for tool in openai_tools]
         assert "MakeDir" in tool_names
         assert "Rename" in tool_names
-        assert "Write" not in tool_names
+        assert "Write" in tool_names
+        assert "Edit" in tool_names
         assert "Delete" not in tool_names
         assert "Delete" not in [tool.name for tool in registry.registered_tools()]
         rename_description = next(
@@ -981,6 +990,50 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert "Rename a folder" in rename_description
         assert "Move a verified Markdown file without renaming it" in rename_description
+
+        index_content = (
+            "# Verified Propositions Index\n\n"
+            "## Directory\n"
+            "- [[bootstrap-lemma]] — proves the bootstrap lemma.\n\n"
+            "## Current Progress And Insights\n"
+            "- Try closing the next bootstrap step.\n"
+        )
+        wrote_index = registry.execute(
+            "Write",
+            {
+                "path": "verified_propositions/index.md",
+                "content": index_content,
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not wrote_index.is_error
+        assert (layout.verified_dir / "index.md").read_text(encoding="utf-8") == index_content
+
+        edited_index = registry.execute(
+            "Edit",
+            {
+                "path": "verified_propositions/index.md",
+                "old_str": "Try closing the next bootstrap step.",
+                "new_str": "Compare bootstrap assumptions A and B next.",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not edited_index.is_error
+        assert "Compare bootstrap assumptions" in (layout.verified_dir / "index.md").read_text(encoding="utf-8")
+
+        wrote_prop = registry.execute(
+            "Write",
+            {
+                "path": "verified_propositions/new-prop.md",
+                "content": "# New Prop\n",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert wrote_prop.is_error
+        assert "must be 'verified_propositions/index.md'" in wrote_prop.content
 
         made = registry.execute(
             "MakeDir",
@@ -1015,6 +1068,18 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert renamed_file.is_error
         assert "cannot rename .md files" in renamed_file.content
 
+        renamed_index = registry.execute(
+            "Rename",
+            {
+                "old_path": "verified_propositions/index.md",
+                "new_path": "verified_propositions/bootstrap-A/index.md",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert renamed_index.is_error
+        assert "must match pattern" in renamed_index.content
+
         outside = registry.execute(
             "MakeDir",
             {"path": "knowledge/bootstrap-A"},
@@ -1023,6 +1088,17 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert outside.is_error
         assert "must match pattern" in outside.content
+
+
+def test_verified_count_ignores_verified_index_file():
+    with local_project_dir("verified_count_index") as project_dir:
+        verified_dir = project_dir / "workspace" / "verified_propositions"
+        verified_dir.mkdir(parents=True)
+        (verified_dir / "index.md").write_text("# Verified Propositions Index\n", encoding="utf-8")
+        assert verified_count(verified_dir) == 0
+
+        (verified_dir / "lemma.md").write_text("# Lemma\n", encoding="utf-8")
+        assert verified_count(verified_dir) == 1
 
 
 def test_role_workspace_access_supports_append_rename_delete_and_protects_special_files():

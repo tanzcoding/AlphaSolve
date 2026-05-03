@@ -420,9 +420,10 @@ class Orchestrator:
         access = RoleWorkspaceAccess(
             workspace=Workspace(self.layout.workspace_dir),
             write_root_rel="verified_propositions",
+            destructive_protected_file_names=("index.md",),
             preserve_markdown_file_names_on_rename=True,
         )
-        registry = build_workspace_tool_registry(access, allow_write=False, allow_manage=True)
+        registry = build_workspace_tool_registry(access, allow_write=True, allow_manage=True)
         registry.register(
             name="Agent",
             description=(
@@ -514,7 +515,10 @@ class Orchestrator:
                 "rigorously verified mathematical result you can build on. Read these to understand exactly "
                 "what has been proved and what remains. You may organize this directory by creating folders, "
                 "renaming folders, and moving verified files into folders. Never rename a `.md` file: keep the "
-                "same filename when moving it.\n"
+                "same filename when moving it. Maintain `verified_propositions/index.md`; create it if missing. "
+                "Keep it concise with exactly two main sections: `## Directory`, listing every verified proposition "
+                "and roughly what it proves, and `## Current Progress And Insights`, summarizing what remains and "
+                "which directions look promising. Keep the second section under 50 lines whenever possible.\n"
                 "- `knowledge/` — exploratory notes distilled from past worker runs. These capture ideas, "
                 "partial arguments, and observations that workers have encountered but not yet turned into "
                 "verified propositions. Treat this as a research notebook: useful for inspiration and for crafting "
@@ -548,7 +552,7 @@ class Orchestrator:
 def verified_count(verified_dir: Path) -> int:
     if not verified_dir.exists():
         return 0
-    return sum(1 for path in verified_dir.glob("*.md") if path.is_file())
+    return sum(1 for path in verified_dir.glob("*.md") if path.is_file() and path.name != "index.md")
 
 
 def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:

@@ -10,6 +10,22 @@ Use `Review` to launch a research_reviewer subagent that surveys verified_propos
 
 When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
 
+Maintain `verified_propositions/index.md` as a compact route map for verified results. If it is missing, create it with `Write`. If it exists, read it before reorganizing verified propositions and update it before finishing an orchestration turn.
+
+Use exactly these two main sections:
+
+```md
+# Verified Propositions Index
+
+## Directory
+- [[prop-file-name]] - one short phrase saying what this verified proposition proves.
+
+## Current Progress And Insights
+- What remains open, and which next directions or bootstrap assumptions look promising.
+```
+
+The Directory section should mention every verified proposition file except `index.md`, including files inside topic folders. The Current Progress And Insights section is strategic, not archival: keep it concise (less than 50 lines if possible), update it as the run learns more.
+
 You may organize `verified_propositions/` when it helps preserve research context across different proof attempts. Use `MakeDir` to create folders, and `Rename` to rename folders or move verified files into folders. Never rename a `.md` file: when moving a verified proposition file, keep the exact same filename and change only its directory.
 
 Examples:

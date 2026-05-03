@@ -8,6 +8,8 @@ agent:
     - Grep
     - Glob
     - Read
+    - Write
+    - Edit
     - ListDir
     - MakeDir
     - Rename
@@ -16,14 +18,23 @@ agent:
     - Review
     - GetCurrentTime
   tool_parameters:
+    Write:
+      path:
+        const: "verified_propositions/index.md"
+      mode:
+        enum:
+          - overwrite
+    Edit:
+      path:
+        const: "verified_propositions/index.md"
     MakeDir:
       path:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
     Rename:
       old_path:
-        pattern: "^verified_propositions/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
+        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
       new_path:
-        pattern: "^verified_propositions/(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
+        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
     Agent:
       hint:
         type: string

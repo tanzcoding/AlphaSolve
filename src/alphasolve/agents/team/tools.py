@@ -428,6 +428,7 @@ def build_workspace_tool_registry(
     *,
     allow_write: bool = False,
     allow_manage: bool = False,
+    allow_delete: bool = False,
     subagent_service: "SubagentService | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
@@ -588,7 +589,7 @@ def build_workspace_tool_registry(
                 json.dumps(access.rename_path(args["old_path"], args["new_path"]), ensure_ascii=False)
             ),
         )
-        if allow_write:
+        if allow_write and allow_delete:
             registry.register(
                 name="Delete",
                 description="Deletes a file from the writable workspace area.\n\nUsage:\n- Only delete files that are obsolete after you have consolidated their useful content elsewhere.",
