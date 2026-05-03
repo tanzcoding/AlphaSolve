@@ -927,12 +927,12 @@ def test_role_workspace_access_can_restrict_reads_to_verifier_workspace():
             raise AssertionError("subagent file reads should stay inside verifier_workspace")
 
 
-def test_workspace_read_tool_defaults_to_30_lines_and_can_read_all():
+def test_workspace_read_tool_defaults_to_60_lines_and_can_read_all():
     with local_project_dir("team_read_pages") as project_dir:
         workspace_root = project_dir / "workspace"
         workspace_root.mkdir(parents=True)
         (workspace_root / "notes.md").write_text(
-            "".join(f"line {index}\n" for index in range(1, 34)),
+            "".join(f"line {index}\n" for index in range(1, 64)),
             encoding="utf-8",
         )
         access = RoleWorkspaceAccess(workspace=Workspace(workspace_root))
@@ -942,13 +942,13 @@ def test_workspace_read_tool_defaults_to_30_lines_and_can_read_all():
         assert "ignore n_lines" in read_schema["read_all"]["description"]
 
         default = registry.execute("Read", {"path": "notes.md"}).content
-        assert "30 lines read from file starting from line 1. File has 33 total lines." in default
-        assert "    30\tline 30" in default
-        assert "    31\tline 31" not in default
+        assert "60 lines read from file starting from line 1. File has 63 total lines." in default
+        assert "    60\tline 60" in default
+        assert "    61\tline 61" not in default
 
         full = registry.execute("Read", {"path": "notes.md", "read_all": True}).content
-        assert "33 lines read from file starting from line 1. File has 33 total lines." in full
-        assert "    33\tline 33" in full
+        assert "63 lines read from file starting from line 1. File has 63 total lines." in full
+        assert "    63\tline 63" in full
 
 
 def test_orchestrator_can_organize_verified_propositions_without_renaming_markdown_files():
