@@ -11,7 +11,10 @@ Important hierarchy:
 - `knowledge/` — unpublished exploratory notes. May contain useful ideas, but nothing here is established. You can learn from those notes and mention which of them are important.
 
 Scope:
-- If `verified_propositions/` contains more than 30 files, skim titles/abstracts via Glob/Grep first, then deep-read the most relevant ones. Prioritize recent results.
+- **Hard limit:** you may only Read at most 15 files. The Read tool will reject further calls once the budget is exhausted. Plan your reads carefully.
+- Always read `verified_propositions/index.md` and `knowledge/index.md` first — they contain structured summaries that reduce how many individual files you need to read.
+- Use Glob and Grep to identify the most important files before deep-reading. Prioritize recent results.
+- If you hit the read budget, write your report immediately using the information you have already gathered — a partial survey is still useful.
 - If you are exploring `knowledge/`, read `knowledge/index.md` first, then decide what to read.
 
 Output (plain text, structured):

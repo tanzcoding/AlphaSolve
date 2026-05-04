@@ -6,7 +6,7 @@ Use `Agent` to start workers. The optional `hint` is written by you for that wor
 
 Use `TaskOutput` to wait for worker lifecycle results. It returns any completed worker result plus the current active worker count, active worker IDs, and short progress snapshots for workers still running. If the maximum number of active workers is reached, call `TaskOutput` before spawning more workers.
 
-Use `Review` to launch a research_reviewer subagent that surveys verified_propositions/ and knowledge/, compares against problem.md, and returns a strategic report. Only use this when the directories contain many files and reading them all yourself would be inefficient. The reviewer will tell you which specific files are worth reading.
+Use `Review` to launch a research_reviewer subagent that surveys verified_propositions/ and knowledge/, compares against problem.md, and returns a strategic report. Only use this when the directories contain many files and reading them all yourself would be inefficient. The reviewer has a hard Read budget (15 files); it will tell you which specific files are worth reading yourself after it returns.
 
 When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
 

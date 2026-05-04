@@ -34,6 +34,9 @@ class OrchestratorRunResult:
     solution_path: Path | None = None
 
 
+_REVIEWER_READ_BUDGET = 15  # hard cap on files the research_reviewer may Read
+
+
 class WorkerManager:
     DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
 
@@ -354,6 +357,7 @@ class Orchestrator:
                 file_access_factory=lambda: RoleWorkspaceAccess(
                     workspace=Workspace(self.layout.workspace_dir),
                     deny_read_rel="unverified_propositions",
+                    read_budget=_REVIEWER_READ_BUDGET,
                 ),
                 stop_event=self.stop_event,
             )
@@ -473,7 +477,12 @@ class Orchestrator:
                     },
                     "required": [],
                 },
-                handler=lambda args: subagents.call_tool({"type": "research_reviewer", "task": args.get("task", "Survey verified_propositions/ and knowledge/, compare against problem.md, and recommend research directions.")}),
+                handler=lambda args: subagents.call_tool(
+                    {
+                        "type": "research_reviewer",
+                        "task": _reviewer_task_with_budget(args.get("task")),
+                    }
+                ),
             )
         return registry
 
@@ -525,8 +534,9 @@ class Orchestrator:
                 "hints, but nothing here counts as established until it appears in `verified_propositions/`.\n\n"
                 "Workflow:\n"
                 "1. If `verified_propositions/` or `knowledge/` contain more than a handful of files, use `Review` "
-                "to get a structured survey and discover which specific files are worth reading. Do not read "
-                "dozens of files yourself — delegate to the reviewer.\n"
+                "to get a structured survey and discover which specific files are worth reading. The reviewer "
+                "has a hard Read budget (15 files) so it cannot survey everything; it will flag key files "
+                "for you to read yourself. Do not read dozens of files yourself — delegate to the reviewer first.\n"
                 "2. Read the key files the reviewer flagged, then identify the most valuable next proposition.\n"
                 "3. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
                 "4. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
@@ -553,6 +563,23 @@ def verified_count(verified_dir: Path) -> int:
     if not verified_dir.exists():
         return 0
     return sum(1 for path in verified_dir.glob("*.md") if path.is_file() and path.name != "index.md")
+
+
+def _reviewer_task_with_budget(task: str | None) -> str:
+    base = (task or "").strip() or (
+        "Survey verified_propositions/ and knowledge/, compare against problem.md, "
+        "and recommend research directions."
+    )
+    budget = _REVIEWER_READ_BUDGET
+    return (
+        f"{base}\n\n"
+        f"HARD LIMIT: You may Read at most {budget} files. The Read tool will reject "
+        f"calls beyond this limit. Use Glob, Grep, and ListDir to identify the most "
+        f"important files first, then deep-read only the critical ones. "
+        f"Read `verified_propositions/index.md` and `knowledge/index.md` first — "
+        f"they already contain structured summaries of most files. "
+        f"Your report is valuable even if you could not read every file."
+    )
 
 
 def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:

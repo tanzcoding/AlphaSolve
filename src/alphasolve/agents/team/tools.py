@@ -43,10 +43,12 @@ class RoleWorkspaceAccess:
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
     destructive_protected_file_names: tuple[str, ...] = ()
     preserve_markdown_file_names_on_rename: bool = False
+    read_budget: int | None = None  # max distinct files that may be Read; None = unlimited
 
     def __post_init__(self) -> None:
         self._locked_proposition_rel: str | None = None
         self._touched_paths: set[Path] = set()
+        self._read_count: int = 0
 
     def read_text_page(
         self,
@@ -56,8 +58,15 @@ class RoleWorkspaceAccess:
         n_lines: int = READ_PAGE_DEFAULT_LINES,
         read_all: bool = False,
     ) -> PagedReadResult:
+        if self.read_budget is not None and self._read_count >= self.read_budget:
+            raise ValueError(
+                f"Read budget exhausted ({self.read_budget} files). "
+                "Write your report now using the information you have already gathered."
+            )
         target = self._resolve_readable_file(path)
-        return read_text_page(target, line_offset=line_offset, n_lines=n_lines, read_all=read_all)
+        result = read_text_page(target, line_offset=line_offset, n_lines=n_lines, read_all=read_all)
+        self._read_count += 1
+        return result
 
     def write_text(self, path: str, content: str, *, mode: str = "overwrite") -> str:
         target = self._resolve_writable_file(path)
