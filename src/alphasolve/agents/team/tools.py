@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
+from alphasolve.agents.general import AgentRunResult, GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
 from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, PagedReadResult, read_text_page
 from alphasolve.execution.runners import run_python, run_wolfram
 from alphasolve.utils.shell import (
@@ -43,12 +43,10 @@ class RoleWorkspaceAccess:
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
     destructive_protected_file_names: tuple[str, ...] = ()
     preserve_markdown_file_names_on_rename: bool = False
-    read_budget: int | None = None  # max distinct files that may be Read; None = unlimited
 
     def __post_init__(self) -> None:
         self._locked_proposition_rel: str | None = None
         self._touched_paths: set[Path] = set()
-        self._read_count: int = 0
 
     def read_text_page(
         self,
@@ -58,15 +56,8 @@ class RoleWorkspaceAccess:
         n_lines: int = READ_PAGE_DEFAULT_LINES,
         read_all: bool = False,
     ) -> PagedReadResult:
-        if self.read_budget is not None and self._read_count >= self.read_budget:
-            raise ValueError(
-                f"Read budget exhausted ({self.read_budget} files). "
-                "Write your report now using the information you have already gathered."
-            )
         target = self._resolve_readable_file(path)
-        result = read_text_page(target, line_offset=line_offset, n_lines=n_lines, read_all=read_all)
-        self._read_count += 1
-        return result
+        return read_text_page(target, line_offset=line_offset, n_lines=n_lines, read_all=read_all)
 
     def write_text(self, path: str, content: str, *, mode: str = "overwrite") -> str:
         target = self._resolve_writable_file(path)
@@ -890,6 +881,24 @@ def build_workspace_tool_registry(
     return registry
 
 
+def _last_plain_assistant_content(result: AgentRunResult) -> str:
+    for message in reversed(result.messages):
+        if message.get("role") == "assistant" and not message.get("tool_calls"):
+            return str(message.get("content") or "")
+    return result.final_answer
+
+
+def _format_subagent_result(*, agent_type: str, session_id: str, text: str) -> str:
+    return (
+        f"agent_id: {session_id}\n"
+        f"actual_subagent_type: {agent_type}\n"
+        f"status: completed\n"
+        f"\n"
+        f"[summary]\n"
+        f"{text}"
+    )
+
+
 class SubagentService:
     def __init__(
         self,
@@ -925,14 +934,57 @@ class SubagentService:
         agent_type = str(args.get("type") or "")
         task = str(args.get("task") or "")
         if not task.strip():
-            return ToolResult(json.dumps({"error": "task must not be empty"}, ensure_ascii=False), is_error=True)
+            return ToolResult("ERROR: task must not be empty", is_error=True)
         try:
-            result = self.call(agent_type, task, depth=depth)
+            return ToolResult(self.call(agent_type, task, depth=depth))
         except Exception as exc:
-            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
-        return ToolResult(json.dumps(result, ensure_ascii=False))
+            return ToolResult(f"ERROR: {exc}", is_error=True)
 
-    def call(self, agent_type: str, task: str, *, depth: int = 0) -> dict[str, Any]:
+    def call(self, agent_type: str, task: str, *, depth: int = 0) -> str:
+        session_id, result = self._run(agent_type, task, depth=depth)
+        self._submit_curator_trace(
+            agent_type=agent_type,
+            session_id=session_id,
+            task=task,
+            result=result,
+        )
+        return _format_subagent_result(
+            agent_type=agent_type,
+            session_id=session_id,
+            text=_last_plain_assistant_content(result),
+        )
+
+    def _submit_curator_trace(
+        self,
+        *,
+        agent_type: str,
+        session_id: str,
+        task: str,
+        result: AgentRunResult,
+    ) -> None:
+        if self.curator_queue is not None and not self.session_prefix.startswith("curator") and not self.session_prefix.startswith("orchestrator"):
+            from .curator import CuratorTask
+            caller_context = None
+            if self.curator_context_provider is not None:
+                try:
+                    caller_context = self.curator_context_provider(
+                        {
+                            "agent_type": agent_type,
+                            "session_id": session_id,
+                            "task": task,
+                            "final_answer": result.final_answer,
+                            "turns": result.turns,
+                        }
+                    )
+                except Exception as exc:
+                    caller_context = {"curator_context_error": str(exc)}
+            self.curator_queue.submit(CuratorTask(
+                trace_segment=result.trace,
+                source_label=f"{self.session_prefix}/{agent_type}",
+                caller_context=caller_context,
+            ))
+
+    def _run(self, agent_type: str, task: str, *, depth: int = 0) -> tuple[str, AgentRunResult]:
         config = self.suite.subagents.get(agent_type)
         if config is None:
             allowed = ", ".join(self.available_types())
@@ -987,35 +1039,7 @@ class SubagentService:
                 subagent_sink.close()
             if self.execution_gateway is not None:
                 self.execution_gateway.close_session(session_id)
-        out = {
-            "type": agent_type,
-            "session_id": session_id,
-            "final_answer": result.final_answer,
-            "turns": result.turns,
-            "trace": result.trace,
-        }
-        # Submit trace to curator queue unless we ARE the curator agent (avoid recursion)
-        if self.curator_queue is not None and not self.session_prefix.startswith("curator") and not self.session_prefix.startswith("orchestrator"):
-            from .curator import CuratorTask
-            caller_context = None
-            if self.curator_context_provider is not None:
-                try:
-                    caller_context = self.curator_context_provider(
-                        {
-                            "agent_type": agent_type,
-                            "session_id": session_id,
-                            "task": task,
-                            "result": out,
-                        }
-                    )
-                except Exception as exc:
-                    caller_context = {"curator_context_error": str(exc)}
-            self.curator_queue.submit(CuratorTask(
-                trace_segment=result.trace,
-                source_label=f"{self.session_prefix}/{agent_type}",
-                caller_context=caller_context,
-            ))
-        return out
+        return session_id, result
 
     def _build_subagent_registry(self, *, depth: int, session_id: str) -> ToolRegistry:
         registry = ToolRegistry()

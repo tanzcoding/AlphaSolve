@@ -1001,6 +1001,79 @@ def test_workspace_read_tool_defaults_to_60_lines_and_can_read_all():
         assert "    63\tline 63" in full
 
 
+def test_orchestrator_review_tool_returns_only_reviewer_final_report():
+    class ReviewerClient:
+        def __init__(self, role):
+            self.role = role
+            self.calls = 0
+
+        def complete(self, *, messages, tools):
+            del tools
+            self.calls += 1
+            if self.role != "research_reviewer":
+                return {"role": "assistant", "content": "unused"}
+            if self.calls == 1:
+                return {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "read_index",
+                            "type": "function",
+                            "function": {
+                                "name": "Read",
+                                "arguments": json.dumps({"path": "verified_propositions/index.md"}),
+                            },
+                        }
+                    ],
+                }
+            assert messages[-1]["role"] == "tool"
+            assert "internal read content" in str(messages[-1].get("content") or "")
+            return {"role": "assistant", "content": "## Current state\nClean reviewer report."}
+
+    with local_project_dir("review_final_report_only") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nSurvey progress.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        (layout.verified_dir / "index.md").write_text("internal read content", encoding="utf-8")
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        subagents = SubagentService(
+            suite=suite,
+            client_factory=lambda config: ReviewerClient(config.name),
+            max_depth=0,
+            file_access_factory=lambda: RoleWorkspaceAccess(workspace=Workspace(layout.workspace_dir)),
+            session_prefix="orchestrator",
+        )
+        orchestrator = Orchestrator(
+            layout=layout,
+            suite=suite,
+            client_factory=lambda config: ReviewerClient(config.name),
+            max_workers=1,
+            max_verify_rounds=1,
+            verifier_scaling_factor=1,
+            subagent_max_depth=0,
+        )
+        config = suite.agents["orchestrator"]
+        registry = orchestrator._build_registry(manager=object(), subagents=subagents)
+
+        result = registry.execute(
+            "Review",
+            {"task": "survey"},
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+
+        assert not result.is_error
+        assert "agent_id: orchestrator/research_reviewer/depth-0/" in result.content
+        assert "actual_subagent_type: research_reviewer" in result.content
+        assert "status: completed" in result.content
+        assert "[summary]" in result.content
+        assert "## Current state\nClean reviewer report." in result.content
+        assert '"trace"' not in result.content
+        assert '"final_answer"' not in result.content
+        assert "internal read content" not in result.content
+
+
 def test_orchestrator_can_organize_verified_propositions_without_renaming_markdown_files():
     with local_project_dir("orchestrator_verified_manage") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nOrganize verified propositions.\n", encoding="utf-8")
@@ -1528,9 +1601,10 @@ def test_subagent_service_cleans_up_gateway_session_after_return():
 
         pool = gateway._python_pool
         assert pool is not None
-        assert result["session_id"] not in pool._session_worker
-
-        rerun = gateway.run_python(session_id=result["session_id"], code="'x' in globals()")
-        assert "False" in rerun.tool_content
+        assert "agent_id: pytest-cleanup/compute_subagent/depth-0/" in result
+        assert "actual_subagent_type: compute_subagent" in result
+        assert "status: completed" in result
+        assert "[summary]\ndone" in result
+        assert pool._session_worker == {}
     finally:
         gateway.close()

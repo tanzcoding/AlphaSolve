@@ -83,7 +83,6 @@ class AlphaSolveConfig:
         "timeout": 3600,
         "params": {"extra_body": {"reasoning": {"effort": "high"}}},
     }
-
     # Default model configs referenced by agents.yaml
     GENERATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}
     VERIFIER_CONFIG = {**DEEPSEEK_PRO_CONFIG}
