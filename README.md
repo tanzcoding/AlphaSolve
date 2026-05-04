@@ -328,3 +328,4 @@ logs/{run_id}/
 AlphaSolve 的架构参考了如下工作：
 
 - [AI Mathematician (AIM)](https://arxiv.org/html/2505.22451v1) 及其开源实现 [Carlos-Mero/AIM](https://github.com/Carlos-Mero/AIM/)
+- [kimi-cli](https://github.com/MoonshotAI/kimi-cli) — 多个工具的参数设计和 tool result 格式参考了其写法
