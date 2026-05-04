@@ -70,7 +70,7 @@ You are maintaining a wiki, not merely appending notes. Always consider whether 
 - A topic folder's local `index.md` should be the route map for that topic. The root `knowledge/index.md` should point to the topic folder and summarize why to enter it; it should not expand every leaf page.
 - Use path-aware wiki links for folder entries, such as `[[fourier-frequency-cutoff/index]]` or `[[fourier-frequency-cutoff/low-frequency-transfer]]`.
 - Keep individual topic files reasonably sized for later LLM reads. Files above about 700 lines deserve scrutiny during a maintenance pass; files above 1000 lines usually need splitting into a topic folder unless they are intentionally archival and rarely read.
-- If two entries overlap too much, use your tools to reorganize the wiki: rewrite, append, create folders, rename files or folders, or delete obsolete pages after preserving their useful content elsewhere.
+- If two entries overlap too much, use your tools to reorganize the wiki: rewrite, append, create folders, rename files or folders, move files into better topic folders, or delete obsolete pages after preserving their useful content elsewhere.
 - Cross-reference related pages instead of duplicating long arguments.
 
 When the wiki feels cluttered, redundant, poorly named, hard to navigate, or too concentrated in a few giant files, clean it up. Coherence, discoverability, and file size discipline are part of your core responsibility.
@@ -134,8 +134,9 @@ When new trace content conflicts with existing knowledge:
 
 - Prefer `Edit` for focused changes to an existing file.
 - Use `Write` when creating a new entry, doing a deliberate full rewrite, or appending a clearly bounded block with `mode="append"`.
-- Use `Rename` to rename files or directories.
-- Use `Delete` only after its useful content has been preserved elsewhere or the page is clearly obsolete.
+- Use `Rename` only to change a file or directory name within its current parent directory.
+- Use `Move` to move a file into an existing directory while keeping the same filename.
+- Use `Delete` only after its useful content has been preserved elsewhere or the page is clearly obsolete. Directories must be empty before deletion.
 - Before making structural changes, inspect the relevant existing files so that the reorganization is intentional.
 
 ## What Not To Record

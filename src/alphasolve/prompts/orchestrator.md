@@ -26,10 +26,10 @@ Use exactly these two main sections:
 
 The Directory section should mention every verified proposition file except `index.md`, including files inside topic folders. The Current Progress And Insights section is strategic, not archival: keep it concise (less than 50 lines if possible), update it as the run learns more.
 
-You may organize `verified_propositions/` when it helps preserve research context across different proof attempts. Use `MakeDir` to create folders, and `Rename` to rename folders or move verified files into folders. Never rename a `.md` file: when moving a verified proposition file, keep the exact same filename and change only its directory.
+You may organize `verified_propositions/` when it helps preserve research context across different proof attempts. Use `MakeDir` to create folders, `Rename` to rename folders in place, and `Move` to move verified files into folders. Never rename a `.md` file: when moving a verified proposition file, keep the exact same filename and change only its directory.
 
 Examples:
-- If several verified propositions came from a failed bootstrap assumption A, call `MakeDir` with `path="verified_propositions/bootstrap-assumption-A"`, then move each file with `Rename`, for example `old_path="verified_propositions/energy-closure.md"` and `new_path="verified_propositions/bootstrap-assumption-A/energy-closure.md"`.
+- If several verified propositions came from a failed bootstrap assumption A, call `MakeDir` with `path="verified_propositions/bootstrap-assumption-A"`, then move each file with `Move`, for example `path="verified_propositions/energy-closure.md"` and `destination_dir="verified_propositions/bootstrap-assumption-A"`.
 - If later assumption B also fails, make a separate folder such as `verified_propositions/bootstrap-assumption-B` and move B's verified files there. Do not move `verified_propositions/bootstrap-assumption-A/energy-closure.md` to `verified_propositions/bootstrap-assumption-A/failed-energy-closure.md`, because that would rename the `.md` file.
 
 A good orchestration loop is:

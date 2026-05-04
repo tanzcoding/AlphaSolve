@@ -13,6 +13,7 @@ agent:
     - ListDir
     - MakeDir
     - Rename
+    - Move
     - Agent
     - TaskOutput
     - Review
@@ -31,10 +32,17 @@ agent:
       path:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
     Rename:
-      old_path:
-        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
-      new_path:
-        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?/?$"
+      directory:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+      old_name:
+        pattern: "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+      new_name:
+        pattern: "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+    Move:
+      path:
+        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+      destination_dir:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
     Agent:
       hint:
         type: string

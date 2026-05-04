@@ -253,7 +253,7 @@ def _health_check_prompt() -> str:
         "# Knowledge Base Health Check\n\n"
         "Perform a focused maintenance pass on `knowledge/`. This task is not based on a new mathematical trace.\n\n"
         "Read `knowledge/index.md` first, then inspect the directory shape with ListDir/Glob and targeted reads. "
-        "Keep the pass practical: make small organization fixes immediately, but only do larger splits or renames "
+        "Keep the pass practical: make small organization fixes immediately, but only do larger splits, moves, or renames "
         "when the current structure is clearly making the wiki hard to navigate.\n\n"
         "Check these items:\n"
         "- `knowledge/index.md` should be a route map with sections like Start Here, Current Bottlenecks, Main Routes, "

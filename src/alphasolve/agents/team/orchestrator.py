@@ -514,7 +514,7 @@ class Orchestrator:
                 "- `verified_propositions/` — the ground truth of current progress. Every `.md` file here is a "
                 "rigorously verified mathematical result you can build on. Read these to understand exactly "
                 "what has been proved and what remains. You may organize this directory by creating folders, "
-                "renaming folders, and moving verified files into folders. Never rename a `.md` file: keep the "
+                "renaming folders with Rename, and moving verified files into folders with Move. Never rename a `.md` file: keep the "
                 "same filename when moving it. Maintain `verified_propositions/index.md`; create it if missing. "
                 "Keep it concise with exactly two main sections: `## Directory`, listing every verified proposition "
                 "and roughly what it proves, and `## Current Progress And Insights`, summarizing what remains and "

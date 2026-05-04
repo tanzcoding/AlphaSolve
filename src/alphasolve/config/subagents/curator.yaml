@@ -11,6 +11,7 @@ agent:
     - Edit
     - MakeDir
     - Rename
+    - Move
     - Delete
     - ListDir
     - Glob
@@ -34,13 +35,20 @@ agent:
       path:
         pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
     Rename:
-      old_path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
-      new_path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+      directory:
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+      old_name:
+        pattern: "^(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?$"
+      new_name:
+        pattern: "^(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?$"
+    Move:
+      path:
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+      destination_dir:
+        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
     Delete:
       path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*\\.md$"
+        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
     ListDir:
       path:
         default: knowledge

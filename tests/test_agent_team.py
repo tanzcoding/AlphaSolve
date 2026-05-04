@@ -70,6 +70,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Edit" in suite.agents["orchestrator"].tools
     assert "MakeDir" in suite.agents["orchestrator"].tools
     assert "Rename" in suite.agents["orchestrator"].tools
+    assert "Move" in suite.agents["orchestrator"].tools
     assert "Delete" not in suite.agents["orchestrator"].tools
     assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["const"] == "verified_propositions/index.md"
     assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["const"] == "verified_propositions/index.md"
@@ -104,6 +105,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert curator.tool_parameters["Write"]["path"]["pattern"].endswith("\\.md$")
     assert curator.tool_parameters["Write"]["mode"]["enum"] == ["overwrite", "append"]
     assert any("rename" in name.lower() for name in curator.tools)
+    assert "Move" in curator.tools
     assert any("delete" in name.lower() for name in curator.tools)
     assert not any(name.lower() in {"get_current_time", "getcurrenttime"} for name in curator.tools)
     assert "not a transcript archive" in curator.system_prompt
@@ -1027,6 +1029,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         tool_names = [tool["function"]["name"] for tool in openai_tools]
         assert "MakeDir" in tool_names
         assert "Rename" in tool_names
+        assert "Move" in tool_names
         assert "Write" in tool_names
         assert "Edit" in tool_names
         assert "Delete" not in tool_names
@@ -1037,7 +1040,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
             if tool["function"]["name"] == "Rename"
         )
         assert "Rename a folder" in rename_description
-        assert "Move a verified Markdown file without renaming it" in rename_description
+        assert "Use this only when the item stays in the same directory" in rename_description
 
         index_content = (
             "# Verified Propositions Index\n\n"
@@ -1093,10 +1096,10 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert (layout.verified_dir / "bootstrap-A").is_dir()
 
         moved = registry.execute(
-            "Rename",
+            "Move",
             {
-                "old_path": "verified_propositions/bootstrap-lemma.md",
-                "new_path": "verified_propositions/bootstrap-A/bootstrap-lemma.md",
+                "path": "verified_propositions/bootstrap-lemma.md",
+                "destination_dir": "verified_propositions/bootstrap-A",
             },
             enabled=config.tools,
             tool_parameters=config.tool_parameters,
@@ -1107,20 +1110,22 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         renamed_file = registry.execute(
             "Rename",
             {
-                "old_path": "verified_propositions/bootstrap-A/bootstrap-lemma.md",
-                "new_path": "verified_propositions/bootstrap-A/renamed-lemma.md",
+                "directory": "verified_propositions/bootstrap-A",
+                "old_name": "bootstrap-lemma.md",
+                "new_name": "renamed-lemma.md",
             },
             enabled=config.tools,
             tool_parameters=config.tool_parameters,
         )
         assert renamed_file.is_error
-        assert "cannot rename .md files" in renamed_file.content
+        assert "must match pattern" in renamed_file.content
 
         renamed_index = registry.execute(
             "Rename",
             {
-                "old_path": "verified_propositions/index.md",
-                "new_path": "verified_propositions/bootstrap-A/index.md",
+                "directory": "verified_propositions",
+                "old_name": "index.md",
+                "new_name": "renamed-index",
             },
             enabled=config.tools,
             tool_parameters=config.tool_parameters,
@@ -1137,6 +1142,30 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert outside.is_error
         assert "must match pattern" in outside.content
 
+        move_outside_source = registry.execute(
+            "Move",
+            {
+                "path": "knowledge/note.md",
+                "destination_dir": "verified_propositions/bootstrap-A",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert move_outside_source.is_error
+        assert "must match pattern" in move_outside_source.content
+
+        move_outside_destination = registry.execute(
+            "Move",
+            {
+                "path": "verified_propositions/bootstrap-A/bootstrap-lemma.md",
+                "destination_dir": "knowledge",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert move_outside_destination.is_error
+        assert "must match pattern" in move_outside_destination.content
+
 
 def test_verified_count_ignores_verified_index_file():
     with local_project_dir("verified_count_index") as project_dir:
@@ -1149,7 +1178,7 @@ def test_verified_count_ignores_verified_index_file():
         assert verified_count(verified_dir) == 1
 
 
-def test_role_workspace_access_supports_append_rename_delete_and_protects_special_files():
+def test_role_workspace_access_supports_append_rename_move_delete_and_protects_special_files():
     with local_project_dir("knowledge_manage") as project_dir:
         workspace_root = project_dir / "workspace"
         knowledge_dir = workspace_root / "knowledge"
@@ -1167,17 +1196,44 @@ def test_role_workspace_access_supports_append_rename_delete_and_protects_specia
         access.write_text("knowledge/entry.md", "\n## Detail\n", mode="append")
         assert access.read_text_page("knowledge/entry.md").output == "     1\t# Entry\n     2\t\n     3\t## Detail\n"
 
-        renamed = access.rename_path("knowledge/entry.md", "knowledge/renamed-entry.md")
+        renamed = access.rename_item("knowledge", "entry.md", "renamed-entry.md")
         assert renamed == {
             "old_path": "knowledge/entry.md",
             "path": "knowledge/renamed-entry.md",
         }
         assert (knowledge_dir / "renamed-entry.md").is_file()
 
+        (knowledge_dir / "topic").mkdir()
+        moved = access.move_file("knowledge/renamed-entry.md", "knowledge/topic")
+        assert moved == {
+            "old_path": "knowledge/renamed-entry.md",
+            "path": "knowledge/topic/renamed-entry.md",
+        }
+        assert (knowledge_dir / "topic" / "renamed-entry.md").is_file()
+
+        try:
+            access.rename_path("knowledge/topic/renamed-entry.md", "knowledge/renamed-entry.md")
+        except Exception as exc:
+            assert "use Move to change directories" in str(exc)
+        else:
+            raise AssertionError("Rename should not move files across directories")
+
         access.write_text("knowledge/obsolete.md", "old\n")
         deleted = access.delete_file("knowledge/obsolete.md")
         assert deleted == "knowledge/obsolete.md"
         assert not (knowledge_dir / "obsolete.md").exists()
+
+        try:
+            access.delete_path("knowledge/topic")
+        except Exception as exc:
+            assert "not empty" in str(exc) or "directory is not empty" in str(exc)
+        else:
+            raise AssertionError("non-empty directories should not be deletable")
+
+        access.delete_file("knowledge/topic/renamed-entry.md")
+        deleted_dir = access.delete_path("knowledge/topic")
+        assert deleted_dir == "knowledge/topic"
+        assert not (knowledge_dir / "topic").exists()
 
         try:
             access.delete_file("knowledge/index.md")

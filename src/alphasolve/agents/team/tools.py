@@ -91,6 +91,8 @@ class RoleWorkspaceAccess:
             destructive=True,
             expect_dir=source.is_dir(),
         )
+        if source.parent != target.parent:
+            raise ValueError("Rename can only change a name within the same directory; use Move to change directories")
         old_rel = self._rel(source)
         if source == target:
             return {"old_path": old_rel, "path": self._rel(target)}
@@ -108,16 +110,45 @@ class RoleWorkspaceAccess:
         self._record_touch(target)
         return {"old_path": old_rel, "path": self._rel(target)}
 
+    def rename_item(self, directory: str, old_name: str, new_name: str) -> dict[str, str]:
+        if self._has_path_separator(old_name) or self._has_path_separator(new_name):
+            raise ValueError("old_name and new_name must be plain names, not paths")
+        if old_name in {"", ".", ".."} or new_name in {"", ".", ".."}:
+            raise ValueError("old_name and new_name must be plain names")
+        parent = self._resolve_writable_directory(directory, must_exist=True)
+        return self.rename_path(self._rel(parent / old_name), self._rel(parent / new_name))
+
+    def move_file(self, path: str, destination_dir: str) -> dict[str, str]:
+        source = self._resolve_writable_file(path, must_exist=True, destructive=True)
+        destination = self._resolve_writable_directory(destination_dir, must_exist=True)
+        target = destination / source.name
+        if source == target:
+            return {"old_path": self._rel(source), "path": self._rel(target)}
+        if target.exists():
+            raise ValueError(f"target already exists: {self._rel(target)}")
+        old_rel = self._rel(source)
+        source.rename(target)
+        self._record_touch(target)
+        return {"old_path": old_rel, "path": self._rel(target)}
+
     def make_dir(self, path: str) -> str:
         target = self._resolve_writable_directory(path)
         target.mkdir(parents=True, exist_ok=True)
         return self._rel(target)
 
-    def delete_file(self, path: str) -> str:
-        target = self._resolve_writable_file(path, must_exist=True, destructive=True)
+    def delete_path(self, path: str) -> str:
+        target = self._resolve_manageable_path(path, must_exist=True, destructive=True)
         rel = self._rel(target)
-        target.unlink()
+        if target.is_dir():
+            if any(target.iterdir()):
+                raise ValueError(f"directory is not empty: {path}")
+            target.rmdir()
+        else:
+            target.unlink()
         return rel
+
+    def delete_file(self, path: str) -> str:
+        return self.delete_path(path)
 
     def touched_paths(self) -> tuple[Path, ...]:
         return tuple(sorted(self._touched_paths, key=lambda item: item.as_posix()))
@@ -325,16 +356,22 @@ class RoleWorkspaceAccess:
             raise ValueError(f"file extension is not allowed: {path}")
         return target
 
-    def _resolve_writable_directory(self, path: str) -> Path:
+    def _resolve_writable_directory(self, path: str, *, must_exist: bool = False) -> Path:
         target = self.workspace.resolve(path)
         if self.write_root_rel is None:
             raise ValueError("write_file is not enabled for this agent")
         self._ensure_under_root(target, self.write_root_rel, kind="write")
-        if target == self.workspace.resolve(self.write_root_rel):
+        if target == self.workspace.resolve(self.write_root_rel) and not must_exist:
             raise ValueError("cannot create the writable root directory")
+        if must_exist and not target.is_dir():
+            raise ValueError(f"directory does not exist: {path}")
         if target.exists() and not target.is_dir():
             raise ValueError(f"not a directory: {path}")
         return target
+
+    @staticmethod
+    def _has_path_separator(name: str) -> bool:
+        return "/" in name or "\\" in name
 
     def _finalize_writable_target(
         self,
@@ -566,42 +603,72 @@ def build_workspace_tool_registry(
         registry.register(
             name="Rename",
             description=(
-                "Renames or moves a file or directory within the writable workspace area.\n\n"
+                "Renames a file or directory in place within the writable workspace area.\n\n"
                 "Usage:\n"
-                "- Use this to promote clearer topic folders or reorganize files without rewriting file contents.\n"
+                "- Use this only when the item stays in the same directory and only its name changes.\n"
+                "- `directory` is the parent directory that currently contains the item.\n"
+                "- `old_name` and `new_name` must be plain names, not paths, and must not contain `/` or `\\`.\n"
+                "- To move a file into another directory, use Move instead.\n"
                 "- This tool fails if the target path already exists.\n\n"
                 "Examples:\n"
-                "- Rename a folder: old_path=\"verified_propositions/bootstrap-A\", "
-                "new_path=\"verified_propositions/bootstrap-attempt-A\".\n"
-                "- Move a verified Markdown file without renaming it: "
-                "old_path=\"verified_propositions/bootstrap-lemma.md\", "
-                "new_path=\"verified_propositions/bootstrap-attempt-A/bootstrap-lemma.md\"."
+                "- Rename a folder: directory=\"verified_propositions\", old_name=\"bootstrap-A\", "
+                "new_name=\"bootstrap-attempt-A\".\n"
+                "- Rename a knowledge page: directory=\"knowledge/fourier\", old_name=\"cutoff.md\", "
+                "new_name=\"frequency-cutoff.md\"."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "old_path": {"type": "string", "description": "Existing file or directory path to rename or move."},
-                    "new_path": {"type": "string", "description": "New file or directory path after renaming or moving."},
+                    "directory": {"type": "string", "description": "Parent directory containing the item to rename."},
+                    "old_name": {"type": "string", "description": "Current file or directory name only; no path separators."},
+                    "new_name": {"type": "string", "description": "New file or directory name only; no path separators."},
                 },
-                "required": ["old_path", "new_path"],
+                "required": ["directory", "old_name", "new_name"],
             },
             handler=lambda args: ToolResult(
-                json.dumps(access.rename_path(args["old_path"], args["new_path"]), ensure_ascii=False)
+                json.dumps(access.rename_item(args["directory"], args["old_name"], args["new_name"]), ensure_ascii=False)
+            ),
+        )
+        registry.register(
+            name="Move",
+            description=(
+                "Moves a file into another directory within the writable workspace area while keeping the same file name.\n\n"
+                "Usage:\n"
+                "- Use this when reorganizing files into topic folders.\n"
+                "- `path` must be an existing file.\n"
+                "- `destination_dir` must be an existing directory.\n"
+                "- Move never renames the file; use Rename separately if the file name itself should change."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Existing file path to move."},
+                    "destination_dir": {"type": "string", "description": "Existing destination directory."},
+                },
+                "required": ["path", "destination_dir"],
+            },
+            handler=lambda args: ToolResult(
+                json.dumps(access.move_file(args["path"], args["destination_dir"]), ensure_ascii=False)
             ),
         )
         if allow_write and allow_delete:
             registry.register(
                 name="Delete",
-                description="Deletes a file from the writable workspace area.\n\nUsage:\n- Only delete files that are obsolete after you have consolidated their useful content elsewhere.",
+                description=(
+                    "Deletes a file or empty directory from the writable workspace area.\n\n"
+                    "Usage:\n"
+                    "- Only delete files after useful content has been consolidated elsewhere.\n"
+                    "- Directories must already be empty; this tool will not recursively delete directory contents."
+                ),
                 parameters={
                     "type": "object",
                     "properties": {
-                        "path": {"type": "string", "description": "The file path to delete."},
+                        "path": {"type": "string", "description": "The file or empty directory path to delete."},
                     },
                     "required": ["path"],
                 },
                 handler=lambda args: ToolResult(
-                    json.dumps({"path": access.delete_file(args["path"])}, ensure_ascii=False)
+                    json.dumps({"path": access.delete_path(args["path"])}, ensure_ascii=False)
                 ),
             )
 
