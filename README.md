@@ -1,11 +1,11 @@
 # AlphaSolve
 
-> 一个面向数学研究的多智能体证明工作台：让 LLM 像研究小组一样并行提出想法、审查漏洞、修正证明，并把有价值的中间知识沉淀下来。
+> 一个面向数学研究的多智能体证明工作台：让 LLM 能够进行长程研究，并产出**自然语言**证明。
 
-把一个 `problem.md` 放进空文件夹，运行 `alphasolve`。AlphaSolve 会启动 Orchestrator、多个 Worker、Verifier、Reviser 和 Curator，在自然语言证明空间里持续探索，直到产出可复用的已验证命题，或把失败路径整理成下一轮研究的线索。
+把一个 `problem.md` 放进空文件夹，运行 `alphasolve`。AlphaSolve 会持续探索，直到解决问题。您也可以在产生的 `verified_propositions` 中手工添加命题，或者在 `knowledge` 中添加可参考的论文 (markdown格式) 以引导和干预 AlphaSolve。
 
 <p align="center">
-  <img src="docs/assets/alphasolve-dashboard.png" alt="AlphaSolve 实时多智能体证明面板" width="100%">
+  <img src="docs/assets/alphasolve-dashboard.png" alt="AlphaSolve 实时面板" width="100%">
 </p>
 
 ## 这是什么？
