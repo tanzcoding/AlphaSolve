@@ -50,5 +50,5 @@ agent:
     TaskOutput:
       seconds:
         type: number
-        minimum: 0
+        minimum: 1200
         maximum: 3600

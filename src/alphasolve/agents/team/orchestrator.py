@@ -230,7 +230,7 @@ class WorkerManager:
             return self._with_runtime_updates(self._wait_payload(completed))
         if not self.active:
             return self._with_runtime_updates({"completed": [], **self._pool_status(), "message": "no active workers"})
-        timeout = self.DEFAULT_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else max(300.0, float(timeout_seconds))
+        timeout = self.DEFAULT_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else max(1200.0, float(timeout_seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
             timeout=timeout,
@@ -567,7 +567,7 @@ class Orchestrator:
                         "type": "number",
                         "description": "Maximum seconds to wait before returning active worker status.",
                         "default": WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
-                        "minimum": 300,
+                        "minimum": 1200,
                         "maximum": 3600,
                     },
                 },
