@@ -129,7 +129,9 @@ class RoleWorkspaceAccess:
         old_rel = self._rel(source)
         source.rename(target)
         self._record_touch(target)
-        return {"old_path": old_rel, "path": self._rel(target)}
+        new_rel = self._rel(target)
+        self._update_verified_references_after_move(old_rel, new_rel)
+        return {"old_path": old_rel, "path": new_rel}
 
     def make_dir(self, path: str) -> str:
         target = self._resolve_writable_directory(path)
@@ -152,6 +154,38 @@ class RoleWorkspaceAccess:
 
     def touched_paths(self) -> tuple[Path, ...]:
         return tuple(sorted(self._touched_paths, key=lambda item: item.as_posix()))
+
+    def _update_verified_references_after_move(self, old_rel: str, new_rel: str) -> None:
+        prefix = "verified_propositions/"
+        if not (old_rel.startswith(prefix) and new_rel.startswith(prefix)):
+            return
+        if not (old_rel.endswith(".md") and new_rel.endswith(".md")):
+            return
+
+        old_label = old_rel[len(prefix):-3]
+        new_label = new_rel[len(prefix):-3]
+        if old_label == new_label:
+            return
+
+        old_labels = {old_label, old_label.replace("/", "\\")}
+        new_ref = "\\ref{" + new_label.replace("/", "\\") + "}"
+        verified_root = self.workspace.resolve("verified_propositions")
+        if not verified_root.is_dir():
+            return
+
+        for current, dirs, files in os.walk(verified_root):
+            dirs[:] = sorted(name for name in dirs if name not in {".git", "__pycache__", ".venv", "node_modules"})
+            for name in sorted(files):
+                file_path = Path(current) / name
+                if file_path.suffix.lower() != ".md":
+                    continue
+                text = file_path.read_text(encoding="utf-8")
+                new_text = text
+                for label in sorted(old_labels, key=len, reverse=True):
+                    new_text = new_text.replace("\\ref{" + label + "}", new_ref)
+                if new_text != text:
+                    file_path.write_text(new_text, encoding="utf-8")
+                    self._record_touch(file_path)
 
     def list_dir(self, path: str = ".", *, recursive: bool = False, max_results: int = 200) -> list[str]:
         target = self.workspace.resolve(path)
@@ -637,7 +671,9 @@ def build_workspace_tool_registry(
                 "- Use this when reorganizing files into topic folders.\n"
                 "- `path` must be an existing file.\n"
                 "- `destination_dir` must be an existing directory.\n"
-                "- Move never renames the file; use Rename separately if the file name itself should change."
+                "- Move never renames the file; use Rename separately if the file name itself should change.\n"
+                "- When moving files inside verified_propositions/, Move automatically updates matching "
+                "`\\ref{old-path}` references across verified_propositions/ to the new backslash-separated path."
             ),
             parameters={
                 "type": "object",

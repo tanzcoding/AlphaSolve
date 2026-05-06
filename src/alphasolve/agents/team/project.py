@@ -55,7 +55,25 @@ class ProjectLayout:
             self.verified_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(self.problem_path, self.workspace_dir / "problem.md")
+        self.sync_workspace_inputs()
+
+    def sync_workspace_inputs(self) -> dict[str, str | None]:
+        problem_target = self.workspace_dir / "problem.md"
+        hint_target = self.workspace_dir / "hint.md"
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.problem_path, problem_target)
+        hint_source = self.hint_path if self.hint_path is not None and self.hint_path.is_file() else None
+        if hint_source is not None:
+            shutil.copy2(hint_source, hint_target)
+            hint_status: str | None = str(hint_target)
+        else:
+            if hint_target.exists():
+                hint_target.unlink()
+            hint_status = None
+        return {
+            "problem": str(problem_target),
+            "hint": hint_status,
+        }
 
     def read_problem(self) -> str:
         return self.problem_path.read_text(encoding="utf-8")

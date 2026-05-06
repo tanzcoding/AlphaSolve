@@ -72,8 +72,9 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Rename" in suite.agents["orchestrator"].tools
     assert "Move" in suite.agents["orchestrator"].tools
     assert "Delete" not in suite.agents["orchestrator"].tools
-    assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["const"] == "verified_propositions/index.md"
-    assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["const"] == "verified_propositions/index.md"
+    index_pattern = r"^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\.md$"
+    assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["pattern"] == index_pattern
+    assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["pattern"] == index_pattern
     assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
     assert "Examples:" in suite.agents["orchestrator"].system_prompt
     assert "Verified Propositions Index" in suite.agents["orchestrator"].system_prompt
@@ -112,6 +113,44 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "There is no maintenance log file." in curator.system_prompt
     assert "<source_label>" not in curator.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
+
+
+def test_project_layout_syncs_workspace_inputs_from_project_root():
+    with local_project_dir("sync_workspace_inputs") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nfresh problem\n", encoding="utf-8")
+        (project_dir / "hint.md").write_text("# Hint\n\nfresh hint\n", encoding="utf-8")
+        workspace_dir = project_dir / "workspace"
+        workspace_dir.mkdir()
+        (workspace_dir / "problem.md").write_text("stale problem\n", encoding="utf-8")
+        (workspace_dir / "hint.md").write_text("stale hint\n", encoding="utf-8")
+
+        layout = ProjectLayout.create(project_dir)
+        synced = layout.sync_workspace_inputs()
+
+        assert synced == {
+            "problem": str(workspace_dir / "problem.md"),
+            "hint": str(workspace_dir / "hint.md"),
+        }
+        assert (workspace_dir / "problem.md").read_text(encoding="utf-8") == "# Problem\n\nfresh problem\n"
+        assert (workspace_dir / "hint.md").read_text(encoding="utf-8") == "# Hint\n\nfresh hint\n"
+
+
+def test_project_layout_sync_removes_stale_workspace_hint_when_project_hint_is_missing():
+    with local_project_dir("sync_workspace_inputs_no_hint") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nfresh problem\n", encoding="utf-8")
+        workspace_dir = project_dir / "workspace"
+        workspace_dir.mkdir()
+        (workspace_dir / "hint.md").write_text("stale hint\n", encoding="utf-8")
+
+        layout = ProjectLayout.create(project_dir)
+        synced = layout.sync_workspace_inputs()
+
+        assert synced == {
+            "problem": str(workspace_dir / "problem.md"),
+            "hint": None,
+        }
+        assert (workspace_dir / "problem.md").read_text(encoding="utf-8") == "# Problem\n\nfresh problem\n"
+        assert not (workspace_dir / "hint.md").exists()
 
 
 def test_knowledge_curator_task_prompt_hides_source_labels():
@@ -1118,7 +1157,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         index_content = (
             "# Verified Propositions Index\n\n"
             "## Directory\n"
-            "- [[bootstrap-lemma]] — proves the bootstrap lemma.\n\n"
+            "- [[bootstrap-lemma]] - proves the bootstrap lemma; see \\ref{bootstrap-lemma}.\n\n"
             "## Current Progress And Insights\n"
             "- Try closing the next bootstrap step.\n"
         )
@@ -1157,7 +1196,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
             tool_parameters=config.tool_parameters,
         )
         assert wrote_prop.is_error
-        assert "must be 'verified_propositions/index.md'" in wrote_prop.content
+        assert "must match pattern" in wrote_prop.content
 
         made = registry.execute(
             "MakeDir",
@@ -1167,6 +1206,31 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert not made.is_error
         assert (layout.verified_dir / "bootstrap-A").is_dir()
+
+        wrote_nested_index = registry.execute(
+            "Write",
+            {
+                "path": "verified_propositions/bootstrap-A/index.md",
+                "content": "# Bootstrap A\n\n- Local route map.\n",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not wrote_nested_index.is_error
+        assert (layout.verified_dir / "bootstrap-A" / "index.md").is_file()
+
+        edited_nested_index = registry.execute(
+            "Edit",
+            {
+                "path": "verified_propositions/bootstrap-A/index.md",
+                "old_str": "Local route map.",
+                "new_str": "Local route map for bootstrap assumption A.",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not edited_nested_index.is_error
+        assert "bootstrap assumption A" in (layout.verified_dir / "bootstrap-A" / "index.md").read_text(encoding="utf-8")
 
         moved = registry.execute(
             "Move",
@@ -1179,6 +1243,9 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert not moved.is_error
         assert (layout.verified_dir / "bootstrap-A" / "bootstrap-lemma.md").is_file()
+        index_after_move = (layout.verified_dir / "index.md").read_text(encoding="utf-8")
+        assert "\\ref{bootstrap-A\\bootstrap-lemma}" in index_after_move
+        assert "\\ref{bootstrap-lemma}" not in index_after_move
 
         renamed_file = registry.execute(
             "Rename",
@@ -1205,6 +1272,18 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert renamed_index.is_error
         assert "must match pattern" in renamed_index.content
+
+        moved_nested_index = registry.execute(
+            "Move",
+            {
+                "path": "verified_propositions/bootstrap-A/index.md",
+                "destination_dir": "verified_propositions",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert moved_nested_index.is_error
+        assert "must match pattern" in moved_nested_index.content
 
         outside = registry.execute(
             "MakeDir",
@@ -1249,6 +1328,75 @@ def test_verified_count_ignores_verified_index_file():
 
         (verified_dir / "lemma.md").write_text("# Lemma\n", encoding="utf-8")
         assert verified_count(verified_dir) == 1
+
+
+def test_move_file_updates_verified_proposition_references():
+    with local_project_dir("verified_move_references") as project_dir:
+        workspace_root = project_dir / "workspace"
+        verified_dir = workspace_root / "verified_propositions"
+        verified_dir.mkdir(parents=True)
+        (verified_dir / "source.md").write_text(
+            "# Source\n\nUses \\ref{target} and \\ref{archive\\target}.\n",
+            encoding="utf-8",
+        )
+        (verified_dir / "target.md").write_text(
+            "# Target\n\nSelf citation \\ref{target}.\n",
+            encoding="utf-8",
+        )
+        (verified_dir / "index.md").write_text(
+            "# Index\n\n- See \\ref{target}.\n",
+            encoding="utf-8",
+        )
+        (verified_dir / "archive").mkdir()
+
+        access = RoleWorkspaceAccess(
+            workspace=Workspace(workspace_root),
+            write_root_rel="verified_propositions",
+        )
+
+        moved = access.move_file("verified_propositions/target.md", "verified_propositions/archive")
+
+        assert moved == {
+            "old_path": "verified_propositions/target.md",
+            "path": "verified_propositions/archive/target.md",
+        }
+        assert "\\ref{archive\\target}" in (verified_dir / "source.md").read_text(encoding="utf-8")
+        assert "\\ref{archive\\target}" in (verified_dir / "archive" / "target.md").read_text(encoding="utf-8")
+        assert "\\ref{archive\\target}" in (verified_dir / "index.md").read_text(encoding="utf-8")
+        assert "\\ref{target}" not in (verified_dir / "source.md").read_text(encoding="utf-8")
+
+        (verified_dir / "final").mkdir()
+        moved_again = access.move_file("verified_propositions/archive/target.md", "verified_propositions/final")
+
+        source_after_second_move = (verified_dir / "source.md").read_text(encoding="utf-8")
+        assert moved_again == {
+            "old_path": "verified_propositions/archive/target.md",
+            "path": "verified_propositions/final/target.md",
+        }
+        assert source_after_second_move.count("\\ref{final\\target}") == 2
+        assert "\\ref{archive/target}" not in source_after_second_move
+        assert "\\ref{archive\\target}" not in source_after_second_move
+
+
+def test_move_file_outside_verified_propositions_does_not_update_references():
+    with local_project_dir("knowledge_move_references") as project_dir:
+        workspace_root = project_dir / "workspace"
+        verified_dir = workspace_root / "verified_propositions"
+        knowledge_dir = workspace_root / "knowledge"
+        verified_dir.mkdir(parents=True)
+        knowledge_dir.mkdir()
+        (verified_dir / "note.md").write_text("# Note\n\nSee \\ref{entry}.\n", encoding="utf-8")
+        (knowledge_dir / "entry.md").write_text("# Entry\n", encoding="utf-8")
+        (knowledge_dir / "archive").mkdir()
+
+        access = RoleWorkspaceAccess(
+            workspace=Workspace(workspace_root),
+            write_root_rel="knowledge",
+        )
+
+        access.move_file("knowledge/entry.md", "knowledge/archive")
+
+        assert "\\ref{entry}" in (verified_dir / "note.md").read_text(encoding="utf-8")
 
 
 def test_role_workspace_access_supports_append_rename_move_delete_and_protects_special_files():

@@ -95,6 +95,11 @@ class AlphaSolve:
                 if renderer is not None:
                     level = "INFO" if probe.available else "WARNING"
                     renderer.log(None, probe.reason, module="wolfram", level=level)
+            if renderer is not None:
+                renderer.update_orchestrator_phase("resume checks", status="running")
+            startup["workspace_inputs"] = self.layout.sync_workspace_inputs()
+            if renderer is not None:
+                renderer.log(None, "workspace problem.md and hint.md synced from project root", module="startup")
             execution_gateway = self.execution_gateway_override or ExecutionGateway(
                 python_workers=self.tool_executor_size,
                 wolfram_enabled=AlphaSolveConfig.WOLFRAM_AVAILABLE,

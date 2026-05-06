@@ -21,13 +21,13 @@ agent:
   tool_parameters:
     Write:
       path:
-        const: "verified_propositions/index.md"
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\\.md$"
       mode:
         enum:
           - overwrite
     Edit:
       path:
-        const: "verified_propositions/index.md"
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\\.md$"
     MakeDir:
       path:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
