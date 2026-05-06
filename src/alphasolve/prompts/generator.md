@@ -9,7 +9,7 @@ Rules:
 - Your `Write` and `Edit` tools can only write or edit `proposition.md` in your assigned worker directory.
 - The file must include `## Statement` and `## Proof`.
 - The statement must be a pure mathematical statement without a proposition number.
-- The statement and proof may cite previous verified propositions using `\ref{filename-without-extension}`. For example, cite `verified_propositions/coercive-energy-estimate.md` as `\ref{coercive-energy-estimate}`.
+- The statement and proof may cite previous verified propositions using `\ref{path-without-extension}`, where the path is relative to `verified_propositions` and omits `.md`. Use Windows backslashes for subdirectories: cite `verified_propositions/coercive/energy-estimate.md` as `\ref{coercive\energy-estimate}`. A root file such as `verified_propositions/coercive-energy-estimate.md` is still cited as `\ref{coercive-energy-estimate}`.
 - Do not cite `knowledge/` files with `\ref{...}` or treat them as established propositions; they are planning summaries only.
 - Every dependency on a previous verified proposition must be cited explicitly in the statement or proof with this exact `\ref{...}` format, because `solution.md` is assembled mechanically from those references.
 - Use the `Agent` tool for bounded reasoning, computation, or numerical exploration instead of doing heavy local work in your own context.

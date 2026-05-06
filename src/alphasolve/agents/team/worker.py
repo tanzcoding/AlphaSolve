@@ -651,7 +651,8 @@ class Worker:
                     "Create a file named `proposition.md` directly in your own directory "
                     f"`{self.worker_rel}`. The file must contain "
                     "a Statement section and a Proof section. You may reference verified propositions that have been established in `verified_propositions` directory with "
-                    "\\ref{filename-without-extension}."
+                    "\\ref{path-without-extension}, where the path is relative to `verified_propositions` and subdirectories use backslashes, "
+                    "for example \\ref{category\\filename}."
                 ),
             ]
             if part
@@ -672,7 +673,8 @@ class Worker:
                 "Read the candidate proposition in `proposition.md` and perform only the citation/reference audit. "
                 "Your final answer must include `Verdict: pass` or `Verdict: fail`. "
                 "Check every `\\ref{...}` and every textual dependency claim: each valid citation must refer to an existing "
-                "file in `verified_propositions` by filename without the `.md` extension. The proposition must not cite, "
+                "file in `verified_propositions` by path relative to `verified_propositions` without the `.md` extension. "
+                "Subdirectories must be written with backslashes, such as `\\ref{category\\filename}`. The proposition must not cite, "
                 "depend on, or present as established any proposition from `knowledge/`."
             )
         else:
@@ -711,7 +713,8 @@ class Worker:
             + "\n\n# Newly Verified Proposition File\n"
             + rel
             + "\n\nDecide whether the newly verified proposition, together with any verified propositions cited by "
-            "`\\ref{filename-without-extension}`, proves the original problem. Read cited verified propositions as needed. "
+            "`\\ref{path-without-extension}`, proves the original problem. The path is relative to `verified_propositions` "
+            "and subdirectories use backslashes, such as `\\ref{category\\filename}`. Read cited verified propositions as needed. "
             "Do not re-review the proposition proof except to understand what has been established. Your final answer must "
             "include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
             + f"\n\nIndependent theorem check attempt: {attempt_index} of {AlphaSolveConfig.CHECK_IS_THEOREM_TIMES}"

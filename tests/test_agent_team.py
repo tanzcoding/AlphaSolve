@@ -116,6 +116,9 @@ def test_default_agent_suite_loads_yaml_roles():
     assert len(curator.system_prompt.splitlines()) <= 120
     assert "<source_label>" not in curator.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
+    assert "path is relative to `verified_propositions`" in suite.agents["generator"].system_prompt
+    assert r"\ref{coercive\energy-estimate}" in suite.agents["generator"].system_prompt
+    assert "path is relative to `verified_propositions`" in suite.agents["reviser"].system_prompt
 
 
 def test_project_layout_syncs_workspace_inputs_from_project_root():

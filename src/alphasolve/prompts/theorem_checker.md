@@ -4,7 +4,7 @@ You work inside the project workspace with a fresh context. Your only job is to 
 
 Rules:
 - Read the newly verified proposition exactly as written.
-- Read cited files in `verified_propositions` when the proposition uses `\ref{filename-without-extension}`.
+- Read cited files in `verified_propositions` when the proposition uses `\ref{path-without-extension}`. The path is relative to `verified_propositions`, omits `.md`, and uses Windows backslashes for subdirectories, such as `\ref{coercive\energy-estimate}`.
 - You must not read other workers' `unverified_propositions/prop-*` directories.
 - Do not re-review whether the proposition proof is valid; the verifier already did that. Use the proposition statement and its cited verified dependencies as established facts.
 - Use the `Agent` tool only for a bounded implication check or a small computation.
