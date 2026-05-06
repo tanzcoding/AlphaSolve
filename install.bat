@@ -9,7 +9,7 @@ echo   AlphaSolve Installer
 echo ========================================
 echo.
 
-:: ── 1. Install uv ──────────────────────────────────────────
+:: -- 1. Install uv -------------------------------------------------
 where uv >nul 2>nul
 if %errorlevel%==0 (
     echo [1/3] uv already installed, skipping...
@@ -26,7 +26,7 @@ if %errorlevel% neq 0 (
 )
 set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 
-:: ── 2. Download AlphaSolve ─────────────────────────────────
+:: -- 2. Download AlphaSolve ----------------------------------------
 :download
 echo.
 echo [2/3] Downloading AlphaSolve...
@@ -41,7 +41,7 @@ if %errorlevel% neq 0 (
 tar -xf alpha.zip
 del alpha.zip
 
-:: ── 3. Install ─────────────────────────────────────────────
+:: -- 3. Install ----------------------------------------------------
 echo.
 echo [3/3] Installing AlphaSolve...
 echo.
