@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+import re
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -34,6 +36,93 @@ class OrchestratorRunResult:
     solution_path: Path | None = None
 
 
+class RuntimeInjectionMonitor:
+    def __init__(self, *, layout: ProjectLayout, curator_queue: CuratorQueue | None = None) -> None:
+        self.layout = layout
+        self.curator_queue = curator_queue
+        self._known_reference_files = self._scan_reference_files()
+
+    def check(self) -> dict[str, Any] | None:
+        hint_updated = self._sync_changed_hint()
+        new_reference_files = self._new_reference_files()
+        if not hint_updated and not new_reference_files:
+            return None
+
+        messages: list[str] = []
+        if hint_updated:
+            messages.append(
+                "hint.md has changed and was copied from the project root into workspace/hint.md; "
+                "this may be a human expert injection. Read hint.md before deciding the next action."
+            )
+        if new_reference_files:
+            refs = ", ".join(new_reference_files)
+            messages.append(
+                "New files appeared under workspace/knowledge/references during this run; "
+                f"this may be a human expert injection. Read these files: {refs}."
+            )
+        return {
+            "hint_md_updated": hint_updated,
+            "new_reference_files": new_reference_files,
+            "message": " ".join(messages),
+        }
+
+    def _sync_changed_hint(self) -> bool:
+        source = self.layout.hint_path or (self.layout.project_root / "hint.md")
+        target = self.layout.workspace_dir / "hint.md"
+        if not source.is_file():
+            return False
+        source_bytes = source.read_bytes()
+        target_bytes = target.read_bytes() if target.is_file() else None
+        if target_bytes == source_bytes:
+            return False
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        return True
+
+    def _new_reference_files(self) -> list[str]:
+        if (
+            self.curator_queue is not None
+            and hasattr(self.curator_queue, "has_active_task")
+            and self.curator_queue.has_active_task()
+        ):
+            return []
+        current = self._scan_reference_files()
+        added = current - self._known_reference_files
+        if not added:
+            return []
+
+        curator_touched = self._curator_touched_reference_files()
+        human_added = sorted(
+            rel
+            for rel in added
+            if rel not in curator_touched
+            and rel != "knowledge/references/index.md"
+        )
+        self._known_reference_files.update(added)
+        return human_added
+
+    def _scan_reference_files(self) -> set[str]:
+        references_dir = self.layout.knowledge_dir / "references"
+        if not references_dir.is_dir():
+            return set()
+        out: set[str] = set()
+        for path in references_dir.rglob("*"):
+            if path.is_file():
+                out.add(path.resolve().relative_to(self.layout.workspace_dir).as_posix())
+        return out
+
+    def _curator_touched_reference_files(self) -> set[str]:
+        if self.curator_queue is None or not hasattr(self.curator_queue, "touched_paths"):
+            return set()
+        references_dir = self.layout.knowledge_dir / "references"
+        out: set[str] = set()
+        for path in self.curator_queue.touched_paths():
+            resolved = Path(path).resolve()
+            if resolved.is_file() and (resolved == references_dir or references_dir in resolved.parents):
+                out.add(resolved.relative_to(self.layout.workspace_dir).as_posix())
+        return out
+
+
 class WorkerManager:
     DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
 
@@ -63,6 +152,7 @@ class WorkerManager:
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=self.max_workers)
         self.active: dict[concurrent.futures.Future, str] = {}
         self.active_info: dict[str, dict[str, Any]] = {}
+        self.active_info_lock = threading.Lock()
         self.results: list[WorkerRunResult] = []
         self.completed_backlog: list[dict[str, Any]] = []
         self.renderer = renderer
@@ -72,6 +162,7 @@ class WorkerManager:
         self.stop_event = stop_event or threading.Event()
         self.solution_path: Path | None = None
         self.solved_result: WorkerRunResult | None = None
+        self.injection_monitor = RuntimeInjectionMonitor(layout=self.layout, curator_queue=self.curator_queue)
 
     def spawn(self, hint: str | None = None) -> dict[str, Any]:
         self._collect_done()
@@ -103,20 +194,28 @@ class WorkerManager:
             log_session=self.log_session,
         )
         worker_id = worker.worker_id
+        worker.progress_callback = lambda phase, status, worker_id=worker_id: self._update_worker_progress(
+            worker_id,
+            phase,
+            status,
+        )
         if self.renderer is not None:
             self.renderer.register_worker(
                 worker_id,
                 verified_ctx_size=self._verified_count(),
                 remaining_capacity=max(0, self.max_workers - len(self.active) - 1),
             )
+        with self.active_info_lock:
+            self.active_info[worker_id] = {
+                "worker_id": worker_id,
+                "worker_dir": str(worker.worker_dir),
+                "started_at": time.time(),
+                "phase": "spawned",
+                "phase_status": "running",
+                "phase_updated_at": time.time(),
+            }
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
-        self.active_info[worker_id] = {
-            "worker_id": worker_id,
-            "worker_dir": str(worker.worker_dir),
-            "hint": (hint or "").strip() or None,
-            "started_at": time.time(),
-        }
         return {
             "spawned": True,
             "worker_id": worker_id,
@@ -128,9 +227,9 @@ class WorkerManager:
         if self.completed_backlog:
             completed = list(self.completed_backlog)
             self.completed_backlog.clear()
-            return self._wait_payload(completed)
+            return self._with_runtime_updates(self._wait_payload(completed))
         if not self.active:
-            return {"completed": [], **self._pool_status(), "message": "no active workers"}
+            return self._with_runtime_updates({"completed": [], **self._pool_status(), "message": "no active workers"})
         timeout = self.DEFAULT_WAIT_TIMEOUT_SECONDS if timeout_seconds is None else max(300.0, float(timeout_seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
@@ -138,14 +237,14 @@ class WorkerManager:
             return_when=concurrent.futures.FIRST_COMPLETED,
         )
         if not done:
-            return {
+            return self._with_runtime_updates({
                 "completed": [],
                 "timed_out": True,
                 "timeout_seconds": timeout,
                 "message": f"no worker finished within {timeout:g} seconds",
                 **self._pool_status(),
-            }
-        return self._wait_payload(self._consume_done(done))
+            })
+        return self._with_runtime_updates(self._wait_payload(self._consume_done(done)))
 
     def close(self, *, timeout: float = 5.0, graceful: bool = False) -> None:
         wait_timeout = max(0.0, float(timeout))
@@ -201,7 +300,8 @@ class WorkerManager:
             worker_id = self.active.pop(future, None)
             if worker_id is None:
                 continue
-            self.active_info.pop(worker_id, None)
+            with self.active_info_lock:
+                self.active_info.pop(worker_id, None)
             try:
                 result = future.result()
             except Exception as exc:
@@ -244,6 +344,12 @@ class WorkerManager:
             payload["message"] = "problem solved; orchestration should stop"
         return payload
 
+    def _with_runtime_updates(self, payload: dict[str, Any]) -> dict[str, Any]:
+        updates = self.injection_monitor.check()
+        if updates is not None:
+            payload["human_expert_updates"] = updates
+        return payload
+
     def _pool_status(self) -> dict[str, Any]:
         active_workers = [
             self._active_worker_payload(worker_id)
@@ -258,17 +364,24 @@ class WorkerManager:
         }
 
     def _active_worker_payload(self, worker_id: str) -> dict[str, Any]:
-        info = self.active_info.get(worker_id, {})
-        hint = info.get("hint")
+        with self.active_info_lock:
+            info = dict(self.active_info.get(worker_id, {}))
         elapsed = max(0.0, time.time() - float(info.get("started_at") or time.time()))
-        progress = f"running for {elapsed:.0f}s"
-        if hint:
-            progress += f"; hint: {_short_summary(str(hint), limit=120)}"
+        progress = f"running for {elapsed:.0f}s; {_format_worker_phase(str(info.get('phase') or 'starting'))}"
         return {
             "worker_id": worker_id,
             "worker_dir": info.get("worker_dir"),
             "progress": progress,
         }
+
+    def _update_worker_progress(self, worker_id: str, phase: str, status: str) -> None:
+        with self.active_info_lock:
+            info = self.active_info.get(worker_id)
+            if info is None:
+                return
+            info["phase"] = phase
+            info["phase_status"] = status
+            info["phase_updated_at"] = time.time()
 
     def _verified_count(self) -> int:
         return verified_count(self.layout.verified_dir)
@@ -530,6 +643,11 @@ class Orchestrator:
                 "2. Read the key files the reviewer flagged, then identify the most valuable next proposition.\n"
                 "3. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
                 "4. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
+                "Worker lifecycle: each worker first runs `generator` to draft one candidate proposition, then runs "
+                "`verifier`; if verification fails and rounds remain, it runs `reviser` and repeats the "
+                "`verifier` -> `reviser` loop until a proposition is verified or the worker exhausts its rounds. "
+                "After verification, theorem-checking decides whether the new verified proposition solves the "
+                "original problem.\n\n"
                 "Use `TaskOutput` only to receive worker results — it blocks until one worker's lifecycle ends. "
                 "Both `Agent` and `TaskOutput` return `active_count`, `active_worker_ids`, and `active_workers`; "
                 "use those fields to keep the number of active workers at or below the maximum. "
@@ -579,6 +697,32 @@ def _short_summary(summary: str, *, limit: int = 180) -> str:
     if len(clean) <= limit:
         return clean
     return clean[: limit - 3] + "..."
+
+
+def _format_worker_phase(phase: str) -> str:
+    clean = " ".join((phase or "starting").split())
+    if clean == "generator":
+        return "current agent: generator"
+    if clean.startswith("verifier_attempt"):
+        match = re.search(r"w(\d+)\.(\d+)", clean)
+        if match:
+            return f"current agent: verifier, round {match.group(1)}, attempt {match.group(2)}"
+        return "current agent: verifier"
+    if clean.startswith("review_verdict_judge"):
+        match = re.search(r"w(\d+)\.(\d+)", clean)
+        if match:
+            return f"current agent: verifier verdict judge, round {match.group(1)}, attempt {match.group(2)}"
+        return "current agent: verifier verdict judge"
+    if clean.startswith("reviser"):
+        match = re.search(r"w(\d+)", clean)
+        if match:
+            return f"current agent: reviser, round {match.group(1)}"
+        return "current agent: reviser"
+    if clean == "theorem_checker":
+        return "current agent: theorem_checker"
+    if clean == "done":
+        return "current agent: done"
+    return f"current agent: {clean}"
 
 
 def _solution_final_answer(solution_path: Path | None) -> str:

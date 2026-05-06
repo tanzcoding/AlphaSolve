@@ -59,6 +59,10 @@ class CuratorQueue:
         self._thread = threading.Thread(target=self._worker, daemon=True, name="curator")
         self._started = False
         self._digest_tasks_since_health_check = 0
+        self._touched_paths: set[Path] = set()
+        self._touched_paths_lock = threading.Lock()
+        self._active_tasks = 0
+        self._active_tasks_lock = threading.Lock()
 
     def start(self) -> None:
         if not self._started:
@@ -89,15 +93,39 @@ class CuratorQueue:
                         self.renderer.enqueue_curator_task(health_task.source_label)
                     self._queue.put(health_task)
 
+    def touched_paths(self) -> tuple[Path, ...]:
+        with self._touched_paths_lock:
+            return tuple(sorted(self._touched_paths, key=lambda item: item.as_posix()))
+
+    def _record_touched_paths(self, paths: tuple[Path, ...]) -> None:
+        if not paths:
+            return
+        with self._touched_paths_lock:
+            self._touched_paths.update(path.resolve() for path in paths)
+
+    def has_active_task(self) -> bool:
+        with self._active_tasks_lock:
+            return self._active_tasks > 0
+
+    def _set_task_active(self, active: bool) -> None:
+        with self._active_tasks_lock:
+            if active:
+                self._active_tasks += 1
+            else:
+                self._active_tasks = max(0, self._active_tasks - 1)
+
     def _worker(self) -> None:
         while True:
             task = self._queue.get()
             if task is None:
                 break
+            self._set_task_active(True)
             try:
                 self._run_curator(task)
             except Exception:
                 pass
+            finally:
+                self._set_task_active(False)
 
     def _run_curator(self, task: CuratorTask) -> None:
         config: GeneralAgentConfig | None = self.suite.subagents.get("curator")
@@ -205,7 +233,9 @@ class CuratorQueue:
                 curator_sink.close()
             if self.renderer is not None:
                 self.renderer.finish_curator_task(success=curator_success)
-        _update_entry_metadata(access.touched_paths())
+        touched_paths = access.touched_paths()
+        _update_entry_metadata(touched_paths)
+        self._record_touched_paths(touched_paths)
 
 
 def _make_workspace(workspace_dir: Path):

@@ -9,7 +9,7 @@ import time
 import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
@@ -188,6 +188,7 @@ class Worker:
         curator_queue: CuratorQueue | None = None,
         stop_event: threading.Event | None = None,
         log_session: LogSession | None = None,
+        progress_callback: Callable[[str, str], None] | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -207,6 +208,7 @@ class Worker:
         self.curator_queue = curator_queue
         self.stop_event = stop_event
         self.log_session = log_session
+        self.progress_callback = progress_callback
         self._worker_log_sink = log_session.create_worker_sink(prop_hash) if log_session is not None else None
 
     def run(self) -> WorkerRunResult:
@@ -772,6 +774,8 @@ class Worker:
         return sink
 
     def _set_phase(self, phase: str, *, status: str, model: str = "") -> None:
+        if self.progress_callback is not None:
+            self.progress_callback(phase, status)
         if self.renderer is not None:
             self.renderer.clear_worker_text(self.worker_id)
             if model:

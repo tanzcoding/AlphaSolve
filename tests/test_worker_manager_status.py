@@ -78,7 +78,8 @@ def test_spawn_reports_active_workers_and_enforces_limit(tmp_path, monkeypatch):
         assert blocked["active_worker_ids"] == ["w1", "w2"]
         assert blocked["available_worker_slots"] == 0
         assert [item["worker_id"] for item in blocked["active_workers"]] == ["w1", "w2"]
-        assert "first branch" in blocked["active_workers"][0]["progress"]
+        assert "current agent:" in blocked["active_workers"][0]["progress"]
+        assert "first branch" not in blocked["active_workers"][0]["progress"]
     finally:
         manager.close(timeout=0)
 
@@ -253,6 +254,114 @@ def test_task_output_returns_completed_result_and_remaining_active_snapshot(tmp_
         assert payload["active_count"] == 1
         assert payload["active_worker_ids"] == ["w2"]
         assert payload["available_worker_slots"] == 1
-        assert "second branch" in payload["active_workers"][0]["progress"]
+        assert "current agent:" in payload["active_workers"][0]["progress"]
+        assert "second branch" not in payload["active_workers"][0]["progress"]
+    finally:
+        manager.close(timeout=0)
+
+
+def test_task_output_syncs_changed_root_hint_and_reports_update(tmp_path, monkeypatch):
+    (tmp_path / "hint.md").write_text("initial hint\n", encoding="utf-8")
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        (tmp_path / "hint.md").write_text("expert hint\n", encoding="utf-8")
+
+        payload = manager.wait(timeout_seconds=0)
+
+        assert (manager.layout.workspace_dir / "hint.md").read_text(encoding="utf-8") == "expert hint\n"
+        updates = payload["human_expert_updates"]
+        assert updates["hint_md_updated"] is True
+        assert updates["new_reference_files"] == []
+        assert "Read hint.md" in updates["message"]
+    finally:
+        manager.close(timeout=0)
+
+
+def test_task_output_reports_new_reference_files_once(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        references_dir = manager.layout.knowledge_dir / "references"
+        references_dir.mkdir(parents=True)
+        (references_dir / "expert-note.md").write_text("# Expert Note\n", encoding="utf-8")
+
+        first = manager.wait(timeout_seconds=0)
+        second = manager.wait(timeout_seconds=0)
+
+        assert first["human_expert_updates"]["new_reference_files"] == [
+            "knowledge/references/expert-note.md"
+        ]
+        assert "human_expert_updates" not in second
+    finally:
+        manager.close(timeout=0)
+
+
+def test_task_output_ignores_curator_touched_reference_files(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        references_dir = manager.layout.knowledge_dir / "references"
+        references_dir.mkdir(parents=True)
+        curator_file = references_dir / "renamed-by-curator.md"
+        curator_file.write_text("# Curator renamed note\n", encoding="utf-8")
+
+        class FakeCuratorQueue:
+            def touched_paths(self):
+                return (curator_file,)
+
+        manager.injection_monitor.curator_queue = FakeCuratorQueue()
+
+        payload = manager.wait(timeout_seconds=0)
+
+        assert "human_expert_updates" not in payload
+    finally:
+        manager.close(timeout=0)
+
+
+def test_task_output_defers_reference_scan_while_curator_is_active(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        references_dir = manager.layout.knowledge_dir / "references"
+        references_dir.mkdir(parents=True)
+        expert_file = references_dir / "expert-note.md"
+        expert_file.write_text("# Expert Note\n", encoding="utf-8")
+
+        class ActiveCuratorQueue:
+            active = True
+
+            def has_active_task(self):
+                return self.active
+
+            def touched_paths(self):
+                return ()
+
+        active_queue = ActiveCuratorQueue()
+        manager.injection_monitor.curator_queue = active_queue
+
+        during_curator = manager.wait(timeout_seconds=0)
+        active_queue.active = False
+        after_curator = manager.wait(timeout_seconds=0)
+
+        assert "human_expert_updates" not in during_curator
+        assert after_curator["human_expert_updates"]["new_reference_files"] == [
+            "knowledge/references/expert-note.md"
+        ]
+    finally:
+        manager.close(timeout=0)
+
+
+def test_active_worker_progress_reports_current_agent_and_round(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        manager.spawn("do not leak this hint")
+
+        manager._update_worker_progress("w1", "verifier_attempt w2.3", "thinking")
+        payload = manager._pool_status()
+
+        progress = payload["active_workers"][0]["progress"]
+        assert "current agent: verifier, round 2, attempt 3" in progress
+        assert "do not leak this hint" not in progress
+
+        manager._update_worker_progress("w1", "reviser w2", "thinking")
+        progress = manager._pool_status()["active_workers"][0]["progress"]
+        assert "current agent: reviser, round 2" in progress
     finally:
         manager.close(timeout=0)
