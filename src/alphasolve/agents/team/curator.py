@@ -29,6 +29,7 @@ class CuratorTask:
 
 
 CURATOR_HEALTH_CHECK_INTERVAL = 4
+CURATOR_OVERSIZED_ENTRY_LINE_LIMIT = 250
 
 
 class CuratorQueue:
@@ -134,7 +135,7 @@ class CuratorQueue:
         )
 
         if task.task_kind == "health_check":
-            task_prompt = _health_check_prompt()
+            task_prompt = _health_check_prompt(self.knowledge_dir)
         else:
             trace_kind = _trace_kind(task.source_label)
             is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
@@ -248,7 +249,15 @@ def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
     )
 
 
-def _health_check_prompt() -> str:
+def _health_check_prompt(knowledge_dir: Path | None = None) -> str:
+    scan_text = _knowledge_health_scan(knowledge_dir) if knowledge_dir is not None else ""
+    scan_section = ""
+    if scan_text:
+        scan_section = (
+            "\n\nProgram scan before curator:\n"
+            f"{scan_text}\n"
+            "Use this scan as a triage list, then inspect the files before renaming, splitting, or editing."
+        )
     return (
         "# Knowledge Base Health Check\n\n"
         "Perform a focused maintenance pass on `knowledge/`. This task is not based on a new mathematical trace.\n\n"
@@ -256,20 +265,130 @@ def _health_check_prompt() -> str:
         "Keep the pass practical: make small organization fixes immediately, but only do larger splits, moves, or renames "
         "when the current structure is clearly making the wiki hard to navigate.\n\n"
         "Check these items:\n"
-        "- `knowledge/index.md` should be a route map with sections like Start Here, Current Bottlenecks, Main Routes, "
-        "Failed Routes And Pitfalls, Tools And Lemmas, and All Entries. It should not be a giant flat summary list.\n"
-        "- The knowledge root should stay quiet. Broad or oversized topics should live in topic folders with their own "
-        "local `index.md`; do not scatter many sibling fragments at the root.\n"
-        "- If an entry is too long for useful later reads, split it into a topic folder with focused subtopic files and "
-        "preserve cross-links. Files above about 700 lines deserve scrutiny; files above 1000 lines usually need splitting.\n"
-        "- Check for stale links, missing entries in the root route map, confusing names, redundant pages, and obvious duplicates.\n"
+        "- `knowledge/index.md` should be a route map of immediate children, not a giant flat summary list.\n"
+        "- Each topic directory should have its own `index.md`; every index should track only immediate child files and folders.\n"
+        "- Keep broad or oversized topics in topic folders. Files over 250 lines should usually be split, "
+        "except `knowledge/common-errors.md` which stays as one compressed file.\n"
+        "- Keep user-provided papers, OCR markdown, and personal notes under `knowledge/references/`; rename paper files by title.\n"
+        "- Check for stale links, confusing names, redundant pages, obvious duplicates, and program-reported untracked files.\n"
         "- Keep `knowledge/common-errors.md` concise and capped at 15 error patterns. If it has more than 15 bullets, "
         "or if several bullets describe similar mistakes, consolidate them by abstracting their shared failure mode "
         "into one broader reusable pattern. Look for entries that can be subsumed by a more general error pattern. "
         "Do not add new error patterns in this health check.\n\n"
         "Do not record source labels, worker names, proposition IDs, round numbers, attempts, or session IDs. "
         "Before finishing, make sure `knowledge/index.md` accurately describes the current live structure."
+        f"{scan_section}"
     )
+
+
+def _knowledge_health_scan(knowledge_dir: Path) -> str:
+    if not knowledge_dir.exists():
+        return "- `knowledge/` does not exist yet."
+
+    missing = _find_untracked_markdown(knowledge_dir)
+    oversized = _find_oversized_markdown(knowledge_dir)
+    common_errors_lines = _common_errors_line_count(knowledge_dir)
+    lines: list[str] = []
+    if missing:
+        lines.append("Untracked markdown:")
+        lines.extend(f"- {item}" for item in missing)
+    if oversized:
+        if lines:
+            lines.append("")
+        lines.append(f"Markdown over {CURATOR_OVERSIZED_ENTRY_LINE_LIMIT} lines:")
+        lines.extend(f"- {path} ({line_count} lines)" for path, line_count in oversized)
+    if common_errors_lines is not None and common_errors_lines > CURATOR_OVERSIZED_ENTRY_LINE_LIMIT:
+        if lines:
+            lines.append("")
+        lines.append("Common errors maintenance:")
+        lines.append(
+            f"- `knowledge/common-errors.md` is {common_errors_lines} lines. Keep it within "
+            f"{CURATOR_OVERSIZED_ENTRY_LINE_LIMIT} lines and within 15 common error patterns; "
+            "if it has too many patterns, distill and abstract shared failure modes until it has at most 15."
+        )
+    if not lines:
+        return "- No untracked markdown or oversized markdown files detected."
+    return "\n".join(lines)
+
+
+def _find_untracked_markdown(knowledge_dir: Path) -> list[str]:
+    entries: list[str] = []
+    for md_file in sorted(knowledge_dir.rglob("*.md")):
+        if md_file.name == "index.md" and md_file.parent == knowledge_dir:
+            continue
+        if md_file.name == "index.md":
+            tracked_child = md_file.parent
+            parent_dir = md_file.parent.parent
+            rel = _knowledge_rel(tracked_child, knowledge_dir) + "/"
+            expected = _knowledge_rel(parent_dir / tracked_child.name / "index.md", knowledge_dir)
+        else:
+            tracked_child = md_file
+            parent_dir = md_file.parent
+            rel = _knowledge_rel(md_file, knowledge_dir)
+            expected = rel
+        parent_index = parent_dir / "index.md"
+        parent_rel = _knowledge_rel(parent_index, knowledge_dir)
+        if not parent_index.is_file():
+            entries.append(f"`knowledge/{rel}` has no parent index `knowledge/{parent_rel}`")
+            continue
+        try:
+            index_text = parent_index.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            index_text = parent_index.read_text(encoding="utf-8", errors="replace")
+        if not _index_tracks_child(index_text, tracked_child, parent_dir, knowledge_dir):
+            entries.append(f"`knowledge/{expected}` is not tracked by `knowledge/{parent_rel}`")
+    return entries
+
+
+def _find_oversized_markdown(knowledge_dir: Path) -> list[tuple[str, int]]:
+    oversized: list[tuple[str, int]] = []
+    for md_file in sorted(knowledge_dir.rglob("*.md")):
+        if md_file.name == "common-errors.md":
+            continue
+        line_count = _markdown_line_count(md_file)
+        if line_count > CURATOR_OVERSIZED_ENTRY_LINE_LIMIT:
+            oversized.append((f"knowledge/{_knowledge_rel(md_file, knowledge_dir)}", line_count))
+    return oversized
+
+
+def _common_errors_line_count(knowledge_dir: Path) -> int | None:
+    common_errors = knowledge_dir / "common-errors.md"
+    if not common_errors.is_file():
+        return None
+    return _markdown_line_count(common_errors)
+
+
+def _markdown_line_count(path: Path) -> int:
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return sum(1 for _ in handle)
+    except UnicodeDecodeError:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            return sum(1 for _ in handle)
+
+
+def _index_tracks_child(index_text: str, child: Path, parent_dir: Path, knowledge_dir: Path) -> bool:
+    text = index_text.lower()
+    candidates: set[str] = set()
+    if child.is_dir():
+        local_dir = child.name
+        rel_dir = _knowledge_rel(child, knowledge_dir)
+        candidates.update({local_dir, f"{local_dir}/index", rel_dir, f"{rel_dir}/index"})
+    else:
+        local = child.relative_to(parent_dir).as_posix()
+        rel = _knowledge_rel(child, knowledge_dir)
+        local_stem = local[:-3] if local.lower().endswith(".md") else local
+        rel_stem = rel[:-3] if rel.lower().endswith(".md") else rel
+        candidates.update({local, local_stem, rel, rel_stem, child.name, child.stem})
+    for candidate in candidates:
+        lowered = candidate.lower()
+        if f"[[{lowered}]]" in text or f"({lowered})" in text or lowered in text:
+            return True
+    return False
+
+
+def _knowledge_rel(path: Path, knowledge_dir: Path) -> str:
+    return path.relative_to(knowledge_dir).as_posix()
 
 
 def _update_entry_metadata(touched_paths: tuple[Path, ...]) -> None:
@@ -335,6 +454,8 @@ def init_knowledge_base(knowledge_dir: Path, problem_text: str) -> None:
             "_No entries yet._\n\n"
             "## Tools And Lemmas\n\n"
             "_No entries yet._\n\n"
+            "## References\n\n"
+            "- [[references/index]] - user-provided papers, OCR markdown, and personal notes.\n\n"
             "## All Entries\n\n"
             "_No entries yet._\n",
             encoding="utf-8",
@@ -350,3 +471,12 @@ def init_knowledge_base(knowledge_dir: Path, problem_text: str) -> None:
     errors = knowledge_dir / "common-errors.md"
     if not errors.exists():
         errors.write_text("# Common Proof Errors\n\n", encoding="utf-8")
+    references = knowledge_dir / "references"
+    references.mkdir(exist_ok=True)
+    references_index = references / "index.md"
+    if not references_index.exists():
+        references_index.write_text(
+            "# References\n\n"
+            "_No user-provided papers or notes yet._\n",
+            encoding="utf-8",
+        )

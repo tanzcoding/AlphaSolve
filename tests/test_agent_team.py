@@ -111,6 +111,9 @@ def test_default_agent_suite_loads_yaml_roles():
     assert not any(name.lower() in {"get_current_time", "getcurrenttime"} for name in curator.tools)
     assert "not a transcript archive" in curator.system_prompt
     assert "There is no maintenance log file." in curator.system_prompt
+    assert "knowledge/references/" in curator.system_prompt
+    assert "immediate child markdown files and immediate child folders" in curator.system_prompt
+    assert len(curator.system_prompt.splitlines()) <= 120
     assert "<source_label>" not in curator.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
 
@@ -272,6 +275,7 @@ def test_init_knowledge_base_removes_log_and_omits_problem_section():
         assert "## Entries" in index_text
         assert not (knowledge_dir / "log.md").exists()
         assert (knowledge_dir / "common-errors.md").is_file()
+        assert (knowledge_dir / "references" / "index.md").is_file()
 
 
 def test_init_knowledge_base_creates_route_map_index():
@@ -287,6 +291,8 @@ def test_init_knowledge_base_creates_route_map_index():
         assert "## Main Routes" in index_text
         assert "## Failed Routes And Pitfalls" in index_text
         assert "## Tools And Lemmas" in index_text
+        assert "## References" in index_text
+        assert "[[references/index]]" in index_text
         assert "## All Entries" in index_text
 
 
@@ -387,11 +393,46 @@ def test_curator_health_check_prompt_is_navigation_focused():
     assert "route map" in prompt
     assert "topic folders" in prompt
     assert "giant flat summary list" in prompt
+    assert "immediate child files and folders" in prompt
+    assert "references" in prompt
+    assert "250 lines" in prompt
+    assert "common-errors.md` which stays as one compressed file" in prompt
     assert "common-errors.md" in prompt
     assert "15 error patterns" in prompt
     assert "shared failure mode" in prompt
     assert "prop-000" not in prompt
     assert "worker_id" not in prompt
+
+
+def test_curator_health_check_prompt_injects_program_scan(tmp_path):
+    knowledge_dir = tmp_path / "knowledge"
+    knowledge_dir.mkdir()
+    (knowledge_dir / "index.md").write_text(
+        "# Knowledge Index\n\n"
+        "## All Entries\n\n"
+        "- [[tracked]] - tracked.\n"
+        "- [[topic/index]] - topic.\n"
+        "- [[common-errors]] - common errors.\n",
+        encoding="utf-8",
+    )
+    (knowledge_dir / "tracked.md").write_text("# Tracked\n", encoding="utf-8")
+    (knowledge_dir / "loose-paper.md").write_text("# A Very Good Paper\n", encoding="utf-8")
+    (knowledge_dir / "common-errors.md").write_text("\n".join(["- pattern"] * 251), encoding="utf-8")
+    topic = knowledge_dir / "topic"
+    topic.mkdir()
+    (topic / "index.md").write_text("# Topic\n\n_No entries yet._\n", encoding="utf-8")
+    (topic / "long-note.md").write_text("\n".join(["line"] * 251), encoding="utf-8")
+
+    prompt = _health_check_prompt(knowledge_dir)
+
+    assert "Program scan before curator" in prompt
+    assert "`knowledge/loose-paper.md` is not tracked by `knowledge/index.md`" in prompt
+    assert "`knowledge/topic/long-note.md` is not tracked by `knowledge/topic/index.md`" in prompt
+    assert "knowledge/topic/long-note.md (251 lines)" in prompt
+    assert "knowledge/common-errors.md` is 251 lines" in prompt
+    assert "within 15 common error patterns" in prompt
+    assert "knowledge/common-errors.md (251 lines)" not in prompt
+    assert "rename paper files by title" in prompt
 
 
 def test_agent_team_demo_creates_workspace_and_verified_proposition():
