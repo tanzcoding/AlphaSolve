@@ -43,7 +43,9 @@ pytest-cache-files-*/
 .ruff_cache/
 _tmp_general_agent_pytest/
 _tmp_agent_team_pytest/
+_tmp_edit_precision_test/
 _tmp_debug_*/
+tests/edit_precision_test_data/
 
 # Logs & outputs
 *.log

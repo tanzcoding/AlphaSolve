@@ -47,7 +47,7 @@ class DemoChatClient:
                         "id": "spawn_demo_worker",
                         "type": "function",
                         "function": {
-                            "name": "Agent",
+                            "name": "SpawnWorker",
                             "arguments": json.dumps({"hint": "Produce a small self-contained demo proposition."}),
                         },
                     }

@@ -19,7 +19,7 @@ from .dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
 from .solution import write_solution
-from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry
+from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
@@ -538,7 +538,7 @@ class Orchestrator:
         )
         registry = build_workspace_tool_registry(access, allow_write=True, allow_manage=True)
         registry.register(
-            name="Agent",
+            name="SpawnWorker",
             description=(
                 "Spawn one worker with an optional orchestrator hint. This call returns immediately. "
                 "The worker attempts to prove a proposition and verify it. The result includes the current "
@@ -576,17 +576,16 @@ class Orchestrator:
             handler=lambda args: self._wait_tool(manager, args),
         )
         if subagents is not None:
-            registry.register(
-                name="Review",
-                description="Launch a research_reviewer subagent to survey verified_propositions/ and knowledge/, compare against problem.md, and recommend research directions. Use this when there are too many files to read directly yourself. The reviewer returns a structured report with current state, key files worth reading, gaps, and suggested next directions.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "task": {"type": "string", "description": "What to focus on (e.g. 'survey all verified results related to boundedness') or leave general."},
-                    },
-                    "required": [],
-                },
-                handler=lambda args: subagents.call_tool({"type": "research_reviewer", "task": args.get("task", "Survey verified_propositions/ and knowledge/, compare against problem.md, and recommend research directions.")}),
+            from .tools import GeneralAgentConfig
+            register_agent_tool(
+                registry,
+                agent_config=GeneralAgentConfig(
+                    name="_orchestrator_subagent",
+                    system_prompt="",
+                    tools=["Agent"],
+                    tool_parameters={"Agent": {"type": {"enum": ["research_reviewer"]}}},
+                ),
+                subagent_service=subagents,
             )
         return registry
 

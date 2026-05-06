@@ -16,7 +16,7 @@ from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.utils.event_logger import compose_event_sinks
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
-from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry
+from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
@@ -321,10 +321,12 @@ class Worker:
                 deny_other_unverified=True,
             ),
         )
+        registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
+            tool_registry=registry,
             event_sink=self._generator_event_sink(curator_context),
             stop_event=self.stop_event,
         )
@@ -404,10 +406,12 @@ class Worker:
             ),
             curator_queue=self.curator_queue,
         )
+        registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
+            tool_registry=registry,
             event_sink=self._event_sink(role),
             stop_event=self.stop_event,
         )
@@ -473,10 +477,12 @@ class Worker:
                 read_root_rel="verified_propositions",
             ),
         )
+        registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents),
+            tool_registry=registry,
             event_sink=self._event_sink(role),
             stop_event=self.stop_event,
         )
@@ -515,10 +521,12 @@ class Worker:
                 deny_other_unverified=True,
             ),
         )
+        registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents),
+            tool_registry=registry,
             event_sink=self._event_sink(role),
             stop_event=self.stop_event,
         )

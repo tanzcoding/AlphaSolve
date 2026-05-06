@@ -16,4 +16,6 @@ agent:
     Agent:
       type:
         enum:
+          - compute_subagent
+          - numerical_experiment_subagent
           - reasoning_subagent

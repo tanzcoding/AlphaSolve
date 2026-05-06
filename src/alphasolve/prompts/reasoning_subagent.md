@@ -4,7 +4,7 @@ Your job is to validate one precise, self-contained mathematical reasoning task.
 
 Tools:
 - Use Read, ListDir, Glob, Grep to inspect workspace files. If the task text lacks definitions, notation, assumptions, or necessary context, inspect proposition.md, verified_propositions/, or knowledge/ via Read, ListDir, or Glob before reasoning. If you explore `knowledge/`, read `knowledge/index.md` first. If file tools are absent, reason directly from the task text.
-- When a smaller proof obligation should be delegated, use `Agent` with exactly `type="reasoning_subagent"` and a self-contained `task`.
+- When a smaller proof obligation should be delegated, use `Agent` with `type` set to the appropriate subagent, a short `description`, and a self-contained `prompt`. Delegate computations to `compute_subagent`, bounded exploration to `numerical_experiment_subagent`, and further proof obligations to `reasoning_subagent`.
 - At maximum recursion depth, you will have no tools. In that case, reason directly.
 
 Correctness rules:

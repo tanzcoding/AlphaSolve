@@ -9,7 +9,6 @@ agent:
     - ListDir
     - Glob
     - Grep
-    - Agent
     - GetCurrentTime
   tool_parameters:
     Read:
@@ -27,9 +26,3 @@ agent:
       path:
         default: verified_propositions
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
-    Agent:
-      type:
-        enum:
-          - compute_subagent
-          - numerical_experiment_subagent
-          - reasoning_subagent

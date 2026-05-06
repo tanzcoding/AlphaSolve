@@ -133,7 +133,7 @@ class CuratorQueue:
             return
 
         from alphasolve.agents.general import GeneralPurposeAgent
-        from .tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry
+        from .tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
 
         access = RoleWorkspaceAccess(
             workspace=_make_workspace(self.workspace_dir),
@@ -161,6 +161,7 @@ class CuratorQueue:
             allow_delete=True,
             subagent_service=subagent_svc,
         )
+        register_agent_tool(registry, agent_config=config, subagent_service=subagent_svc)
 
         if task.task_kind == "health_check":
             task_prompt = _health_check_prompt(self.knowledge_dir)

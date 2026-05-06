@@ -788,21 +788,8 @@ def build_workspace_tool_registry(
         ),
     )
 
-    if subagent_service is not None:
-        subagent_types = subagent_service.available_types()
-        registry.register(
-            name="Agent",
-            description="Launch a new agent to handle complex, multi-step tasks autonomously.\n\nThe Agent tool launches specialized agents (subprocesses) that autonomously handle complex tasks. Each agent type has specific capabilities and tools available to it.\n\nAvailable agent types and their purposes:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- numerical_experiment_subagent: Bounded exploration, branch checks, and local numerical experiments.\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "type": {"type": "string", "enum": subagent_types, "description": "The type of specialized agent to use for this task."},
-                    "task": {"type": "string", "description": "The task for the agent to perform."},
-                },
-                "required": ["type", "task"],
-            },
-            handler=lambda args: subagent_service.call_tool(args),
-        )
+    # Agent tool is registered per-agent via register_agent_tool(), not here,
+    # because the set of allowed subagent types varies by agent config.
 
     registry.register(
         name="GetCurrentTime",
@@ -935,6 +922,59 @@ def _format_subagent_result(*, agent_type: str, session_id: str, text: str) -> s
     )
 
 
+def register_agent_tool(
+    registry: ToolRegistry,
+    *,
+    agent_config: GeneralAgentConfig,
+    subagent_service: "SubagentService",
+    depth: int = 0,
+) -> None:
+    """Register the Agent tool with a description and enum scoped to this agent's permissions."""
+    if "Agent" not in agent_config.tools:
+        return
+    agent_tool_params = agent_config.tool_parameters.get("Agent", {})
+    type_constraint = agent_tool_params.get("type", {})
+    allowed_types = type_constraint.get("enum", subagent_service.available_types())
+    known = set(subagent_service.available_types())
+    allowed_types = [t for t in allowed_types if t in known]
+    if not allowed_types:
+        return
+    lines = [
+        "Launch a new agent to handle complex, multi-step tasks autonomously.",
+        "",
+        "Available agent types:",
+    ]
+    for stype in allowed_types:
+        config = subagent_service.suite.subagents.get(stype)
+        when = config.when_to_use if config and config.when_to_use else stype
+        lines.append(f"- {stype}: {when}")
+    lines.extend([
+        "",
+        "## Writing the prompt",
+        "",
+        "Brief the agent like a smart colleague — it hasn't seen this conversation "
+        "and doesn't know what you've already tried.",
+        "- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.",
+        "- Include relevant context: what's already known, what approaches have been tried, and why this task matters.",
+        "- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.",
+        "- Keep the task self-contained and bounded to the agent's scope.",
+    ])
+    registry.register(
+        name="Agent",
+        description="\n".join(lines),
+        parameters={
+            "type": "object",
+            "properties": {
+                "type": {"type": "string", "enum": allowed_types, "description": "The type of specialized agent to use for this task."},
+                "description": {"type": "string", "description": "A short (3-5 word) description of the task."},
+                "prompt": {"type": "string", "description": "The task for the agent to perform."},
+            },
+            "required": ["type", "description", "prompt"],
+        },
+        handler=lambda args: subagent_service.call_tool(args, depth=depth),
+    )
+
+
 class SubagentService:
     def __init__(
         self,
@@ -968,20 +1008,22 @@ class SubagentService:
 
     def call_tool(self, args: dict[str, Any], *, depth: int = 0) -> ToolResult:
         agent_type = str(args.get("type") or "")
-        task = str(args.get("task") or "")
-        if not task.strip():
-            return ToolResult("ERROR: task must not be empty", is_error=True)
+        description = str(args.get("description") or "")
+        prompt = str(args.get("prompt") or "")
+        if not prompt.strip():
+            return ToolResult("ERROR: prompt must not be empty", is_error=True)
         try:
-            return ToolResult(self.call(agent_type, task, depth=depth))
+            return ToolResult(self.call(agent_type, description, prompt, depth=depth))
         except Exception as exc:
             return ToolResult(f"ERROR: {exc}", is_error=True)
 
-    def call(self, agent_type: str, task: str, *, depth: int = 0) -> str:
-        session_id, result = self._run(agent_type, task, depth=depth)
+    def call(self, agent_type: str, description: str, prompt: str, *, depth: int = 0) -> str:
+        session_id, result = self._run(agent_type, description, prompt, depth=depth)
         self._submit_curator_trace(
             agent_type=agent_type,
             session_id=session_id,
-            task=task,
+            description=description,
+            prompt=prompt,
             result=result,
         )
         return _format_subagent_result(
@@ -995,7 +1037,8 @@ class SubagentService:
         *,
         agent_type: str,
         session_id: str,
-        task: str,
+        description: str,
+        prompt: str,
         result: AgentRunResult,
     ) -> None:
         if self.curator_queue is not None and not self.session_prefix.startswith("curator") and not self.session_prefix.startswith("orchestrator"):
@@ -1007,7 +1050,8 @@ class SubagentService:
                         {
                             "agent_type": agent_type,
                             "session_id": session_id,
-                            "task": task,
+                            "description": description,
+                            "prompt": prompt,
                             "final_answer": result.final_answer,
                             "turns": result.turns,
                         }
@@ -1020,13 +1064,13 @@ class SubagentService:
                 caller_context=caller_context,
             ))
 
-    def _run(self, agent_type: str, task: str, *, depth: int = 0) -> tuple[str, AgentRunResult]:
+    def _run(self, agent_type: str, description: str, prompt: str, *, depth: int = 0) -> tuple[str, AgentRunResult]:
         config = self.suite.subagents.get(agent_type)
         if config is None:
             allowed = ", ".join(self.available_types())
             raise ValueError(f"unknown subagent type: {agent_type}. Allowed types: {allowed}")
         session_id = self._make_session_id(agent_type=agent_type, depth=depth)
-        registry = self._build_subagent_registry(depth=depth, session_id=session_id)
+        registry = self._build_subagent_registry(depth=depth, session_id=session_id, config=config)
         enabled_tools = list(config.tools)
         if self.file_access_factory is not None:
             for name in ("Read", "ListDir", "Glob", "Grep"):
@@ -1069,7 +1113,7 @@ class SubagentService:
                 event_sink=subagent_sink,
                 stop_event=self.stop_event,
             )
-            result = agent.run(task)
+            result = agent.run(prompt, description=description)
         finally:
             if subagent_sink is not None:
                 subagent_sink.close()
@@ -1077,7 +1121,7 @@ class SubagentService:
                 self.execution_gateway.close_session(session_id)
         return session_id, result
 
-    def _build_subagent_registry(self, *, depth: int, session_id: str) -> ToolRegistry:
+    def _build_subagent_registry(self, *, depth: int, session_id: str, config: GeneralAgentConfig) -> ToolRegistry:
         registry = ToolRegistry()
         python_env: dict[str, Any] = {}
         wolfram_session = {"session": None}
@@ -1127,18 +1171,11 @@ class SubagentService:
                     handler=tool.handler,
                 )
         if depth < self.max_depth:
-            registry.register(
-                name="Agent",
-                description="Launch a new agent to handle complex, multi-step tasks autonomously. Recursive depth is bounded.",
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "type": {"type": "string", "enum": self.available_types(), "description": "The type of specialized agent to use."},
-                        "task": {"type": "string", "description": "The task for the agent to perform."},
-                    },
-                    "required": ["type", "task"],
-                },
-                handler=lambda args: self.call_tool(args, depth=depth + 1),
+            register_agent_tool(
+                registry,
+                agent_config=config,
+                subagent_service=self,
+                depth=depth + 1,
             )
         return registry
 

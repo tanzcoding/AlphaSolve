@@ -229,7 +229,7 @@ class GeneralPurposeAgent:
         self.event_sink = event_sink
         self.stop_event = stop_event
 
-    def run(self, task: str, *, extra_messages: list[dict[str, Any]] | None = None) -> AgentRunResult:
+    def run(self, task: str, *, description: str = "", extra_messages: list[dict[str, Any]] | None = None) -> AgentRunResult:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.config.system_prompt},
             {"role": "user", "content": task},
@@ -244,6 +244,7 @@ class GeneralPurposeAgent:
                 "type": "run_start",
                 "agent": self.config.name,
                 "task": task,
+                "description": description,
                 "enabled_tools": list(self.config.tools),
                 "tool_parameters": self.config.tool_parameters,
             }

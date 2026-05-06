@@ -89,7 +89,11 @@ def test_default_agent_suite_loads_yaml_roles():
         "numerical_experiment_subagent",
         "reasoning_subagent",
     ]
-    assert suite.subagents["reasoning_subagent"].tool_parameters["Agent"]["type"]["enum"] == ["reasoning_subagent"]
+    assert suite.subagents["reasoning_subagent"].tool_parameters["Agent"]["type"]["enum"] == [
+        "compute_subagent",
+        "numerical_experiment_subagent",
+        "reasoning_subagent",
+    ]
     assert suite.settings["max_verify_rounds"] == 6
     assert suite.settings["verifier_scaling_factor"] == 4
     assert suite.settings["verifier_agents"] == [
@@ -489,7 +493,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                                 "id": "spawn_worker",
                                 "type": "function",
                                 "function": {
-                                    "name": "Agent",
+                                    "name": "SpawnWorker",
                                     "arguments": json.dumps({"hint": "Try a near miss."}),
                                 },
                             }
@@ -1140,8 +1144,8 @@ def test_orchestrator_review_tool_returns_only_reviewer_final_report():
         registry = orchestrator._build_registry(manager=object(), subagents=subagents)
 
         result = registry.execute(
-            "Review",
-            {"task": "survey"},
+            "Agent",
+            {"type": "research_reviewer", "description": "survey", "prompt": "survey"},
             enabled=config.tools,
             tool_parameters=config.tool_parameters,
         )
@@ -1176,8 +1180,16 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         config = suite.agents["orchestrator"]
 
         class DummyReviewService:
-            def call_tool(self, args):
+            def available_types(self):
+                return ["research_reviewer"]
+            def call_tool(self, args, depth=0):
                 return args
+            class _Suite:
+                class _Subagents:
+                    def get(self, _key):
+                        return None
+                subagents = _Subagents()
+            suite = _Suite()
 
         registry = orchestrator._build_registry(manager=object(), subagents=DummyReviewService())
 
@@ -1565,7 +1577,7 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
                                 "function": {
                                     "name": "Agent",
                                     "arguments": json.dumps(
-                                        {"type": "reasoning_subagent", "task": "Check the first bounded claim."}
+                                        {"type": "reasoning_subagent", "description": "Check first claim", "prompt": "Check the first bounded claim."}
                                     ),
                                 },
                             }
@@ -1583,7 +1595,7 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
                                 "function": {
                                     "name": "Agent",
                                     "arguments": json.dumps(
-                                        {"type": "reasoning_subagent", "task": "Check the second bounded claim."}
+                                        {"type": "reasoning_subagent", "description": "Check second claim", "prompt": "Check the second bounded claim."}
                                     ),
                                 },
                             }
@@ -1715,19 +1727,20 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         session_prefix="pytest",
     )
     try:
-        rejected = service.call_tool({"type": "math", "task": "Try an unsupported subagent type."})
+        rejected = service.call_tool({"type": "math", "description": "unsupported", "prompt": "Try an unsupported subagent type."})
         assert rejected.is_error
         assert "unknown subagent type: math" in rejected.content
         assert "reasoning_subagent" in rejected.content
 
-        registry = service._build_subagent_registry(depth=0, session_id="pytest/session")
+        reasoning_config = suite.subagents["reasoning_subagent"]
+        registry = service._build_subagent_registry(depth=0, session_id="pytest/session", config=reasoning_config)
         python_result = registry.execute("RunPython", {"code": "value = 6 * 7\nvalue"})
         denied = registry.execute("RunPython", {"code": "open('leak.txt', 'w')"})
         tools = registry.openai_tools(["Agent"], suite.agents["generator"].tool_parameters)
         type_schema = tools[0]["function"]["parameters"]["properties"]["type"]
         blocked = registry.execute(
             "Agent",
-            {"type": "curator", "task": "This should not be callable from generator."},
+            {"type": "curator", "description": "blocked", "prompt": "This should not be callable from generator."},
             enabled=["Agent"],
             tool_parameters=suite.agents["generator"].tool_parameters,
         )
@@ -1745,9 +1758,9 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         assert "must be one of" in blocked.content
         # reasoning_subagent config includes GetCurrentTime which the subagent
         # registry does not yet register; skip the success assertion for now.
-        reasoning = service.call_tool({"type": "reasoning_subagent", "task": "Check x=x."})
+        reasoning = service.call_tool({"type": "reasoning_subagent", "description": "Identity check", "prompt": "Check x=x."})
 
-        max_depth_registry = service._build_subagent_registry(depth=1, session_id="pytest/deep")
+        max_depth_registry = service._build_subagent_registry(depth=1, session_id="pytest/deep", config=reasoning_config)
         assert "Agent" not in [tool.name for tool in max_depth_registry.registered_tools()]
     finally:
         gateway.close()
@@ -1789,7 +1802,7 @@ def test_subagent_service_cleans_up_gateway_session_after_return():
         session_prefix="pytest-cleanup",
     )
     try:
-        result = service.call("compute_subagent", "Use Python once and finish.")
+        result = service.call("compute_subagent", "Python compute", "Use Python once and finish.")
 
         pool = gateway._python_pool
         assert pool is not None

@@ -1,8 +1,8 @@
 # AlphaSolve
 
-> 一个面向数学研究的多智能体证明工作台：让 LLM 能够进行长程研究，并产出**自然语言**证明。
+> 一个面向数学研究的多智能体证明工作台：让 LLM 能够进行长程研究，支持人机协作和断点续研，并产出**自然语言**证明。
 
-把一个 `problem.md` 放进空文件夹，运行 `alphasolve`。AlphaSolve 会持续探索，直到解决问题。您也可以在产生的 `verified_propositions` 中手工添加命题，或者在 `knowledge` 中添加可参考的论文 (markdown格式) 以引导和干预 AlphaSolve。
+把一个 `problem.md` 放进空文件夹，运行 `alphasolve`。AlphaSolve 会持续探索，直到解决问题。您也可以在产生的 `verified_propositions` 中手工添加命题，或者在 `knowledge/references` 中添加可参考的论文或笔记 (均要求markdown格式) 以引导和干预 AlphaSolve的后续行为。
 
 <p align="center">
   <img src="docs/assets/alphasolve-dashboard.png" alt="AlphaSolve 实时面板" width="100%">
@@ -10,18 +10,8 @@
 
 ## 这是什么？
 
-AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它不是单次问答式的 proof generator，而是一套可持续运行的研究流程：Orchestrator 负责规划方向，多个 Worker 并行尝试证明，Verifier 从不同角度审查，Reviser 修复失败证明，Curator 将探索过程中形成的知识整理进 `workspace/knowledge/`，供后续继续使用。
+AlphaSolve 是一个基于大语言模型（LLM）的自动化数学定理证明系统。它大体上遵循一套可持续运行的研究流程：Orchestrator 负责规划方向，多个 Worker 并行尝试证明，Verifier 从不同角度审查和抑制幻觉，Reviser 修复失败证明，Curator 将探索过程中形成的知识整理进 `workspace/knowledge/`，供后续继续使用。在无人干预的情况下，AlphaSolve 能够自主运行几十小时。它特别适合那些需要长时间探索、反复试错、积累中间引理和失败经验的数学问题。当幻觉透过 Verifier 渗入到 `verified_propositions` 中时，人类可以手工删除，并继续启动 AlphaSolve 进行研究。
 
-它特别适合那些需要长时间探索、反复试错、积累中间引理和失败经验的数学问题。
-
-## 核心特性
-
-- **Orchestrator 驱动**：LLM Orchestrator 读取已验证命题和 knowledge/ 下的知识管理，动态决定何时 spawn 新 worker 以及使用什么提示
-- **并行 Worker**：多个 worker 同时独立探索，每个 worker 运行完整的 Generator → Verifier → Reviser 流水线
-- **多 Verifier 协同审查**：每轮验证启动多次独立尝试，在多种 Verifier 之间轮换，各自从不同角度审查证明，一次不通过则视为不通过。支持通过 YAML 自行配置 Verifier 的工作方式，支持为 Verifier 添加 SKILLS
-- **Subagent 系统**：Generator、Verifier、Reviser 可调用 compute subagent（Python / Wolfram）和 reasoning subagent 辅助探索；Orchestrator 可调用 research_reviewer 综述已有知识并推荐研究方向
-- **知识管理**：后台 `curator` agent 持续将运行 trace 知识写入 `workspace/knowledge/`，供 Orchestrator 参考
-- **多 LLM 提供商**：支持 DeepSeek、火山引擎、Moonshot、DashScope、LongCat、Parasail、OpenRouter、MIMO 等
 
 ## 快速开始
 
