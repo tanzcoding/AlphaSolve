@@ -125,6 +125,7 @@ class RuntimeInjectionMonitor:
 
 class WorkerManager:
     DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
+    VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD = 40
 
     def __init__(
         self,
@@ -348,7 +349,45 @@ class WorkerManager:
         updates = self.injection_monitor.check()
         if updates is not None:
             payload["human_expert_updates"] = updates
+        organization_prompt = self._verified_propositions_organization_prompt()
+        if organization_prompt is not None:
+            payload["verified_propositions_organization"] = organization_prompt
         return payload
+
+    def _verified_propositions_organization_prompt(self) -> dict[str, Any] | None:
+        overloaded_dirs = self._overloaded_verified_proposition_dirs()
+        threshold = self.VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD
+        if not overloaded_dirs:
+            return None
+        return {
+            "threshold": threshold,
+            "directories": overloaded_dirs,
+            "message": "Organize these verified_propositions directories before spawning more work: "
+            + ", ".join(item["path"] for item in overloaded_dirs),
+        }
+
+    def _overloaded_verified_proposition_dirs(self) -> list[dict[str, Any]]:
+        if not self.layout.verified_dir.is_dir():
+            return []
+        threshold = self.VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD
+        overloaded: list[dict[str, Any]] = []
+        for directory in sorted(
+            (path for path in self.layout.verified_dir.rglob("*") if path.is_dir()),
+            key=lambda item: item.relative_to(self.layout.verified_dir).as_posix(),
+        ):
+            direct_markdown_count = sum(1 for path in directory.glob("*.md") if path.is_file())
+            if direct_markdown_count > threshold:
+                overloaded.append({
+                    "path": directory.relative_to(self.layout.workspace_dir).as_posix(),
+                    "markdown_file_count": direct_markdown_count,
+                })
+        root_markdown_count = sum(1 for path in self.layout.verified_dir.glob("*.md") if path.is_file())
+        if root_markdown_count > threshold:
+            overloaded.insert(0, {
+                "path": "verified_propositions",
+                "markdown_file_count": root_markdown_count,
+            })
+        return overloaded
 
     def _pool_status(self) -> dict[str, Any]:
         active_workers = [

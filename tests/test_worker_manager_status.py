@@ -295,6 +295,80 @@ def test_task_output_reports_new_reference_files_once(tmp_path, monkeypatch):
         manager.close(timeout=0)
 
 
+def test_task_output_omits_verified_organization_prompt_at_directory_threshold(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        for index in range(WorkerManager.VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD):
+            (manager.layout.verified_dir / f"lemma-{index:02d}.md").write_text(
+                f"# Lemma {index}\n",
+                encoding="utf-8",
+            )
+
+        payload = manager.wait(timeout_seconds=0)
+
+        assert "verified_propositions_organization" not in payload
+    finally:
+        manager.close(timeout=0)
+
+
+def test_task_output_omits_verified_organization_prompt_when_recursive_total_is_high(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        first_dir = manager.layout.verified_dir / "first"
+        second_dir = manager.layout.verified_dir / "second"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        for index in range(30):
+            (first_dir / f"lemma-{index:02d}.md").write_text(
+                f"# Lemma {index}\n",
+                encoding="utf-8",
+            )
+            (second_dir / f"lemma-{index:02d}.md").write_text(
+                f"# Lemma {index}\n",
+                encoding="utf-8",
+            )
+
+        payload = manager.wait(timeout_seconds=0)
+
+        assert "verified_propositions_organization" not in payload
+    finally:
+        manager.close(timeout=0)
+
+
+def test_task_output_prompts_verified_organization_for_overloaded_direct_directory(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        topic_dir = manager.layout.verified_dir / "topic"
+        topic_dir.mkdir()
+        for index in range(WorkerManager.VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD + 1):
+            (topic_dir / f"lemma-{index:02d}.md").write_text(
+                f"# Lemma {index}\n",
+                encoding="utf-8",
+            )
+        for index in range(10):
+            (manager.layout.verified_dir / f"root-lemma-{index:02d}.md").write_text(
+                f"# Root Lemma {index}\n",
+                encoding="utf-8",
+            )
+
+        payload = manager.wait(timeout_seconds=0)
+
+        organization = payload["verified_propositions_organization"]
+        assert organization["threshold"] == WorkerManager.VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD
+        assert organization["directories"] == [
+            {
+                "path": "verified_propositions/topic",
+                "markdown_file_count": WorkerManager.VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD + 1,
+            }
+        ]
+        assert organization["message"] == (
+            "Organize these verified_propositions directories before spawning more work: "
+            "verified_propositions/topic"
+        )
+    finally:
+        manager.close(timeout=0)
+
+
 def test_task_output_ignores_curator_touched_reference_files(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch, max_workers=1)
     try:
