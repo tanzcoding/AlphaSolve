@@ -81,6 +81,8 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Current Progress And Insights" in suite.agents["orchestrator"].system_prompt
     assert "Current Progress And Insights section" in suite.agents["orchestrator"].system_prompt
     assert "less than 50 lines" in suite.agents["orchestrator"].system_prompt
+    assert "responsible for keeping `verified_propositions/` tidy and easy to navigate" in suite.agents["orchestrator"].system_prompt
+    assert "You may organize `verified_propositions/`" not in suite.agents["orchestrator"].system_prompt
     assert "bootstrap-assumption-A" in suite.agents["orchestrator"].system_prompt
     assert "that would rename the `.md` file" in suite.agents["orchestrator"].system_prompt
     assert "Agent" in suite.agents["generator"].tools
@@ -509,7 +511,7 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                                 "type": "function",
                                 "function": {
                                     "name": "TaskOutput",
-                                    "arguments": json.dumps({"seconds": 5}),
+                                    "arguments": json.dumps({}),
                                 },
                             }
                         ],

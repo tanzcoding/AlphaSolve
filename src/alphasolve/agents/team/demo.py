@@ -63,7 +63,7 @@ class DemoChatClient:
                         "type": "function",
                         "function": {
                             "name": "TaskOutput",
-                            "arguments": json.dumps({"seconds": 5}),
+                            "arguments": json.dumps({}),
                         },
                     }
                 ],
