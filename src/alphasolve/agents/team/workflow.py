@@ -63,7 +63,7 @@ class AlphaSolve:
         self._stop_event.set()
 
     def run(self) -> OrchestratorRunResult:
-        renderer = PropositionTeamRenderer(screen=False, stop_event=self._stop_event, problem_name=self.layout.problem_path.parent.name) if self.print_to_console else None
+        renderer = PropositionTeamRenderer(screen=True, stop_event=self._stop_event, problem_name=self.layout.problem_path.parent.name) if self.print_to_console else None
         self._renderer = renderer
         execution_gateway: ExecutionGateway | None = None
         owns_gateway = self.execution_gateway_override is None

@@ -61,8 +61,8 @@ if sys.platform == "win32":
                 b" (press Ctrl+C again to force exit)\r\n"
             )
             return 1  # TRUE — event handled
-        # Second Ctrl+C
-        _win_write_stderr(b"\x1b[?25h\r\nForce quit.\r\n")
+        # 第二次 Ctrl+C 会绕过 Python 清理流程，必须直接恢复光标和主屏幕缓冲区。
+        _win_write_stderr(b"\x1b[?25h\x1b[?1049l\r\nForce quit.\r\n")
         os._exit(130)
 
     def _install_console_handler() -> None:

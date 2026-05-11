@@ -121,6 +121,26 @@ def test_dashboard_line_diff_painter_skips_unchanged_lines():
         renderer.stop()
 
 
+def test_dashboard_screen_mode_uses_alternate_screen_buffer():
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=100,
+        height=28,
+        record=True,
+        force_terminal=True,
+        color_system=None,
+    )
+    renderer = PropositionTeamRenderer(console=console, screen=True)
+
+    renderer.start()
+    renderer.stop()
+
+    output = stream.getvalue()
+    assert "\x1b[?1049h" in output
+    assert "\x1b[?1049l" in output
+
+
 def test_dashboard_repaints_when_terminal_size_changes():
     stream = io.StringIO()
     console = Console(
