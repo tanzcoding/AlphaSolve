@@ -1,0 +1,13 @@
+settings:
+  max_verify_rounds: 6
+  verifier_scaling_factor: 4
+  verifier_agents:
+    - verifier_citation
+    - verifier_failure_modes
+    - verifier_stepwise
+    - verifier_premise_chain
+  subagent_max_depth: 1
+  max_orchestrator_restarts: 50
+
+agents_dir: ./agents
+subagents_dir: ./subagents

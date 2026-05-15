@@ -1,0 +1,22 @@
+version: 1
+agent:
+  name: generator
+  system_prompt_path: ../../prompts/generator.md
+  model_config: GENERATOR_CONFIG
+  max_turns: 80
+  tools:
+    - Read
+    - ListDir
+    - Glob
+    - Grep
+    - Write
+    - Edit
+    - Agent
+    - GetCurrentTime
+  tool_parameters:
+    Agent:
+      type:
+        enum:
+          - compute_subagent
+          - numerical_experiment_subagent
+          - reasoning_subagent

@@ -1,0 +1,14 @@
+version: 1
+agent:
+  name: numerical_experiment_subagent
+  system_prompt_path: ../../prompts/numerical_experiment_subagent.md
+  model_config: COMPUTE_SUBAGENT_CONFIG
+  max_turns: 80
+  when_to_use: Bounded exploration, branch checks, and local numerical experiments.
+  tools:
+    - RunPython
+    - RunWolfram
+    - Read
+    - ListDir
+    - Glob
+    - Grep

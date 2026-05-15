@@ -1,0 +1,184 @@
+from __future__ import annotations
+
+import argparse
+import ctypes
+import os
+import signal
+import sys
+from pathlib import Path
+
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
+from alphasolve.agents.team import AlphaSolve
+from alphasolve.agents.team.demo import make_demo_client_factory
+
+_app: AlphaSolve | None = None
+_interrupt_count = 0
+
+# ---------------------------------------------------------------------------
+# Windows console control handler (bypasses Python's signal module entirely
+# because signal.signal(SIGINT, ...) can silently stop working when the main
+# thread is blocked in Winsock I/O and another thread is doing heavy console
+# output).
+# ---------------------------------------------------------------------------
+
+if sys.platform == "win32":
+    _kernel32 = ctypes.windll.kernel32
+    _STD_ERROR_HANDLE = ctypes.c_ulong(0xFFFFFFF4)  # STD_ERROR_HANDLE
+
+    # Console control handler callback type
+    _PHANDLER_ROUTINE = ctypes.WINFUNCTYPE(ctypes.c_long, ctypes.c_ulong)
+
+    def _win_write_stderr(text: bytes) -> None:
+        """Write raw bytes to stderr via the Windows console API.
+        This bypasses Python's I/O stack and works from any thread."""
+        written = ctypes.c_ulong(0)
+        handle = _kernel32.GetStdHandle(_STD_ERROR_HANDLE)
+        _kernel32.WriteFile(
+            handle,
+            text,
+            ctypes.c_ulong(len(text)),
+            ctypes.byref(written),
+            None,
+        )
+
+    @_PHANDLER_ROUTINE
+    def _win_ctrl_handler(ctrl_type: int) -> int:
+        """Windows console control handler — called in a dedicated thread."""
+        if ctrl_type != 0:  # CTRL_C_EVENT
+            return 0  # FALSE — pass to next handler
+        global _interrupt_count
+        _interrupt_count += 1
+        if _interrupt_count == 1:
+            if _app is not None:
+                _app.cancel()  # sets threading.Event (always non-blocking)
+            _win_write_stderr(
+                b"\r\nInterrupted -- finishing current work..."
+                b" (press Ctrl+C again to force exit)\r\n"
+            )
+            return 1  # TRUE — event handled
+        # 第二次 Ctrl+C 会绕过 Python 清理流程，必须直接恢复光标和主屏幕缓冲区。
+        _win_write_stderr(b"\x1b[?25h\x1b[?1049l\r\nForce quit.\r\n")
+        os._exit(130)
+
+    def _install_console_handler() -> None:
+        """Register our handler.  Returns True on success."""
+        ok = _kernel32.SetConsoleCtrlHandler(_win_ctrl_handler, 1)
+        if not ok:
+            _win_write_stderr(
+                b"WARNING: SetConsoleCtrlHandler failed (error %d)\r\n"
+                % _kernel32.GetLastError()
+            )
+
+else:  # Unix
+    def _on_interrupt(_signum: int, _frame: object) -> None:
+        global _interrupt_count
+        _interrupt_count += 1
+        if _interrupt_count == 1:
+            if _app is not None:
+                _app.cancel()
+            print(
+                "\nInterrupted — finishing current work…"
+                " (press Ctrl+C again to force exit)",
+                file=sys.stderr,
+            )
+            return
+        # Second Ctrl+C
+        if _app is not None and _app._renderer is not None:
+            try:
+                _app._renderer.stop()
+            except Exception:
+                pass
+        sys.stderr.write("\nForce quit.\n")
+        sys.stderr.flush()
+        os._exit(130)
+
+
+def main() -> None:
+    global _app
+
+    if sys.platform == "win32":
+        _install_console_handler()
+    else:
+        signal.signal(signal.SIGINT, _on_interrupt)
+
+    default_max_workers = 4
+
+    parser = argparse.ArgumentParser(description="Run AlphaSolve.")
+    parser.add_argument("--problem", type=str, default="problem.md",
+                        help="Path to the problem markdown file (default: problem.md)")
+    parser.add_argument("--hint", type=str, default=None,
+                        help="Path to an optional hint markdown file")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Maximum number of concurrent workers")
+    parser.add_argument("--config", type=str, default=None,
+                        help="Path to an agent suite YAML file or directory containing agents.yaml")
+    parser.add_argument("--max_verify_rounds", type=int, default=None,
+                        help="Maximum verifier/reviser rounds per worker (default: from agents.yaml)")
+    parser.add_argument("--verifier_scaling_factor", type=int, default=None,
+                        help="Independent verifier attempts per verifier round (default: from agents.yaml)")
+    parser.add_argument("--subagent_max_depth", type=int, default=None,
+                        help="Maximum recursive depth for subagents (default: from agents.yaml)")
+    parser.add_argument("--debug", action="store_true",
+                        help="Produce detailed per-agent trace logs under logs/")
+    parser.add_argument("--demo", action="store_true",
+                        help="Run a deterministic local demo without calling an LLM API")
+    parser.add_argument("--no_wolfram_prime", action="store_true",
+                        help="Skip the startup Wolfram kernel probe")
+    parser.add_argument("--no_dashboard", action="store_true",
+                        help="Disable the live terminal dashboard")
+    parser.add_argument("--tool_executor_size", type=int, default=default_max_workers,
+                        help="Number of Python execution worker processes")
+    parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
+                        help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
+
+    args = parser.parse_args()
+
+    from alphasolve.agents.general import load_agent_suite_config
+    from alphasolve.config.agent_config import PACKAGE_ROOT
+    config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
+    suite_settings = load_agent_suite_config(config_path).settings
+    max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
+    verifier_scaling_factor = (
+        args.verifier_scaling_factor
+        if args.verifier_scaling_factor is not None
+        else int(suite_settings.get("verifier_scaling_factor", 1))
+    )
+    subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
+    max_orchestrator_restarts = (
+        args.max_orchestrator_restarts
+        if args.max_orchestrator_restarts is not None
+        else int(suite_settings.get("max_orchestrator_restarts", 5))
+    )
+
+    try:
+        _app = AlphaSolve(
+            project_dir=Path.cwd(),
+            problem=args.problem,
+            hint=args.hint,
+            config_path=args.config,
+            max_workers=args.workers or default_max_workers,
+            max_verify_rounds=max_verify_rounds,
+            verifier_scaling_factor=verifier_scaling_factor,
+            subagent_max_depth=subagent_max_depth,
+            client_factory=make_demo_client_factory() if args.demo else None,
+            prime_wolfram=not args.no_wolfram_prime,
+            print_to_console=not args.no_dashboard,
+            tool_executor_size=args.tool_executor_size,
+            max_orchestrator_restarts=max_orchestrator_restarts,
+            debug=args.debug,
+        )
+        result = _app.run()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(130)
+
+    print(result.final_answer or "")
+
+
+if __name__ == "__main__":
+    main()

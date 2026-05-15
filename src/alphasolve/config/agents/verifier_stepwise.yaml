@@ -1,0 +1,20 @@
+version: 1
+agent:
+  name: verifier_stepwise
+  system_prompt_path: ../../prompts/verifier_stepwise.md
+  model_config: VERIFIER_CONFIG
+  max_turns: 80
+  tools:
+    - Read
+    - ListDir
+    - Glob
+    - Grep
+    - Agent
+    - GetCurrentTime
+  tool_parameters:
+    Agent:
+      type:
+        enum:
+          - compute_subagent
+          - numerical_experiment_subagent
+          - reasoning_subagent

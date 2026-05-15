@@ -1,0 +1,54 @@
+version: 1
+agent:
+  name: orchestrator
+  system_prompt_path: ../../prompts/orchestrator.md
+  model_config: ORCHESTRATOR_CONFIG
+  max_turns: 80
+  tools:
+    - Grep
+    - Glob
+    - Read
+    - Write
+    - Edit
+    - ListDir
+    - MakeDir
+    - Rename
+    - Move
+    - SpawnWorker
+    - Agent
+    - TaskOutput
+    - GetCurrentTime
+  tool_parameters:
+    Write:
+      path:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\\.md$"
+      mode:
+        enum:
+          - overwrite
+    Edit:
+      path:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\\.md$"
+    MakeDir:
+      path:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
+    Rename:
+      directory:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+      old_name:
+        pattern: "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+      new_name:
+        pattern: "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+    Move:
+      path:
+        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+      destination_dir:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+    SpawnWorker:
+      hint:
+        type: string
+        maxLength: 4000
+    TaskOutput:
+      seconds:
+        type: number
+        minimum: 1200
+        maximum: 3600

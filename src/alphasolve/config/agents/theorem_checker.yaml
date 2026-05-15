@@ -1,0 +1,28 @@
+version: 1
+agent:
+  name: theorem_checker
+  system_prompt_path: ../../prompts/theorem_checker.md
+  model_config: VERIFIER_CONFIG
+  max_turns: 60
+  tools:
+    - Read
+    - ListDir
+    - Glob
+    - Grep
+    - GetCurrentTime
+  tool_parameters:
+    Read:
+      path:
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*\\.md$"
+    ListDir:
+      path:
+        default: verified_propositions
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+    Glob:
+      path:
+        default: verified_propositions
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+    Grep:
+      path:
+        default: verified_propositions
+        pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"

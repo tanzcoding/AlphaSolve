@@ -1,0 +1,27 @@
+version: 1
+agent:
+  name: verifier_citation
+  system_prompt_path: ../../prompts/verifier_citation.md
+  model_config: VERIFIER_CONFIG
+  max_turns: 40
+  tools:
+    - Read
+    - ListDir
+    - Glob
+    - Grep
+    - GetCurrentTime
+  tool_parameters:
+    ListDir:
+      path:
+        default: verified_propositions
+        pattern: "^(verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
+      recursive:
+        const: false
+    Glob:
+      path:
+        default: verified_propositions
+        pattern: "^(verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
+    Grep:
+      path:
+        default: verified_propositions
+        pattern: "^(unverified_propositions/prop-[A-Za-z0-9_-]+/?|unverified_propositions/prop-[A-Za-z0-9_-]+/proposition\\.md|verified_propositions/?|verified_propositions/.*)$"

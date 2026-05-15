@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "alphasolve"
+version = "0.1.0"
+description = "Multi-agent collaborative system for proving mathematical theorems and solving mathematical problems"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0",
+    "wolframclient>=1.3",
+    "rich>=13.0",
+    "PyYAML>=6.0",
+    "httpx>=0.28.1",
+]
+
+[project.scripts]
+alphasolve = "alphasolve.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+alphasolve = ["prompts/*.md", "config/*.yaml", "config/agents/*.yaml", "config/subagents/*.yaml"]

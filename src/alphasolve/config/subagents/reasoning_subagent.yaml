@@ -1,0 +1,21 @@
+version: 1
+agent:
+  name: reasoning_subagent
+  system_prompt_path: ../../prompts/reasoning_subagent.md
+  model_config: PROOF_SUBAGENT_CONFIG
+  max_turns: 80
+  when_to_use: Bounded proof and mathematical reasoning obligations.
+  tools:
+    - Agent
+    - Read
+    - ListDir
+    - Glob
+    - Grep
+    - GetCurrentTime
+  tool_parameters:
+    Agent:
+      type:
+        enum:
+          - compute_subagent
+          - numerical_experiment_subagent
+          - reasoning_subagent

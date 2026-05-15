@@ -1,12 +1,65 @@
+# Python
 __pycache__/
 *.pyc
-benchmark_results*
-pocketflow/
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.uv-cache/
+.uv-python/
+
+# Environment & secrets
+.env
+*.env
+
+# AI coding tools
+.agents/
+.claude/
+.kiro/
+.cursor/
+.aider*
+.copilot/
+
+# IDE / editors
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Cache & testing
+.pytest_cache/
+.pytest_tmp/
+pytest-cache-files-*/
+.mypy_cache/
+.ruff_cache/
+_tmp_general_agent_pytest/
+_tmp_agent_team_pytest/
+_tmp_edit_precision_test/
+_tmp_debug_*/
+tests/edit_precision_test_data/
+
+# Logs & outputs
+*.log
 logs/
 logs_as_html/
 log_as_html/
+benchmark_results*
+
+# Runtime data
+pocketflow/
 test/
 solution.md
 progress/
 hint.md
 problems/
+/workspace/
+advise.md
