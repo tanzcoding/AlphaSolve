@@ -318,7 +318,7 @@ def test_task_output_omits_verified_organization_prompt_when_recursive_total_is_
         second_dir = manager.layout.verified_dir / "second"
         first_dir.mkdir()
         second_dir.mkdir()
-        for index in range(30):
+        for index in range(15):
             (first_dir / f"lemma-{index:02d}.md").write_text(
                 f"# Lemma {index}\n",
                 encoding="utf-8",

@@ -1,8 +1,8 @@
 #!/bin/sh
 set -e
 
-REPO_URL="https://github.com/tanzcoding/AlphaSolve/archive/refs/heads/procedural_knowledge_mem.zip"
-REPO_DIR="AlphaSolve-procedural_knowledge_mem"
+REPO_URL="https://github.com/tanzcoding/AlphaSolve/archive/refs/heads/main.zip"
+REPO_DIR="AlphaSolve-main"
 
 echo "========================================"
 echo "  AlphaSolve Installer"

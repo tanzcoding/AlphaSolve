@@ -1,8 +1,8 @@
 @echo off
 setlocal
 
-set "REPO_URL=https://github.com/tanzcoding/AlphaSolve/archive/refs/heads/procedural_knowledge_mem.zip"
-set "REPO_DIR=AlphaSolve-procedural_knowledge_mem"
+set "REPO_URL=https://github.com/tanzcoding/AlphaSolve/archive/refs/heads/main.zip"
+set "REPO_DIR=AlphaSolve-main"
 
 echo ========================================
 echo   AlphaSolve Installer

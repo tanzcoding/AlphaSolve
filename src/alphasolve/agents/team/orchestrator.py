@@ -125,7 +125,7 @@ class RuntimeInjectionMonitor:
 
 class WorkerManager:
     DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
-    VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD = 40
+    VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD = 20
 
     def __init__(
         self,
