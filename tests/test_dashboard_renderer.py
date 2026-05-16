@@ -8,6 +8,7 @@ from rich.console import Console
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agents.team.dashboard import make_curator_event_sink, make_worker_event_sink  # noqa: E402
+from alphasolve.utils import rich_renderer as rich_renderer_module  # noqa: E402
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
 
 
@@ -321,6 +322,36 @@ def test_dashboard_wraps_long_error_logs_in_agent_panel():
     assert "RemoteProtocolError" in text
     # In timeline mode long logs are truncated to a single line
     assert "peer closed connection" in text
+
+
+def test_dashboard_update_phase_marks_terminal_workers_finished(monkeypatch):
+    stream = io.StringIO()
+    console = Console(
+        file=stream,
+        width=100,
+        height=28,
+        record=True,
+        force_terminal=False,
+        color_system=None,
+    )
+    renderer = PropositionTeamRenderer(console=console, screen=False)
+    now = time.time()
+
+    renderer.register_worker(0)
+    monkeypatch.setattr(rich_renderer_module.time, "time", lambda: now)
+    renderer.update_phase(0, "done", status="cancelled")
+
+    state = renderer._workers[0]
+    assert state.finished_at == now
+
+    monkeypatch.setattr(
+        rich_renderer_module.time,
+        "time",
+        lambda: now + rich_renderer_module._WORKER_RETENTION_SECONDS + 1,
+    )
+    renderer.render()
+
+    assert 0 not in renderer._workers
 
 
 def test_dashboard_sidebar_reserves_curator_panel_space():

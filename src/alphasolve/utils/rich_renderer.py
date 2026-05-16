@@ -497,6 +497,10 @@ class PropositionTeamRenderer:
             state = self._ensure_worker(worker_id)
             state.phase = phase
             state.status = status
+            if status in _TERMINAL_STATUSES:
+                state.finished_at = state.finished_at or time.time()
+            else:
+                state.finished_at = None
             state.updated_at = time.time()
             self._refresh_locked()
 
