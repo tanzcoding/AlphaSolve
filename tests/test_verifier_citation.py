@@ -135,3 +135,19 @@ def test_citation_tools_can_list_verified_proposition_subdirectories(tmp_path):
     assert "energy.md" in listed.content
     assert not globbed.is_error
     assert "verified_propositions/coercive/local/energy.md" in globbed.content
+
+
+def test_grep_defaults_to_regex_matching(tmp_path):
+    workspace = Workspace(tmp_path)
+    target = tmp_path / "verified_propositions" / "coercive"
+    target.mkdir(parents=True)
+    (target / "energy.md").write_text("# Energy\n", encoding="utf-8")
+
+    registry = build_workspace_tool_registry(RoleWorkspaceAccess(workspace=workspace))
+    result = registry.execute(
+        "Grep",
+        {"path": "verified_propositions", "pattern": r"^# Energy$"},
+    )
+
+    assert not result.is_error
+    assert "verified_propositions/coercive/energy.md" in result.content

@@ -187,7 +187,7 @@ class RoleWorkspaceAccess:
                     file_path.write_text(new_text, encoding="utf-8")
                     self._record_touch(file_path)
 
-    def list_dir(self, path: str = ".", *, recursive: bool = False, max_results: int = 200) -> list[str]:
+    def list_dir(self, path: str = ".", *, max_results: int = 200) -> list[str]:
         target = self.workspace.resolve(path)
         self._ensure_under_read_root(target)
         self._ensure_not_other_worker_path(target)
@@ -195,32 +195,6 @@ class RoleWorkspaceAccess:
             raise ValueError(f"not a directory: {path}")
 
         out: list[str] = []
-        if recursive:
-            for current, dirs, files in os.walk(target):
-                current_path = Path(current)
-                dirs[:] = sorted([
-                    name
-                    for name in dirs
-                    if name not in {".git", "__pycache__", ".venv", "node_modules"}
-                    and not self._is_other_worker_path(current_path / name)
-                    and not self._is_denied_read_path(current_path / name)
-                ])
-                for name in dirs:
-                    out.append(self._rel(current_path / name) + "/")
-                    if len(out) >= max_results:
-                        return out
-                for name in sorted(files):
-                    file_path = current_path / name
-                    if (
-                        not self._is_other_worker_path(file_path)
-                        and not self._is_denied_read_path(file_path)
-                        and not self._is_denied_read_file(file_path)
-                    ):
-                        out.append(self._rel(file_path))
-                        if len(out) >= max_results:
-                            return out
-            return out
-
         for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
             if self._is_other_worker_path(child):
                 continue
@@ -262,7 +236,7 @@ class RoleWorkspaceAccess:
         pattern: str,
         *,
         path: str = ".",
-        regex: bool = False,
+        regex: bool = True,
         max_results: int = 50,
         context_lines: int = 0,
     ) -> list[dict[str, Any]]:
@@ -737,14 +711,13 @@ def build_workspace_tool_registry(
             "Lists files and directories under a workspace directory without invoking a shell.\n\n"
             "Usage:\n"
             "- Prefer this over Bash/Shell for checking directory contents.\n"
-            "- Use recursive=true only for small, well-scoped directories.\n"
+            "- If the directory contains `index.md`, read `index.md` first before exploring other files.\n"
             "- The result respects this agent's workspace access restrictions."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "Directory to list. Defaults to this agent's configured read root.", "default": "."},
-                "recursive": {"type": "boolean", "description": "Whether to recursively list descendants.", "default": False},
                 "max_results": {"type": "integer", "description": "Maximum entries to return.", "default": 200},
             },
             "required": [],
@@ -753,7 +726,6 @@ def build_workspace_tool_registry(
             json.dumps(
                 access.list_dir(
                     args.get("path", "."),
-                    recursive=bool(args.get("recursive", False)),
                     max_results=int(args.get("max_results", 200)),
                 ),
                 ensure_ascii=False,
@@ -762,13 +734,13 @@ def build_workspace_tool_registry(
     )
     registry.register(
         name="Grep",
-        description="Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- Set regex=true to treat pattern as a regular expression.\n- Results respect this agent's workspace access restrictions.",
+        description="Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
         parameters={
             "type": "object",
             "properties": {
                 "pattern": {"type": "string", "description": "The text or regular expression pattern to search for in file contents."},
                 "path": {"type": "string", "description": "File or directory to search in. Defaults to this agent's configured search root.", "default": "."},
-                "regex": {"type": "boolean", "description": "Treat pattern as a regex (default: substring match).", "default": False},
+                "regex": {"type": "boolean", "description": "Treat pattern as a regex (default: true; set false for substring matching).", "default": True},
                 "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 50},
                 "context_lines": {"type": "integer", "description": "Number of context lines around each match.", "default": 0},
             },
@@ -779,7 +751,7 @@ def build_workspace_tool_registry(
                 access.grep(
                     args["pattern"],
                     path=args.get("path", "."),
-                    regex=bool(args.get("regex", False)),
+                    regex=bool(args.get("regex", True)),
                     max_results=int(args.get("max_results", 50)),
                     context_lines=int(args.get("context_lines", 0)),
                 ),

@@ -15,8 +15,6 @@ agent:
       path:
         default: verified_propositions
         pattern: "^(verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
-      recursive:
-        const: false
     Glob:
       path:
         default: verified_propositions
