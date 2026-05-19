@@ -232,10 +232,10 @@ class GeneralPurposeAgent:
     def run(self, task: str, *, description: str = "", extra_messages: list[dict[str, Any]] | None = None) -> AgentRunResult:
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.config.system_prompt},
-            {"role": "user", "content": task},
         ]
         if extra_messages:
             messages.extend(extra_messages)
+        messages.append({"role": "user", "content": task})
 
         tools = self.tool_registry.openai_tools(self.config.tools, self.config.tool_parameters)
         final_answer = ""

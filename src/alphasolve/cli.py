@@ -125,6 +125,8 @@ def main() -> None:
                         help="Maximum recursive depth for subagents (default: from agents.yaml)")
     parser.add_argument("--debug", action="store_true",
                         help="Produce detailed per-agent trace logs under logs/")
+    parser.add_argument("--agent-debug", action="store_true",
+                        help="Run an interactive GeneralPurposeAgent tool-debugging TUI")
     parser.add_argument("--demo", action="store_true",
                         help="Run a deterministic local demo without calling an LLM API")
     parser.add_argument("--no_wolfram_prime", action="store_true",
@@ -141,7 +143,23 @@ def main() -> None:
     from alphasolve.agents.general import load_agent_suite_config
     from alphasolve.config.agent_config import PACKAGE_ROOT
     config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
-    suite_settings = load_agent_suite_config(config_path).settings
+    suite = load_agent_suite_config(config_path)
+    if args.agent_debug:
+        from alphasolve.agents.team.debug_agent import GeneralAgentDebugApp
+        from alphasolve.agents.team.workflow import make_openai_client_factory
+
+        _app = GeneralAgentDebugApp(
+            project_dir=Path.cwd(),
+            client_factory=make_demo_client_factory() if args.demo else make_openai_client_factory(suite),
+        )
+        try:
+            _app.run()
+        except KeyboardInterrupt:
+            print("\nInterrupted.")
+            sys.exit(130)
+        return
+
+    suite_settings = suite.settings
     max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
     verifier_scaling_factor = (
         args.verifier_scaling_factor
