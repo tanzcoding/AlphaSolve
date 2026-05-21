@@ -9,10 +9,10 @@ from typing import Any, Callable
 from rich.console import Console
 from rich.text import Text
 
-from alphasolve.agents.general import AgentRunError, AgentRunResult, GeneralAgentConfig, GeneralPurposeAgent, Workspace
+from alphasolve.agents.general import AgentRunError, AgentRunResult, AgentSuiteConfig, GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.utils.rich_renderer import RICH_CONSOLE
 
-from .tools import ClientFactory, RoleWorkspaceAccess, build_workspace_tool_registry
+from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
 
 
 DEBUG_AGENT_TOOLS = ["Glob", "Grep", "ListDir", "Read", "Write", "Edit"]
@@ -218,6 +218,8 @@ def _tool_call_title(tool: DebugToolEvent) -> str:
         return f"glob {_arg(args, 'pattern')} in {_arg(args, 'path', '.')}"
     if name == "ListDir":
         return f"list {_arg(args, 'path', '.')}"
+    if name == "Agent":
+        return f"agent {_arg(args, 'type')} ({_arg(args, 'description', 'task')})"
     return name
 
 
@@ -241,6 +243,7 @@ class GeneralAgentDebugApp:
         *,
         project_dir: str | Path,
         client_factory: ClientFactory,
+        suite: AgentSuiteConfig | None = None,
         model_config: str | None = "GENERATOR_CONFIG",
         console: Console = RICH_CONSOLE,
         renderer_factory: Callable[..., GeneralAgentDebugRenderer | None] | None = GeneralAgentDebugRenderer,
@@ -248,6 +251,7 @@ class GeneralAgentDebugApp:
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.client_factory = client_factory
+        self.suite = suite
         self.model_config = model_config
         self.console = console
         self.max_turns = max_turns
@@ -255,6 +259,8 @@ class GeneralAgentDebugApp:
         self._renderer_factory = renderer_factory
         self._renderer: GeneralAgentDebugRenderer | None = None
         self._history: list[dict[str, Any]] = []
+        self._agent_config: GeneralAgentConfig | None = None
+        self._tools: list[str] = []
 
     def cancel(self) -> None:
         self.stop_event.set()
@@ -290,7 +296,7 @@ class GeneralAgentDebugApp:
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
-                event_sink=renderer.handle_event if renderer is not None else None,
+                event_sink=renderer.handle_event if renderer is not None else _silent_event_sink,
                 stop_event=self.stop_event,
             )
             result = agent.run(prompt, extra_messages=self._history)
@@ -302,13 +308,20 @@ class GeneralAgentDebugApp:
             self._renderer = None
 
     def build_config(self) -> GeneralAgentConfig:
-        return GeneralAgentConfig(
+        if self.suite is not None and "agent_debug" in self.suite.agents:
+            config = self.suite.agents["agent_debug"]
+            self._agent_config = config
+            self._tools = list(config.tools)
+            return config
+        self._agent_config = GeneralAgentConfig(
             name="agent_debug",
             system_prompt="",
             tools=list(DEBUG_AGENT_TOOLS),
             max_turns=self.max_turns,
             model_config=self.model_config,
         )
+        self._tools = list(self._agent_config.tools)
+        return self._agent_config
 
     def build_registry(self):
         access = RoleWorkspaceAccess(
@@ -317,7 +330,22 @@ class GeneralAgentDebugApp:
             write_root_rel=".",
             allowed_extensions=DEBUG_AGENT_EXTENSIONS,
         )
-        return build_workspace_tool_registry(access, allow_write=True)
+        registry = build_workspace_tool_registry(access, allow_write=True)
+        if self.suite is not None and self.suite.subagents and self._agent_config is not None and "Agent" in self._agent_config.tools:
+            subagent_service = SubagentService(
+                suite=self.suite,
+                client_factory=self.client_factory,
+                max_depth=2,
+                session_prefix="agent_debug",
+                stop_event=self.stop_event,
+            )
+            register_agent_tool(
+                registry,
+                agent_config=self._agent_config,
+                subagent_service=subagent_service,
+                depth=0,
+            )
+        return registry
 
     def _make_renderer(self) -> GeneralAgentDebugRenderer | None:
         if self._renderer_factory is None:
@@ -325,7 +353,7 @@ class GeneralAgentDebugApp:
         return self._renderer_factory(
             console=self.console,
             workspace=self.project_dir,
-            tools=list(DEBUG_AGENT_TOOLS),
+            tools=list(self._tools) if self._tools else list(DEBUG_AGENT_TOOLS),
             screen=False,
         )
 
@@ -348,3 +376,7 @@ def _preview(value: str, *, limit: int) -> str:
 
 def _lines(value: str) -> list[str]:
     return str(value).replace("\r\n", "\n").replace("\r", "\n").splitlines() or [str(value)]
+
+
+def _silent_event_sink(_event: dict[str, Any]) -> None:
+    pass

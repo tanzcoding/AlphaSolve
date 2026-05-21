@@ -41,6 +41,26 @@ class FakeDebugClient:
         return {"role": "assistant", "content": "done"}
 
 
+class FakePrintClient:
+    def __init__(self) -> None:
+        self.seen_messages = []
+
+    def complete(self, *, messages, tools):
+        self.seen_messages.append(messages)
+        return {"role": "assistant", "content": "printed answer"}
+
+
+class FakeStreamingPrintClient:
+    def __init__(self) -> None:
+        self.delta_sink_seen = False
+
+    def complete(self, *, messages, tools, delta_sink=None):
+        self.delta_sink_seen = delta_sink is not None
+        if delta_sink is not None:
+            delta_sink({"type": "content", "content": "streamed answer"})
+        return {"role": "assistant", "content": "streamed answer"}
+
+
 def test_agent_debug_app_uses_blank_prompt_and_requested_tools(tmp_path):
     client = FakeDebugClient()
     app = GeneralAgentDebugApp(
@@ -89,3 +109,36 @@ def test_agent_debug_renderer_uses_transcript_blocks_instead_of_tool_table(tmp_p
     assert rendered.index("I should write the file first.") < rendered.index("write debug-agent-test.yaml")
     assert rendered.index("write debug-agent-test.yaml running") < rendered.index("write debug-agent-test.yaml done")
     assert rendered.count("x") >= 1500
+
+
+def test_agent_debug_cli_print_mode_runs_once_and_prints_final_answer(monkeypatch, tmp_path, capsys):
+    from alphasolve import cli as cli_module
+
+    client = FakePrintClient()
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["alphasolve", "--agent-debug", "--demo", "-p", "script prompt"])
+    if hasattr(cli_module, "_install_console_handler"):
+        monkeypatch.setattr(cli_module, "_install_console_handler", lambda: None)
+    monkeypatch.setattr(cli_module, "make_demo_client_factory", lambda: (lambda _config: client))
+
+    cli_module.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "printed answer\n"
+    assert captured.err == ""
+    user_messages = [message["content"] for message in client.seen_messages[0] if message["role"] == "user"]
+    assert user_messages == ["script prompt"]
+
+
+def test_agent_debug_print_mode_still_uses_streaming_when_supported(tmp_path):
+    client = FakeStreamingPrintClient()
+    app = GeneralAgentDebugApp(
+        project_dir=tmp_path,
+        client_factory=lambda _config: client,
+        renderer_factory=None,
+    )
+
+    result = app.run_once("survey quietly")
+
+    assert result.final_answer == "streamed answer"
+    assert client.delta_sink_seen is True

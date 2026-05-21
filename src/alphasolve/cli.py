@@ -127,6 +127,8 @@ def main() -> None:
                         help="Produce detailed per-agent trace logs under logs/")
     parser.add_argument("--agent-debug", action="store_true",
                         help="Run an interactive GeneralPurposeAgent tool-debugging TUI")
+    parser.add_argument("-p", "--print", dest="agent_debug_prompt", metavar="PROMPT",
+                        help="Run --agent-debug once with PROMPT and print the final answer")
     parser.add_argument("--demo", action="store_true",
                         help="Run a deterministic local demo without calling an LLM API")
     parser.add_argument("--no_wolfram_prime", action="store_true",
@@ -139,6 +141,8 @@ def main() -> None:
                         help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
 
     args = parser.parse_args()
+    if args.agent_debug_prompt is not None and not args.agent_debug:
+        parser.error("-p/--print can only be used with --agent-debug")
 
     from alphasolve.agents.general import load_agent_suite_config
     from alphasolve.config.agent_config import PACKAGE_ROOT
@@ -148,12 +152,26 @@ def main() -> None:
         from alphasolve.agents.team.debug_agent import GeneralAgentDebugApp
         from alphasolve.agents.team.workflow import make_openai_client_factory
 
-        _app = GeneralAgentDebugApp(
-            project_dir=Path.cwd(),
-            client_factory=make_demo_client_factory() if args.demo else make_openai_client_factory(suite),
-        )
+        client_factory = make_demo_client_factory() if args.demo else make_openai_client_factory(suite)
+        if args.agent_debug_prompt is not None:
+            _app = GeneralAgentDebugApp(
+                project_dir=Path.cwd(),
+                client_factory=client_factory,
+                suite=suite,
+                renderer_factory=None,
+            )
+        else:
+            _app = GeneralAgentDebugApp(
+                project_dir=Path.cwd(),
+                client_factory=client_factory,
+                suite=suite,
+            )
         try:
-            _app.run()
+            if args.agent_debug_prompt is not None:
+                result = _app.run_once(args.agent_debug_prompt)
+                print(result.final_answer or "")
+            else:
+                _app.run()
         except KeyboardInterrupt:
             print("\nInterrupted.")
             sys.exit(130)
