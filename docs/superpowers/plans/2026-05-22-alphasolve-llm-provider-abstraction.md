@@ -568,19 +568,19 @@ openrouter-gemini:
   timeout: 3600
   params: { extra_body: { reasoning: { effort: high } } }
 
-# Anthropic Messages presets (new). URL/model_id marked TODO must be confirmed
-# against provider docs before Commit 6 smoke runs.
+# Anthropic Messages presets (new). All URLs/model_ids confirmed by user
+# before implementation.
 
 deepseek-pro-anthropic:
   wire_format: anthropic_messages
-  base_url: https://api.deepseek.com/anthropic    # TODO: confirm
+  base_url: https://api.deepseek.com/anthropic
   api_key_env: DEEPSEEK_API_KEY
   model: deepseek-v4-pro
   timeout: 3600
 
 moonshot-kimi-anthropic:
   wire_format: anthropic_messages
-  base_url: https://api.moonshot.cn/anthropic     # TODO: confirm
+  base_url: https://api.moonshot.cn/anthropic
   api_key_env: MOONSHOT_API_KEY
   model: kimi-k2-thinking
   timeout: 3600
@@ -591,7 +591,7 @@ qwen-3.7-max:
   wire_format: openai_chat
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
-  model: qwen3.7-max                              # TODO: confirm model_id
+  model: qwen3.7-max
   timeout: 3600
 ```
 
@@ -3640,23 +3640,18 @@ Expected: prints all 13 presets with wire_format and model.
 Run: `alphasolve --profile nonexistent-profile`
 Expected: exits non-zero with a clear `KeyError`-derived message listing available profile names.
 
-### Task 6.4: Confirm placeholders are filled
+### Task 6.4: Placeholders already resolved
 
-The spec listed three "TODO: confirm" placeholders in `presets.yaml`. Now is the time:
+All three "TODO" placeholders were confirmed by the user before implementation, and the values baked into the `presets.yaml` content in Task 1.6 already reflect them:
 
-- [ ] **Step 1: Confirm DeepSeek anthropic endpoint URL**
+- DeepSeek Anthropic endpoint URL: `https://api.deepseek.com/anthropic` ✓
+- Moonshot Anthropic endpoint URL: `https://api.moonshot.cn/anthropic` ✓
+- Qwen 3.7 Max model_id: `qwen3.7-max` ✓
 
-Visit https://api-docs.deepseek.com or DeepSeek's portal. Find the Anthropic-format endpoint URL. Update `src/alphasolve/config/presets.yaml`'s `deepseek-pro-anthropic.base_url`.
+- [ ] **Step 1: Verify the shipped `presets.yaml` has no `# TODO` comments**
 
-If DeepSeek does not offer an anthropic-format endpoint at this time, remove the `deepseek-pro-anthropic` preset entirely (and any profile entry referencing it).
-
-- [ ] **Step 2: Confirm Moonshot anthropic endpoint URL**
-
-Visit Moonshot's docs. Update `moonshot-kimi-anthropic.base_url`. Same removal rule if not available.
-
-- [ ] **Step 3: Confirm Qwen 3.7 Max model_id**
-
-Visit Dashscope's model catalog. Confirm the exact model identifier string (e.g. `qwen-max-2024-09-19` or `qwen3.7-max-latest`). Update `qwen-3.7-max.model`.
+Run: `grep -n "TODO" src/alphasolve/config/presets.yaml`
+Expected: zero hits.
 
 ### Task 6.5: Commit 6
 

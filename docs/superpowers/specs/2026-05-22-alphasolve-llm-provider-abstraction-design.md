@@ -351,14 +351,14 @@ openrouter-gemini:
 
 deepseek-pro-anthropic:
   wire_format: anthropic_messages
-  base_url: https://api.deepseek.com/anthropic    # TODO: confirm at implementation time
+  base_url: https://api.deepseek.com/anthropic
   api_key_env: DEEPSEEK_API_KEY
   model: deepseek-v4-pro
   timeout: 3600
 
 moonshot-kimi-anthropic:
   wire_format: anthropic_messages
-  base_url: https://api.moonshot.cn/anthropic     # TODO: confirm at implementation time
+  base_url: https://api.moonshot.cn/anthropic
   api_key_env: MOONSHOT_API_KEY
   model: kimi-k2-thinking
   timeout: 3600
@@ -369,7 +369,7 @@ qwen-3.7-max:
   wire_format: openai_chat
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
-  model: qwen3.7-max                              # TODO: confirm exact model_id string
+  model: qwen3.7-max
   timeout: 3600
 ```
 
@@ -805,13 +805,13 @@ Run from a known-good problem fixture (e.g. an existing test problem in `tests/f
 
 ## 9. Open Implementation TODOs
 
-These are placeholders in `presets.yaml` and `profiles.yaml`. The user has agreed to confirm them during implementation, before commit 6:
+All three placeholders confirmed by user prior to implementation:
 
-1. **DeepSeek Anthropic endpoint URL** — `https://api.deepseek.com/anthropic` is a guess; confirm in DeepSeek docs.
-2. **Moonshot Anthropic endpoint URL** — `https://api.moonshot.cn/anthropic` is a guess; confirm in Moonshot docs.
-3. **Qwen 3.7 Max model_id** — `qwen3.7-max` is a guess; confirm with Dashscope (or whichever endpoint is chosen).
+1. **DeepSeek Anthropic endpoint URL** — `https://api.deepseek.com/anthropic` ✓
+2. **Moonshot Anthropic endpoint URL** — `https://api.moonshot.cn/anthropic` ✓
+3. **Qwen 3.7 Max model_id** — `qwen3.7-max` ✓
 
-If any of these turn out to be unavailable or named differently, the relevant preset is renamed / removed and the affected profile entry updated. None of this affects the rest of the design.
+Spec text and the canonical `presets.yaml` content in §4.3 reflect these confirmed values.
 
 ---
 
