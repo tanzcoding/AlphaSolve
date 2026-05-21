@@ -579,14 +579,18 @@ class Orchestrator:
         registry.register(
             name="SpawnWorker",
             description=(
-                "Spawn one worker with an optional orchestrator hint. This call returns immediately. "
-                "The worker attempts to prove a proposition and verify it. The result includes the current "
-                "active worker count, active worker IDs, and a short progress snapshot for each active worker."
+                "Start one worker and return immediately; this tool does not wait for the worker to finish.\n\n"
+                "Worker lifecycle:\n"
+                "- The worker first runs generator to draft one candidate proposition.\n"
+                "- It then runs verifier; if verification fails and rounds remain, it runs reviser and repeats verifier -> reviser.\n"
+                "- After verification, theorem-checking decides whether the verified proposition resolves the original problem.\n\n"
+                "Return content is JSON containing whether a worker was spawned, plus active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
+                "If the parallelism limit has been reached, call TaskOutput before spawning more workers."
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "hint": {"type": "string", "description": "A targeted hint suggesting a direction, method, branch, or local target for this worker."},
+                    "hint": {"type": "string", "description": "Optional targeted hint for this worker only. Suggest a direction, method, branch, local target, or bootstrap assumption. This is different from the user's hint.md."},
                 },
                 "required": [],
             },
@@ -595,9 +599,11 @@ class Orchestrator:
         registry.register(
             name="TaskOutput",
             description=(
-                "Wait until any one active worker finishes, returning its lifecycle result plus the current "
-                "active worker count, active worker IDs, and short progress snapshots for still-active workers. "
-                "Blocks until a worker completes or timeout is reached."
+                "Wait until one active worker finishes, or until the timeout is reached.\n\n"
+                "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
+                "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
+                "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
+                "human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning."
             ),
             parameters={
                 "type": "object",
@@ -650,57 +656,11 @@ class Orchestrator:
     def _task(self) -> str:
         hint = self.layout.read_hint()
         parts = [
-            "# Problem",
-            self.layout.read_problem(),
-            "# Project Workspace",
-            (
-                "You are the orchestrator. Your role is that of a research director: survey what has already "
-                "been rigorously established, identify the most promising gaps, and spawn workers with "
-                "targeted hints that push the overall proof forward. Do not solve or verify propositions yourself.\n\n"
-                "Your session succeeds if and only if a proposition that solves the original problem appears in "
-                "the `verified_propositions/` directory. There is no other way to succeed. Do not stop until "
-                "that happens — if workers finish without solving the problem, keep spawning new ones with "
-                "better hints.\n\n"
-                "Workspace layout:\n"
-                "- `verified_propositions/` — the ground truth of current progress. Every `.md` file here is a "
-                "rigorously verified mathematical result you can build on. Read these to understand exactly "
-                "what has been proved and what remains. You are responsible for keeping this directory tidy and easy "
-                "to navigate as the research grows: when root-level verified files accumulate or several files clearly "
-                "belong to the same route, assumption, obstruction, or technique, organize them into topic folders by "
-                "creating folders, renaming folders with Rename, and moving verified files into folders with Move. Never rename a `.md` file: keep the "
-                "same filename when moving it. Maintain `verified_propositions/index.md`; create it if missing. "
-                "Keep it concise with exactly two main sections: `## Directory`, listing every verified proposition "
-                "and roughly what it proves, and `## Current Progress And Insights`, summarizing what remains and "
-                "which directions look promising. Keep the second section under 50 lines whenever possible.\n"
-                "- `knowledge/` — exploratory notes distilled from past worker runs. These capture ideas, "
-                "partial arguments, and observations that workers have encountered but not yet turned into "
-                "verified propositions. Treat this as a research notebook: useful for inspiration and for crafting "
-                "hints, but nothing here counts as established until it appears in `verified_propositions/`.\n\n"
-                "Workflow:\n"
-                "1. If `verified_propositions/` or `knowledge/` contain more than a handful of files, use `Review` "
-                "to get a structured survey and discover which specific files are worth reading. Do not read "
-                "dozens of files yourself — delegate to the reviewer.\n"
-                "2. Read the key files the reviewer flagged, then identify the most valuable next proposition.\n"
-                "3. Spawn workers via `Agent` with specific, well-motivated hints based on your analysis.\n"
-                "4. Call `TaskOutput` to block until a worker finishes, then read its output and repeat.\n\n"
-                "Worker lifecycle: each worker first runs `generator` to draft one candidate proposition, then runs "
-                "`verifier`; if verification fails and rounds remain, it runs `reviser` and repeats the "
-                "`verifier` -> `reviser` loop until a proposition is verified or the worker exhausts its rounds. "
-                "After verification, theorem-checking decides whether the new verified proposition solves the "
-                "original problem.\n\n"
-                "Use `TaskOutput` only to receive worker results — it blocks until one worker's lifecycle ends. "
-                "Both `Agent` and `TaskOutput` return `active_count`, `active_worker_ids`, and `active_workers`; "
-                "use those fields to keep the number of active workers at or below the maximum. "
-                "It may return `timed_out: true` if no worker finishes within the requested timeout; if repeated "
-                "timeouts show no progress, report the stall so the outer Ralph loop can restart orchestration.\n\n"
-                "You may issue multiple tool calls in a single turn: for example, read several proposition files "
-                "in parallel, or call `Agent` multiple times at once with distinct hints targeting different "
-                "sub-problems. Avoid spawning workers with redundant or near-identical hints."
-            ),
+            "Use workers to solve the problem stated in `problem.md`.",
             f"Maximum concurrent workers: {self.max_workers}",
         ]
         if hint:
-            parts.extend(["# User Hint", hint])
+            parts.append("A human expert hint is available in `hint.md`; read it before deciding the next action.")
         return "\n\n".join(parts)
 
     def _verified_count(self) -> int:

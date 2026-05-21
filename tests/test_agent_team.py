@@ -77,9 +77,16 @@ def test_default_agent_suite_loads_yaml_roles():
     assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["pattern"] == index_pattern
     assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
     assert "Examples:" in suite.agents["orchestrator"].system_prompt
+    assert "task is complete if and only if" in suite.agents["orchestrator"].system_prompt
+    assert "current active worker count" not in suite.agents["orchestrator"].system_prompt
+    assert "after every 3-5 completed workers" in suite.agents["orchestrator"].system_prompt
     assert "Verified Propositions Index" in suite.agents["orchestrator"].system_prompt
     assert "Current Progress And Insights" in suite.agents["orchestrator"].system_prompt
     assert "Current Progress And Insights section" in suite.agents["orchestrator"].system_prompt
+    assert "summarize only its own directory level" in suite.agents["orchestrator"].system_prompt
+    assert "immediate child folders" in suite.agents["orchestrator"].system_prompt
+    assert "`child-folder/`" in suite.agents["orchestrator"].system_prompt
+    assert "Do not recursively list every descendant proposition" in suite.agents["orchestrator"].system_prompt
     assert "less than 50 lines" in suite.agents["orchestrator"].system_prompt
     assert "responsible for keeping `verified_propositions/` tidy and easy to navigate" in suite.agents["orchestrator"].system_prompt
     assert "You may organize `verified_propositions/`" not in suite.agents["orchestrator"].system_prompt
@@ -125,6 +132,35 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "path is relative to `verified_propositions`" in suite.agents["generator"].system_prompt
     assert r"\ref{coercive\energy-estimate}" in suite.agents["generator"].system_prompt
     assert "path is relative to `verified_propositions`" in suite.agents["reviser"].system_prompt
+
+
+def test_orchestrator_task_contains_only_dynamic_runtime_context():
+    with local_project_dir("orchestrator_task_prompt") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nShow that x=x.\n", encoding="utf-8")
+        (project_dir / "hint.md").write_text("Try the reflexivity route.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        orchestrator = Orchestrator(
+            layout=layout,
+            suite=suite,
+            client_factory=make_demo_client_factory(),
+            max_workers=3,
+            max_verify_rounds=1,
+            verifier_scaling_factor=1,
+            subagent_max_depth=0,
+        )
+
+        task = orchestrator._task()
+
+        assert "problem stated in `problem.md`" in task
+        assert "Maximum concurrent workers: 3" in task
+        assert "hint.md" in task
+        assert "Try the reflexivity route." not in task
+        assert "Use `Review`" not in task
+        assert "Spawn workers via `Agent`" not in task
+        assert "Worker lifecycle:" not in task
+        assert "Verified Propositions Index" not in task
 
 
 def test_project_layout_syncs_workspace_inputs_from_project_root():
@@ -1204,6 +1240,17 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Edit" in tool_names
         assert "Delete" not in tool_names
         assert "Delete" not in [tool.name for tool in registry.registered_tools()]
+        tool_descriptions = {
+            tool["function"]["name"]: tool["function"]["description"]
+            for tool in openai_tools
+        }
+        assert "return immediately" in tool_descriptions["SpawnWorker"]
+        assert "active_count" in tool_descriptions["SpawnWorker"]
+        assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
+        assert "timed_out" in tool_descriptions["TaskOutput"]
+        assert "verified_propositions_organization" in tool_descriptions["TaskOutput"]
+        assert "Launch a new specialized agent" in tool_descriptions["Agent"]
+        assert "separate session" in tool_descriptions["Agent"]
         rename_description = next(
             tool["function"]["description"]
             for tool in openai_tools
@@ -1211,6 +1258,8 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert "Rename a folder" in rename_description
         assert "Use this only when the item stays in the same directory" in rename_description
+        assert "renaming `.md` files fails" in rename_description
+        assert "always keeps the source file name" in tool_descriptions["Move"]
 
         index_content = (
             "# Verified Propositions Index\n\n"

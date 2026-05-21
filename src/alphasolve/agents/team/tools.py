@@ -617,6 +617,7 @@ def build_workspace_tool_registry(
                 "- `directory` is the parent directory that currently contains the item.\n"
                 "- `old_name` and `new_name` must be plain names, not paths, and must not contain `/` or `\\`.\n"
                 "- To move a file into another directory, use Move instead.\n"
+                "- Some agents are configured to preserve Markdown file names; in those sessions, renaming `.md` files fails and Move must keep the same file name.\n"
                 "- This tool fails if the target path already exists.\n\n"
                 "Examples:\n"
                 "- Rename a folder: directory=\"verified_propositions\", old_name=\"bootstrap-A\", "
@@ -645,7 +646,7 @@ def build_workspace_tool_registry(
                 "- Use this when reorganizing files into topic folders.\n"
                 "- `path` must be an existing file.\n"
                 "- `destination_dir` must be an existing directory.\n"
-                "- Move never renames the file; use Rename separately if the file name itself should change.\n"
+                "- Move never renames the file; it always keeps the source file name.\n"
                 "- When moving files inside verified_propositions/, Move automatically updates matching "
                 "`\\ref{old-path}` references across verified_propositions/ to the new backslash-separated path."
             ),
@@ -708,9 +709,8 @@ def build_workspace_tool_registry(
     registry.register(
         name="ListDir",
         description=(
-            "Lists files and directories under a workspace directory without invoking a shell.\n\n"
+            "Lists files and directories under a workspace directory.\n\n"
             "Usage:\n"
-            "- Prefer this over Bash/Shell for checking directory contents.\n"
             "- If the directory contains `index.md`, read `index.md` first before exploring other files.\n"
             "- The result respects this agent's workspace access restrictions."
         ),
@@ -826,7 +826,7 @@ def build_workspace_tool_registry(
             handler=_run_bash,
         )
     else:
-        # Windows without Git Bash — provide a PowerShell-backed shell tool.
+        # Windows without Git Bash - provide a PowerShell-backed shell tool.
         def _run_shell(args: dict[str, Any]) -> ToolResult:
             command = str(args.get("command") or "")
             if not command.strip():
@@ -912,7 +912,9 @@ def register_agent_tool(
     if not allowed_types:
         return
     lines = [
-        "Launch a new agent to handle complex, multi-step tasks autonomously.",
+        "Launch a new specialized agent and return its final report.",
+        "",
+        "The launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.",
         "",
         "Available agent types:",
     ]
@@ -924,10 +926,8 @@ def register_agent_tool(
         "",
         "## Writing the prompt",
         "",
-        "Brief the agent like a smart colleague — it hasn't seen this conversation "
-        "and doesn't know what you've already tried.",
         "- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.",
-        "- Include relevant context: what's already known, what approaches have been tried, and why this task matters.",
+        "- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.",
         "- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.",
         "- Keep the task self-contained and bounded to the agent's scope.",
     ])
