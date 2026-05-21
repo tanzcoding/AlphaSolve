@@ -568,8 +568,7 @@ openrouter-gemini:
   timeout: 3600
   params: { extra_body: { reasoning: { effort: high } } }
 
-# Anthropic Messages presets (new). All URLs/model_ids confirmed by user
-# before implementation.
+# Anthropic Messages presets (new).
 
 deepseek-pro-anthropic:
   wire_format: anthropic_messages
@@ -3640,18 +3639,51 @@ Expected: prints all 13 presets with wire_format and model.
 Run: `alphasolve --profile nonexistent-profile`
 Expected: exits non-zero with a clear `KeyError`-derived message listing available profile names.
 
-### Task 6.4: Placeholders already resolved
+### Task 6.4: Spot-check the Anthropic endpoints and Qwen model
 
-All three "TODO" placeholders were confirmed by the user before implementation, and the values baked into the `presets.yaml` content in Task 1.6 already reflect them:
+Spec §9 confirmed: DeepSeek anthropic URL `https://api.deepseek.com/anthropic`, Moonshot anthropic URL `https://api.moonshot.cn/anthropic`, Qwen 3.7 Max model_id `qwen3.7-max`. These are already in `presets.yaml`; this task is a live-endpoint sanity check.
 
-- DeepSeek Anthropic endpoint URL: `https://api.deepseek.com/anthropic` ✓
-- Moonshot Anthropic endpoint URL: `https://api.moonshot.cn/anthropic` ✓
-- Qwen 3.7 Max model_id: `qwen3.7-max` ✓
+- [ ] **Step 1: Verify DeepSeek anthropic endpoint accepts a tool-use round-trip**
 
-- [ ] **Step 1: Verify the shipped `presets.yaml` has no `# TODO` comments**
+Construct a one-off Preset for `deepseek-pro-anthropic`, instantiate `AnthropicMessagesClient`, send a trivial Edit tool call with `old_str="\\frac{1}{2}"`, confirm the response returns and `tool_call.args` survives as a dict with single-backslash LaTeX. If the endpoint 404s or refuses the request, update `presets.yaml` per the provider's actual documentation and re-test.
 
-Run: `grep -n "TODO" src/alphasolve/config/presets.yaml`
-Expected: zero hits.
+Run:
+```bash
+DEEPSEEK_API_KEY=... python - <<'PY'
+from alphasolve.llm import load_presets, make_client
+from alphasolve.llm.types import Message, ToolDef
+from pathlib import Path
+presets = load_presets(repo_path=Path("src/alphasolve/config/presets.yaml"), user_path=None)
+client = make_client(presets["deepseek-pro-anthropic"])
+td = ToolDef(name="Echo", description="echo args", parameters={"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]})
+resp = client.complete(
+    messages=[Message(role="user", content="Please call Echo with text='\\\\frac{1}{2}'")],
+    tools=[td],
+)
+print("finish_reason:", resp.finish_reason)
+print("tool_calls:", resp.message.tool_calls)
+PY
+```
+Expected: `finish_reason=tool_calls`, tool_calls non-empty, `args["text"]` contains a single backslash. If anything else, debug the endpoint configuration before proceeding.
+
+- [ ] **Step 2: Verify Moonshot anthropic endpoint similarly**
+
+Same probe with `moonshot-kimi-anthropic`. Set `MOONSHOT_API_KEY`.
+
+- [ ] **Step 3: Verify Qwen 3.7 Max model_id works via Dashscope**
+
+```bash
+DASHSCOPE_API_KEY=... python - <<'PY'
+from alphasolve.llm import load_presets, make_client
+from alphasolve.llm.types import Message
+from pathlib import Path
+presets = load_presets(repo_path=Path("src/alphasolve/config/presets.yaml"), user_path=None)
+client = make_client(presets["qwen-3.7-max"])
+resp = client.complete(messages=[Message(role="user", content="Say 'pong'")], tools=[])
+print("content:", resp.message.content)
+PY
+```
+Expected: non-empty content with no `model not found` / 404 error. If Dashscope reports the model_id is invalid, look up the current identifier in the Dashscope console and update `presets.yaml`.
 
 ### Task 6.5: Commit 6
 

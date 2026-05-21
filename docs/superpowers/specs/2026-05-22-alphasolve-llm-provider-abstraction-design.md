@@ -803,15 +803,15 @@ Run from a known-good problem fixture (e.g. an existing test problem in `tests/f
 
 ---
 
-## 9. Open Implementation TODOs
+## 9. Confirmed Implementation Values
 
-All three placeholders confirmed by user prior to implementation:
+These three values were left open during brainstorming and confirmed by the project owner before implementation begins:
 
-1. **DeepSeek Anthropic endpoint URL** — `https://api.deepseek.com/anthropic` ✓
-2. **Moonshot Anthropic endpoint URL** — `https://api.moonshot.cn/anthropic` ✓
-3. **Qwen 3.7 Max model_id** — `qwen3.7-max` ✓
+1. **DeepSeek Anthropic endpoint URL** — `https://api.deepseek.com/anthropic`
+2. **Moonshot (Kimi) Anthropic endpoint URL** — `https://api.moonshot.cn/anthropic`
+3. **Qwen 3.7 Max model_id (via Dashscope OpenAI-compat endpoint)** — `qwen3.7-max`
 
-Spec text and the canonical `presets.yaml` content in §4.3 reflect these confirmed values.
+If a live smoke run in Task 6.3 reveals any of these is wrong (404 / unknown model / etc.), fix the affected preset in `presets.yaml` and re-run the smoke. No design change required.
 
 ---
 
