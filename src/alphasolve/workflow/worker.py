@@ -323,7 +323,7 @@ class Worker:
             ),
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
-        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
@@ -408,7 +408,7 @@ class Worker:
             curator_queue=self.curator_queue,
         )
         registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
-        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
@@ -479,7 +479,7 @@ class Worker:
             ),
         )
         registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
-        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),
@@ -523,7 +523,7 @@ class Worker:
             ),
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
-        register_agent_tool(registry, agent_config=config, subagent_service=subagents)
+        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = GeneralPurposeAgent(
             config=config,
             client=self.client_factory(config),

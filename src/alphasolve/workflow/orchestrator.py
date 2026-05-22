@@ -618,7 +618,7 @@ class Orchestrator:
                     tools=["Agent"],
                     tool_parameters={"Agent": {"type": {"enum": ["research_reviewer"]}}},
                 ),
-                subagent_service=subagents,
+                dispatcher=subagents,
             )
         return registry
 

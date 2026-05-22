@@ -391,7 +391,7 @@ def _build_registry_for_agent(
     register_agent_tool(
         registry,
         agent_config=config,
-        subagent_service=subagent_service,
+        dispatcher=subagent_service,
     )
     tool_defs = registry.tool_defs(
         enabled=list(config.tools),

@@ -160,7 +160,7 @@ class CuratorQueue:
             allow_delete=True,
             subagent_service=subagent_svc,
         )
-        register_agent_tool(registry, agent_config=config, subagent_service=subagent_svc)
+        register_agent_tool(registry, agent_config=config, dispatcher=subagent_svc)
 
         if task.task_kind == "health_check":
             task_prompt = _health_check_prompt(self.knowledge_dir)

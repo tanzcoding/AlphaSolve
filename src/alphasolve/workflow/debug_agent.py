@@ -340,7 +340,7 @@ class GeneralAgentDebugApp:
             register_agent_tool(
                 registry,
                 agent_config=self._agent_config,
-                subagent_service=subagent_service,
+                dispatcher=subagent_service,
                 depth=0,
             )
         return registry

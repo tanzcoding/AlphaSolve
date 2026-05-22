@@ -12,10 +12,17 @@ from alphasolve.agent import GeneralAgentConfig, ToolRegistry, ToolResult
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES
 from alphasolve.utils.shell import find_bash_path, has_bash, run_powershell_command
 
+# register_agent_tool 已上移到第二层（A 阶段 commit 5）。本文件保留 re-export
+# 是为了让 from .workflow_tools import register_agent_tool 调用方继续工作。
+from alphasolve.agent.tool_registry import register_agent_tool
+
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
     from .subagent_service import SubagentService
+
+
+__all__ = ["build_workspace_tool_registry", "register_agent_tool"]
 
 
 def build_workspace_tool_registry(
@@ -424,56 +431,3 @@ def build_workspace_tool_registry(
         )
 
     return registry
-
-
-def register_agent_tool(
-    registry: ToolRegistry,
-    *,
-    agent_config: GeneralAgentConfig,
-    subagent_service: "SubagentService",
-    depth: int = 0,
-) -> None:
-    """Register the Agent tool with a description and enum scoped to this agent's permissions."""
-    if "Agent" not in agent_config.tools:
-        return
-    agent_tool_params = agent_config.tool_parameters.get("Agent", {})
-    type_constraint = agent_tool_params.get("type", {})
-    allowed_types = type_constraint.get("enum", subagent_service.available_types())
-    known = set(subagent_service.available_types())
-    allowed_types = [t for t in allowed_types if t in known]
-    if not allowed_types:
-        return
-    lines = [
-        "Launch a new specialized agent and return its final report.",
-        "",
-        "The launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.",
-        "",
-        "Available agent types:",
-    ]
-    for stype in allowed_types:
-        config = subagent_service.suite.subagents.get(stype)
-        when = config.when_to_use if config and config.when_to_use else stype
-        lines.append(f"- {stype}: {when}")
-    lines.extend([
-        "",
-        "## Writing the prompt",
-        "",
-        "- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.",
-        "- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.",
-        "- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.",
-        "- Keep the task self-contained and bounded to the agent's scope.",
-    ])
-    registry.register(
-        name="Agent",
-        description="\n".join(lines),
-        parameters={
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": allowed_types, "description": "The type of specialized agent to use for this task."},
-                "description": {"type": "string", "description": "A short (3-5 word) description of the task."},
-                "prompt": {"type": "string", "description": "The task for the agent to perform."},
-            },
-            "required": ["type", "description", "prompt"],
-        },
-        handler=lambda args: subagent_service.call_tool(args, depth=depth),
-    )

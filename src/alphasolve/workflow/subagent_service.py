@@ -72,6 +72,17 @@ class SubagentService:
     def available_types(self) -> list[str]:
         return sorted(self.suite.subagents)
 
+    def describe_type(self, agent_type: str) -> str:
+        """供第二层 register_agent_tool 用：返回 subagent 的 when_to_use 描述。
+
+        与原 register_agent_tool 内部硬编码的查询逻辑一致：从 suite.subagents 拿
+        config，返回 when_to_use（缺失时返回 agent_type 本身）。
+        """
+        config = self.suite.subagents.get(agent_type)
+        if config is None or not config.when_to_use:
+            return agent_type
+        return config.when_to_use
+
     def call_tool(self, args: dict[str, Any], *, depth: int = 0) -> ToolResult:
         agent_type = str(args.get("type") or "")
         description = str(args.get("description") or "")
@@ -240,7 +251,7 @@ class SubagentService:
             register_agent_tool(
                 registry,
                 agent_config=config,
-                subagent_service=self,
+                dispatcher=self,
                 depth=depth + 1,
             )
         return registry

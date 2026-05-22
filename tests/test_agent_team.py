@@ -1157,6 +1157,10 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         class DummyReviewService:
             def available_types(self):
                 return ["research_reviewer"]
+            def describe_type(self, agent_type):
+                return agent_type
+            def call(self, agent_type, description, prompt, depth=0):
+                return ""
             def call_tool(self, args, depth=0):
                 return args
             class _Suite:
