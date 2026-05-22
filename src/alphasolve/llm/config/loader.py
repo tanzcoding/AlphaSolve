@@ -1,0 +1,108 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Any, Mapping
+
+import yaml
+
+from .preset import Preset
+from .profile import Profile
+
+_VALID_WIRE_FORMATS = {"openai_chat", "anthropic_messages"}
+_REQUIRED_PRESET_FIELDS = ("wire_format", "base_url", "api_key_env", "model")
+
+
+def _read_yaml(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{path}: top-level YAML must be a mapping")
+    return dict(data)
+
+
+def _build_preset(name: str, raw: Mapping[str, Any]) -> Preset:
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"preset {name!r}: value must be a mapping")
+    missing = [field for field in _REQUIRED_PRESET_FIELDS if field not in raw]
+    if missing:
+        raise ValueError(f"preset {name!r}: missing required fields: {missing}")
+    wire = raw["wire_format"]
+    if wire not in _VALID_WIRE_FORMATS:
+        raise ValueError(
+            f"preset {name!r}: unknown wire_format {wire!r}; "
+            f"expected one of {sorted(_VALID_WIRE_FORMATS)}"
+        )
+    return Preset(
+        name=name,
+        wire_format=wire,
+        base_url=str(raw["base_url"]),
+        api_key_env=str(raw["api_key_env"]),
+        model=str(raw["model"]),
+        timeout=float(raw.get("timeout", 3600)),
+        params=dict(raw.get("params") or {}),
+    )
+
+
+def load_presets(*, repo_path: Path, user_path: Path | None) -> dict[str, Preset]:
+    repo_raw = _read_yaml(repo_path)
+    user_raw = _read_yaml(user_path) if user_path is not None else {}
+
+    merged: dict[str, Mapping[str, Any]] = {}
+    merged.update(repo_raw)
+    merged.update(user_raw)  # whole-record replacement
+
+    return {name: _build_preset(name, raw) for name, raw in merged.items()}
+
+
+def _load_profiles_raw(repo_path: Path, user_path: Path | None) -> tuple[dict[str, Any], str | None]:
+    repo_raw = _read_yaml(repo_path)
+    user_raw = _read_yaml(user_path) if user_path is not None else {}
+
+    default_name = user_raw.pop("default", None) or repo_raw.pop("default", None)
+
+    merged: dict[str, Any] = {}
+    merged.update(repo_raw)
+    merged.update(user_raw)
+    return merged, default_name
+
+
+def _build_profile(name: str, raw: Mapping[str, Any]) -> Profile:
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"profile {name!r}: value must be a mapping (role -> preset)")
+    role_to_preset = {str(role): str(preset) for role, preset in raw.items()}
+    return Profile(name=name, role_to_preset=role_to_preset)
+
+
+def load_profile(name: str, *, repo_path: Path, user_path: Path | None) -> Profile:
+    merged, _ = _load_profiles_raw(repo_path, user_path)
+    if name not in merged:
+        raise KeyError(
+            f"profile {name!r} not defined; "
+            f"available profiles: {sorted(merged)}"
+        )
+    return _build_profile(name, merged[name])
+
+
+def load_active_profile(*, name: str | None, repo_path: Path, user_path: Path | None) -> Profile:
+    merged, default_name = _load_profiles_raw(repo_path, user_path)
+    effective = name or default_name
+    if effective is None:
+        raise ValueError(
+            f"no profile name given and no 'default:' key in profiles.yaml at {repo_path}"
+        )
+    if effective not in merged:
+        raise KeyError(
+            f"profile {effective!r} not defined; "
+            f"available profiles: {sorted(merged)}"
+        )
+    return _build_profile(effective, merged[effective])
+
+
+def _user_config_dir() -> Path:
+    override = os.getenv("ALPHASOLVE_CONFIG_DIR")
+    if override:
+        return Path(override)
+    return Path.home() / ".alphasolve"
