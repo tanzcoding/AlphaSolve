@@ -53,4 +53,4 @@ def test_resolve_api_key_missing_env(monkeypatch):
 
 def test_unknown_wire_format_type_hint_does_not_enforce_at_construction():
     # Literal types are not runtime-enforced; loader must check.
-    Preset(name="x", wire_format="anthropic_messages", base_url="u", api_key_env="K", model="m")
+    Preset(name="x", wire_format="gemini_native", base_url="u", api_key_env="K", model="m")  # type: ignore[arg-type]
