@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 from dataclasses import asdict
 from pathlib import Path
@@ -294,7 +295,10 @@ def main() -> None:
         ):
             (workspace_root / sub).mkdir(parents=True, exist_ok=True)
 
-        for name, config in {**suite.agents, **suite.subagents}.items():
+        agents = {**suite.agents, **suite.subagents}
+        total_count = len(agents)
+        ok_count = 0
+        for name, config in agents.items():
             try:
                 snapshot = _build_registry_for_agent(name, config, workspace_root, suite)
             except Exception as exc:
@@ -306,6 +310,15 @@ def main() -> None:
                 encoding="utf-8",
             )
             print(f"[ok]  {name} -> {target.relative_to(repo_root).as_posix()}")
+            ok_count += 1
+
+        print(f"\n{ok_count}/{total_count} agents serialized.")
+        if ok_count < total_count:
+            print(
+                f"WARNING: {total_count - ok_count} agents were skipped; "
+                "their old fixtures (if any) remain on disk.",
+                file=sys.stderr,
+            )
 
 
 if __name__ == "__main__":

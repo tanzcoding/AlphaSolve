@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 # ---------------------------------------------------------------------------
-# Import shim：在 Task 1/2/9 等搬迁过程中支持新旧两套模块路径。脚本
+# 导入垫片：在 Task 1/2/9 等搬迁过程中支持新旧两套模块路径。脚本
 # (``scripts/snapshot_workflow_tools.py``) 自己也会做相应调整，但 test 不再
 # 依赖脚本——通过这里的 try/except 直接拿到所需 symbol。
 # ---------------------------------------------------------------------------
@@ -40,7 +40,6 @@ try:
         register_agent_tool,
     )
     from alphasolve.agents.team.orchestrator import WorkerManager
-    _OLD_PATHS = True
 except ImportError:  # pragma: no cover - 兼容 Task 1/2/9 搬迁后的新路径
     from alphasolve.agent import (  # type: ignore[no-redef]
         GeneralAgentConfig,
@@ -55,7 +54,6 @@ except ImportError:  # pragma: no cover - 兼容 Task 1/2/9 搬迁后的新路�
     from alphasolve.agent.tools import register_agent_tool  # type: ignore[no-redef]
     # WorkerManager 仍住在 orchestrator.py 里，Task 2 只是把整个文件搬到 workflow/。
     from alphasolve.workflow.orchestrator import WorkerManager  # type: ignore[no-redef]
-    _OLD_PATHS = False
 
 from alphasolve.config.agent_config import PACKAGE_ROOT
 
