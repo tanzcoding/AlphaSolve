@@ -53,8 +53,8 @@ except ImportError:  # pragma: no cover - 兼容 Task 1/2/9 搬迁后的新路�
     from alphasolve.workflow.subagent_service import SubagentService  # type: ignore[no-redef]
     from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # type: ignore[no-redef]
     from alphasolve.agent.tools import register_agent_tool  # type: ignore[no-redef]
-    # WorkerManager 等 worker 内部 symbol 在新结构下可能换位置——届时再调整。
-    from alphasolve.workflow.worker_manager import WorkerManager  # type: ignore[no-redef]
+    # WorkerManager 仍住在 orchestrator.py 里，Task 2 只是把整个文件搬到 workflow/。
+    from alphasolve.workflow.orchestrator import WorkerManager  # type: ignore[no-redef]
     _OLD_PATHS = False
 
 from alphasolve.config.agent_config import PACKAGE_ROOT
