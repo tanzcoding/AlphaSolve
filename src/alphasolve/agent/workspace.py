@@ -164,7 +164,7 @@ class Workspace:
                 handle.write(text)
         else:
             raise WorkspaceError("write mode must be either 'overwrite' or 'append'")
-        return str(target)
+        return self._rel(target)
 
     def edit(self, path: str, old_str: str, new_str: str) -> str:
         target = self.resolve(path)

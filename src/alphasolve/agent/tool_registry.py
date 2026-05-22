@@ -257,7 +257,8 @@ def build_default_tool_registry(
             f"- By default, Read returns {READ_PAGE_DEFAULT_LINES} lines.\n"
             "- `line_offset` is the first line to return.\n"
             f"- `n_lines` is how many lines to return in this call; default is {READ_PAGE_DEFAULT_LINES}.\n"
-            "- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file."
+            "- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n"
+            f"- Without `read_all`, the maximum `n_lines` value is {READ_PAGE_MAX_LINES}."
         ),
         parameters={
             "type": "object",
@@ -485,7 +486,7 @@ def build_default_tool_registry(
                 "path": {"type": "string", "description": "File or directory to search in.", "default": "."},
                 "regex": {"type": "boolean", "description": "Treat pattern as regex (default true).", "default": True},
                 "max_results": {"type": "integer", "description": "Maximum results to return.", "default": 50},
-                "context_lines": {"type": "integer", "description": "Lines of context around each match.", "default": 0},
+                "context_lines": {"type": "integer", "description": "Lines of context around each match. Set 0 to disable.", "default": 0},
             },
             "required": ["pattern"],
         },
