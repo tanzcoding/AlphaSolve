@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-from typing import Callable, TYPE_CHECKING
+from typing import Callable, Protocol
 
 from .config.preset import Preset
 from .config.profile import Profile
 from .types import ChatClient
 
-if TYPE_CHECKING:
-    from alphasolve.agents.general.config import GeneralAgentConfig
+
+class _AgentConfigLike(Protocol):
+    """Minimal shape consumed by the client factory.
+
+    Why: keeps alphasolve.llm decoupled from alphasolve.agents — any object
+    exposing ``effective_role()`` works, including test doubles.
+    """
+
+    def effective_role(self) -> str: ...
 
 
 def make_client(preset: Preset) -> ChatClient:
@@ -24,12 +31,10 @@ def make_client(preset: Preset) -> ChatClient:
 def make_client_factory(
     profile: Profile,
     presets: dict[str, Preset],
-) -> Callable[["GeneralAgentConfig"], ChatClient]:
+) -> Callable[[_AgentConfigLike], ChatClient]:
     """Returns a ClientFactory: agent_config -> ChatClient via profile role lookup."""
-    def factory(agent_config: "GeneralAgentConfig") -> ChatClient:
-        role = agent_config.effective_role() if hasattr(agent_config, "effective_role") else (
-            getattr(agent_config, "role", None) or agent_config.name
-        )
+    def factory(agent_config: _AgentConfigLike) -> ChatClient:
+        role = agent_config.effective_role()
         preset_name = profile.preset_for(role)
         if preset_name not in presets:
             raise KeyError(

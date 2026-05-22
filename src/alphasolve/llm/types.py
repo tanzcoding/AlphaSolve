@@ -29,11 +29,8 @@ class Message:
     tool_call_id: str | None = None
     name: str | None = None
     reasoning_content: str = ""
-    # ↑ OpenAI-compat providers (DeepSeek, Volcano, Moonshot, ...) surface
-    # chain-of-thought text on assistant messages as a top-level field and
-    # some require it to be echoed back unchanged in the next request.
-    # Kept here so the agent loop can round-trip it across turns.
-    # Empty string for messages that have none (the common case).
+    # Why: some OpenAI-compat providers (DeepSeek, Volcano, ...) require the
+    # assistant's chain-of-thought field to be echoed back unchanged next turn.
 
 
 @dataclass(frozen=True)
