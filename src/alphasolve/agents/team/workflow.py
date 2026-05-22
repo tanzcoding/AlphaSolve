@@ -11,7 +11,10 @@ from typing import Any
 
 import httpx
 
-from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, OpenAIChatClient, load_agent_suite_config
+from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, load_agent_suite_config
+from alphasolve.llm.providers.openai_chat import OpenAIChatClient
+from alphasolve.llm.config.preset import Preset
+from alphasolve.llm.types import Message, StreamDelta, ToolCall, ToolDef
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
@@ -295,12 +298,149 @@ def make_openai_client_factory(suite) -> ClientFactory:
     )
 
     def factory(config: GeneralAgentConfig):
-        return OpenAIChatClient(
-            _resolve_model_config(config.model_config, suite=suite),
-            http_client=_shared_http_client,
-        )
+        cfg = _resolve_model_config(config.model_config, suite=suite)
+        preset = _config_dict_to_preset(str(config.model_config or "default"), cfg)
+        typed_client = OpenAIChatClient(preset, http_client=_shared_http_client)
+        return _DictShapeAdapter(typed_client)
 
     return factory
+
+
+# --- Transitional shim (Commit 3 → removed in Commit 4) ----------------------
+# GeneralPurposeAgent still operates on dict-shaped OpenAI messages internally.
+# The new alphasolve.llm.providers.openai_chat.OpenAIChatClient speaks typed
+# Message/ToolDef/CompletionResponse. _DictShapeAdapter sits between them so
+# Commit 3 can swap in the new client without rewriting GeneralPurposeAgent.run
+# (that rewrite is Commit 4).
+
+
+class _DictShapeAdapter:
+    """Wraps a typed ChatClient and exposes a dict-shaped complete() to legacy callers."""
+
+    def __init__(self, typed_client) -> None:
+        self._typed_client = typed_client
+
+    def complete(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        delta_sink=None,
+    ) -> dict[str, Any]:
+        typed_msgs = [_dict_to_message(m) for m in messages]
+        typed_tools = [_openai_tool_dict_to_tooldef(t) for t in tools]
+        adapted_sink = _wrap_delta_sink(delta_sink) if delta_sink is not None else None
+        resp = self._typed_client.complete(
+            messages=typed_msgs, tools=typed_tools, delta_sink=adapted_sink,
+        )
+        return _completion_response_to_dict(resp)
+
+
+def _dict_to_message(d: dict[str, Any]) -> Message:
+    role = str(d.get("role") or "user")
+    if role == "tool":
+        return Message(
+            role="tool",
+            content=str(d.get("content") or ""),
+            tool_call_id=d.get("tool_call_id"),
+            name=d.get("name"),
+        )
+    tool_calls: list[ToolCall] = []
+    for tc in d.get("tool_calls") or []:
+        fn = tc.get("function") or {}
+        args_raw = fn.get("arguments")
+        if isinstance(args_raw, str):
+            try:
+                args = json.loads(args_raw) if args_raw else {}
+            except json.JSONDecodeError:
+                args = {}
+        else:
+            args = dict(args_raw or {})
+        tool_calls.append(ToolCall(
+            id=str(tc.get("id") or ""),
+            name=str(fn.get("name") or ""),
+            args=args,
+        ))
+    return Message(
+        role=role,
+        content=str(d.get("content") or ""),
+        tool_calls=tuple(tool_calls),
+        reasoning_content=str(d.get("reasoning_content") or ""),
+    )
+
+
+def _openai_tool_dict_to_tooldef(t: dict[str, Any]) -> ToolDef:
+    fn = t.get("function") or {}
+    return ToolDef(
+        name=str(fn.get("name") or ""),
+        description=str(fn.get("description") or ""),
+        parameters=dict(fn.get("parameters") or {}),
+    )
+
+
+def _wrap_delta_sink(old_sink):
+    """Convert typed StreamDelta back to legacy dict-shaped delta for old GPA sinks.
+
+    The legacy protocol distinguished reasoning/content/retry deltas; the typed
+    protocol only emits text + tool_input. Reasoning and retry deltas are dropped
+    during this transitional period; Commit 4 deletes this adapter entirely.
+    """
+    def adapted(stream_delta: StreamDelta) -> None:
+        if stream_delta.type == "text" and stream_delta.text:
+            old_sink({"type": "content", "content": stream_delta.text})
+        # tool_input deltas have no legacy equivalent — drop them.
+    return adapted
+
+
+def _completion_response_to_dict(resp) -> dict[str, Any]:
+    msg = resp.message
+    out: dict[str, Any] = {"role": msg.role, "content": msg.content}
+    if msg.tool_calls:
+        out["tool_calls"] = [
+            {
+                "id": tc.id,
+                "type": "function",
+                "function": {
+                    "name": tc.name,
+                    "arguments": json.dumps(tc.args, ensure_ascii=False),
+                },
+            }
+            for tc in msg.tool_calls
+        ]
+    if msg.reasoning_content:
+        out["reasoning_content"] = msg.reasoning_content
+    return out
+
+
+_SYNTH_KEY_ENV_PREFIX = "_ALPHASOLVE_LEGACY_KEY_"
+
+
+def _config_dict_to_preset(name: str, cfg: dict[str, Any]) -> Preset:
+    """Convert a legacy AlphaSolveConfig dict into a Preset.
+
+    The legacy dict format has `api_key` as either a string or a zero-arg
+    callable; the new Preset shape requires an environment variable name. We
+    resolve the callable at construction time and stuff its value into a
+    synthesized env var so the Preset round-trip works.
+
+    Transitional: deleted in Commit 4 with the AlphaSolveConfig provider constants.
+    """
+    api_key_raw = cfg.get("api_key")
+    api_key_value = api_key_raw() if callable(api_key_raw) else api_key_raw
+    synth_env = _SYNTH_KEY_ENV_PREFIX + name.upper().replace("-", "_").replace("/", "_")
+    os.environ[synth_env] = str(api_key_value or "")
+    params = dict(cfg.get("params") or {})
+    if "temperature" in cfg:
+        params["temperature"] = cfg["temperature"]
+    return Preset(
+        name=name,
+        wire_format="openai_chat",
+        base_url=str(cfg.get("base_url") or ""),
+        api_key_env=synth_env,
+        model=str(cfg.get("model") or ""),
+        timeout=float(cfg.get("timeout") or 3600),
+        params=params,
+    )
 
 
 def _resolve_model_config(model_ref: Any, *, suite) -> dict[str, Any]:

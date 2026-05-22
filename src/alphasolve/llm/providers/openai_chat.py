@@ -25,6 +25,7 @@ from ..types import (
 )
 
 _REASONING_KEYS = ("reasoning_content", "reasoning", "reasoning_text", "thinking")
+_MISSING = object()
 
 _RETRYABLE_EXCEPTIONS = (
     openai.InternalServerError,
@@ -205,15 +206,48 @@ def _first_text_delta(delta: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 
 def _object_to_dict(value: Any) -> dict[str, Any]:
+    """Convert a possibly-pydantic SDK object to a dict.
+
+    Restores two historical bug fixes from the pre-refactor OpenAIChatClient:
+      (1) If `model_dump` omits a reasoning key the SDK still exposes as an
+          attribute (some SDK versions don't declare reasoning_content in their
+          model schema), recover it via `getattr`.
+      (2) Normalise provider-specific reasoning aliases (`thinking`,
+          `reasoning_text`, `reasoning`) into the canonical `reasoning_content`
+          key so downstream code only has to look in one place.
+    """
     if value is None:
         return {}
     if isinstance(value, dict):
-        return value
+        return _normalize_message_reasoning(dict(value))
     if hasattr(value, "model_dump"):
-        return value.model_dump(exclude_none=False)
+        result = value.model_dump(exclude_none=False)
+        for attr in _REASONING_KEYS:
+            if attr in result or not hasattr(value, attr):
+                continue
+            attr_value = getattr(value, attr)
+            if attr_value is not None:
+                result[attr] = str(attr_value)
+        return _normalize_message_reasoning(result)
     if hasattr(value, "dict"):
-        return value.dict()
-    return dict(value) if hasattr(value, "__iter__") else {"value": value}
+        return _normalize_message_reasoning(value.dict())
+    return _normalize_message_reasoning(dict(value)) if hasattr(value, "__iter__") else {"value": value}
+
+
+def _normalize_message_reasoning(message: dict[str, Any]) -> dict[str, Any]:
+    """Alias-normalise reasoning keys → reasoning_content."""
+    normalized = dict(message)
+    reasoning = _first_present_reasoning_value(normalized)
+    if reasoning is not _MISSING and "reasoning_content" not in normalized:
+        normalized["reasoning_content"] = "" if reasoning is None else str(reasoning)
+    return normalized
+
+
+def _first_present_reasoning_value(message: dict[str, Any]) -> Any:
+    for key in _REASONING_KEYS:
+        if key in message:
+            return message[key]
+    return _MISSING
 
 
 def _messages_to_openai(messages: list[Message], *, thinking_mode: bool) -> list[dict[str, Any]]:
@@ -240,6 +274,13 @@ def _messages_to_openai(messages: list[Message], *, thinking_mode: bool) -> list
                 }
                 for tc in m.tool_calls
             ]
+        if m.reasoning_content:
+            d["reasoning_content"] = m.reasoning_content
+        elif thinking_mode and m.role == "assistant" and m.tool_calls and "reasoning_content" not in d:
+            # Historical bug fix: thinking-mode providers reject the next request
+            # if a previous assistant message carrying tool_calls is missing
+            # reasoning_content. Inject an empty string so the field is present.
+            d["reasoning_content"] = ""
         out.append(d)
     return out
 
@@ -276,6 +317,7 @@ def _openai_response_to_completion(raw_message: dict[str, Any]) -> CompletionRes
         role="assistant",
         content=str(raw_message.get("content") or ""),
         tool_calls=tuple(tool_calls),
+        reasoning_content=str(raw_message.get("reasoning_content") or ""),
     )
     usage = Usage(
         input_tokens=int(usage_dict.get("prompt_tokens") or usage_dict.get("input_tokens") or 0),

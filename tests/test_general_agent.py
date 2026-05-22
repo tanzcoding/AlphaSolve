@@ -6,7 +6,6 @@ import sys
 import threading
 from contextlib import contextmanager
 
-import httpx
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
@@ -14,7 +13,6 @@ import alphasolve.agents.general.general_agent as general_agent_module  # noqa: 
 from alphasolve.agents.general import (  # noqa: E402
     GeneralAgentConfig,
     GeneralPurposeAgent,
-    OpenAIChatClient,
     ToolRegistry,
     ToolResult,
     Workspace,
@@ -314,145 +312,6 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
     assert result.final_answer == ""
     assert result.trace[-1]["type"] == "run_stopped"
     assert result.trace[-1]["reason"] == "stop_event set after model response"
-
-
-def test_openai_chat_client_reconstructs_streaming_tool_calls():
-    class FakeCompletions:
-        def __init__(self):
-            self.requests = []
-
-        def create(self, **request):
-            self.requests.append(request)
-            return [
-                {"choices": [{"delta": {"role": "assistant", "reasoning_content": "plan "}}]},
-                {"choices": [{"delta": {"reasoning_content": "tool"}}]},
-                {"choices": [{"delta": {"content": "Preparing."}}]},
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "id": "call_write",
-                                        "type": "function",
-                                        "function": {"name": "write_", "arguments": "{\"path\":"},
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                },
-                {
-                    "choices": [
-                        {
-                            "delta": {
-                                "tool_calls": [
-                                    {
-                                        "index": 0,
-                                        "function": {"name": "file", "arguments": "\"proposition.md\"}"},
-                                    }
-                                ]
-                            }
-                        }
-                    ]
-                },
-            ]
-
-    class FakeOpenAI:
-        def __init__(self):
-            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
-
-    fake_openai = FakeOpenAI()
-    client = OpenAIChatClient({"api_key": "test", "model": "fake-model"})
-    client.client = fake_openai
-    deltas = []
-
-    message = client.complete(messages=[], tools=[{"type": "function"}], delta_sink=deltas.append)
-
-    request = fake_openai.chat.completions.requests[0]
-    assert request["stream"] is True
-    assert message["role"] == "assistant"
-    assert message["reasoning_content"] == "plan tool"
-    assert message["content"] == "Preparing."
-    assert message["tool_calls"][0]["id"] == "call_write"
-    assert message["tool_calls"][0]["function"]["name"] == "write_file"
-    assert message["tool_calls"][0]["function"]["arguments"] == '{"path":"proposition.md"}'
-    assert deltas == [
-        {"type": "reasoning", "content": "plan "},
-        {"type": "reasoning", "content": "tool"},
-        {"type": "content", "content": "Preparing."},
-    ]
-
-
-def test_openai_chat_client_retries_remote_protocol_error_before_first_delta():
-    class FlakyCompletions:
-        def __init__(self):
-            self.calls = 0
-
-        def create(self, **request):
-            del request
-            self.calls += 1
-            if self.calls == 1:
-                raise httpx.RemoteProtocolError("peer closed connection without sending complete message body")
-            return [{"choices": [{"delta": {"content": "ok"}}]}]
-
-    class FakeOpenAI:
-        def __init__(self):
-            self.chat = type("Chat", (), {"completions": FlakyCompletions()})()
-
-    fake_openai = FakeOpenAI()
-    client = OpenAIChatClient({"api_key": "test", "model": "fake-model"})
-    client.client = fake_openai
-    old_sleep = general_agent_module.time.sleep
-    general_agent_module.time.sleep = lambda _seconds: None
-    try:
-        message = client.complete(messages=[], tools=[], delta_sink=lambda _delta: None)
-    finally:
-        general_agent_module.time.sleep = old_sleep
-
-    assert fake_openai.chat.completions.calls == 2
-    assert message["content"] == "ok"
-
-
-def test_openai_chat_client_retries_remote_protocol_error_after_delta_with_reset():
-    class FlakyCompletions:
-        def __init__(self):
-            self.calls = 0
-
-        def create(self, **request):
-            del request
-            self.calls += 1
-            if self.calls == 1:
-                def broken_stream():
-                    yield {"choices": [{"delta": {"reasoning_content": "stale"}}]}
-                    raise httpx.RemoteProtocolError(
-                        "peer closed connection without sending complete message body"
-                    )
-
-                return broken_stream()
-            return [{"choices": [{"delta": {"reasoning_content": "fresh", "content": "ok"}}]}]
-
-    class FakeOpenAI:
-        def __init__(self):
-            self.chat = type("Chat", (), {"completions": FlakyCompletions()})()
-
-    fake_openai = FakeOpenAI()
-    client = OpenAIChatClient({"api_key": "test", "model": "fake-model"})
-    client.client = fake_openai
-    old_sleep = general_agent_module.time.sleep
-    general_agent_module.time.sleep = lambda _seconds: None
-    deltas = []
-    try:
-        message = client.complete(messages=[], tools=[], delta_sink=deltas.append)
-    finally:
-        general_agent_module.time.sleep = old_sleep
-
-    assert fake_openai.chat.completions.calls == 2
-    assert message["reasoning_content"] == "fresh"
-    assert message["content"] == "ok"
-    assert [delta["type"] for delta in deltas] == ["reasoning", "retry", "reasoning", "content"]
-    assert deltas[1]["error_type"] == "RemoteProtocolError"
 
 
 def _assert_agent_can_write_and_read_workspace_file(tmp_path):
