@@ -2,7 +2,7 @@ version: 1
 agent:
   name: generator
   system_prompt_path: ../../prompts/generator.md
-  model_config: GENERATOR_CONFIG
+  role: generator
   max_turns: 80
   tools:
     - Read

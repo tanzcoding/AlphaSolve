@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.utils.event_logger import compose_event_sinks
 
 from .dashboard import make_curator_event_sink
@@ -253,18 +252,8 @@ def _trace_kind(source_label: str) -> str:
 
 
 def _model_name(config: "GeneralAgentConfig", *, suite) -> str:
-    ref = str(config.model_config or "").strip()
-    if not ref:
-        return ""
-    if ref in suite.models:
-        return str(suite.models[ref].get("model", ref))
-    preset = ref.upper()
-    if not preset.endswith("_CONFIG"):
-        preset += "_CONFIG"
-    model_config = getattr(AlphaSolveConfig, preset, None)
-    if isinstance(model_config, dict):
-        return str(model_config.get("model", ref))
-    return ref
+    del suite  # unused; preserved for signature compatibility
+    return config.effective_role()
 
 
 def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:

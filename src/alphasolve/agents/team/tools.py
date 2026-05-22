@@ -878,8 +878,8 @@ def build_workspace_tool_registry(
 
 def _last_plain_assistant_content(result: AgentRunResult) -> str:
     for message in reversed(result.messages):
-        if message.get("role") == "assistant" and not message.get("tool_calls"):
-            return str(message.get("content") or "")
+        if message.role == "assistant" and not message.tool_calls:
+            return message.content
     return result.final_answer
 
 
@@ -1066,10 +1066,10 @@ class SubagentService:
             config = GeneralAgentConfig(
                 name=config.name,
                 system_prompt=config.system_prompt,
-                tools=enabled_tools,
+                tools=tuple(enabled_tools),
                 tool_parameters=config.tool_parameters,
                 max_turns=config.max_turns,
-                model_config=config.model_config,
+                role=config.role,
                 skills=config.skills,
                 when_to_use=config.when_to_use,
                 system_prompt_template=config.system_prompt_template,

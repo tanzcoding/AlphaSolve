@@ -14,15 +14,18 @@ import yaml
 class GeneralAgentConfig:
     name: str
     system_prompt: str
-    tools: list[str] = field(default_factory=list)
+    role: str | None = None
+    tools: tuple[str, ...] = ()
     tool_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_turns: int = 80
-    model_config: str | None = None
-    skills: list[str] = field(default_factory=list)
+    skills: tuple[str, ...] = ()
     when_to_use: str = ""
     system_prompt_template: str = ""
     system_prompt_args: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def effective_role(self) -> str:
+        return self.role or self.name
 
 
 @dataclass(frozen=True)
@@ -131,6 +134,12 @@ def _resolve_agent_config(
     fallback_name: str,
     seen: frozenset[Path],
 ) -> GeneralAgentConfig:
+    if "model_config" in raw:
+        raise ValueError(
+            f"{config_path}: field 'model_config' is no longer supported; "
+            f"replace with 'role: <role-name>' (see "
+            f"docs/superpowers/specs/2026-05-22-alphasolve-llm-provider-abstraction-design.md §5.5)"
+        )
     base: GeneralAgentConfig | None = None
     extend = raw.get("extend")
     if extend:
@@ -197,11 +206,11 @@ def _resolve_agent_config(
     return GeneralAgentConfig(
         name=name,
         system_prompt=prompt_text,
-        tools=tools,
+        role=raw.get("role") or (base.role if base else None),
+        tools=tuple(tools),
         tool_parameters=tool_parameters,
         max_turns=int(raw.get("max_turns", base.max_turns if base else 80)),
-        model_config=raw.get("model_config") or raw.get("model") or (base.model_config if base else None),
-        skills=skills,
+        skills=tuple(skills),
         when_to_use=str(raw.get("when_to_use") or (base.when_to_use if base else "")),
         system_prompt_template=prompt_template,
         system_prompt_args=prompt_args,

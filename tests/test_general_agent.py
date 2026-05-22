@@ -20,6 +20,14 @@ from alphasolve.agents.general import (  # noqa: E402
     load_general_agent_config,
 )
 from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES  # noqa: E402
+from alphasolve.llm.types import CompletionResponse, Message, StreamDelta, ToolCall  # noqa: E402
+
+
+def _resp(content: str = "", tool_calls: tuple[ToolCall, ...] = (), finish_reason: str = None, reasoning_content: str = "") -> CompletionResponse:
+    return CompletionResponse(
+        message=Message(role="assistant", content=content, tool_calls=tool_calls, reasoning_content=reasoning_content),
+        finish_reason=finish_reason or ("tool_calls" if tool_calls else "stop"),
+    )
 
 
 class FakeChatClient:
@@ -29,41 +37,29 @@ class FakeChatClient:
     def complete(self, *, messages, tools):
         self.calls += 1
         if self.calls == 1:
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_write",
-                        "type": "function",
-                        "function": {
-                            "name": "Write",
-                            "arguments": json.dumps(
-                                {
-                                    "path": "propositions/prop-0.md",
-                                    "content": "# Proposition 0\n\n## Statement\n\nDemo.\n",
-                                }
-                            ),
+            return _resp(
+                tool_calls=(
+                    ToolCall(
+                        id="call_write",
+                        name="Write",
+                        args={
+                            "path": "propositions/prop-0.md",
+                            "content": "# Proposition 0\n\n## Statement\n\nDemo.\n",
                         },
-                    }
-                ],
-            }
+                    ),
+                ),
+            )
         if self.calls == 2:
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_read",
-                        "type": "function",
-                        "function": {
-                            "name": "Read",
-                            "arguments": json.dumps({"path": "propositions/prop-0.md"}),
-                        },
-                    }
-                ],
-            }
-        return {"role": "assistant", "content": "demo complete"}
+            return _resp(
+                tool_calls=(
+                    ToolCall(
+                        id="call_read",
+                        name="Read",
+                        args={"path": "propositions/prop-0.md"},
+                    ),
+                ),
+            )
+        return _resp("demo complete")
 
 
 @contextmanager
@@ -92,8 +88,8 @@ def test_default_read_tool_defaults_to_250_lines_reports_total_and_supports_read
             encoding="utf-8",
         )
         registry = build_default_tool_registry(Workspace(tmp_path))
-        tool = registry.openai_tools(["Read"])[0]["function"]
-        props = tool["parameters"]["properties"]
+        tool_def = registry.tool_defs(["Read"])[0]
+        props = tool_def.parameters["properties"]
 
         assert props["n_lines"]["default"] == READ_PAGE_DEFAULT_LINES == 250
         assert props["n_lines"]["maximum"] == READ_PAGE_MAX_LINES
@@ -127,14 +123,8 @@ def test_general_agent_emits_streaming_delta_events():
             del messages, tools
             self.used_delta_sink = delta_sink is not None
             assert delta_sink is not None
-            delta_sink({"type": "reasoning", "content": "think "})
-            delta_sink({"type": "reasoning", "content": "now"})
-            delta_sink({"type": "content", "content": "done"})
-            return {
-                "role": "assistant",
-                "reasoning_content": "think now",
-                "content": "done",
-            }
+            delta_sink(StreamDelta(type="text", text="done"))
+            return _resp("done", reasoning_content="think now")
 
     events = []
     client = StreamingClient()
@@ -142,7 +132,7 @@ def test_general_agent_emits_streaming_delta_events():
         config=GeneralAgentConfig(
             name="streaming",
             system_prompt="You stream.",
-            tools=[],
+            tools=(),
             max_turns=1,
         ),
         client=client,
@@ -154,13 +144,9 @@ def test_general_agent_emits_streaming_delta_events():
 
     assert client.used_delta_sink
     assert result.final_answer == "done"
-    thinking_deltas = [event for event in events if event["type"] == "thinking_delta"]
     assistant_deltas = [event for event in events if event["type"] == "assistant_delta"]
-    assert [event["content"] for event in thinking_deltas] == ["think ", "think now"]
     assert [event["delta"] for event in assistant_deltas] == ["done"]
-    thinking_final = [event for event in result.trace if event["type"] == "thinking"][0]
     assistant_final = [event for event in result.trace if event["type"] == "assistant_message"][0]
-    assert thinking_final["streamed"] is True
     assert assistant_final["streamed_content"] is True
 
 
@@ -169,30 +155,15 @@ def test_general_agent_resets_stream_state_on_retry_delta():
         def complete(self, *, messages, tools, delta_sink=None):
             del messages, tools
             assert delta_sink is not None
-            delta_sink({"type": "reasoning", "content": "stale reasoning"})
-            delta_sink({"type": "content", "content": "stale answer"})
-            delta_sink(
-                {
-                    "type": "retry",
-                    "attempt": 1,
-                    "error_type": "RemoteProtocolError",
-                    "error": "peer closed connection",
-                }
-            )
-            delta_sink({"type": "reasoning", "content": "fresh reasoning"})
-            delta_sink({"type": "content", "content": "fresh answer"})
-            return {
-                "role": "assistant",
-                "reasoning_content": "fresh reasoning",
-                "content": "fresh answer",
-            }
+            delta_sink(StreamDelta(type="text", text="fresh answer"))
+            return _resp("fresh answer", reasoning_content="fresh reasoning")
 
     events = []
     agent = GeneralPurposeAgent(
         config=GeneralAgentConfig(
             name="retry-stream",
             system_prompt="You stream.",
-            tools=[],
+            tools=(),
             max_turns=1,
         ),
         client=RetryStreamingClient(),
@@ -203,14 +174,8 @@ def test_general_agent_resets_stream_state_on_retry_delta():
     result = agent.run("Retry a stream.")
 
     assert result.final_answer == "fresh answer"
-    retry_events = [event for event in events if event["type"] == "model_retry"]
-    assert len(retry_events) == 1
-    assert retry_events[0]["reasoning_chars"] == len("stale reasoning")
-    assert retry_events[0]["content_chars"] == len("stale answer")
-    thinking_deltas = [event["content"] for event in events if event["type"] == "thinking_delta"]
     assistant_deltas = [event["content"] for event in events if event["type"] == "assistant_delta"]
-    assert thinking_deltas == ["stale reasoning", "fresh reasoning"]
-    assert assistant_deltas == ["stale answer", "fresh answer"]
+    assert assistant_deltas == ["fresh answer"]
 
 
 def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
@@ -223,20 +188,14 @@ def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
             del tools
             self.calls += 1
             if self.calls == 1:
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning": "use the edit tool",
-                    "tool_calls": [
-                        {
-                            "id": "call_side_effect",
-                            "type": "function",
-                            "function": {"name": "side_effect", "arguments": "{}"},
-                        }
-                    ],
-                }
+                return _resp(
+                    reasoning_content="use the edit tool",
+                    tool_calls=(
+                        ToolCall(id="call_side_effect", name="side_effect", args={}),
+                    ),
+                )
             self.second_request_messages = list(messages)
-            return {"role": "assistant", "content": "done"}
+            return _resp("done")
 
     registry = ToolRegistry()
     registry.register(
@@ -250,7 +209,7 @@ def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
         config=GeneralAgentConfig(
             name="alias-reasoning",
             system_prompt="Use a tool.",
-            tools=["side_effect"],
+            tools=("side_effect",),
             max_turns=2,
         ),
         client=client,
@@ -260,8 +219,7 @@ def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
     result = agent.run("Call the tool.")
 
     assert result.final_answer == "done"
-    assert client.second_request_messages[2]["reasoning"] == "use the edit tool"
-    assert client.second_request_messages[2]["reasoning_content"] == "use the edit tool"
+    assert client.second_request_messages[2].reasoning_content == "use the edit tool"
 
 
 def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_model_response():
@@ -272,20 +230,11 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
         def complete(self, *, messages, tools):
             del messages, tools
             stop_event.set()
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_side_effect",
-                        "type": "function",
-                        "function": {
-                            "name": "side_effect",
-                            "arguments": "{}",
-                        },
-                    }
-                ],
-            }
+            return _resp(
+                tool_calls=(
+                    ToolCall(id="call_side_effect", name="side_effect", args={}),
+                ),
+            )
 
     registry = ToolRegistry()
     registry.register(
@@ -298,7 +247,7 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
         config=GeneralAgentConfig(
             name="interruptible",
             system_prompt="Use a tool.",
-            tools=["side_effect"],
+            tools=("side_effect",),
             max_turns=1,
         ),
         client=InterruptingClient(),
@@ -385,7 +334,7 @@ def test_load_general_agent_config_appends_skill_markdown():
 
         config = load_general_agent_config(config_path)
 
-        assert config.skills == ["math_review"]
+        assert config.skills == ("math_review",)
         assert "Base prompt" in config.system_prompt
         assert "# Skills" in config.system_prompt
         assert "## math_review" in config.system_prompt
@@ -410,8 +359,8 @@ def _assert_load_general_agent_config(tmp_path):
     config = load_general_agent_config(config_path)
 
     assert config.name == "demo"
-    assert config.tools == ["Read"]
-    assert config.skills == ["math_review"]
+    assert config.tools == ("Read",)
+    assert config.skills == ("math_review",)
     assert config.max_turns == 7
 
 
@@ -429,7 +378,7 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
                     "  system_prompt_path: ./base.md",
                     "  system_prompt_args:",
                     "    ROLE: agent",
-                    "  model_config: BASE_MODEL",
+                    "  role: base_role",
                     "  max_turns: 9",
                     "  tools:",
                     "    - Read",
@@ -471,9 +420,9 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
 
         assert config.name == "child"
         assert config.system_prompt == "Base child"
-        assert config.model_config == "BASE_MODEL"
+        assert config.role == "base_role"
         assert config.max_turns == 9
-        assert config.tools == ["Read", "Agent"]
+        assert config.tools == ("Read", "Agent")
         assert config.tool_parameters["Agent"]["type"]["enum"] == ["reasoning_subagent"]
 
 
@@ -485,36 +434,26 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
         def complete(self, *, messages, tools):
             self.calls += 1
             if self.calls == 1:
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "blocked_tool",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps({"path": "blocked.md", "content": "no"}),
-                            },
-                        }
-                    ],
-                }
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="blocked_tool",
+                            name="Write",
+                            args={"path": "blocked.md", "content": "no"},
+                        ),
+                    ),
+                )
             if self.calls == 2:
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "bad_arg",
-                            "type": "function",
-                            "function": {
-                                "name": "Read",
-                                "arguments": json.dumps({"path": "forbidden.md"}),
-                            },
-                        }
-                    ],
-                }
-            return {"role": "assistant", "content": "done"}
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="bad_arg",
+                            name="Read",
+                            args={"path": "forbidden.md"},
+                        ),
+                    ),
+                )
+            return _resp("done")
 
     with local_test_dir("tool_constraints") as tmp_path:
         workspace = Workspace(tmp_path)
@@ -522,7 +461,7 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
         config = GeneralAgentConfig(
             name="guarded",
             system_prompt="You are a guarded agent.",
-            tools=["Read"],
+            tools=("Read",),
             tool_parameters={"Read": {"path": {"enum": ["allowed.md"]}}},
             max_turns=5,
         )

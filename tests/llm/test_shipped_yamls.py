@@ -44,3 +44,12 @@ def test_each_profile_role_resolves_to_a_real_preset():
 def test_default_profile_is_balanced():
     p = load_active_profile(name=None, repo_path=PROFILES_PATH, user_path=None)
     assert p.name == "balanced"
+
+
+def test_no_yaml_uses_model_config_field():
+    """Regression: model_config: must never reappear in shipped configs."""
+    config_root = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config"
+    for yaml_path in config_root.rglob("*.yaml"):
+        content = yaml_path.read_text(encoding="utf-8")
+        assert "model_config:" not in content, f"{yaml_path}: contains model_config:"
+

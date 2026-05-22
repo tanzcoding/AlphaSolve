@@ -1,10 +1,22 @@
 from __future__ import annotations
 
-import json
 import re
-from typing import Any
 
 from alphasolve.agents.general import GeneralAgentConfig
+from alphasolve.llm.types import (
+    ChatDeltaSink,
+    CompletionResponse,
+    Message,
+    ToolCall,
+    ToolDef,
+)
+
+
+def _assistant(content: str = "", tool_calls: tuple[ToolCall, ...] = ()) -> CompletionResponse:
+    return CompletionResponse(
+        message=Message(role="assistant", content=content, tool_calls=tool_calls),
+        finish_reason="tool_calls" if tool_calls else "stop",
+    )
 
 
 class DemoChatClient:
@@ -12,96 +24,74 @@ class DemoChatClient:
         self.role = role
         self.calls = 0
 
-    def complete(self, *, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> dict[str, Any]:
+    def complete(
+        self,
+        *,
+        messages: list[Message],
+        tools: list[ToolDef],
+        delta_sink: ChatDeltaSink | None = None,
+    ) -> CompletionResponse:
         self.calls += 1
         if self.role == "orchestrator":
             return self._orchestrator()
         if self.role == "generator":
             return self._generator(messages)
         if self.role.startswith("verifier"):
-            return {
-                "role": "assistant",
-                "content": "Verdict: pass\n\nThis demo proposition is accepted.",
-            }
+            return _assistant("Verdict: pass\n\nThis demo proposition is accepted.")
         if self.role == "review_verdict_judge":
-            return {
-                "role": "assistant",
-                "content": "pass",
-            }
+            return _assistant("pass")
         if self.role == "theorem_checker":
-            return {
-                "role": "assistant",
-                "content": "Solves original problem: yes\n\nThe verified demo proposition states exactly the problem.",
-            }
+            return _assistant(
+                "Solves original problem: yes\n\nThe verified demo proposition states exactly the problem."
+            )
         if self.role == "reviser":
-            return {"role": "assistant", "content": "No revision needed in demo mode."}
-        return {"role": "assistant", "content": "Demo subagent result."}
+            return _assistant("No revision needed in demo mode.")
+        return _assistant("Demo subagent result.")
 
-    def _orchestrator(self) -> dict[str, Any]:
+    def _orchestrator(self) -> CompletionResponse:
         if self.calls == 1:
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "spawn_demo_worker",
-                        "type": "function",
-                        "function": {
-                            "name": "SpawnWorker",
-                            "arguments": json.dumps({"hint": "Produce a small self-contained demo proposition."}),
-                        },
-                    }
-                ],
-            }
+            return _assistant(
+                tool_calls=(
+                    ToolCall(
+                        id="spawn_demo_worker",
+                        name="SpawnWorker",
+                        args={"hint": "Produce a small self-contained demo proposition."},
+                    ),
+                )
+            )
         if self.calls == 2:
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "wait_demo_worker",
-                        "type": "function",
-                        "function": {
-                            "name": "TaskOutput",
-                            "arguments": json.dumps({}),
-                        },
-                    }
-                ],
-            }
-        return {"role": "assistant", "content": "Demo run complete."}
+            return _assistant(
+                tool_calls=(
+                    ToolCall(id="wait_demo_worker", name="TaskOutput", args={}),
+                )
+            )
+        return _assistant("Demo run complete.")
 
-    def _generator(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+    def _generator(self, messages: list[Message]) -> CompletionResponse:
         if self.calls == 1:
-            task = "\n".join(str(message.get("content") or "") for message in messages)
+            task = "\n".join(message.content for message in messages)
             matches = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)
             concrete = [item for item in matches if "*" not in item]
             worker_dir = concrete[-1] if concrete else "unverified_propositions/prop-demo"
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "write_demo_proposition",
-                        "type": "function",
-                        "function": {
-                            "name": "Write",
-                            "arguments": json.dumps(
-                                {
-                                    "path": f"{worker_dir}/proposition.md",
-                                    "content": (
-                                        "# Demo Proposition\n\n"
-                                        "## Statement\n\n"
-                                        "For every real number x, x = x.\n\n"
-                                        "## Proof\n\n"
-                                        "This follows from reflexivity of equality.\n"
-                                    ),
-                                }
+            return _assistant(
+                tool_calls=(
+                    ToolCall(
+                        id="write_demo_proposition",
+                        name="Write",
+                        args={
+                            "path": f"{worker_dir}/proposition.md",
+                            "content": (
+                                "# Demo Proposition\n\n"
+                                "## Statement\n\n"
+                                "For every real number x, x = x.\n\n"
+                                "## Proof\n\n"
+                                "This follows from reflexivity of equality.\n"
                             ),
                         },
-                    }
-                ],
-            }
-        return {"role": "assistant", "content": "Generator wrote the demo proposition."}
+                    ),
+                )
+            )
+        return _assistant("Generator wrote the demo proposition.")
 
 
 def make_demo_client_factory():

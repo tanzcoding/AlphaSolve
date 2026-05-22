@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
+from alphasolve.llm.types import Message
 from alphasolve.utils.event_logger import compose_event_sinks
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
@@ -539,9 +540,9 @@ class Worker:
         config = GeneralAgentConfig(
             name="review_verdict_judge",
             system_prompt=_REVIEW_VERDICT_PROMPT,
-            tools=[],
+            tools=(),
             max_turns=base_config.max_turns,
-            model_config=base_config.model_config,
+            role=base_config.role,
         )
         self._set_phase(role, status="thinking", model=self._model_name(config))
         agent = GeneralPurposeAgent(
@@ -601,10 +602,10 @@ class Worker:
         try:
             client = self.client_factory(config)
             response = client.complete(
-                messages=[{"role": "user", "content": prompt}],
+                messages=[Message(role="user", content=prompt)],
                 tools=[],
             )
-            raw = (response.get("content") or "").strip().lower()
+            raw = (response.message.content or "").strip().lower()
             name = re.sub(r"[^a-z0-9-]", "-", raw).strip("-")
             name = re.sub(r"-{2,}", "-", name)
             if name and len(name) <= 80:
@@ -817,18 +818,7 @@ class Worker:
         return replace(config, tools=tools)
 
     def _model_name(self, config: GeneralAgentConfig) -> str:
-        ref = str(config.model_config or "").strip()
-        if not ref:
-            return ""
-        if ref in self.suite.models:
-            return str(self.suite.models[ref].get("model", ref))
-        preset = ref.upper()
-        if not preset.endswith("_CONFIG"):
-            preset += "_CONFIG"
-        cfg = getattr(AlphaSolveConfig, preset, None)
-        if isinstance(cfg, dict):
-            return str(cfg.get("model", ref))
-        return ref
+        return config.effective_role()
 
 
 def _parse_review_verdict(text: str) -> str:

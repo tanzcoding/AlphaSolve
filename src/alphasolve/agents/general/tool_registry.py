@@ -30,19 +30,6 @@ class RegisteredTool:
     parameters: dict[str, Any]
     handler: ToolHandler
 
-    def to_openai_tool(self, parameter_constraints: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        parameters = deepcopy(self.parameters)
-        if parameter_constraints:
-            _apply_parameter_constraints(parameters, parameter_constraints)
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": parameters,
-            },
-        }
-
 
 class ToolRegistry:
     def __init__(self) -> None:
@@ -65,17 +52,26 @@ class ToolRegistry:
             handler=handler,
         )
 
-    def openai_tools(
+    def tool_defs(
         self,
-        enabled: list[str] | None = None,
+        enabled: tuple[str, ...] | list[str] | None = None,
         tool_parameters: Mapping[str, Mapping[str, Any]] | None = None,
-    ) -> list[dict[str, Any]]:
-        names = enabled if enabled is not None else list(self._tools)
+    ) -> list["ToolDef"]:
+        from alphasolve.llm.types import ToolDef
+        names = list(enabled) if enabled is not None else list(self._tools)
         missing = [name for name in names if name not in self._tools]
         if missing:
             raise KeyError(f"unknown tools: {missing}")
         constraints = tool_parameters or {}
-        return [self._tools[name].to_openai_tool(constraints.get(name)) for name in names]
+        out: list[ToolDef] = []
+        for name in names:
+            tool = self._tools[name]
+            params = deepcopy(tool.parameters)
+            constraint = constraints.get(name)
+            if constraint:
+                _apply_parameter_constraints(params, constraint)
+            out.append(ToolDef(name=tool.name, description=tool.description, parameters=params))
+        return out
 
     def registered_tools(self) -> list[RegisteredTool]:
         return list(self._tools.values())

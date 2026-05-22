@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.agents.general import AgentRunError, GeneralPurposeAgent, Workspace
 from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
-from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.utils.event_logger import compose_event_sinks
 
 from .dashboard import make_orchestrator_event_sink
@@ -555,18 +554,7 @@ class Orchestrator:
         )
 
     def _model_name(self, config) -> str:
-        ref = str(config.model_config or "").strip()
-        if not ref:
-            return ""
-        if ref in self.suite.models:
-            return str(self.suite.models[ref].get("model", ref))
-        preset = ref.upper()
-        if not preset.endswith("_CONFIG"):
-            preset += "_CONFIG"
-        cfg = getattr(AlphaSolveConfig, preset, None)
-        if isinstance(cfg, dict):
-            return str(cfg.get("model", ref))
-        return ref
+        return config.effective_role()
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
         access = RoleWorkspaceAccess(

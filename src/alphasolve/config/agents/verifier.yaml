@@ -2,7 +2,7 @@ version: 1
 agent:
   name: verifier
   system_prompt_path: ../../prompts/verifier.md
-  model_config: VERIFIER_CONFIG
+  role: verifier
   max_turns: 80
   tools:
     - Read

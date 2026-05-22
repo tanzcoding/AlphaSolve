@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.text import Text
 
 from alphasolve.agents.general import AgentRunError, AgentRunResult, AgentSuiteConfig, GeneralAgentConfig, GeneralPurposeAgent, Workspace
+from alphasolve.llm.types import Message
 from alphasolve.utils.rich_renderer import RICH_CONSOLE
 
 from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
@@ -244,7 +245,6 @@ class GeneralAgentDebugApp:
         project_dir: str | Path,
         client_factory: ClientFactory,
         suite: AgentSuiteConfig | None = None,
-        model_config: str | None = "GENERATOR_CONFIG",
         console: Console = RICH_CONSOLE,
         renderer_factory: Callable[..., GeneralAgentDebugRenderer | None] | None = GeneralAgentDebugRenderer,
         max_turns: int = 80,
@@ -252,13 +252,12 @@ class GeneralAgentDebugApp:
         self.project_dir = Path(project_dir).resolve()
         self.client_factory = client_factory
         self.suite = suite
-        self.model_config = model_config
         self.console = console
         self.max_turns = max_turns
         self.stop_event = threading.Event()
         self._renderer_factory = renderer_factory
         self._renderer: GeneralAgentDebugRenderer | None = None
-        self._history: list[dict[str, Any]] = []
+        self._history: list[Message] = []
         self._agent_config: GeneralAgentConfig | None = None
         self._tools: list[str] = []
 
@@ -300,7 +299,7 @@ class GeneralAgentDebugApp:
                 stop_event=self.stop_event,
             )
             result = agent.run(prompt, extra_messages=self._history)
-            self._history = [message for message in result.messages if message.get("role") != "system"]
+            self._history = [message for message in result.messages if message.role != "system"]
             return result
         finally:
             if renderer is not None:
@@ -316,9 +315,8 @@ class GeneralAgentDebugApp:
         self._agent_config = GeneralAgentConfig(
             name="agent_debug",
             system_prompt="",
-            tools=list(DEBUG_AGENT_TOOLS),
+            tools=tuple(DEBUG_AGENT_TOOLS),
             max_turns=self.max_turns,
-            model_config=self.model_config,
         )
         self._tools = list(self._agent_config.tools)
         return self._agent_config

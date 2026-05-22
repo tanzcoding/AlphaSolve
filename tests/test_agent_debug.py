@@ -8,6 +8,14 @@ from rich.console import Console
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agents.team.debug_agent import DEBUG_AGENT_TOOLS, GeneralAgentDebugApp, GeneralAgentDebugRenderer  # noqa: E402
+from alphasolve.llm.types import CompletionResponse, Message, StreamDelta, ToolCall  # noqa: E402
+
+
+def _resp(content: str = "", tool_calls: tuple[ToolCall, ...] = (), finish_reason: str = None) -> CompletionResponse:
+    return CompletionResponse(
+        message=Message(role="assistant", content=content, tool_calls=tool_calls),
+        finish_reason=finish_reason or ("tool_calls" if tool_calls else "stop"),
+    )
 
 
 class FakeDebugClient:
@@ -19,26 +27,19 @@ class FakeDebugClient:
         self.calls += 1
         self.seen_messages.append(messages)
         if self.calls == 1:
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_write",
-                        "type": "function",
-                        "function": {
-                            "name": "Write",
-                            "arguments": json.dumps(
-                                {
-                                    "path": "debug-agent-test.yaml",
-                                    "content": "ok: true\n",
-                                }
-                            ),
+            return _resp(
+                tool_calls=(
+                    ToolCall(
+                        id="call_write",
+                        name="Write",
+                        args={
+                            "path": "debug-agent-test.yaml",
+                            "content": "ok: true\n",
                         },
-                    }
-                ],
-            }
-        return {"role": "assistant", "content": "done"}
+                    ),
+                ),
+            )
+        return _resp("done")
 
 
 class FakePrintClient:
@@ -47,7 +48,7 @@ class FakePrintClient:
 
     def complete(self, *, messages, tools):
         self.seen_messages.append(messages)
-        return {"role": "assistant", "content": "printed answer"}
+        return _resp("printed answer")
 
 
 class FakeStreamingPrintClient:
@@ -57,8 +58,8 @@ class FakeStreamingPrintClient:
     def complete(self, *, messages, tools, delta_sink=None):
         self.delta_sink_seen = delta_sink is not None
         if delta_sink is not None:
-            delta_sink({"type": "content", "content": "streamed answer"})
-        return {"role": "assistant", "content": "streamed answer"}
+            delta_sink(StreamDelta(type="text", text="streamed answer"))
+        return _resp("streamed answer")
 
 
 def test_agent_debug_app_uses_blank_prompt_and_requested_tools(tmp_path):
@@ -71,10 +72,10 @@ def test_agent_debug_app_uses_blank_prompt_and_requested_tools(tmp_path):
 
     config = app.build_config()
     assert config.system_prompt == ""
-    assert config.tools == DEBUG_AGENT_TOOLS
+    assert config.tools == tuple(DEBUG_AGENT_TOOLS)
 
     registry = app.build_registry()
-    exposed = [tool["function"]["name"] for tool in registry.openai_tools(config.tools)]
+    exposed = [t.name for t in registry.tool_defs(config.tools)]
     assert exposed == DEBUG_AGENT_TOOLS
 
     result = app.run_once("write a small yaml file")
@@ -83,7 +84,7 @@ def test_agent_debug_app_uses_blank_prompt_and_requested_tools(tmp_path):
 
     app.run_once("what did you just do?")
     second_run_messages = client.seen_messages[-1]
-    user_messages = [message["content"] for message in second_run_messages if message["role"] == "user"]
+    user_messages = [message.content for message in second_run_messages if message.role == "user"]
     assert user_messages == ["write a small yaml file", "what did you just do?"]
 
 
@@ -126,7 +127,7 @@ def test_agent_debug_cli_print_mode_runs_once_and_prints_final_answer(monkeypatc
     captured = capsys.readouterr()
     assert captured.out == "printed answer\n"
     assert captured.err == ""
-    user_messages = [message["content"] for message in client.seen_messages[0] if message["role"] == "user"]
+    user_messages = [message.content for message in client.seen_messages[0] if message.role == "user"]
     assert user_messages == ["script prompt"]
 
 
