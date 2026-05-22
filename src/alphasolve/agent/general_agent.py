@@ -78,7 +78,7 @@ class GeneralPurposeAgent:
         messages.append(Message(role="user", content=task))
 
         tools: list[ToolDef] = self.tool_registry.tool_defs(
-            self.config.tools, self.config.tool_parameters
+            self.config.tools, self.config.tool_parameters, self.config.tool_descriptions,
         )
         final_answer = ""
         trace: list[dict[str, Any]] = [

@@ -68,6 +68,7 @@ class ToolRegistry:
         self,
         enabled: tuple[str, ...] | list[str] | None = None,
         tool_parameters: Mapping[str, Mapping[str, Any]] | None = None,
+        tool_descriptions: Mapping[str, Mapping[str, Any]] | None = None,
     ) -> list["ToolDef"]:
         from alphasolve.llm.types import ToolDef
         names = list(enabled) if enabled is not None else list(self._tools)
@@ -75,6 +76,7 @@ class ToolRegistry:
         if missing:
             raise KeyError(f"unknown tools: {missing}")
         constraints = tool_parameters or {}
+        descriptions = tool_descriptions or {}
         out: list[ToolDef] = []
         for name in names:
             tool = self._tools[name]
@@ -82,7 +84,16 @@ class ToolRegistry:
             constraint = constraints.get(name)
             if constraint:
                 _apply_parameter_constraints(params, constraint)
-            out.append(ToolDef(name=tool.name, description=tool.description, parameters=params))
+            description = tool.description
+            desc_override = descriptions.get(name)
+            if desc_override:
+                if "override" in desc_override:
+                    description = desc_override["override"]
+                elif "suffix" in desc_override:
+                    description = description + "\n" + desc_override["suffix"]
+                if "parameters" in desc_override:
+                    _apply_parameter_description_overrides(params, desc_override["parameters"])
+            out.append(ToolDef(name=tool.name, description=description, parameters=params))
         return out
 
     def registered_tools(self) -> list[RegisteredTool]:
@@ -122,6 +133,17 @@ def _apply_parameter_constraints(parameters: dict[str, Any], constraints: Mappin
         prop = properties.setdefault(str(param_name), {})
         if isinstance(prop, dict):
             prop.update(dict(constraint))
+
+
+def _apply_parameter_description_overrides(parameters: dict[str, Any], overrides: Mapping[str, Mapping[str, str]]) -> None:
+    """覆盖某个参数自己的 description 文本。"""
+    properties = parameters.setdefault("properties", {})
+    if not isinstance(properties, dict):
+        return
+    for param_name, spec in overrides.items():
+        prop = properties.setdefault(str(param_name), {})
+        if isinstance(prop, dict) and "description" in spec:
+            prop["description"] = str(spec["description"])
 
 
 def _validate_tool_arguments(tool_name: str, args: Mapping[str, Any], constraints: Mapping[str, Any]) -> str | None:

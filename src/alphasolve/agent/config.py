@@ -17,6 +17,7 @@ class GeneralAgentConfig:
     role: str | None = None
     tools: tuple[str, ...] = ()
     tool_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
+    tool_descriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
     max_turns: int = 80
     skills: tuple[str, ...] = ()
     when_to_use: str = ""
@@ -186,6 +187,9 @@ def _resolve_agent_config(
     _merge_tool_parameters(tool_parameters, _parse_tool_parameters(raw.get("tools")))
     for key in ("tool_parameters", "tool_args", "tool_argument_constraints"):
         _merge_tool_parameters(tool_parameters, _parse_tool_parameters(raw.get(key)))
+    tool_descriptions = deepcopy(base.tool_descriptions if base else {})
+    raw_descriptions = raw.get("tool_descriptions") or {}
+    _merge_tool_descriptions(tool_descriptions, _parse_tool_descriptions(raw_descriptions))
     allowed_tools = raw.get("allowed_tools")
     if allowed_tools is not None:
         allowed = set(str(item) for item in allowed_tools)
@@ -209,6 +213,7 @@ def _resolve_agent_config(
         role=raw.get("role") or (base.role if base else None),
         tools=tuple(tools),
         tool_parameters=tool_parameters,
+        tool_descriptions=tool_descriptions,
         max_turns=int(raw.get("max_turns", base.max_turns if base else 80)),
         skills=tuple(skills),
         when_to_use=str(raw.get("when_to_use") or (base.when_to_use if base else "")),
@@ -310,3 +315,68 @@ def _merge_tool_parameters(target: dict[str, dict[str, Any]], incoming: dict[str
             base_constraint = dict(target_params.get(param_name) or {})
             base_constraint.update(dict(constraint))
             target_params[param_name] = base_constraint
+
+
+def _parse_tool_descriptions(raw: Any) -> dict[str, dict[str, Any]]:
+    """解析 YAML 的 tool_descriptions 字段。
+
+    支持三种覆盖语义：
+      tool_descriptions:
+        Read:
+          suffix: "..."        # 追加到工具默认 description 末尾（最常用）
+          override: "..."      # 完全替换默认 description（与 suffix 互斥）
+          parameters:
+            n_lines:
+              description: "..."   # 覆盖某个参数自己的 description
+    """
+    if not isinstance(raw, Mapping):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for tool_name, raw_override in raw.items():
+        if not isinstance(raw_override, Mapping):
+            continue
+        entry: dict[str, Any] = {}
+        if "suffix" in raw_override and "override" in raw_override:
+            raise ValueError(
+                f"tool_descriptions.{tool_name}: 'suffix' and 'override' are mutually exclusive"
+            )
+        if "suffix" in raw_override:
+            suffix = str(raw_override["suffix"]).strip()
+            if suffix:
+                entry["suffix"] = suffix
+        if "override" in raw_override:
+            override = str(raw_override["override"]).strip()
+            if override:
+                entry["override"] = override
+        if "parameters" in raw_override and isinstance(raw_override["parameters"], Mapping):
+            params: dict[str, dict[str, str]] = {}
+            for param_name, param_spec in raw_override["parameters"].items():
+                if not isinstance(param_spec, Mapping):
+                    continue
+                if "description" in param_spec:
+                    params[str(param_name)] = {"description": str(param_spec["description"])}
+            if params:
+                entry["parameters"] = params
+        if entry:
+            out[str(tool_name)] = entry
+    return out
+
+
+def _merge_tool_descriptions(target: dict[str, dict[str, Any]], incoming: dict[str, dict[str, Any]]) -> None:
+    """合并 tool_descriptions：base agent 与当前 agent 的覆盖叠加。
+
+    顶层 key（工具名）独立合并；每个工具内部：
+    - suffix / override：incoming 覆盖 target
+    - parameters：按参数名递归合并（incoming 参数级覆盖 target 同名参数）
+    """
+    for tool_name, entry in incoming.items():
+        target_entry = target.setdefault(tool_name, {})
+        for key, value in entry.items():
+            if key == "parameters":
+                target_params = target_entry.setdefault("parameters", {})
+                for param_name, param_spec in value.items():
+                    base_spec = dict(target_params.get(param_name, {}))
+                    base_spec.update(param_spec)
+                    target_params[param_name] = base_spec
+            else:
+                target_entry[key] = value
