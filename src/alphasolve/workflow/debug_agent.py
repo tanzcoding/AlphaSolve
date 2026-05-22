@@ -13,7 +13,10 @@ from alphasolve.agent import AgentRunError, AgentRunResult, AgentSuiteConfig, Ge
 from alphasolve.llm.types import Message
 from alphasolve.utils.rich_renderer import RICH_CONSOLE
 
-from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
+from .client_factory import ClientFactory
+from .subagent_service import SubagentService
+from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+from .workspace_access import RoleWorkspaceAccess
 
 
 DEBUG_AGENT_TOOLS = ["Glob", "Grep", "ListDir", "Read", "Write", "Edit"]

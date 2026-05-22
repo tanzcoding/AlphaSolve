@@ -16,7 +16,8 @@ if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
-    from .tools import ClientFactory, SubagentService
+    from .client_factory import ClientFactory
+    from .subagent_service import SubagentService
 
 
 @dataclass
@@ -132,7 +133,9 @@ class CuratorQueue:
             return
 
         from alphasolve.agent import GeneralPurposeAgent
-        from .tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
+        from .subagent_service import SubagentService
+        from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+        from .workspace_access import RoleWorkspaceAccess
 
         access = RoleWorkspaceAccess(
             workspace=_make_workspace(self.workspace_dir),

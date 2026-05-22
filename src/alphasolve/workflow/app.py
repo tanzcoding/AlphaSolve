@@ -18,7 +18,7 @@ from alphasolve.utils.rich_renderer import PropositionTeamRenderer
 from .curator import CuratorQueue, init_knowledge_base
 from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count
 from .project import ProjectLayout
-from .tools import ClientFactory
+from .client_factory import ClientFactory
 
 
 class AlphaSolve:

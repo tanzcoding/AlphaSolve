@@ -26,12 +26,9 @@ from alphasolve.agent import (
     Workspace,
     load_agent_suite_config,
 )
-from alphasolve.workflow.tools import (
-    RoleWorkspaceAccess,
-    SubagentService,
-    build_workspace_tool_registry,
-    register_agent_tool,
-)
+from alphasolve.workflow.subagent_service import SubagentService
+from alphasolve.workflow.workflow_tools import build_workspace_tool_registry, register_agent_tool
+from alphasolve.workflow.workspace_access import RoleWorkspaceAccess
 from alphasolve.config.agent_config import PACKAGE_ROOT
 
 
@@ -137,7 +134,7 @@ def _agent_setup(name: str, workspace: Workspace, worker_rel: str) -> tuple[Role
 def _register_compute_subagent_extra_tools(registry: ToolRegistry) -> None:
     """为 compute / numerical 子 agent 补齐 RunPython / RunWolfram 描述。
 
-    描述文本必须与 ``alphasolve.workflow.tools.SubagentService._build_subagent_registry``
+    描述文本必须与 ``alphasolve.workflow.subagent_service.SubagentService._build_subagent_registry``
     内对应注册一字一句保持一致。
     """
     registry.register(
@@ -271,6 +268,7 @@ def _build_registry_for_agent(
     tool_defs = registry.tool_defs(
         enabled=list(config.tools),
         tool_parameters=config.tool_parameters,
+        tool_descriptions=config.tool_descriptions,
     )
     return [asdict(td) for td in tool_defs]
 

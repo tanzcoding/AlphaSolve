@@ -13,10 +13,10 @@ from alphasolve.agent import (
     ToolRegistry,
     ToolResult,
 )
+from alphasolve.agent.tool_registry import build_default_tool_registry, register_agent_tool
 from alphasolve.execution.runners import run_python, run_wolfram
 
 from .client_factory import ClientFactory
-from .workflow_tools import build_workspace_tool_registry, register_agent_tool
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -199,7 +199,17 @@ class SubagentService:
         return session_id, result
 
     def _build_subagent_registry(self, *, depth: int, session_id: str, config: GeneralAgentConfig) -> ToolRegistry:
-        registry = ToolRegistry()
+        """子 agent 的工具集：第二层基础工具 + workflow 专属 RunPython/RunWolfram。
+
+        当 ``file_access_factory`` 提供时直接走第二层 ``build_default_tool_registry``；
+        否则用空 registry（基础文件工具由 ``enabled_tools`` 过滤逻辑剔除）。差异化
+        措辞统一由 agent YAML 的 ``tool_descriptions`` 表达，本方法不再重复注册基础工具。
+        """
+        if self.file_access_factory is not None:
+            access = self.file_access_factory()
+            registry = build_default_tool_registry(access)
+        else:
+            registry = ToolRegistry()
         python_env: dict[str, Any] = {}
         wolfram_session = {"session": None}
 
@@ -237,16 +247,6 @@ class SubagentService:
                 session_id=session_id,
             ),
         )
-        if self.file_access_factory is not None:
-            access = self.file_access_factory()
-            file_registry = build_workspace_tool_registry(access, allow_write=self.file_allow_write)
-            for tool in file_registry.registered_tools():
-                registry.register(
-                    name=tool.name,
-                    description=tool.description,
-                    parameters=tool.parameters,
-                    handler=tool.handler,
-                )
         if depth < self.max_depth:
             register_agent_tool(
                 registry,

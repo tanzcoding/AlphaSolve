@@ -17,7 +17,10 @@ from alphasolve.llm.types import Message
 from alphasolve.utils.event_logger import compose_event_sinks
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
-from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
+from .client_factory import ClientFactory
+from .subagent_service import SubagentService
+from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway

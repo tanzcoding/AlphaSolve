@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from alphasolve.agent import Workspace, load_agent_suite_config  # noqa: E402
 from alphasolve.workflow.project import ProjectLayout  # noqa: E402
-from alphasolve.workflow.tools import RoleWorkspaceAccess, build_workspace_tool_registry  # noqa: E402
+from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # noqa: E402
+from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.workflow.worker import Worker  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 

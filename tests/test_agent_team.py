@@ -29,7 +29,9 @@ from alphasolve.workflow.orchestrator import verified_count  # noqa: E402
 from alphasolve.workflow.worker import Worker  # noqa: E402
 from alphasolve.workflow.project import ProjectLayout  # noqa: E402
 from alphasolve.workflow.solution import write_solution  # noqa: E402
-from alphasolve.workflow.tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry  # noqa: E402
+from alphasolve.workflow.subagent_service import SubagentService  # noqa: E402
+from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # noqa: E402
+from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.execution import ExecutionGateway  # noqa: E402
@@ -1055,7 +1057,13 @@ def test_workspace_read_tool_defaults_to_60_lines_and_can_read_all():
         access = RoleWorkspaceAccess(workspace=Workspace(workspace_root))
         registry = build_workspace_tool_registry(access)
         read_schema = registry.tool_defs(["Read"])[0].parameters["properties"]
-        assert "How many lines to return in this Read call" in read_schema["n_lines"]["description"]
+        # Task 8: build_workspace_tool_registry is now a thin wrapper over
+        # build_default_tool_registry, which uses the canonical second-layer
+        # descriptions. The "How many lines to return in this Read call" /
+        # "ignore n_lines" wording is now sourced from each agent's YAML
+        # tool_descriptions override; this test only constructs the registry
+        # directly so it sees the base text instead.
+        assert "How many lines to return" in read_schema["n_lines"]["description"]
         assert "ignore n_lines" in read_schema["read_all"]["description"]
 
         default = registry.execute("Read", {"path": "notes.md"}).content
@@ -1172,7 +1180,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
 
         registry = orchestrator._build_registry(manager=object(), subagents=DummyReviewService())
 
-        defs = registry.tool_defs(config.tools, config.tool_parameters)
+        defs = registry.tool_defs(config.tools, config.tool_parameters, config.tool_descriptions)
         tool_names = [t.name for t in defs]
         assert "MakeDir" in tool_names
         assert "Rename" in tool_names
@@ -1180,7 +1188,12 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Write" in tool_names
         assert "Edit" in tool_names
         assert "Delete" not in tool_names
-        assert "Delete" not in [tool.name for tool in registry.registered_tools()]
+        # Task 8: build_workspace_tool_registry now always registers the full
+        # 12-tool base set (the registry is shared across agents). Per-agent
+        # gating happens via the YAML `tools:` whitelist surfaced through
+        # `tool_defs(enabled=...)`. So we no longer assert Delete is absent
+        # from registered_tools(); only that it is absent from the orchestrator
+        # agent's enabled tool defs.
         tool_descriptions = {t.name: t.description for t in defs}
         assert "return immediately" in tool_descriptions["SpawnWorker"]
         assert "active_count" in tool_descriptions["SpawnWorker"]

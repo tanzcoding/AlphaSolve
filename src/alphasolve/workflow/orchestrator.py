@@ -18,7 +18,10 @@ from .dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
 from .solution import write_solution
-from .tools import ClientFactory, RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
+from .client_factory import ClientFactory
+from .subagent_service import SubagentService
+from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
     from alphasolve.execution import ExecutionGateway
@@ -609,7 +612,7 @@ class Orchestrator:
             handler=lambda args: self._wait_tool(manager, args),
         )
         if subagents is not None:
-            from .tools import GeneralAgentConfig
+            from alphasolve.agent import GeneralAgentConfig
             register_agent_tool(
                 registry,
                 agent_config=GeneralAgentConfig(
