@@ -26,7 +26,7 @@ from alphasolve.agent import (
     Workspace,
     load_agent_suite_config,
 )
-from alphasolve.agents.team.tools import (
+from alphasolve.workflow.tools import (
     RoleWorkspaceAccess,
     SubagentService,
     build_workspace_tool_registry,
@@ -37,7 +37,7 @@ from alphasolve.config.agent_config import PACKAGE_ROOT
 
 # ---------------------------------------------------------------------------
 # 各 agent 在运行时拿到的 RoleWorkspaceAccess 参数与 registry 选项。
-# 字段含义与 alphasolve.agents.team.worker.Worker / orchestrator.Orchestrator /
+# 字段含义与 alphasolve.workflow.worker.Worker / orchestrator.Orchestrator /
 # curator.CuratorQueue 内的真实构造一一对应；snapshot 必须复刻这些参数才能
 # 得到与运行期完全一致的 ToolDef 列表。
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def _agent_setup(name: str, workspace: Workspace, worker_rel: str) -> tuple[Role
 def _register_compute_subagent_extra_tools(registry: ToolRegistry) -> None:
     """为 compute / numerical 子 agent 补齐 RunPython / RunWolfram 描述。
 
-    描述文本必须与 ``alphasolve.agents.team.tools.SubagentService._build_subagent_registry``
+    描述文本必须与 ``alphasolve.workflow.tools.SubagentService._build_subagent_registry``
     内对应注册一字一句保持一致。
     """
     registry.register(
@@ -175,13 +175,13 @@ def _register_compute_subagent_extra_tools(registry: ToolRegistry) -> None:
 def _register_orchestrator_extra_tools(registry: ToolRegistry) -> None:
     """为 orchestrator 补齐 SpawnWorker / TaskOutput 描述，使其能被 ToolRegistry.tool_defs 看到。
 
-    描述文本必须与 ``alphasolve.agents.team.orchestrator.Orchestrator._build_registry``
+    描述文本必须与 ``alphasolve.workflow.orchestrator.Orchestrator._build_registry``
     内 ``SpawnWorker`` / ``TaskOutput`` 的注册一字一句保持一致；后续 commit 改这两处
     必须同步修改这里。
     """
-    from alphasolve.agents.team.worker import Worker as _Worker  # noqa: F401  仅用于让 codegraph 看到依赖
+    from alphasolve.workflow.worker import Worker as _Worker  # noqa: F401  仅用于让 codegraph 看到依赖
     # WorkerManager 的默认等待时长嵌在 TaskOutput 描述里，需要导入。
-    from alphasolve.agents.team.orchestrator import WorkerManager
+    from alphasolve.workflow.orchestrator import WorkerManager
 
     registry.register(
         name="SpawnWorker",

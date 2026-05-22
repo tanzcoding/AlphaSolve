@@ -22,7 +22,7 @@ from alphasolve.llm.providers.openai_chat import (
     _messages_to_openai,
     _object_to_dict,
 )
-from alphasolve.agents.team.dashboard import make_worker_event_sink
+from alphasolve.workflow.dashboard import make_worker_event_sink
 from alphasolve.utils.rich_renderer import (
     PropositionTeamRenderer,
     WorkerRenderState,

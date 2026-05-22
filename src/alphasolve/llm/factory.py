@@ -10,7 +10,7 @@ from .types import ChatClient
 class _AgentConfigLike(Protocol):
     """Minimal shape consumed by the client factory.
 
-    Why: keeps alphasolve.llm decoupled from alphasolve.agents — any object
+    Why: keeps alphasolve.llm decoupled from alphasolve.agent — any object
     exposing ``effective_role()`` works, including test doubles.
     """
 

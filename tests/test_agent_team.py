@@ -14,9 +14,9 @@ from rich.console import Console
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agent import GeneralAgentConfig, Workspace, load_agent_suite_config  # noqa: E402
-from alphasolve.agents.team import AlphaSolve  # noqa: E402
-from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
-from alphasolve.agents.team.curator import (  # noqa: E402
+from alphasolve.workflow import AlphaSolve  # noqa: E402
+from alphasolve.workflow.demo import make_demo_client_factory  # noqa: E402
+from alphasolve.workflow.curator import (  # noqa: E402
     CURATOR_HEALTH_CHECK_INTERVAL,
     CuratorTask,
     CuratorQueue,
@@ -24,12 +24,12 @@ from alphasolve.agents.team.curator import (  # noqa: E402
     _update_entry_metadata,
     init_knowledge_base,
 )
-from alphasolve.agents.team.orchestrator import Orchestrator  # noqa: E402
-from alphasolve.agents.team.orchestrator import verified_count  # noqa: E402
-from alphasolve.agents.team.worker import Worker  # noqa: E402
-from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
-from alphasolve.agents.team.solution import write_solution  # noqa: E402
-from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry  # noqa: E402
+from alphasolve.workflow.orchestrator import Orchestrator  # noqa: E402
+from alphasolve.workflow.orchestrator import verified_count  # noqa: E402
+from alphasolve.workflow.worker import Worker  # noqa: E402
+from alphasolve.workflow.project import ProjectLayout  # noqa: E402
+from alphasolve.workflow.solution import write_solution  # noqa: E402
+from alphasolve.workflow.tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry  # noqa: E402
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.execution import ExecutionGateway  # noqa: E402
