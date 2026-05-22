@@ -136,12 +136,13 @@ def _apply_parameter_constraints(parameters: dict[str, Any], constraints: Mappin
 
 
 def _apply_parameter_description_overrides(parameters: dict[str, Any], overrides: Mapping[str, Mapping[str, str]]) -> None:
-    """覆盖某个参数自己的 description 文本。"""
-    properties = parameters.setdefault("properties", {})
+    """覆盖某个参数自己的 description 文本。未知参数名直接跳过，避免 YAML 笔误悄悄造出
+    没有 type 的空参数 schema。"""
+    properties = parameters.get("properties")
     if not isinstance(properties, dict):
         return
     for param_name, spec in overrides.items():
-        prop = properties.setdefault(str(param_name), {})
+        prop = properties.get(str(param_name))
         if isinstance(prop, dict) and "description" in spec:
             prop["description"] = str(spec["description"])
 

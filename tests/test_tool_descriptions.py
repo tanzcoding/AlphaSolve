@@ -88,3 +88,33 @@ def test_tool_descriptions_passthrough_when_none():
     defs_new = reg.tool_defs(enabled=["Read"], tool_descriptions=None)
     assert defs_old[0].description == defs_new[0].description
     assert defs_old[0].parameters == defs_new[0].parameters
+
+
+def test_parameters_description_skips_unknown_param():
+    """YAML 笔误指向不存在的参数时应直接跳过，不应在 schema 里造一个没有 type 的空 prop。"""
+    reg = _registry_with_one_tool()
+    defs = reg.tool_defs(
+        enabled=["Read"],
+        tool_descriptions={"Read": {"parameters": {"nonexistent": {"description": "ghost"}}}},
+    )
+    props = defs[0].parameters["properties"]
+    assert "nonexistent" not in props
+    assert set(props.keys()) == {"path", "n_lines"}
+
+
+def test_merge_suffix_clears_inherited_override():
+    """base agent 设了 override，子 agent 设 suffix 时，merge 后只应剩 suffix。"""
+    from alphasolve.agent.config import _merge_tool_descriptions
+
+    target = {"Read": {"override": "BASE."}}
+    _merge_tool_descriptions(target, {"Read": {"suffix": "child suffix"}})
+    assert target == {"Read": {"suffix": "child suffix"}}
+
+
+def test_merge_override_clears_inherited_suffix():
+    """对称情况：base 设 suffix，子 agent 设 override 时，merge 后只应剩 override。"""
+    from alphasolve.agent.config import _merge_tool_descriptions
+
+    target = {"Read": {"suffix": "BASE suffix"}}
+    _merge_tool_descriptions(target, {"Read": {"override": "child override"}})
+    assert target == {"Read": {"override": "child override"}}

@@ -366,7 +366,8 @@ def _merge_tool_descriptions(target: dict[str, dict[str, Any]], incoming: dict[s
     """合并 tool_descriptions：base agent 与当前 agent 的覆盖叠加。
 
     顶层 key（工具名）独立合并；每个工具内部：
-    - suffix / override：incoming 覆盖 target
+    - suffix / override：incoming 覆盖 target；并且当 incoming 设置其中一个时
+      会移除 target 上另一个，保持 suffix/override 互斥（与 parser 单文档检查一致）
     - parameters：按参数名递归合并（incoming 参数级覆盖 target 同名参数）
     """
     for tool_name, entry in incoming.items():
@@ -379,4 +380,8 @@ def _merge_tool_descriptions(target: dict[str, dict[str, Any]], incoming: dict[s
                     base_spec.update(param_spec)
                     target_params[param_name] = base_spec
             else:
+                if key == "suffix":
+                    target_entry.pop("override", None)
+                elif key == "override":
+                    target_entry.pop("suffix", None)
                 target_entry[key] = value
