@@ -19,7 +19,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from alphasolve.agents.general import (
+from alphasolve.agent import (
     GeneralAgentConfig,
     ToolRegistry,
     ToolResult,

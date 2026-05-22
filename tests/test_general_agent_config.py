@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from alphasolve.agents.general.config import (
+from alphasolve.agent.config import (
     GeneralAgentConfig,
     load_general_agent_config,
 )

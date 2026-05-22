@@ -2,7 +2,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from alphasolve.agents.general import GeneralAgentConfig
+from alphasolve.agent import GeneralAgentConfig
 from alphasolve.agents.team import orchestrator as orchestrator_module
 from alphasolve.agents.team import workflow as workflow_module
 from alphasolve.agents.team import AlphaSolve

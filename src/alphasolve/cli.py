@@ -190,7 +190,7 @@ def main() -> None:
     if args.agent_debug_prompt is not None and not args.agent_debug:
         parser.error("-p/--print can only be used with --agent-debug")
 
-    from alphasolve.agents.general import load_agent_suite_config
+    from alphasolve.agent import load_agent_suite_config
     from alphasolve.config.agent_config import PACKAGE_ROOT
     from alphasolve.llm import load_presets, load_active_profile, make_client_factory
 

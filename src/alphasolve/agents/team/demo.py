@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from alphasolve.agents.general import GeneralAgentConfig
+from alphasolve.agent import GeneralAgentConfig
 from alphasolve.llm.types import (
     ChatDeltaSink,
     CompletionResponse,

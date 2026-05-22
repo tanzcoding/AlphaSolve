@@ -13,7 +13,7 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agents.general import GeneralAgentConfig, Workspace, load_agent_suite_config  # noqa: E402
+from alphasolve.agent import GeneralAgentConfig, Workspace, load_agent_suite_config  # noqa: E402
 from alphasolve.agents.team import AlphaSolve  # noqa: E402
 from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
 from alphasolve.agents.team.curator import (  # noqa: E402

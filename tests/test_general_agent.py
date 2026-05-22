@@ -9,8 +9,8 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-import alphasolve.agents.general.general_agent as general_agent_module  # noqa: E402
-from alphasolve.agents.general import (  # noqa: E402
+import alphasolve.agent.general_agent as general_agent_module  # noqa: E402
+from alphasolve.agent import (  # noqa: E402
     GeneralAgentConfig,
     GeneralPurposeAgent,
     ToolRegistry,
@@ -19,7 +19,7 @@ from alphasolve.agents.general import (  # noqa: E402
     build_default_tool_registry,
     load_general_agent_config,
 )
-from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES  # noqa: E402
+from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES  # noqa: E402
 from alphasolve.llm.types import CompletionResponse, Message, StreamDelta, ToolCall  # noqa: E402
 
 

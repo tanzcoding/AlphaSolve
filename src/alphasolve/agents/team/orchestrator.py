@@ -10,8 +10,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from alphasolve.agents.general import AgentRunError, GeneralPurposeAgent, Workspace
-from alphasolve.agents.general.tool_registry import ToolRegistry, ToolResult
+from alphasolve.agent import AgentRunError, GeneralPurposeAgent, Workspace
+from alphasolve.agent.tool_registry import ToolRegistry, ToolResult
 from alphasolve.utils.event_logger import compose_event_sinks
 
 from .dashboard import make_orchestrator_event_sink

@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from alphasolve.agents.general import AgentRunError, GeneralAgentConfig, load_agent_suite_config
+from alphasolve.agent import AgentRunError, GeneralAgentConfig, load_agent_suite_config
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel

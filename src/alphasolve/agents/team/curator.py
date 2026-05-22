@@ -12,7 +12,7 @@ from alphasolve.utils.event_logger import compose_event_sinks
 from .dashboard import make_curator_event_sink
 
 if TYPE_CHECKING:
-    from alphasolve.agents.general import GeneralAgentConfig
+    from alphasolve.agent import GeneralAgentConfig
     from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
@@ -131,7 +131,7 @@ class CuratorQueue:
         if config is None:
             return
 
-        from alphasolve.agents.general import GeneralPurposeAgent
+        from alphasolve.agent import GeneralPurposeAgent
         from .tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry, register_agent_tool
 
         access = RoleWorkspaceAccess(
@@ -239,7 +239,7 @@ class CuratorQueue:
 
 
 def _make_workspace(workspace_dir: Path):
-    from alphasolve.agents.general import Workspace
+    from alphasolve.agent import Workspace
     return Workspace(workspace_dir)
 
 

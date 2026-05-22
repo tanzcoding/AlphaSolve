@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from alphasolve.agents.general import GeneralAgentConfig, GeneralPurposeAgent, Workspace
+from alphasolve.agent import GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.llm.types import Message
 from alphasolve.utils.event_logger import compose_event_sinks

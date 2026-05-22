@@ -12,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from alphasolve.agents.general import AgentRunResult, GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
-from alphasolve.agents.general.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, PagedReadResult, read_text_page
+from alphasolve.agent import AgentRunResult, GeneralAgentConfig, GeneralPurposeAgent, ToolRegistry, ToolResult, Workspace
+from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, PagedReadResult, read_text_page
 from alphasolve.execution.runners import run_python, run_wolfram
 from alphasolve.utils.shell import (
     find_bash_path,

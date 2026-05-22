@@ -9,7 +9,7 @@ from typing import Any, Callable
 from rich.console import Console
 from rich.text import Text
 
-from alphasolve.agents.general import AgentRunError, AgentRunResult, AgentSuiteConfig, GeneralAgentConfig, GeneralPurposeAgent, Workspace
+from alphasolve.agent import AgentRunError, AgentRunResult, AgentSuiteConfig, GeneralAgentConfig, GeneralPurposeAgent, Workspace
 from alphasolve.llm.types import Message
 from alphasolve.utils.rich_renderer import RICH_CONSOLE
 
