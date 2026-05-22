@@ -49,16 +49,19 @@ except ImportError:
         _SHIM_SKIP_REASON = f"Workspace import failed: {exc}"
         Workspace = None  # type: ignore[assignment, misc]
 
-# GeneralAgentConfig: 同上路径变化。
+# GeneralAgentConfig: Task 1 路径变化 + Task 9 重命名为 ``AgentConfig``。
 if _SHIM_SKIP_REASON is None:
     try:
         from alphasolve.agents.general import GeneralAgentConfig
     except ImportError:
         try:
-            from alphasolve.agent import GeneralAgentConfig  # type: ignore[no-redef]
-        except ImportError as exc:
-            _SHIM_SKIP_REASON = f"GeneralAgentConfig import failed: {exc}"
-            GeneralAgentConfig = None  # type: ignore[assignment, misc]
+            from alphasolve.agent import AgentConfig as GeneralAgentConfig  # type: ignore[no-redef]
+        except ImportError:
+            try:
+                from alphasolve.agent import GeneralAgentConfig  # type: ignore[no-redef]
+            except ImportError as exc:
+                _SHIM_SKIP_REASON = f"GeneralAgentConfig import failed: {exc}"
+                GeneralAgentConfig = None  # type: ignore[assignment, misc]
 
 # ToolRegistry: 同上路径变化。
 if _SHIM_SKIP_REASON is None:

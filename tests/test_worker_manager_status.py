@@ -2,7 +2,7 @@ import threading
 import time
 from types import SimpleNamespace
 
-from alphasolve.agent import GeneralAgentConfig
+from alphasolve.agent import AgentConfig
 from alphasolve.workflow import orchestrator as orchestrator_module
 from alphasolve.workflow import app as workflow_module
 from alphasolve.workflow import AlphaSolve
@@ -149,7 +149,7 @@ def test_orchestrator_interrupt_uses_separate_worker_stop_event(tmp_path, monkey
     user_stop_event.set()
     suite = SimpleNamespace(
         agents={
-            "orchestrator": GeneralAgentConfig(
+            "orchestrator": AgentConfig(
                 name="orchestrator",
                 system_prompt="Stop immediately.",
                 tools=[],
@@ -200,7 +200,7 @@ def test_alphasolve_cancel_stops_orchestrator_and_current_workers(tmp_path, monk
     monkeypatch.setattr(workflow_module, "Orchestrator", CapturingOrchestrator)
     monkeypatch.setattr(
         workflow_module,
-        "load_agent_suite_config",
+        "load_agent_suite",
         lambda _path: SimpleNamespace(settings={}, subagents={}, agents={}, models={}),
     )
     (tmp_path / "problem.md").write_text("# Problem\n\nTest.\n", encoding="utf-8")

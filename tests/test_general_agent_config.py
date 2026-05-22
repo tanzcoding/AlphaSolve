@@ -5,13 +5,13 @@ from pathlib import Path
 import pytest
 
 from alphasolve.agent.config import (
-    GeneralAgentConfig,
-    load_general_agent_config,
+    AgentConfig,
+    load_agent_config,
 )
 
 
 def test_general_agent_config_has_role_field():
-    cfg = GeneralAgentConfig(
+    cfg = AgentConfig(
         name="verifier_adversarial",
         system_prompt="...",
         role="verifier",
@@ -21,13 +21,13 @@ def test_general_agent_config_has_role_field():
 
 
 def test_effective_role_falls_back_to_name():
-    cfg = GeneralAgentConfig(name="curator", system_prompt="...")
+    cfg = AgentConfig(name="curator", system_prompt="...")
     assert cfg.role is None
     assert cfg.effective_role() == "curator"
 
 
 def test_tools_and_skills_are_tuples():
-    cfg = GeneralAgentConfig(
+    cfg = AgentConfig(
         name="x",
         system_prompt="...",
         tools=("Read", "Write"),
@@ -48,7 +48,7 @@ def test_loading_yaml_with_model_config_raises(tmp_path):
         encoding="utf-8",
     )
     with pytest.raises(ValueError) as exc:
-        load_general_agent_config(yaml_path)
+        load_agent_config(yaml_path)
     msg = str(exc.value)
     assert "model_config" in msg
     assert "role" in msg
@@ -65,7 +65,7 @@ def test_loading_yaml_with_role_works(tmp_path):
         "  max_turns: 60\n",
         encoding="utf-8",
     )
-    cfg = load_general_agent_config(yaml_path)
+    cfg = load_agent_config(yaml_path)
     assert cfg.name == "verifier_adversarial"
     assert cfg.role == "verifier"
     assert cfg.effective_role() == "verifier"

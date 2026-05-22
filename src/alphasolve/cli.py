@@ -162,7 +162,7 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true",
                         help="Produce detailed per-agent trace logs under logs/")
     parser.add_argument("--agent-debug", action="store_true",
-                        help="Run an interactive GeneralPurposeAgent tool-debugging TUI")
+                        help="Run an interactive Agent tool-debugging TUI")
     parser.add_argument("-p", "--print", dest="agent_debug_prompt", metavar="PROMPT",
                         help="Run --agent-debug once with PROMPT and print the final answer")
     parser.add_argument("--demo", action="store_true",
@@ -190,7 +190,7 @@ def main() -> None:
     if args.agent_debug_prompt is not None and not args.agent_debug:
         parser.error("-p/--print can only be used with --agent-debug")
 
-    from alphasolve.agent import load_agent_suite_config
+    from alphasolve.agent import load_agent_suite
     from alphasolve.config.agent_config import PACKAGE_ROOT
     from alphasolve.llm import load_presets, load_active_profile, make_client_factory
 
@@ -234,7 +234,7 @@ def main() -> None:
         return
 
     config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
-    suite = load_agent_suite_config(config_path)
+    suite = load_agent_suite(config_path)
 
     if args.demo:
         client_factory = make_demo_client_factory()

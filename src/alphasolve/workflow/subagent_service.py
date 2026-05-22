@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agent import (
     AgentRunResult,
-    GeneralAgentConfig,
-    GeneralPurposeAgent,
+    AgentConfig,
+    Agent,
     ToolRegistry,
     ToolResult,
 )
-from alphasolve.agent.tool_registry import build_default_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 from alphasolve.execution.runners import run_python, run_wolfram
 
 from .client_factory import ClientFactory
@@ -172,7 +172,7 @@ class SubagentService:
         if depth >= self.max_depth and "Agent" in enabled_tools:
             enabled_tools = [name for name in enabled_tools if name != "Agent"]
         if enabled_tools != list(config.tools):
-            config = GeneralAgentConfig(
+            config = AgentConfig(
                 name=config.name,
                 system_prompt=config.system_prompt,
                 tools=tuple(enabled_tools),
@@ -187,7 +187,7 @@ class SubagentService:
             )
         subagent_sink = self.log_session.create_subagent_sink(agent_type) if self.log_session is not None else None
         try:
-            agent = GeneralPurposeAgent(
+            agent = Agent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
@@ -202,7 +202,7 @@ class SubagentService:
                 self.execution_gateway.close_session(session_id)
         return session_id, result
 
-    def _build_subagent_registry(self, *, depth: int, session_id: str, config: GeneralAgentConfig) -> ToolRegistry:
+    def _build_subagent_registry(self, *, depth: int, session_id: str, config: AgentConfig) -> ToolRegistry:
         """子 agent 的工具集：第二层基础工具 + workflow 专属 RunPython/RunWolfram。
 
         当 ``file_access_factory`` 提供时直接走第二层 ``build_default_tool_registry``；

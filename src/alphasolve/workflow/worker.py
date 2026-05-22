@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from alphasolve.agent import GeneralAgentConfig, GeneralPurposeAgent, Workspace
+from alphasolve.agent import AgentConfig, Agent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.llm.types import Message
 from alphasolve.utils.event_logger import compose_event_sinks
@@ -327,7 +327,7 @@ class Worker:
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = GeneralPurposeAgent(
+        agent = Agent(
             config=config,
             client=self.client_factory(config),
             tool_registry=registry,
@@ -412,7 +412,7 @@ class Worker:
         )
         registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = GeneralPurposeAgent(
+        agent = Agent(
             config=config,
             client=self.client_factory(config),
             tool_registry=registry,
@@ -483,7 +483,7 @@ class Worker:
         )
         registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = GeneralPurposeAgent(
+        agent = Agent(
             config=config,
             client=self.client_factory(config),
             tool_registry=registry,
@@ -527,7 +527,7 @@ class Worker:
         )
         registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = GeneralPurposeAgent(
+        agent = Agent(
             config=config,
             client=self.client_factory(config),
             tool_registry=registry,
@@ -540,7 +540,7 @@ class Worker:
     def _run_review_verdict_judge(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
         role = f"review_verdict_judge w{workflow_index}.{attempt_index}"
         base_config = self.suite.agents.get("verifier") or self.suite.agents[self._verifier_config_names()[0]]
-        config = GeneralAgentConfig(
+        config = AgentConfig(
             name="review_verdict_judge",
             system_prompt=_REVIEW_VERDICT_PROMPT,
             tools=(),
@@ -548,7 +548,7 @@ class Worker:
             role=base_config.role,
         )
         self._set_phase(role, status="thinking", model=self._model_name(config))
-        agent = GeneralPurposeAgent(
+        agent = Agent(
             config=config,
             client=self.client_factory(config),
             tool_registry=build_workspace_tool_registry(
@@ -813,14 +813,14 @@ class Worker:
             raise ValueError(f"unknown verifier agent config(s): {missing}")
         return names
 
-    def _verifier_attempt_config(self, config_name: str) -> GeneralAgentConfig:
+    def _verifier_attempt_config(self, config_name: str) -> AgentConfig:
         config = self.suite.agents[config_name]
         tools = [name for name in config.tools if name not in {"Write", "Edit"}]
         if tools == config.tools:
             return config
         return replace(config, tools=tools)
 
-    def _model_name(self, config: GeneralAgentConfig) -> str:
+    def _model_name(self, config: AgentConfig) -> str:
         return config.effective_role()
 
 

@@ -1,7 +1,7 @@
 """Workflow 层的工具 registry 工厂：直接调用第二层 build_default_tool_registry。
 
 历史上这里重复注册了 12 个基础工具（Read / Write / Edit / ...），与第二层的
-``alphasolve.agent.tool_registry.build_default_tool_registry`` 一字不差地重复。
+``alphasolve.agent.tools.build_default_tool_registry`` 一字不差地重复。
 A 阶段 Task 8 把所有差异化措辞（"Results respect this agent's workspace access
 restrictions." 等）搬到每个 agent YAML 的 ``tool_descriptions`` 字段，本文件
 退化为薄包装。
@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from alphasolve.agent import ToolRegistry
-from alphasolve.agent.tool_registry import build_default_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 
 from .workspace_access import RoleWorkspaceAccess
 

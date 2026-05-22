@@ -11,7 +11,7 @@ import yaml
 
 
 @dataclass(frozen=True)
-class GeneralAgentConfig:
+class AgentConfig:
     name: str
     system_prompt: str
     role: str | None = None
@@ -30,15 +30,15 @@ class GeneralAgentConfig:
 
 
 @dataclass(frozen=True)
-class AgentSuiteConfig:
+class AgentSuite:
     path: Path
-    agents: dict[str, GeneralAgentConfig] = field(default_factory=dict)
-    subagents: dict[str, GeneralAgentConfig] = field(default_factory=dict)
+    agents: dict[str, AgentConfig] = field(default_factory=dict)
+    subagents: dict[str, AgentConfig] = field(default_factory=dict)
     models: dict[str, Any] = field(default_factory=dict)
     settings: dict[str, Any] = field(default_factory=dict)
 
 
-def load_general_agent_config(path: str | Path, *, base_dir: str | Path | None = None) -> GeneralAgentConfig:
+def load_agent_config(path: str | Path, *, base_dir: str | Path | None = None) -> AgentConfig:
     config_path = Path(path)
     if not config_path.is_absolute() and base_dir is not None:
         config_path = Path(base_dir) / config_path
@@ -49,10 +49,10 @@ def load_general_agent_config(path: str | Path, *, base_dir: str | Path | None =
     if not isinstance(raw, Mapping):
         raise ValueError("agent config must be a JSON object")
 
-    return _build_general_agent_config(raw, config_path=config_path, fallback_name=config_path.stem)
+    return _build_agent_config(raw, config_path=config_path, fallback_name=config_path.stem)
 
 
-def load_agent_suite_config(path: str | Path) -> AgentSuiteConfig:
+def load_agent_suite(path: str | Path) -> AgentSuite:
     config_path = Path(path).resolve()
     if config_path.is_dir():
         config_path = config_path / "agents.yaml"
@@ -60,13 +60,13 @@ def load_agent_suite_config(path: str | Path) -> AgentSuiteConfig:
     if not isinstance(raw, Mapping):
         raise ValueError("agent suite config must be a mapping")
 
-    agents: dict[str, GeneralAgentConfig] = {}
-    subagents: dict[str, GeneralAgentConfig] = {}
+    agents: dict[str, AgentConfig] = {}
+    subagents: dict[str, AgentConfig] = {}
     agents.update(_load_agent_dir(raw.get("agents_dir"), config_path=config_path))
     subagents.update(_load_agent_dir(raw.get("subagents_dir"), config_path=config_path))
     agents.update(_load_agent_group(raw.get("agents") or {}, config_path=config_path))
     subagents.update(_load_agent_group(raw.get("subagents") or {}, config_path=config_path))
-    return AgentSuiteConfig(
+    return AgentSuite(
         path=config_path,
         agents=agents,
         subagents=subagents,
@@ -82,23 +82,23 @@ def _load_raw_config(config_path: Path) -> Any:
         return json.load(f)
 
 
-def _load_agent_group(raw_group: Any, *, config_path: Path) -> dict[str, GeneralAgentConfig]:
+def _load_agent_group(raw_group: Any, *, config_path: Path) -> dict[str, AgentConfig]:
     if not isinstance(raw_group, Mapping):
         raise ValueError("agent group must be a mapping")
 
-    out: dict[str, GeneralAgentConfig] = {}
+    out: dict[str, AgentConfig] = {}
     for name, raw_agent in raw_group.items():
         if not isinstance(raw_agent, Mapping):
             raise ValueError(f"agent config for {name!r} must be a mapping")
         if raw_agent.get("path"):
-            config = load_general_agent_config(raw_agent["path"], base_dir=config_path.parent)
+            config = load_agent_config(raw_agent["path"], base_dir=config_path.parent)
         else:
-            config = _build_general_agent_config(raw_agent, config_path=config_path, fallback_name=str(name))
+            config = _build_agent_config(raw_agent, config_path=config_path, fallback_name=str(name))
         out[str(name)] = config
     return out
 
 
-def _load_agent_dir(raw_dir: Any, *, config_path: Path) -> dict[str, GeneralAgentConfig]:
+def _load_agent_dir(raw_dir: Any, *, config_path: Path) -> dict[str, AgentConfig]:
     if not raw_dir:
         return {}
     agent_dir = Path(str(raw_dir))
@@ -108,21 +108,21 @@ def _load_agent_dir(raw_dir: Any, *, config_path: Path) -> dict[str, GeneralAgen
     if not agent_dir.is_dir():
         raise ValueError(f"agent directory does not exist: {agent_dir}")
 
-    out: dict[str, GeneralAgentConfig] = {}
+    out: dict[str, AgentConfig] = {}
     for path in sorted([*agent_dir.glob("*.yaml"), *agent_dir.glob("*.yml")]):
-        config = load_general_agent_config(path)
+        config = load_agent_config(path)
         if config.name in out:
             raise ValueError(f"duplicate agent name {config.name!r} in {agent_dir}")
         out[config.name] = config
     return out
 
 
-def _build_general_agent_config(
+def _build_agent_config(
     raw: Mapping[str, Any],
     *,
     config_path: Path,
     fallback_name: str,
-) -> GeneralAgentConfig:
+) -> AgentConfig:
     if "agent" in raw and isinstance(raw.get("agent"), Mapping):
         raw = raw["agent"]
     return _resolve_agent_config(raw, config_path=config_path, fallback_name=fallback_name, seen=frozenset())
@@ -134,14 +134,14 @@ def _resolve_agent_config(
     config_path: Path,
     fallback_name: str,
     seen: frozenset[Path],
-) -> GeneralAgentConfig:
+) -> AgentConfig:
     if "model_config" in raw:
         raise ValueError(
             f"{config_path}: field 'model_config' is no longer supported; "
             f"replace with 'role: <role-name>' (see "
             f"docs/superpowers/specs/2026-05-22-alphasolve-llm-provider-abstraction-design.md §5.5)"
         )
-    base: GeneralAgentConfig | None = None
+    base: AgentConfig | None = None
     extend = raw.get("extend")
     if extend:
         base_path = Path(str(extend))
@@ -207,7 +207,7 @@ def _resolve_agent_config(
     skill_blocks = _load_skill_blocks(skills, config_path=config_path)
     if skill_blocks:
         prompt_text = _append_skill_blocks(prompt_text, skill_blocks)
-    return GeneralAgentConfig(
+    return AgentConfig(
         name=name,
         system_prompt=prompt_text,
         role=raw.get("role") or (base.role if base else None),

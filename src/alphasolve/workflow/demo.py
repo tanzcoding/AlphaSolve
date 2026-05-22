@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 
-from alphasolve.agent import GeneralAgentConfig
+from alphasolve.agent import AgentConfig
 from alphasolve.llm.types import (
     ChatDeltaSink,
     CompletionResponse,
@@ -95,7 +95,7 @@ class DemoChatClient:
 
 
 def make_demo_client_factory():
-    def factory(config: GeneralAgentConfig) -> DemoChatClient:
+    def factory(config: AgentConfig) -> DemoChatClient:
         return DemoChatClient(config.name)
 
     return factory

@@ -17,17 +17,17 @@ from alphasolve.llm.types import (
     ToolDef,
 )
 
-from .config import GeneralAgentConfig
-from .tool_registry import ToolRegistry
+from .config import AgentConfig
+from .tools import ToolRegistry
 
 
 __all__ = [
+    "Agent",
     "AgentEventSink",
     "AgentRunError",
     "AgentRunResult",
     "ChatClient",
     "ChatDeltaSink",
-    "GeneralPurposeAgent",
 ]
 
 
@@ -48,11 +48,11 @@ class AgentRunError(RuntimeError):
 AgentEventSink = Callable[[dict[str, Any]], None]
 
 
-class GeneralPurposeAgent:
+class Agent:
     def __init__(
         self,
         *,
-        config: GeneralAgentConfig,
+        config: AgentConfig,
         client: ChatClient,
         tool_registry: ToolRegistry,
         event_sink: AgentEventSink | None = None,

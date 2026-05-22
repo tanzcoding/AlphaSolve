@@ -9,15 +9,15 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-import alphasolve.agent.general_agent as general_agent_module  # noqa: E402
+import alphasolve.agent.agent as general_agent_module  # noqa: E402
 from alphasolve.agent import (  # noqa: E402
-    GeneralAgentConfig,
-    GeneralPurposeAgent,
+    AgentConfig,
+    Agent,
     ToolRegistry,
     ToolResult,
     Workspace,
     build_default_tool_registry,
-    load_general_agent_config,
+    load_agent_config,
 )
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES  # noqa: E402
 from alphasolve.llm.types import CompletionResponse, Message, StreamDelta, ToolCall  # noqa: E402
@@ -128,8 +128,8 @@ def test_general_agent_emits_streaming_delta_events():
 
     events = []
     client = StreamingClient()
-    agent = GeneralPurposeAgent(
-        config=GeneralAgentConfig(
+    agent = Agent(
+        config=AgentConfig(
             name="streaming",
             system_prompt="You stream.",
             tools=(),
@@ -159,8 +159,8 @@ def test_general_agent_resets_stream_state_on_retry_delta():
             return _resp("fresh answer", reasoning_content="fresh reasoning")
 
     events = []
-    agent = GeneralPurposeAgent(
-        config=GeneralAgentConfig(
+    agent = Agent(
+        config=AgentConfig(
             name="retry-stream",
             system_prompt="You stream.",
             tools=(),
@@ -205,8 +205,8 @@ def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
         handler=lambda _args: ToolResult("ok"),
     )
     client = AliasReasoningClient()
-    agent = GeneralPurposeAgent(
-        config=GeneralAgentConfig(
+    agent = Agent(
+        config=AgentConfig(
             name="alias-reasoning",
             system_prompt="Use a tool.",
             tools=("side_effect",),
@@ -243,8 +243,8 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
         parameters={"type": "object", "properties": {}, "required": []},
         handler=lambda _args: tool_calls.append("called") or ToolResult("done"),
     )
-    agent = GeneralPurposeAgent(
-        config=GeneralAgentConfig(
+    agent = Agent(
+        config=AgentConfig(
             name="interruptible",
             system_prompt="Use a tool.",
             tools=("side_effect",),
@@ -266,13 +266,13 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
 def _assert_agent_can_write_and_read_workspace_file(tmp_path):
     workspace = Workspace(tmp_path)
     registry = build_default_tool_registry(workspace)
-    config = GeneralAgentConfig(
+    config = AgentConfig(
         name="demo",
         system_prompt="You are a demo agent.",
         tools=["Write", "Read"],
         max_turns=5,
     )
-    agent = GeneralPurposeAgent(config=config, client=FakeChatClient(), tool_registry=registry)
+    agent = Agent(config=config, client=FakeChatClient(), tool_registry=registry)
 
     result = agent.run("Create a proposition file and read it back.")
 
@@ -304,12 +304,12 @@ def _assert_workspace_blocks_path_escape(tmp_path):
         raise AssertionError("workspace path escape should fail")
 
 
-def test_load_general_agent_config():
+def test_load_agent_config():
     with local_test_dir("config") as tmp_path:
-        _assert_load_general_agent_config(tmp_path)
+        _assert_load_agent_config(tmp_path)
 
 
-def test_load_general_agent_config_appends_skill_markdown():
+def test_load_agent_config_appends_skill_markdown():
     with local_test_dir("config_skill") as tmp_path:
         skill_dir = tmp_path / "skills" / "math_review"
         skill_dir.mkdir(parents=True)
@@ -332,7 +332,7 @@ def test_load_general_agent_config_appends_skill_markdown():
             encoding="utf-8",
         )
 
-        config = load_general_agent_config(config_path)
+        config = load_agent_config(config_path)
 
         assert config.skills == ("math_review",)
         assert "Base prompt" in config.system_prompt
@@ -341,7 +341,7 @@ def test_load_general_agent_config_appends_skill_markdown():
         assert "Check hidden assumptions carefully." in config.system_prompt
 
 
-def _assert_load_general_agent_config(tmp_path):
+def _assert_load_agent_config(tmp_path):
     config_path = tmp_path / "agent.json"
     config_path.write_text(
         json.dumps(
@@ -356,7 +356,7 @@ def _assert_load_general_agent_config(tmp_path):
         encoding="utf-8",
     )
 
-    config = load_general_agent_config(config_path)
+    config = load_agent_config(config_path)
 
     assert config.name == "demo"
     assert config.tools == ("Read",)
@@ -364,7 +364,7 @@ def _assert_load_general_agent_config(tmp_path):
     assert config.max_turns == 7
 
 
-def test_load_general_agent_config_supports_extend_and_exclude_tools():
+def test_load_agent_config_supports_extend_and_exclude_tools():
     with local_test_dir("extend_config") as tmp_path:
         prompt = tmp_path / "base.md"
         prompt.write_text("Base ${ROLE}", encoding="utf-8")
@@ -416,7 +416,7 @@ def test_load_general_agent_config_supports_extend_and_exclude_tools():
             encoding="utf-8",
         )
 
-        config = load_general_agent_config(child)
+        config = load_agent_config(child)
 
         assert config.name == "child"
         assert config.system_prompt == "Base child"
@@ -458,14 +458,14 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
     with local_test_dir("tool_constraints") as tmp_path:
         workspace = Workspace(tmp_path)
         registry = build_default_tool_registry(workspace)
-        config = GeneralAgentConfig(
+        config = AgentConfig(
             name="guarded",
             system_prompt="You are a guarded agent.",
             tools=("Read",),
             tool_parameters={"Read": {"path": {"enum": ["allowed.md"]}}},
             max_turns=5,
         )
-        agent = GeneralPurposeAgent(config=config, client=InvalidToolClient(), tool_registry=registry)
+        agent = Agent(config=config, client=InvalidToolClient(), tool_registry=registry)
 
         result = agent.run("Try invalid tools and arguments.")
 
@@ -515,7 +515,7 @@ def _run_as_script():
     try:
         _assert_agent_can_write_and_read_workspace_file(tmp_root / "a")
         _assert_workspace_blocks_path_escape(tmp_root / "b")
-        _assert_load_general_agent_config(tmp_root / "c")
+        _assert_load_agent_config(tmp_root / "c")
         print("general agent demo ok")
     finally:
         if tmp_root.exists():

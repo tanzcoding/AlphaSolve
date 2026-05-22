@@ -3,6 +3,6 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from alphasolve.agent import GeneralAgentConfig
+from alphasolve.agent import AgentConfig
 
-ClientFactory = Callable[[GeneralAgentConfig], Any]
+ClientFactory = Callable[[AgentConfig], Any]

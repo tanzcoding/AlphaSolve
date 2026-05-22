@@ -20,11 +20,11 @@ from pathlib import Path
 from typing import Any
 
 from alphasolve.agent import (
-    GeneralAgentConfig,
+    AgentConfig,
     ToolRegistry,
     ToolResult,
     Workspace,
-    load_agent_suite_config,
+    load_agent_suite,
 )
 from alphasolve.workflow.subagent_service import SubagentService
 from alphasolve.workflow.workflow_tools import build_workspace_tool_registry, register_agent_tool
@@ -234,7 +234,7 @@ def _register_orchestrator_extra_tools(registry: ToolRegistry) -> None:
 
 def _build_registry_for_agent(
     name: str,
-    config: GeneralAgentConfig,
+    config: AgentConfig,
     workspace_root: Path,
     suite: Any,
 ) -> list[dict]:
@@ -276,7 +276,7 @@ def _build_registry_for_agent(
 def main() -> None:
     repo_root = Path(__file__).resolve().parent.parent
     suite_path = Path(PACKAGE_ROOT) / "config"
-    suite = load_agent_suite_config(suite_path)
+    suite = load_agent_suite(suite_path)
 
     snapshots_dir = repo_root / "tests" / "fixtures" / "workflow_tool_snapshots"
     snapshots_dir.mkdir(parents=True, exist_ok=True)

@@ -9,7 +9,7 @@ from typing import Any
 
 import httpx
 
-from alphasolve.agent import AgentRunError, GeneralAgentConfig, load_agent_suite_config
+from alphasolve.agent import AgentRunError, AgentConfig, load_agent_suite
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.execution import ExecutionGateway
 from alphasolve.runtime.wolfram_probe import check_wolfram_kernel
@@ -116,7 +116,7 @@ class AlphaSolve:
                 encoding="utf-8",
             )
 
-            suite = load_agent_suite_config(self.config_path)
+            suite = load_agent_suite(self.config_path)
             verifier_scaling_factor = (
                 int(self.verifier_scaling_factor_override)
                 if self.verifier_scaling_factor_override is not None

@@ -10,8 +10,8 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from alphasolve.agent import AgentRunError, GeneralPurposeAgent, Workspace
-from alphasolve.agent.tool_registry import ToolRegistry, ToolResult
+from alphasolve.agent import AgentRunError, Agent, Workspace
+from alphasolve.agent.tools import ToolRegistry, ToolResult
 from alphasolve.utils.event_logger import compose_event_sinks
 
 from .dashboard import make_orchestrator_event_sink
@@ -517,7 +517,7 @@ class Orchestrator:
                 if self.renderer is not None:
                     model_name = self._model_name(config)
                     self.renderer.set_orchestrator_model(model_name)
-                agent = GeneralPurposeAgent(
+                agent = Agent(
                     config=config,
                     client=self.client_factory(config),
                     tool_registry=registry,
@@ -612,10 +612,10 @@ class Orchestrator:
             handler=lambda args: self._wait_tool(manager, args),
         )
         if subagents is not None:
-            from alphasolve.agent import GeneralAgentConfig
+            from alphasolve.agent import AgentConfig
             register_agent_tool(
                 registry,
-                agent_config=GeneralAgentConfig(
+                agent_config=AgentConfig(
                     name="_orchestrator_subagent",
                     system_prompt="",
                     tools=["Agent"],

@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agent import Workspace  # noqa: E402
-from alphasolve.agent.tool_registry import build_default_tool_registry  # noqa: E402
+from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
 
 
 @pytest.fixture

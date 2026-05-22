@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agent import Workspace, load_agent_suite_config  # noqa: E402
+from alphasolve.agent import Workspace, load_agent_suite  # noqa: E402
 from alphasolve.workflow.project import ProjectLayout  # noqa: E402
 from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # noqa: E402
 from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
@@ -16,7 +16,7 @@ from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 
 
 def test_verifier_citation_is_first_default_attempt():
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
 
     assert "verifier_citation" in suite.agents
     assert suite.settings["verifier_agents"][0] == "verifier_citation"
@@ -110,7 +110,7 @@ def test_citation_access_denies_knowledge_reads(tmp_path):
 
 
 def test_citation_tools_can_list_verified_proposition_subdirectories(tmp_path):
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
     config = suite.agents["verifier_citation"]
     workspace = Workspace(tmp_path)
     nested_dir = tmp_path / "verified_propositions" / "coercive" / "local"

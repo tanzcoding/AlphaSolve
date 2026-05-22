@@ -12,7 +12,7 @@ from alphasolve.utils.event_logger import compose_event_sinks
 from .dashboard import make_curator_event_sink
 
 if TYPE_CHECKING:
-    from alphasolve.agent import GeneralAgentConfig
+    from alphasolve.agent import AgentConfig
     from alphasolve.execution import ExecutionGateway
     from alphasolve.utils.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
@@ -128,11 +128,11 @@ class CuratorQueue:
                 self._set_task_active(False)
 
     def _run_curator(self, task: CuratorTask) -> None:
-        config: GeneralAgentConfig | None = self.suite.subagents.get("curator")
+        config: AgentConfig | None = self.suite.subagents.get("curator")
         if config is None:
             return
 
-        from alphasolve.agent import GeneralPurposeAgent
+        from alphasolve.agent import Agent
         from .subagent_service import SubagentService
         from .workflow_tools import build_workspace_tool_registry, register_agent_tool
         from .workspace_access import RoleWorkspaceAccess
@@ -219,7 +219,7 @@ class CuratorQueue:
             self.renderer.set_curator_model(_model_name(config, suite=self.suite))
             self.renderer.start_curator_task(task.source_label)
         try:
-            agent = GeneralPurposeAgent(
+            agent = Agent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
@@ -254,7 +254,7 @@ def _trace_kind(source_label: str) -> str:
     return "subagent"
 
 
-def _model_name(config: "GeneralAgentConfig", *, suite) -> str:
+def _model_name(config: "AgentConfig", *, suite) -> str:
     del suite  # unused; preserved for signature compatibility
     return config.effective_role()
 

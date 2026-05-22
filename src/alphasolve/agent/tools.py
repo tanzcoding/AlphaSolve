@@ -7,7 +7,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Protocol
 
-from .config import GeneralAgentConfig
+from .config import AgentConfig
 from .workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, WorkspaceLike
 from alphasolve.utils.shell import find_bash_path, has_bash, run_powershell_command
 
@@ -625,7 +625,7 @@ def build_default_tool_registry(
 def register_agent_tool(
     registry: ToolRegistry,
     *,
-    agent_config: GeneralAgentConfig,
+    agent_config: AgentConfig,
     dispatcher: SubagentDispatcher,
     depth: int = 0,
 ) -> None:

@@ -9,7 +9,7 @@ from typing import Any, Callable
 from rich.console import Console
 from rich.text import Text
 
-from alphasolve.agent import AgentRunError, AgentRunResult, AgentSuiteConfig, GeneralAgentConfig, GeneralPurposeAgent, Workspace
+from alphasolve.agent import AgentRunError, AgentRunResult, AgentSuite, AgentConfig, Agent, Workspace
 from alphasolve.llm.types import Message
 from alphasolve.utils.rich_renderer import RICH_CONSOLE
 
@@ -247,7 +247,7 @@ class GeneralAgentDebugApp:
         *,
         project_dir: str | Path,
         client_factory: ClientFactory,
-        suite: AgentSuiteConfig | None = None,
+        suite: AgentSuite | None = None,
         console: Console = RICH_CONSOLE,
         renderer_factory: Callable[..., GeneralAgentDebugRenderer | None] | None = GeneralAgentDebugRenderer,
         max_turns: int = 80,
@@ -261,14 +261,14 @@ class GeneralAgentDebugApp:
         self._renderer_factory = renderer_factory
         self._renderer: GeneralAgentDebugRenderer | None = None
         self._history: list[Message] = []
-        self._agent_config: GeneralAgentConfig | None = None
+        self._agent_config: AgentConfig | None = None
         self._tools: list[str] = []
 
     def cancel(self) -> None:
         self.stop_event.set()
 
     def run(self) -> None:
-        self.console.print("[bold cyan]AlphaSolve GeneralPurposeAgent debug mode[/bold cyan]")
+        self.console.print("[bold cyan]AlphaSolve Agent debug mode[/bold cyan]")
         self.console.print(f"[dim]workspace:[/dim] {self.project_dir}")
         self.console.print("[dim]commands:[/dim] /exit, /quit, Ctrl+C")
         while not self.stop_event.is_set():
@@ -294,7 +294,7 @@ class GeneralAgentDebugApp:
         if renderer is not None:
             renderer.start(prompt)
         try:
-            agent = GeneralPurposeAgent(
+            agent = Agent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
@@ -309,13 +309,13 @@ class GeneralAgentDebugApp:
                 renderer.stop()
             self._renderer = None
 
-    def build_config(self) -> GeneralAgentConfig:
+    def build_config(self) -> AgentConfig:
         if self.suite is not None and "agent_debug" in self.suite.agents:
             config = self.suite.agents["agent_debug"]
             self._agent_config = config
             self._tools = list(config.tools)
             return config
-        self._agent_config = GeneralAgentConfig(
+        self._agent_config = AgentConfig(
             name="agent_debug",
             system_prompt="",
             tools=tuple(DEBUG_AGENT_TOOLS),

@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
-from alphasolve.agent import GeneralAgentConfig, ToolRegistry, ToolResult
+from alphasolve.agent import AgentConfig, ToolRegistry, ToolResult
 
 
 def _registry_with_one_tool() -> ToolRegistry:
@@ -71,13 +71,13 @@ agent:
 """,
         encoding="utf-8",
     )
-    from alphasolve.agent.config import load_general_agent_config
+    from alphasolve.agent.config import load_agent_config
     with pytest.raises(ValueError, match="mutually exclusive"):
-        load_general_agent_config(yaml)
+        load_agent_config(yaml)
 
 
 def test_tool_descriptions_field_default_empty():
-    cfg = GeneralAgentConfig(name="t", system_prompt="hi")
+    cfg = AgentConfig(name="t", system_prompt="hi")
     assert cfg.tool_descriptions == {}
 
 
