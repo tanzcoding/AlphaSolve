@@ -26,6 +26,8 @@ env/
 .cursor/
 .aider*
 .copilot/
+.codegraph/
+docs/superpowers/
 
 # IDE / editors
 .vscode/
