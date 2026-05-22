@@ -29,7 +29,8 @@ __all__ = ["build_workspace_tool_registry", "register_agent_tool"]
 def build_workspace_tool_registry(
     access: RoleWorkspaceAccess,
     *,
-    allow_write: bool = False,  # 兼容旧调用方；不再影响工具集
+    # 以下四个参数都是为了向后兼容现有 call sites 保留；不再影响工具集（见模块 docstring）。
+    allow_write: bool = False,
     allow_manage: bool = False,
     allow_delete: bool = False,
     subagent_service: "SubagentService | None" = None,

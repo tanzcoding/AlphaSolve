@@ -149,6 +149,10 @@ class SubagentService:
         session_id = self._make_session_id(agent_type=agent_type, depth=depth)
         registry = self._build_subagent_registry(depth=depth, session_id=session_id, config=config)
         enabled_tools = list(config.tools)
+        # TODO(B-phase): 这段在 Python 里硬过滤 subagent 能用的文件/Agent 工具，
+        # 是 A 阶段 Task 8 之后第三层仅剩的运行时工具白名单逻辑。B 阶段会让
+        # extension API 用更通用的方式表达"按 file_access_factory / 递归 depth
+        # 决定的运行时工具开关"。参见 plan §8。
         if self.file_access_factory is not None:
             for name in ("Read", "ListDir", "Glob", "Grep"):
                 if name not in enabled_tools:
