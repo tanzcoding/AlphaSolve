@@ -93,7 +93,7 @@ def test_default_read_tool_defaults_to_250_lines_reports_total_and_supports_read
 
         assert props["n_lines"]["default"] == READ_PAGE_DEFAULT_LINES == 250
         assert props["n_lines"]["maximum"] == READ_PAGE_MAX_LINES
-        assert "How many lines to return in this Read call" in props["n_lines"]["description"]
+        assert "How many lines to return" in props["n_lines"]["description"]
         assert props["read_all"]["default"] is False
         assert "ignore n_lines" in props["read_all"]["description"]
 

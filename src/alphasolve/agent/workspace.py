@@ -134,6 +134,10 @@ class Workspace:
             raise WorkspaceError(f"path escapes workspace: {path}")
         return resolved
 
+    def _rel(self, target: Path) -> str:
+        # 内部辅助：把绝对路径转为 workspace 相对 POSIX 字符串；根目录返回 "."。
+        return target.relative_to(self.root).as_posix() if target != self.root else "."
+
     def read_text_page(
         self,
         path: str | Path,
@@ -149,19 +153,160 @@ class Workspace:
             raise WorkspaceError(f"not a file: {path}")
         return read_text_page(target, line_offset=line_offset, n_lines=n_lines, read_all=read_all)
 
-    def write_text(self, path: str | Path, content: str) -> str:
+    def write_text(self, path: str | Path, content: str, *, mode: str = "overwrite") -> str:
         target = self.resolve(path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
+        text = str(content)
+        if mode == "overwrite":
+            target.write_text(text, encoding="utf-8")
+        elif mode == "append":
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write(text)
+        else:
+            raise WorkspaceError("write mode must be either 'overwrite' or 'append'")
         return str(target)
 
-    def list_dir(self, path: str | Path = ".") -> list[str]:
+    def edit(self, path: str, old_str: str, new_str: str) -> str:
+        target = self.resolve(path)
+        if not target.is_file():
+            raise WorkspaceError(f"not a file: {path}")
+        text = target.read_text(encoding="utf-8")
+        if old_str not in text:
+            raise WorkspaceError(f"old_str not found in {path}")
+        if text.count(old_str) > 1:
+            raise WorkspaceError(f"old_str matches multiple locations in {path}; make it more specific")
+        target.write_text(text.replace(old_str, new_str, 1), encoding="utf-8")
+        return self._rel(target)
+
+    def make_dir(self, path: str) -> str:
+        target = self.resolve(path)
+        target.mkdir(parents=True, exist_ok=True)
+        return self._rel(target)
+
+    def rename_item(self, directory: str, old_name: str, new_name: str) -> dict[str, str]:
+        # old_name / new_name 必须是纯文件/目录名，不允许包含路径分隔符，避免越权。
+        if "/" in old_name or "\\" in old_name or "/" in new_name or "\\" in new_name:
+            raise WorkspaceError("old_name and new_name must be plain names, not paths")
+        if old_name in {"", ".", ".."} or new_name in {"", ".", ".."}:
+            raise WorkspaceError("old_name and new_name must be plain names")
+        parent = self.resolve(directory)
+        if not parent.is_dir():
+            raise WorkspaceError(f"not a directory: {directory}")
+        source = parent / old_name
+        target = parent / new_name
+        if not source.exists():
+            raise WorkspaceError(f"source does not exist: {old_name}")
+        if target.exists():
+            raise WorkspaceError(f"target already exists: {new_name}")
+        source.rename(target)
+        return {"old_path": self._rel(source), "path": self._rel(target)}
+
+    def move_file(self, path: str, destination_dir: str) -> dict[str, str]:
+        source = self.resolve(path)
+        if not source.is_file():
+            raise WorkspaceError(f"not a file: {path}")
+        destination = self.resolve(destination_dir)
+        if not destination.is_dir():
+            raise WorkspaceError(f"not a directory: {destination_dir}")
+        target = destination / source.name
+        if source == target:
+            return {"old_path": self._rel(source), "path": self._rel(target)}
+        if target.exists():
+            raise WorkspaceError(f"target already exists: {self._rel(target)}")
+        old_rel = self._rel(source)
+        source.rename(target)
+        return {"old_path": old_rel, "path": self._rel(target)}
+
+    def delete_path(self, path: str) -> str:
+        target = self.resolve(path)
+        if not target.exists():
+            raise WorkspaceError(f"path does not exist: {path}")
+        rel = self._rel(target)
+        if target.is_dir():
+            if any(target.iterdir()):
+                raise WorkspaceError(f"directory is not empty: {path}")
+            target.rmdir()
+        else:
+            target.unlink()
+        return rel
+
+    def list_dir(self, path: str | Path = ".", *, max_results: int = 200) -> list[str]:
         target = self.resolve(path)
         if not target.is_dir():
             raise WorkspaceError(f"not a directory: {path}")
-        return sorted(child.name + ("/" if child.is_dir() else "") for child in target.iterdir())
+        out: list[str] = []
+        for child in sorted(target.iterdir(), key=lambda item: item.name.lower()):
+            out.append(child.name + ("/" if child.is_dir() else ""))
+            if len(out) >= max_results:
+                break
+        return out
+
+    def glob(self, pattern: str, *, path: str = ".", max_results: int = 100) -> list[str]:
+        target = self.resolve(path)
+        if not target.is_dir():
+            raise WorkspaceError(f"not a directory: {path}")
+        out: list[str] = []
+        recursive = "**" in pattern
+        match_func = target.rglob if recursive else target.glob
+        for child_path in sorted(match_func(pattern)):
+            if child_path.is_file():
+                out.append(self._rel(child_path))
+            elif child_path.is_dir() and not child_path.name.startswith("."):
+                out.append(self._rel(child_path) + "/")
+            if len(out) >= max_results:
+                break
+        return out
+
+    def grep(
+        self,
+        pattern: str,
+        *,
+        path: str = ".",
+        regex: bool = True,
+        max_results: int = 50,
+        context_lines: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not pattern:
+            raise WorkspaceError("pattern must not be empty")
+        root = self.resolve(path)
+        if not root.exists():
+            raise WorkspaceError(f"path does not exist: {path}")
+        if root.is_file():
+            files: list[Path] = [root]
+        else:
+            files = []
+            for current, dirs, file_names in os.walk(root):
+                dirs[:] = [d for d in dirs if d not in {".git", "__pycache__", ".venv", "node_modules"}]
+                for filename in file_names:
+                    files.append(Path(current) / filename)
+        out: list[dict[str, Any]] = []
+        compiled = re.compile(pattern) if regex else None
+        for file_path in files:
+            try:
+                text = file_path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, UnicodeDecodeError):
+                continue
+            lines = text.splitlines()
+            for index, line in enumerate(lines, start=1):
+                hit = bool(compiled.search(line)) if compiled else pattern in line
+                if not hit:
+                    continue
+                start = max(1, index - int(context_lines))
+                end = min(len(lines), index + int(context_lines))
+                out.append({
+                    "path": self._rel(file_path),
+                    "line": index,
+                    "text": line,
+                    "context": "\n".join(
+                        f"{line_no}: {lines[line_no - 1]}" for line_no in range(start, end + 1)
+                    ),
+                })
+                if len(out) >= max_results:
+                    return out
+        return out
 
     def search_files(self, pattern: str, *, path: str | Path = ".", max_results: int = 50) -> list[str]:
+        """已废弃：保留为兼容旧测试。请使用 glob。"""
         root = self.resolve(path)
         if not root.is_dir():
             raise WorkspaceError(f"not a directory: {path}")
