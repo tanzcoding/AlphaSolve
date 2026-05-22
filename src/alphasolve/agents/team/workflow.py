@@ -33,7 +33,7 @@ class AlphaSolve:
         max_verify_rounds: int = 2,
         verifier_scaling_factor: int | None = None,
         subagent_max_depth: int = 2,
-        client_factory: ClientFactory | None = None,
+        client_factory: ClientFactory,
         prime_wolfram: bool = True,
         print_to_console: bool = True,
         tool_executor_size: int = 2,
@@ -47,7 +47,7 @@ class AlphaSolve:
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor_override = verifier_scaling_factor
         self.subagent_max_depth = max(0, int(subagent_max_depth))
-        self.client_factory_override = client_factory
+        self.client_factory = client_factory
         self.prime_wolfram = prime_wolfram
         self.print_to_console = print_to_console
         self.tool_executor_size = max(1, int(tool_executor_size))
@@ -123,7 +123,7 @@ class AlphaSolve:
                 else int(suite.settings.get("verifier_scaling_factor", 1))
             )
             verifier_scaling_factor = max(1, verifier_scaling_factor)
-            client_factory = self.client_factory_override or make_openai_client_factory(suite)
+            client_factory = self.client_factory
 
             if "curator" in suite.subagents:
                 init_knowledge_base(self.layout.knowledge_dir, self.layout.read_problem())
@@ -274,21 +274,6 @@ class _SharedHTTPXClient(httpx.Client):
 
     def close(self) -> None:
         pass  # lifecycle managed by the factory, not by individual OpenAI clients
-
-
-def make_openai_client_factory(suite) -> ClientFactory:
-    """Build a default client factory using the balanced profile.
-
-    Suite is currently unused (kept for signature compatibility); Commit 6
-    will replace this entire function once the CLI wires --profile end-to-end.
-    """
-    del suite  # unused
-    from alphasolve.llm import load_presets, load_active_profile, make_client_factory
-    presets_path = Path(PACKAGE_ROOT) / "config" / "presets.yaml"
-    profiles_path = Path(PACKAGE_ROOT) / "config" / "profiles.yaml"
-    presets = load_presets(repo_path=presets_path, user_path=None)
-    profile = load_active_profile(name="balanced", repo_path=profiles_path, user_path=None)
-    return make_client_factory(profile, presets)
 
 
 def _worker_result_to_json(result) -> dict[str, Any]:

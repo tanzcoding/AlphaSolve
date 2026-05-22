@@ -139,6 +139,13 @@ def main() -> None:
                         help="Number of Python execution worker processes")
     parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
                         help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
+    parser.add_argument("--profile", type=str, default=None,
+                        help="Model profile (cheap | balanced | strategic | <user-defined>). "
+                             "Default: ALPHASOLVE_PROFILE env var, else 'default:' from profiles.yaml.")
+    parser.add_argument("--list-profiles", action="store_true",
+                        help="List available profiles and exit")
+    parser.add_argument("--list-presets", action="store_true",
+                        help="List available presets and exit")
 
     args = parser.parse_args()
     if args.agent_debug_prompt is not None and not args.agent_debug:
@@ -146,13 +153,52 @@ def main() -> None:
 
     from alphasolve.agents.general import load_agent_suite_config
     from alphasolve.config.agent_config import PACKAGE_ROOT
+    from alphasolve.llm import load_presets, load_active_profile, make_client_factory
+
+    presets_path = Path(PACKAGE_ROOT) / "config" / "presets.yaml"
+    profiles_path = Path(PACKAGE_ROOT) / "config" / "profiles.yaml"
+    user_dir_env = os.getenv("ALPHASOLVE_CONFIG_DIR")
+    user_dir = Path(user_dir_env) if user_dir_env else Path.home() / ".alphasolve"
+    user_presets = user_dir / "presets.yaml" if (user_dir / "presets.yaml").is_file() else None
+    user_profiles = user_dir / "profiles.yaml" if (user_dir / "profiles.yaml").is_file() else None
+
+    if args.list_presets:
+        presets = load_presets(repo_path=presets_path, user_path=user_presets)
+        for name in sorted(presets):
+            p = presets[name]
+            print(f"  {name:<28} {p.wire_format:<22} {p.model}")
+        return
+
+    if args.list_profiles:
+        import yaml as _yaml
+        merged: dict = {}
+        for path in (profiles_path, user_profiles):
+            if path is None or not path.is_file():
+                continue
+            with path.open("r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            data.pop("default", None)
+            merged.update(data)
+        for name in sorted(merged):
+            print(f"  {name}")
+            for role, preset_name in (merged[name] or {}).items():
+                print(f"    {role:<22} -> {preset_name}")
+        return
+
     config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
     suite = load_agent_suite_config(config_path)
+
+    if args.demo:
+        client_factory = make_demo_client_factory()
+    else:
+        profile_name = args.profile or os.getenv("ALPHASOLVE_PROFILE")
+        active_profile = load_active_profile(name=profile_name, repo_path=profiles_path, user_path=user_profiles)
+        presets = load_presets(repo_path=presets_path, user_path=user_presets)
+        client_factory = make_client_factory(active_profile, presets)
+
     if args.agent_debug:
         from alphasolve.agents.team.debug_agent import GeneralAgentDebugApp
-        from alphasolve.agents.team.workflow import make_openai_client_factory
 
-        client_factory = make_demo_client_factory() if args.demo else make_openai_client_factory(suite)
         if args.agent_debug_prompt is not None:
             _app = GeneralAgentDebugApp(
                 project_dir=Path.cwd(),
@@ -201,7 +247,7 @@ def main() -> None:
             max_verify_rounds=max_verify_rounds,
             verifier_scaling_factor=verifier_scaling_factor,
             subagent_max_depth=subagent_max_depth,
-            client_factory=make_demo_client_factory() if args.demo else None,
+            client_factory=client_factory,
             prime_wolfram=not args.no_wolfram_prime,
             print_to_console=not args.no_dashboard,
             tool_executor_size=args.tool_executor_size,
