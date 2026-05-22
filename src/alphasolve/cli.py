@@ -98,6 +98,42 @@ else:  # Unix
         os._exit(130)
 
 
+def _apply_env_sources(
+    *,
+    cwd_env_path: Path,
+    user_env_path: Path,
+    env_overrides: list[str],
+) -> None:
+    """Populate os.environ from .env files and --env CLI flags.
+
+    Precedence (highest first):
+      1. --env KEY=VAL flags (always win)
+      2. Existing os.environ (shell exports)
+      3. cwd .env (project-local)
+      4. user .env (~/.alphasolve/.env or $ALPHASOLVE_CONFIG_DIR/.env)
+
+    .env files never overwrite already-set env vars. --env flags always do.
+    Raises ValueError on malformed --env arguments.
+    """
+    from dotenv import load_dotenv
+
+    # Load highest-priority .env first; override=False on subsequent loads
+    # means user .env only fills variables not set by cwd .env (or shell).
+    if cwd_env_path.is_file():
+        load_dotenv(cwd_env_path, override=False)
+    if user_env_path.is_file():
+        load_dotenv(user_env_path, override=False)
+
+    # --env always wins, applied after .env loading
+    for entry in env_overrides:
+        if "=" not in entry:
+            raise ValueError(f"--env expects KEY=VAL format, got: {entry!r}")
+        key, _, value = entry.partition("=")
+        if not key:
+            raise ValueError(f"--env key must not be empty: {entry!r}")
+        os.environ[key] = value
+
+
 def main() -> None:
     global _app
 
@@ -146,6 +182,9 @@ def main() -> None:
                         help="List available profiles and exit")
     parser.add_argument("--list-presets", action="store_true",
                         help="List available presets and exit")
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VAL",
+                        help="Set an environment variable for this run (repeatable). "
+                             "Overrides shell env and .env files for that key.")
 
     args = parser.parse_args()
     if args.agent_debug_prompt is not None and not args.agent_debug:
@@ -155,10 +194,19 @@ def main() -> None:
     from alphasolve.config.agent_config import PACKAGE_ROOT
     from alphasolve.llm import load_presets, load_active_profile, make_client_factory
 
-    presets_path = Path(PACKAGE_ROOT) / "config" / "presets.yaml"
-    profiles_path = Path(PACKAGE_ROOT) / "config" / "profiles.yaml"
     user_dir_env = os.getenv("ALPHASOLVE_CONFIG_DIR")
     user_dir = Path(user_dir_env) if user_dir_env else Path.home() / ".alphasolve"
+    try:
+        _apply_env_sources(
+            cwd_env_path=Path.cwd() / ".env",
+            user_env_path=user_dir / ".env",
+            env_overrides=args.env,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    presets_path = Path(PACKAGE_ROOT) / "config" / "presets.yaml"
+    profiles_path = Path(PACKAGE_ROOT) / "config" / "profiles.yaml"
     user_presets = user_dir / "presets.yaml" if (user_dir / "presets.yaml").is_file() else None
     user_profiles = user_dir / "profiles.yaml" if (user_dir / "profiles.yaml").is_file() else None
 
