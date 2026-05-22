@@ -1,4 +1,4 @@
-from .workflow import AlphaSolve, run_alphasolve
+from .app import AlphaSolve, run_alphasolve
 
 __all__ = [
     "AlphaSolve",

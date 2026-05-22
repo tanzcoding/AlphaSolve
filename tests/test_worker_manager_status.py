@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 from alphasolve.agent import GeneralAgentConfig
 from alphasolve.workflow import orchestrator as orchestrator_module
-from alphasolve.workflow import workflow as workflow_module
+from alphasolve.workflow import app as workflow_module
 from alphasolve.workflow import AlphaSolve
 from alphasolve.workflow.orchestrator import Orchestrator, WorkerManager
 from alphasolve.workflow.project import ProjectLayout
