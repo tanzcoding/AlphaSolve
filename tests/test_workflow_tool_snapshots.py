@@ -138,12 +138,9 @@ if _SHIM_SKIP_REASON is None:
             from alphasolve.workflow.workflow_tools import register_agent_tool  # type: ignore[no-redef]
         except ImportError:
             try:
-                from alphasolve.agent.tool_registry import register_agent_tool  # type: ignore[no-redef]
-            except ImportError:
-                try:
-                    from alphasolve.agent.tools import register_agent_tool  # type: ignore[no-redef]
-                except ImportError as exc:
-                    _SHIM_SKIP_REASON = f"register_agent_tool import failed: {exc}"
+                from alphasolve.agent.tools import register_agent_tool  # type: ignore[no-redef]
+            except ImportError as exc:
+                _SHIM_SKIP_REASON = f"register_agent_tool import failed: {exc}"
 
 # WorkerManager: Task 2 把整个 orchestrator.py 搬到 workflow/。
 if _SHIM_SKIP_REASON is None:
