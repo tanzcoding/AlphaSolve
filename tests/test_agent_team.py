@@ -61,8 +61,8 @@ def local_project_dir(name):
 
 
 def test_default_agent_suite_loads_yaml_roles():
-    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
-    suite_from_dir = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
+    suite_from_dir = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
     assert {
         "orchestrator",
@@ -150,7 +150,7 @@ def test_orchestrator_task_contains_only_dynamic_runtime_context():
         (project_dir / "hint.md").write_text("Try the reflexivity route.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         orchestrator = Orchestrator(
             layout=layout,
             suite=suite,
@@ -662,7 +662,7 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -734,7 +734,7 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -804,7 +804,7 @@ def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -886,7 +886,7 @@ def test_verifier_review_is_not_visible_to_later_attempts():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -911,7 +911,7 @@ def test_clear_verifier_artifacts_leaves_empty_workspace():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         worker = Worker(
             layout=layout,
             suite=suite,
@@ -936,7 +936,7 @@ def test_verifier_workflow_reset_keeps_only_proposition_hint_and_empty_workspace
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         worker = Worker(
             layout=layout,
             suite=suite,
@@ -1106,7 +1106,7 @@ def test_orchestrator_review_tool_returns_only_reviewer_final_report():
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         (layout.verified_dir / "index.md").write_text("internal read content", encoding="utf-8")
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         subagents = SubagentService(
             suite=suite,
             client_factory=lambda config: ReviewerClient(config.name),
@@ -1150,7 +1150,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         (layout.verified_dir / "bootstrap-lemma.md").write_text("# Bootstrap Lemma\n", encoding="utf-8")
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         orchestrator = Orchestrator(
             layout=layout,
             suite=suite,
@@ -1633,7 +1633,7 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         curator_queue = CapturingCuratorQueue()
-        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -1704,7 +1704,7 @@ def test_execution_gateway_close_session_resets_python_env_and_workdir():
 
 
 def test_subagent_service_uses_strict_types_and_gateway_python_tool():
-    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
     service = SubagentService(
         suite=suite,
@@ -1774,7 +1774,7 @@ def test_subagent_service_cleans_up_gateway_session_after_return():
                 )
             return _resp("done")
 
-    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
     service = SubagentService(
         suite=suite,

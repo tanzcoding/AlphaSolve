@@ -16,7 +16,7 @@ from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 
 
 def test_verifier_citation_is_first_default_attempt():
-    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
 
     assert "verifier_citation" in suite.agents
     assert suite.settings["verifier_agents"][0] == "verifier_citation"
@@ -110,7 +110,7 @@ def test_citation_access_denies_knowledge_reads(tmp_path):
 
 
 def test_citation_tools_can_list_verified_proposition_subdirectories(tmp_path):
-    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     config = suite.agents["verifier_citation"]
     workspace = Workspace(tmp_path)
     nested_dir = tmp_path / "verified_propositions" / "coercive" / "local"

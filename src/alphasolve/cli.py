@@ -233,7 +233,7 @@ def main() -> None:
                 print(f"    {role:<22} -> {preset_name}")
         return
 
-    config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
+    config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "solver" / "config"
     suite = load_agent_suite(config_path)
 
     if args.demo:

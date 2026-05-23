@@ -42,7 +42,7 @@ class AlphaSolve:
         debug: bool = False,
     ) -> None:
         self.layout = ProjectLayout.create(project_dir, problem=problem, hint=hint)
-        self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "config"
+        self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "solver" / "config"
         self.max_workers = max(1, int(max_workers))
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor_override = verifier_scaling_factor

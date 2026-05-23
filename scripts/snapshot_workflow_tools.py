@@ -270,7 +270,7 @@ def _build_registry_for_agent(
 
 def main() -> None:
     repo_root = Path(__file__).resolve().parent.parent
-    suite_path = Path(PACKAGE_ROOT) / "config"
+    suite_path = Path(PACKAGE_ROOT) / "solver" / "config"
     suite = load_agent_suite(suite_path)
 
     snapshots_dir = repo_root / "tests" / "fixtures" / "workflow_tool_snapshots"

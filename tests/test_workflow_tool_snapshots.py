@@ -398,7 +398,7 @@ def test_workflow_tool_snapshot_matches(snapshot_path: Path) -> None:
     name = snapshot_path.stem
     expected = json.loads(snapshot_path.read_text(encoding="utf-8"))
 
-    suite_path = Path(PACKAGE_ROOT) / "config"
+    suite_path = Path(PACKAGE_ROOT) / "solver" / "config"
     suite = load_agent_suite_config(suite_path)
     config = (suite.agents | suite.subagents).get(name)
     if config is None:
