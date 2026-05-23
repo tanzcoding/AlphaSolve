@@ -14,7 +14,7 @@ from alphasolve.agent import AgentRunError, Agent, Workspace
 from alphasolve.agent.tools import ToolRegistry, ToolResult
 from alphasolve.solver.logging.event_log import compose_event_sinks
 
-from .dashboard import make_orchestrator_event_sink
+from alphasolve.solver.ui.dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
 from .solution import write_solution

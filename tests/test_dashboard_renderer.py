@@ -7,7 +7,7 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.workflow.dashboard import make_curator_event_sink, make_worker_event_sink  # noqa: E402
+from alphasolve.solver.ui.dashboard import make_curator_event_sink, make_worker_event_sink  # noqa: E402
 from alphasolve.solver.ui import team_renderer as rich_renderer_module  # noqa: E402
 from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer  # noqa: E402
 

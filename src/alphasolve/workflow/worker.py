@@ -15,7 +15,7 @@ from alphasolve.agent import AgentConfig, Agent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.llm.types import Message
 from alphasolve.solver.logging.event_log import compose_event_sinks
-from .dashboard import make_worker_event_sink
+from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService

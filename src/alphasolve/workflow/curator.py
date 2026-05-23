@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.solver.logging.event_log import compose_event_sinks
 
-from .dashboard import make_curator_event_sink
+from alphasolve.solver.ui.dashboard import make_curator_event_sink
 
 if TYPE_CHECKING:
     from alphasolve.agent import AgentConfig
