@@ -88,11 +88,6 @@ else:  # Unix
             )
             return
         # Second Ctrl+C
-        if _app is not None and _app._renderer is not None:
-            try:
-                _app._renderer.stop()
-            except Exception:
-                pass
         sys.stderr.write("\nForce quit.\n")
         sys.stderr.flush()
         os._exit(130)
@@ -161,10 +156,10 @@ def main() -> None:
                         help="Maximum recursive depth for subagents (default: from agents.yaml)")
     parser.add_argument("--debug", action="store_true",
                         help="Produce detailed per-agent trace logs under logs/")
-    parser.add_argument("--agent-debug", action="store_true",
-                        help="Run an interactive Agent tool-debugging TUI")
-    parser.add_argument("-p", "--print", dest="agent_debug_prompt", metavar="PROMPT",
-                        help="Run --agent-debug once with PROMPT and print the final answer")
+    parser.add_argument("--agent", action="store_true",
+                        help="Run an interactive second-layer Agent REPL")
+    parser.add_argument("-p", "--print", dest="agent_prompt", metavar="PROMPT",
+                        help="Run --agent once with PROMPT and print the final answer")
     parser.add_argument("--demo", action="store_true",
                         help="Run a deterministic local demo without calling an LLM API")
     parser.add_argument("--no_wolfram_prime", action="store_true",
@@ -187,8 +182,8 @@ def main() -> None:
                              "Overrides shell env and .env files for that key.")
 
     args = parser.parse_args()
-    if args.agent_debug_prompt is not None and not args.agent_debug:
-        parser.error("-p/--print can only be used with --agent-debug")
+    if args.agent_prompt is not None and not args.agent:
+        parser.error("-p/--print can only be used with --agent")
 
     from alphasolve.agent import load_agent_suite
     from alphasolve.config.agent_config import PACKAGE_ROOT
@@ -244,25 +239,16 @@ def main() -> None:
         presets = load_presets(repo_path=presets_path, user_path=user_presets)
         client_factory = make_client_factory(active_profile, presets)
 
-    if args.agent_debug:
-        from alphasolve.solver.debug_agent import GeneralAgentDebugApp
+    if args.agent:
+        from alphasolve.agent.ui.cli_app import AgentApp
 
-        if args.agent_debug_prompt is not None:
-            _app = GeneralAgentDebugApp(
-                project_dir=Path.cwd(),
-                client_factory=client_factory,
-                suite=suite,
-                renderer_factory=None,
-            )
-        else:
-            _app = GeneralAgentDebugApp(
-                project_dir=Path.cwd(),
-                client_factory=client_factory,
-                suite=suite,
-            )
+        _app = AgentApp(
+            project_dir=Path.cwd(),
+            client_factory=client_factory,
+        )
         try:
-            if args.agent_debug_prompt is not None:
-                result = _app.run_once(args.agent_debug_prompt)
+            if args.agent_prompt is not None:
+                result = _app.run_once(args.agent_prompt)
                 print(result.final_answer or "")
             else:
                 _app.run()

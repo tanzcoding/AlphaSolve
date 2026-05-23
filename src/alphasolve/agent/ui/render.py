@@ -1,9 +1,8 @@
 """第二层自己的 UI：渲染单 agent 生命周期事件（thinking/tool_call/assistant_message 等）。
 
-phase C 拆分时 rich_renderer.py 中真正"单 agent 事件渲染"的逻辑实际位于
-alphasolve.solver.debug_agent 里（Task 10 会重写成 agent/ui/cli_app.py）。
-本文件目前仅做 import 转发，让 agent 层有正确的 ui 入口；具体的单 agent
-渲染类（DebugAgentRenderer 等）由 Task 10 引入。
+phase C T10 后 --agent CLI 直接走 alphasolve.agent.ui.cli_app 里的 AgentApp（无 renderer，
+LLM 输出直接 print 在 stdout）。具体的"单 agent 富 UI 渲染类"延后到 phase E：届时如要
+重做富 UI，可以挪进本文件，并复用 ._render_shared.RICH_CONSOLE。
 """
 from __future__ import annotations
 
