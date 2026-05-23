@@ -245,7 +245,7 @@ def main() -> None:
         )
         try:
             if args.agent_prompt is not None:
-                result = _app.run_once(args.agent_prompt)
+                result = _app.run_once(args.agent_prompt, event_sink=None)
                 print(result.final_answer or "")
             else:
                 _app.run()

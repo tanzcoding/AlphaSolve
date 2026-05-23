@@ -32,6 +32,8 @@ from alphasolve.llm.types import ChatClient
 # build_default_tool_registry 决定；这里硬编码白名单，避免把 "Agent"
 # （需要 SubagentDispatcher）和需要专门注册的 SpawnWorker/TaskOutput
 # 误开。Bash vs Shell 由平台决定（has_bash 探测一次）。
+_sentinel = object()
+
 _BASE_AGENT_TOOLS: tuple[str, ...] = (
     "Read",
     "Write",
@@ -53,24 +55,52 @@ def _default_agent_tools() -> tuple[str, ...]:
 
 
 def _make_repl_event_sink(console: Console) -> AgentEventSink:
-    """Build an event_sink that renders intermediate agent events to the console."""
+    """Build an event_sink that renders intermediate agent events to the console.
+
+    每个 turn 的事件顺序（streaming reasoning model）：
+      thinking_delta* → assistant_delta* → thinking → assistant_message
+    非 streaming provider 没有 delta 事件，直接 thinking → assistant_message。
+
+    避免重复打印：
+    - delta 流式输出后 assistant_message 不再重复打印正文
+    - run_finish 的 final_answer 总是已经展示过，无需再印
+    """
+    # Mutable state shared across events within one turn; reset at assistant_message.
+    state: dict[str, bool] = {"had_reasoning": False, "had_text": False}
+
     def sink(event: dict[str, Any]) -> None:
         etype = event.get("type", "")
-        if etype == "thinking":
+        if etype == "thinking_delta":
+            delta = event.get("delta", "")
+            if delta:
+                console.print(delta, end="", style="bright_blue dim")
+                state["had_reasoning"] = True
+        elif etype == "thinking":
             reasoning = event.get("content", "")
-            if reasoning:
-                console.print(f"[dim bright_blue]Thinking...[/dim bright_blue]")
-        elif etype == "assistant_message":
-            content = event.get("content", "")
-            if content:
-                console.print(content)
-            tc_count = event.get("tool_call_count", 0)
-            if tc_count:
-                console.print(f"[dim](calling {tc_count} tool(s))[/dim]")
+            streamed = event.get("streamed", False)
+            if reasoning and not streamed:
+                # Non-streaming provider: print full block.
+                console.print(f"[dim bright_blue]{reasoning}[/dim bright_blue]")
+                state["had_reasoning"] = True
         elif etype == "assistant_delta":
             delta = event.get("delta", "")
             if delta:
+                if state["had_reasoning"] and not state["had_text"]:
+                    console.print()  # reasoning → text transition
                 console.print(delta, end="")
+                state["had_text"] = True
+        elif etype == "assistant_message":
+            content = event.get("content", "")
+            streamed = event.get("streamed_content", False)
+            if content and not streamed:
+                console.print(content)
+            elif state["had_text"]:
+                console.print()  # end delta-streamed line
+            tc_count = event.get("tool_call_count", 0)
+            if tc_count:
+                console.print(f"[dim](calling {tc_count} tool(s))[/dim]")
+            state["had_reasoning"] = False
+            state["had_text"] = False
         elif etype == "tool_call":
             name = event.get("name", "")
             args = event.get("arguments", {})
@@ -84,9 +114,7 @@ def _make_repl_event_sink(console: Console) -> AgentEventSink:
             console.print(tag)
             console.print(content)
         elif etype == "run_finish":
-            answer = event.get("final_answer", "")
-            if answer:
-                console.print(f"\n[bold cyan]Answer:[/bold cyan] {answer}")
+            pass  # content already visible via deltas or assistant_message
         elif etype == "run_error":
             error = event.get("error", "")
             console.print(f"[red]Error: {error}[/red]")
@@ -141,16 +169,24 @@ class AgentApp:
                 continue
             history = [m for m in result.messages if m.role != "system"]
 
-    def run_once(self, prompt: str, *, extra_messages=None) -> AgentRunResult:
-        """单次执行 —— 用于 `alphasolve --agent -p PROMPT`。"""
+    def run_once(
+        self, prompt: str, *, extra_messages=None, event_sink: AgentEventSink | None = _sentinel,
+    ) -> AgentRunResult:
+        """单次执行。
+
+        event_sink 默认用交互式 REPL sink；传入 None 可抑制所有中间输出
+        （`alphasolve --agent -p PROMPT` 走此路径）。
+        """
         config = self._build_config()
         registry = build_default_tool_registry(Workspace(self.project_dir))
+        if event_sink is _sentinel:
+            event_sink = self._event_sink
         agent = Agent(
             config=config,
             client=self.client_factory(config),
             tool_registry=registry,
             stop_event=self.stop_event,
-            event_sink=self._event_sink,
+            event_sink=event_sink,
         )
         return agent.run(prompt, extra_messages=extra_messages or [])
 
