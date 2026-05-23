@@ -1,12 +1,16 @@
 """第二层：通用 coding agent runtime。
 
-依赖契约：
-- 允许 import: alphasolve.llm.types（公共类型/协议）
+依赖契约（phase C 后）：
+- 允许 import: alphasolve.llm.types（公共类型/协议如 ChatClient/Message/ToolDef）
 - 禁止 import: alphasolve.solver.*（反向依赖）
 - 禁止 import: alphasolve.llm.providers.*、alphasolve.llm.config.*（实现细节）
 
-公共 API（__all__）：见下。LLM 类型（Message/ChatClient/ToolDef/...）继续从
-alphasolve.llm 拿，第二层不 re-export。
+包含子域：
+- agent.agent / agent.config / agent.tools / agent.workspace —— Agent runtime
+- agent.shell —— bash/PowerShell 探测与执行（Bash 工具的支撑）
+- agent.ui —— 第二层自己的 UI（单 agent 事件渲染 + --agent CLI REPL）
+
+公共 API（__all__）：见下。LLM 类型继续从 alphasolve.llm 拿，第二层不 re-export。
 """
 from .agent import Agent, AgentRunResult, AgentRunError, AgentEventSink
 from .config import (
