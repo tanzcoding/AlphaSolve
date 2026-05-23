@@ -14,13 +14,13 @@ from alphasolve.agent import (
     ToolResult,
 )
 from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
-from alphasolve.execution.runners import run_python, run_wolfram
+from alphasolve.solver.execution.runners import run_python, run_wolfram
 
 from .client_factory import ClientFactory
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
-    from alphasolve.execution import ExecutionGateway
+    from alphasolve.solver.execution import ExecutionGateway
 
 
 def _last_plain_assistant_content(result: AgentRunResult) -> str:

@@ -9,7 +9,7 @@ import threading
 import uuid
 from dataclasses import dataclass
 
-from alphasolve.execution.runners import run_python, run_wolfram
+from alphasolve.solver.execution.runners import run_python, run_wolfram
 from alphasolve.utils.logger import Logger
 from wolframclient.evaluation import WolframLanguageSession
 

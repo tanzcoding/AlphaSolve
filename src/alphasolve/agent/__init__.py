@@ -3,7 +3,7 @@
 依赖契约：
 - 允许 import: alphasolve.llm.*（公共 API）、alphasolve.utils.*
 - 禁止 import: alphasolve.workflow.*（反向依赖）
-- 禁止 import: alphasolve.execution.*（execution 是 workflow 域的）
+- 禁止 import: alphasolve.solver.*（execution 是 solver 域的）
 - 禁止 import: alphasolve.llm.providers.*、alphasolve.llm.config.*（实现细节）
 
 公共 API（__all__）：见下。LLM 类型（Message/ChatClient/ToolDef/...）继续从

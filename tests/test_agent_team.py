@@ -34,7 +34,7 @@ from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # 
 from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
-from alphasolve.execution import ExecutionGateway  # noqa: E402
+from alphasolve.solver.execution import ExecutionGateway  # noqa: E402
 from alphasolve.llm.types import CompletionResponse, Message, ToolCall  # noqa: E402
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
 
