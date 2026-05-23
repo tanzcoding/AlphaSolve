@@ -178,7 +178,7 @@ class SubagentService:
                 tools=tuple(enabled_tools),
                 tool_parameters=config.tool_parameters,
                 max_turns=config.max_turns,
-                role=config.role,
+                tier=config.tier,
                 skills=config.skills,
                 when_to_use=config.when_to_use,
                 system_prompt_template=config.system_prompt_template,

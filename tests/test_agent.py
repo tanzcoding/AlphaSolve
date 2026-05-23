@@ -378,7 +378,7 @@ def test_load_agent_config_supports_extend_and_exclude_tools():
                     "  system_prompt_path: ./base.md",
                     "  system_prompt_args:",
                     "    ROLE: agent",
-                    "  role: base_role",
+                    "  tier: base_role",
                     "  max_turns: 9",
                     "  tools:",
                     "    - Read",
@@ -420,7 +420,7 @@ def test_load_agent_config_supports_extend_and_exclude_tools():
 
         assert config.name == "child"
         assert config.system_prompt == "Base child"
-        assert config.role == "base_role"
+        assert config.tier == "base_role"
         assert config.max_turns == 9
         assert config.tools == ("Read", "Agent")
         assert config.tool_parameters["Agent"]["type"]["enum"] == ["reasoning_subagent"]

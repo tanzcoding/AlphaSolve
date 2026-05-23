@@ -2,7 +2,7 @@ version: 1
 agent:
   name: theorem_checker
   system_prompt_path: ../../prompts/theorem_checker.md
-  role: verifier
+  tier: verifier
   max_turns: 60
   tools:
     - Read

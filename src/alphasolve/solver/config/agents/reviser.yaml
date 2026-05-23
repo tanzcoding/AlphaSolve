@@ -2,7 +2,7 @@ version: 1
 agent:
   name: reviser
   system_prompt_path: ../../prompts/reviser.md
-  role: reviser
+  tier: reviser
   max_turns: 80
   tools:
     - Read

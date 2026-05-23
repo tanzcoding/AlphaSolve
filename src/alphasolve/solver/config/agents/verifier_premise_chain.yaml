@@ -2,7 +2,7 @@ version: 1
 agent:
   name: verifier_premise_chain
   system_prompt_path: ../../prompts/verifier_premise_chain.md
-  role: verifier
+  tier: verifier
   max_turns: 80
   tools:
     - Read

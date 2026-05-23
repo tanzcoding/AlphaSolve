@@ -10,20 +10,20 @@ from alphasolve.agent.config import (
 )
 
 
-def test_general_agent_config_has_role_field():
+def test_general_agent_config_has_tier_field():
     cfg = AgentConfig(
         name="verifier_adversarial",
         system_prompt="...",
-        role="verifier",
+        tier="verifier",
     )
-    assert cfg.role == "verifier"
-    assert cfg.effective_role() == "verifier"
+    assert cfg.tier == "verifier"
+    assert cfg.effective_tier() == "verifier"
 
 
-def test_effective_role_falls_back_to_name():
+def test_effective_tier_returns_tier_value():
     cfg = AgentConfig(name="curator", system_prompt="...")
-    assert cfg.role is None
-    assert cfg.effective_role() == "curator"
+    assert cfg.tier == "balanced"
+    assert cfg.effective_tier() == "balanced"
 
 
 def test_tools_and_skills_are_tuples():
@@ -51,7 +51,7 @@ def test_loading_yaml_with_model_config_raises(tmp_path):
         load_agent_config(yaml_path)
     msg = str(exc.value)
     assert "model_config" in msg
-    assert "role" in msg
+    assert "tier" in msg
 
 
 def test_loading_yaml_with_role_works(tmp_path):
@@ -61,12 +61,12 @@ def test_loading_yaml_with_role_works(tmp_path):
         "agent:\n"
         "  name: verifier_adversarial\n"
         "  system_prompt: stand in for verifier\n"
-        "  role: verifier\n"
+        "  tier: verifier\n"
         "  max_turns: 60\n",
         encoding="utf-8",
     )
     cfg = load_agent_config(yaml_path)
     assert cfg.name == "verifier_adversarial"
-    assert cfg.role == "verifier"
-    assert cfg.effective_role() == "verifier"
+    assert cfg.tier == "verifier"
+    assert cfg.effective_tier() == "verifier"
     assert cfg.max_turns == 60

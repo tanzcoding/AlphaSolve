@@ -111,7 +111,7 @@ class AgentApp:
     def _build_config(self) -> AgentConfig:
         return AgentConfig(
             name="agent",
-            role="orchestrator",  # 复用 orchestrator 的模型 tier（phase D 独立配置）
+            tier="balanced",
             system_prompt="",  # phase D 加可配置默认
             tools=_default_agent_tools(),
             max_turns=self.max_turns,

@@ -545,7 +545,7 @@ class Worker:
             system_prompt=_REVIEW_VERDICT_PROMPT,
             tools=(),
             max_turns=base_config.max_turns,
-            role=base_config.role,
+            tier=base_config.tier,
         )
         self._set_phase(role, status="thinking", model=self._model_name(config))
         agent = Agent(
@@ -820,7 +820,7 @@ class Worker:
         return replace(config, tools=tools)
 
     def _model_name(self, config: AgentConfig) -> str:
-        return config.effective_role()
+        return config.effective_tier()
 
 
 def _parse_review_verdict(text: str) -> str:

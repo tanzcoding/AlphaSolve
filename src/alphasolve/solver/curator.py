@@ -250,7 +250,7 @@ def _trace_kind(source_label: str) -> str:
 
 def _model_name(config: "AgentConfig", *, suite) -> str:
     del suite  # unused; preserved for signature compatibility
-    return config.effective_role()
+    return config.effective_tier()
 
 
 def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:

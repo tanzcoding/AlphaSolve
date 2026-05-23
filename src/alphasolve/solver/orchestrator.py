@@ -557,7 +557,7 @@ class Orchestrator:
         )
 
     def _model_name(self, config) -> str:
-        return config.effective_role()
+        return config.effective_tier()
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
         access = RoleWorkspaceAccess(

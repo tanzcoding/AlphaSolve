@@ -2,7 +2,7 @@ version: 1
 agent:
   name: verifier_citation
   system_prompt_path: ../../prompts/verifier_citation.md
-  role: verifier
+  tier: verifier
   max_turns: 40
   tools:
     - Read

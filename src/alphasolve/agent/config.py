@@ -14,7 +14,7 @@ import yaml
 class AgentConfig:
     name: str
     system_prompt: str
-    role: str | None = None
+    tier: str = "balanced"
     tools: tuple[str, ...] = ()
     tool_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_descriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -25,8 +25,8 @@ class AgentConfig:
     system_prompt_args: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
 
-    def effective_role(self) -> str:
-        return self.role or self.name
+    def effective_tier(self) -> str:
+        return self.tier
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ def _resolve_agent_config(
     if "model_config" in raw:
         raise ValueError(
             f"{config_path}: field 'model_config' is no longer supported; "
-            f"replace with 'role: <role-name>' (see "
+            f"replace with 'tier: <tier-name>' (see "
             f"docs/superpowers/specs/2026-05-22-alphasolve-llm-provider-abstraction-design.md §5.5)"
         )
     base: AgentConfig | None = None
@@ -210,7 +210,7 @@ def _resolve_agent_config(
     return AgentConfig(
         name=name,
         system_prompt=prompt_text,
-        role=raw.get("role") or (base.role if base else None),
+        tier=raw.get("tier") or (base.tier if base else "balanced"),
         tools=tuple(tools),
         tool_parameters=tool_parameters,
         tool_descriptions=tool_descriptions,

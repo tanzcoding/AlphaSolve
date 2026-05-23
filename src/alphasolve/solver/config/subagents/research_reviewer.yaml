@@ -2,7 +2,7 @@ version: 1
 agent:
   name: research_reviewer
   system_prompt_path: ../../prompts/research_reviewer.md
-  role: orchestrator
+  tier: orchestrator
   max_turns: 100
   when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, and recommend research directions.
   tools:

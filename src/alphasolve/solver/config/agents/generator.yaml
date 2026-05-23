@@ -2,7 +2,7 @@ version: 1
 agent:
   name: generator
   system_prompt_path: ../../prompts/generator.md
-  role: generator
+  tier: generator
   max_turns: 80
   tools:
     - Read

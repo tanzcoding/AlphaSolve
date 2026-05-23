@@ -2,7 +2,7 @@ version: 1
 agent:
   name: reasoning_subagent
   system_prompt_path: ../../prompts/reasoning_subagent.md
-  role: proof_subagent
+  tier: proof_subagent
   max_turns: 80
   when_to_use: Bounded proof and mathematical reasoning obligations.
   tools:
