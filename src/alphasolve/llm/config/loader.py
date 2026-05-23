@@ -58,27 +58,22 @@ def load_presets(*, repo_path: Path, user_path: Path | None) -> dict[str, Preset
     return {name: _build_preset(name, raw) for name, raw in merged.items()}
 
 
-def _load_tiers_raw(repo_path: Path, user_path: Path | None) -> tuple[dict[str, str], str | None]:
+def _load_tiers_raw(repo_path: Path, user_path: Path | None) -> tuple[dict[str, Any], str | None]:
     repo_raw = _read_yaml(repo_path)
     user_raw = _read_yaml(user_path) if user_path is not None else {}
 
     default_name = user_raw.pop("default", None) or repo_raw.pop("default", None)
 
-    merged: dict[str, str] = {}
-    for k, v in repo_raw.items():
-        if not isinstance(k, str):
-            continue
-        merged[k] = str(v)
-    for k, v in user_raw.items():
-        if not isinstance(k, str):
-            continue
-        merged[k] = str(v)
+    merged: dict[str, Any] = {}
+    merged.update(repo_raw)
+    merged.update(user_raw)
     return merged, default_name
 
 
 def load_tier_mapping(*, repo_path: Path, user_path: Path | None) -> TierMapping:
     merged, default_name = _load_tiers_raw(repo_path, user_path)
-    return TierMapping(name="default", tier_to_preset=merged)
+    tier_to_preset = {str(k): str(v) for k, v in merged.items()}
+    return TierMapping(name="default", tier_to_preset=tier_to_preset)
 
 
 def _user_config_dir() -> Path:
