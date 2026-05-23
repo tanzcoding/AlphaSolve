@@ -54,4 +54,6 @@ def test_agent_app_uses_default_tools(tmp_path: Path):
     # Bash 或 Shell 二选一（按平台），至少有一个
     assert "Bash" in config.tools or "Shell" in config.tools
     assert "Agent" not in config.tools  # subagent 调度不属于第二层 CLI
-    assert config.system_prompt == ""
+    assert "general-purpose coding agent" in config.system_prompt
+    assert "Read" in config.system_prompt
+    assert "Write" in config.system_prompt

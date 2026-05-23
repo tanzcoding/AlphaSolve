@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-def test_public_api_exports_exactly_19_names():
+def test_public_api_exports_exactly_18_names():
     import alphasolve.llm as mod
     expected = {
         # Types
@@ -9,9 +9,9 @@ def test_public_api_exports_exactly_19_names():
         "Message", "Role", "ToolCall", "ToolDef",
         "CompletionResponse", "Usage", "StreamDelta", "FinishReason",
         # Config
-        "Preset", "Profile", "WireFormat",
+        "Preset", "TierMapping", "WireFormat",
         # Loaders + factory
-        "load_presets", "load_profile", "load_active_profile",
+        "load_presets", "load_tier_mapping",
         "make_client", "make_client_factory",
     }
     actual = set(mod.__all__)

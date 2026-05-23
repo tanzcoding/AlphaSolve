@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alphasolve.llm.config.loader import load_presets, load_active_profile
+from alphasolve.llm.config.loader import load_presets, load_tier_mapping
 
 PRESETS_PATH = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config" / "presets.yaml"
-PROFILES_PATH = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config" / "profiles.yaml"
+TIERS_PATH = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config" / "tiers.yaml"
 
 
 def test_shipped_presets_load():
@@ -24,26 +24,22 @@ def test_shipped_presets_load():
         assert presets[name].wire_format == "anthropic_messages", name
 
 
-def test_balanced_profile_role_coverage():
-    p = load_active_profile(name="balanced", repo_path=PROFILES_PATH, user_path=None)
+def test_tier_coverage():
+    """All required tiers must be mapped in tiers.yaml."""
+    tm = load_tier_mapping(repo_path=TIERS_PATH, user_path=None)
     required = {"orchestrator", "generator", "verifier", "reviser",
                 "curator", "compute_subagent", "proof_subagent"}
-    assert set(p.role_to_preset) == required
+    assert set(tm.tier_to_preset) == required
 
 
-def test_each_profile_role_resolves_to_a_real_preset():
+def test_each_tier_resolves_to_a_real_preset():
+    """Every tier in tiers.yaml must point to a preset defined in presets.yaml."""
     presets = load_presets(repo_path=PRESETS_PATH, user_path=None)
-    for profile_name in ("cheap", "balanced", "strategic"):
-        p = load_active_profile(name=profile_name, repo_path=PROFILES_PATH, user_path=None)
-        for role, preset_name in p.role_to_preset.items():
-            assert preset_name in presets, (
-                f"profile {profile_name!r} role {role!r} -> preset {preset_name!r} not found"
-            )
-
-
-def test_default_profile_is_balanced():
-    p = load_active_profile(name=None, repo_path=PROFILES_PATH, user_path=None)
-    assert p.name == "balanced"
+    tm = load_tier_mapping(repo_path=TIERS_PATH, user_path=None)
+    for tier, preset_name in tm.tier_to_preset.items():
+        assert preset_name in presets, (
+            f"tier {tier!r} -> preset {preset_name!r} not found"
+        )
 
 
 def test_no_yaml_uses_model_config_field():

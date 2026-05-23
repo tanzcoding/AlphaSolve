@@ -2,25 +2,25 @@ from __future__ import annotations
 
 import pytest
 
-from alphasolve.llm.config.profile import Profile
+from alphasolve.llm.config.tier import TierMapping
 
 
-def test_profile_construction():
-    p = Profile(
+def test_tier_mapping_construction():
+    tm = TierMapping(
         name="balanced",
-        role_to_preset={
+        tier_to_preset={
             "orchestrator": "deepseek-pro",
             "verifier": "deepseek-pro",
         },
     )
-    assert p.name == "balanced"
-    assert p.preset_for("verifier") == "deepseek-pro"
+    assert tm.name == "balanced"
+    assert tm.preset_for("verifier") == "deepseek-pro"
 
 
-def test_preset_for_unknown_role_raises():
-    p = Profile(name="cheap", role_to_preset={"orchestrator": "deepseek-flash"})
+def test_preset_for_unknown_tier_raises():
+    tm = TierMapping(name="cheap", tier_to_preset={"orchestrator": "deepseek-flash"})
     with pytest.raises(KeyError) as exc:
-        p.preset_for("verifier")
+        tm.preset_for("verifier")
     assert "verifier" in str(exc.value)
     assert "cheap" in str(exc.value)
-    assert "orchestrator" in str(exc.value)  # available roles listed
+    assert "orchestrator" in str(exc.value)  # available tiers listed

@@ -31,8 +31,8 @@ def test_agent_does_not_reexport_llm_types():
     forbidden = {
         "Message", "ChatClient", "ChatDeltaSink", "ToolDef", "ToolCall",
         "CompletionResponse", "Usage", "StreamDelta", "FinishReason", "Role",
-        "Preset", "Profile", "WireFormat",
-        "load_presets", "load_profile", "load_active_profile",
+        "Preset", "TierMapping", "WireFormat",
+        "load_presets", "load_tier_mapping",
         "make_client", "make_client_factory",
     }
     for name in forbidden:

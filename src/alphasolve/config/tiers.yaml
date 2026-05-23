@@ -1,0 +1,7 @@
+orchestrator: deepseek-pro
+generator: deepseek-pro
+verifier: deepseek-pro
+reviser: deepseek-pro
+curator: deepseek-flash
+compute_subagent: deepseek-flash
+proof_subagent: deepseek-flash
