@@ -57,6 +57,7 @@ class Agent:
         tool_registry: ToolRegistry,
         event_sink: AgentEventSink | None = None,
         stop_event: threading.Event | None = None,
+        caller_context: dict[str, Any] | None = None,
     ) -> None:
         self.config = config
         self.client = client
@@ -64,6 +65,10 @@ class Agent:
         self.last_trace: list[dict[str, Any]] = []
         self.event_sink = event_sink
         self.stop_event = stop_event
+        # 第二层不解释 caller_context 字段（parent_agent_id / depth / caller_tool_call_id
+        # 等）；第三层（或未来的扩展编排）通过它注入调用关系元数据，curator /
+        # verify_subagent 拦截策略据此识别调用树。原样拷贝一份避免外部修改。
+        self.caller_context = dict(caller_context) if caller_context else None
 
     def run(
         self,
@@ -283,6 +288,8 @@ class Agent:
         raise AgentRunError(f"agent exceeded max_turns={self.config.max_turns}", trace=trace)
 
     def _emit(self, event: dict[str, Any]) -> None:
+        if self.caller_context is not None and "caller_context" not in event:
+            event = {**event, "caller_context": self.caller_context}
         if self.event_sink is None:
             return
         try:
