@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from rich.console import Console
 
 from alphasolve.agent import (
     Agent,
     AgentConfig,
+    AgentEventSink,
     AgentRunError,
     AgentRunResult,
     Workspace,
@@ -51,6 +52,49 @@ def _default_agent_tools() -> tuple[str, ...]:
     return (*_BASE_AGENT_TOOLS, shell_tool)
 
 
+def _make_repl_event_sink(console: Console) -> AgentEventSink:
+    """Build an event_sink that renders intermediate agent events to the console."""
+    def sink(event: dict[str, Any]) -> None:
+        etype = event.get("type", "")
+        if etype == "thinking":
+            reasoning = event.get("content", "")
+            if reasoning:
+                console.print(f"[dim bright_blue]Thinking...[/dim bright_blue]")
+        elif etype == "assistant_message":
+            content = event.get("content", "")
+            if content:
+                console.print(content)
+            tc_count = event.get("tool_call_count", 0)
+            if tc_count:
+                console.print(f"[dim](calling {tc_count} tool(s))[/dim]")
+        elif etype == "assistant_delta":
+            delta = event.get("delta", "")
+            if delta:
+                console.print(delta, end="")
+        elif etype == "tool_call":
+            name = event.get("name", "")
+            args = event.get("arguments", {})
+            console.rule(f"[bold green]{name}[/bold green]")
+            for k, v in args.items():
+                console.print(f"  [dim]{k}[/dim] = {v}")
+        elif etype == "tool_result":
+            content = event.get("content", "")
+            is_error = event.get("is_error", False)
+            tag = "[red]✗ Error[/red]" if is_error else "[green]✓ Result[/green]"
+            console.print(tag)
+            console.print(content)
+        elif etype == "run_finish":
+            answer = event.get("final_answer", "")
+            if answer:
+                console.print(f"\n[bold cyan]Answer:[/bold cyan] {answer}")
+        elif etype == "run_error":
+            error = event.get("error", "")
+            console.print(f"[red]Error: {error}[/red]")
+        elif etype == "run_stopped":
+            console.print("[dim]Agent stopped.[/dim]")
+    return sink
+
+
 class AgentApp:
     """`alphasolve --agent` CLI 入口。
 
@@ -70,6 +114,7 @@ class AgentApp:
         self.console = console
         self.max_turns = max_turns
         self.stop_event = threading.Event()
+        self._event_sink = _make_repl_event_sink(console)
 
     def cancel(self) -> None:
         self.stop_event.set()
@@ -105,6 +150,7 @@ class AgentApp:
             client=self.client_factory(config),
             tool_registry=registry,
             stop_event=self.stop_event,
+            event_sink=self._event_sink,
         )
         return agent.run(prompt, extra_messages=extra_messages or [])
 
