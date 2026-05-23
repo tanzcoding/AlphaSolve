@@ -2,7 +2,7 @@ version: 1
 agent:
   name: numerical_experiment_subagent
   system_prompt_path: ../../prompts/numerical_experiment_subagent.md
-  tier: compute_subagent
+  tier: cheap
   max_turns: 80
   when_to_use: Bounded exploration, branch checks, and local numerical experiments.
   tools:

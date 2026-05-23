@@ -2,7 +2,7 @@ version: 1
 agent:
   name: verifier_failure_modes
   system_prompt_path: ../../prompts/verifier_failure_modes.md
-  tier: verifier
+  tier: balanced
   max_turns: 80
   tools:
     - Read

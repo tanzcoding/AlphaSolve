@@ -28,7 +28,10 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
 
+_DIFF_FULL_REPAINT_INTERVAL = 30.0  # seconds between forced full-repaints (safety net)
+
 _DISPLAY_CHAR_LIMIT = 16000
+_THINKING_CHAR_LIMIT = 3000
 _MAX_TEAM_LOG_LINES = 80
 _ORCHESTRATOR_LOG_LINES = 30
 _RESIZE_POLL_INTERVAL = 0.10
@@ -80,7 +83,10 @@ def _fmt_elapsed(seconds: float) -> str:
         return f"{s}s"
     if s < 3600:
         return f"{s // 60}m{s % 60:02d}s"
-    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    if s < 86400:
+        return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+    d, remainder = s // 86400, s % 86400
+    return f"{d}d{remainder // 3600}h{(remainder % 3600) // 60:02d}m"
 
 
 def _fmt_count(n: int) -> str:
@@ -200,6 +206,7 @@ class WorkerRenderState:
     output_buffer: str = ""
     result_summary: str = ""
     model: str = ""
+    solved_flash_until: float = 0.0
 
 
 @dataclass
@@ -227,7 +234,14 @@ class OrchestratorRenderState:
 
 
 class _LineDiffLive:
-    """Small terminal painter that updates changed dashboard lines only."""
+    """Small terminal painter that updates changed dashboard lines only.
+
+    Two safety nets for long-running stability:
+      1. Buffered writes — all ANSI sequences for a frame are batched into
+         one I/O flush, preventing partial-writes that can garble borders.
+      2. Periodic full-repaint — every 30s the entire screen is cleared and
+         redrawn, correcting any accumulated terminal drift.
+    """
 
     auto_refresh = False
 
@@ -237,15 +251,19 @@ class _LineDiffLive:
         self._started = False
         self._last_lines: list[str] = []
         self._last_size: tuple[int, int] | None = None
+        self._buffer = io.StringIO()
+        self._last_full_at: float = 0.0
 
     def start(self, *, refresh: bool = False) -> None:
         del refresh
         if self._started:
             return
         self._started = True
+        self._last_full_at = time.time()
         if self.screen:
             self._write("\x1b[?1049h\x1b[H\x1b[2J")
         self._write("\x1b[?25l")
+        self._flush()
 
     def stop(self) -> None:
         if not self._started:
@@ -254,6 +272,7 @@ class _LineDiffLive:
             self._write("\x1b[?25h\x1b[?1049l")
         else:
             self._write("\n\x1b[?25h")
+        self._flush()
         self._started = False
 
     def update(self, renderable: "RenderableType", *, refresh: bool = True) -> None:
@@ -262,12 +281,20 @@ class _LineDiffLive:
             return
         size = (max(80, self.console.size.width), max(24, self.console.size.height))
         lines = self._render_lines(renderable, width=size[0], height=size[1])
-        if self._last_size != size or len(lines) != len(self._last_lines):
+        now = time.time()
+        needs_full = (
+            self._last_size != size
+            or len(lines) != len(self._last_lines)
+            or (now - self._last_full_at) >= _DIFF_FULL_REPAINT_INTERVAL
+        )
+        if needs_full:
             self._paint_full(lines)
+            self._last_full_at = now
         else:
             self._paint_diff(lines)
         self._last_lines = lines
         self._last_size = size
+        self._flush()
 
     def _render_lines(self, renderable: "RenderableType", *, width: int, height: int) -> list[str]:
         stream = io.StringIO()
@@ -295,7 +322,7 @@ class _LineDiffLive:
             self._clear_lines(len(self._last_lines))
             self._move_to_top(len(self._last_lines))
         else:
-            self._write("\x1b[H") # we need to manually trig it here when started.
+            self._write("\x1b[H")
         for index, line in enumerate(lines):
             self._write("\x1b[2K\r" + line)
             if index != len(lines) - 1:
@@ -324,8 +351,15 @@ class _LineDiffLive:
             self._write("\r")
 
     def _write(self, text: str) -> None:
-        self.console.file.write(text)
-        self.console.file.flush()
+        self._buffer.write(text)
+
+    def _flush(self) -> None:
+        data = self._buffer.getvalue()
+        if data:
+            self.console.file.write(data)
+            self.console.file.flush()
+            self._buffer.seek(0)
+            self._buffer.truncate(0)
 
 
 # ---------------------------------------------------------------------------
@@ -521,7 +555,7 @@ class PropositionTeamRenderer:
                 state.thinking_started_at = time.time()
             delta = max(0, len(thinking_text) - state.thinking_token_count)
             state.thinking_token_count = len(thinking_text)
-            state.thinking_text = _tail_chars(thinking_text)
+            state.thinking_text = _tail_chars(thinking_text, _THINKING_CHAR_LIMIT)
             state.char_count += delta
             state.updated_at = time.time()
             self._refresh_stream_locked()
@@ -641,6 +675,7 @@ class PropositionTeamRenderer:
             state.active_tool_args = ""
             state.finished_at = time.time()
             state.updated_at = time.time()
+            state.solved_flash_until = time.time() + 5.0 if solved else 0.0
             self._worker_finished += 1
             if state.status == "failed":
                 self._failed += 1
@@ -807,7 +842,7 @@ class PropositionTeamRenderer:
                 state.thinking_started_at = time.time()
             delta = max(0, len(thinking_text) - state.thinking_token_count)
             state.thinking_token_count = len(thinking_text)
-            state.thinking_text = _tail_chars(thinking_text)
+            state.thinking_text = _tail_chars(thinking_text, _THINKING_CHAR_LIMIT)
             state.char_count += delta
             state.updated_at = time.time()
             self._refresh_stream_locked()
@@ -909,7 +944,7 @@ class PropositionTeamRenderer:
                 state.thinking_started_at = time.time()
             delta = max(0, len(thinking_text) - state.thinking_token_count)
             state.thinking_token_count = len(thinking_text)
-            state.thinking_text = _tail_chars(thinking_text)
+            state.thinking_text = _tail_chars(thinking_text, _THINKING_CHAR_LIMIT)
             state.char_count += delta
             state.updated_at = time.time()
             self._refresh_stream_locked()
@@ -1087,7 +1122,7 @@ class PropositionTeamRenderer:
         return Text(_truncate(t.plain, width), style="")
 
     def _render_footer(self, *, width: int) -> Text:
-        text = "grey CoT tails  |  tool status ✓/✗  |  Ctrl+C to stop"
+        text = "CoT streaming  |  tool ✓/✗  |  Ctrl+C stop"
         return Text(_truncate(text, width), style="grey50")
 
     def _render_sidebar(self, *, width: int, height: int) -> "RenderableType":
@@ -1241,13 +1276,18 @@ class PropositionTeamRenderer:
             lines.append(_text_line("waiting for activity", "grey50 italic"))
 
         subtitle = self._panel_subtitle(state)
+        # Solved flash: bright green border for 5 seconds after solving
+        border_style = color
+        flash_until = getattr(state, "solved_flash_until", 0.0)
+        if flash_until > time.time():
+            border_style = "bold green"
         return Panel(
             Group(*lines[:max_lines]),
             title=f"[{color}]{title}[/]",
             title_align="right",
             subtitle=subtitle,
             subtitle_align="left",
-            border_style=color,
+            border_style=border_style,
             box=box.ROUNDED,
             padding=(0, 1),
             height=height,
@@ -1280,7 +1320,7 @@ class PropositionTeamRenderer:
             count_str = _fmt_count(state.thinking_token_count)
             line = Text(no_wrap=True, overflow="ellipsis")
             line.append("Thinking", "italic")
-            frame = _bullet_frame_for(thinking_elapsed)
+            frame = _spinner_frame_for(thinking_elapsed)
             line.append(f" {frame}", "cyan")
             line.append(f"  {_fmt_elapsed(thinking_elapsed)}", "grey50")
             line.append(f" · {count_str} chars", "grey50")
@@ -1485,16 +1525,16 @@ class PropositionTeamRenderer:
 
 
 # ---------------------------------------------------------------------------
-# Animated bullet frame for thinking spinner (kimi-cli style)
+# Animated spinner for thinking state (braille dot cycle)
 # ---------------------------------------------------------------------------
 
-_BULLET_FRAMES = (".  ", ".. ", "...", " ..", "  .", "   ")
-_BULLET_FRAME_INTERVAL = 0.13
+_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_SPINNER_FRAME_INTERVAL = 0.08
 
 
-def _bullet_frame_for(elapsed: float) -> str:
-    idx = int(elapsed / _BULLET_FRAME_INTERVAL) % len(_BULLET_FRAMES)
-    return _BULLET_FRAMES[idx]
+def _spinner_frame_for(elapsed: float) -> str:
+    idx = int(elapsed / _SPINNER_FRAME_INTERVAL) % len(_SPINNER_FRAMES)
+    return _SPINNER_FRAMES[idx]
 
 
 def __getattr__(name: str):

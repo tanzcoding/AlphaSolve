@@ -92,10 +92,24 @@ class OpenAIChatClient:
                     if streaming_failures >= self._STREAMING_MAX_RETRIES:
                         use_streaming = False
                         if delta_sink is not None:
-                            # Surface fallback as a synthetic text delta with a leading marker.
-                            delta_sink(StreamDelta(type="text", text=f"[fallback to non-streaming after {streaming_failures} streaming failures]"))
+                            delta_sink(StreamDelta(
+                                type="retry",
+                                attempt=attempt + 1,
+                                error_type=type(exc).__name__,
+                                error=str(exc),
+                                error_detail=_format_exception_detail(exc),
+                                fallback="non_streaming",
+                            ))
                         delay = 5.0
                         continue
+                if delta_sink is not None:
+                    delta_sink(StreamDelta(
+                        type="retry",
+                        attempt=attempt + 1,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                        error_detail=_format_exception_detail(exc),
+                    ))
                 time.sleep(delay + random.uniform(0, delay * 0.5))
                 delay = min(delay * 2, 300.0)
 
@@ -111,6 +125,9 @@ class OpenAIChatClient:
         message["_usage"] = _object_to_dict(getattr(response, "usage", None) or {})
         message["_raw"] = response
         if delta_sink is not None:
+            reasoning = str(message.get("reasoning_content") or "")
+            if reasoning:
+                delta_sink(StreamDelta(type="reasoning", text=reasoning))
             content = str(message.get("content") or "")
             if content:
                 delta_sink(StreamDelta(type="text", text=content))
@@ -148,6 +165,7 @@ class OpenAIChatClient:
             reasoning_delta = _first_text_delta(delta, _REASONING_KEYS)
             if reasoning_delta:
                 reasoning_parts.append(reasoning_delta)
+                delta_sink(StreamDelta(type="reasoning", text=reasoning_delta))
 
             for raw_tool_delta in delta.get("tool_calls") or []:
                 tool_delta = _object_to_dict(raw_tool_delta)
@@ -326,3 +344,15 @@ def _openai_response_to_completion(raw_message: dict[str, Any]) -> CompletionRes
     )
     fr: FinishReason = finish_reason if finish_reason in {"stop", "tool_calls", "length", "content_filter", "error"} else "stop"
     return CompletionResponse(message=msg, finish_reason=fr, usage=usage, raw=raw_obj)
+
+
+def _format_exception_detail(exc: BaseException) -> str:
+    lines = [item.strip() for item in traceback.format_exception_only(type(exc), exc) if item.strip()]
+    detail = " ".join(lines)
+    cause = exc.__cause__ or exc.__context__
+    if cause is not None:
+        cause_lines = [item.strip() for item in traceback.format_exception_only(type(cause), cause) if item.strip()]
+        cause_detail = " ".join(cause_lines)
+        if cause_detail and cause_detail not in detail:
+            detail = f"{detail} | caused by {cause_detail}" if detail else cause_detail
+    return detail

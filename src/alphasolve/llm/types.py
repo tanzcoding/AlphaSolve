@@ -50,10 +50,16 @@ class CompletionResponse:
 
 @dataclass(frozen=True)
 class StreamDelta:
-    type: Literal["text", "tool_input"]
+    type: Literal["text", "reasoning", "tool_input", "retry"]
     text: str = ""
     tool_call_id: str = ""
     arg_delta: str = ""
+    # retry metadata
+    attempt: int = 0
+    error_type: str = ""
+    error: str = ""
+    error_detail: str = ""
+    fallback: str = ""
 
 
 ChatDeltaSink = Callable[[StreamDelta], None]

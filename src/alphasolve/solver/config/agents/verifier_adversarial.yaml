@@ -2,7 +2,7 @@ version: 1
 agent:
   name: verifier_adversarial
   system_prompt_path: ../../prompts/verifier_adversarial.md
-  tier: verifier
+  tier: balanced
   max_turns: 80
   tools:
     - Read

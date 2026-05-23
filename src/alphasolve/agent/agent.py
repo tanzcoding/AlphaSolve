@@ -312,18 +312,53 @@ class Agent:
         started_at = time.time()
 
         def sink(delta: StreamDelta) -> None:
-            if delta.type != "text" or not delta.text:
+            if delta.type == "retry":
+                reasoning_chars = len(state["reasoning"])
+                content_chars = len(state["content"])
+                state["reasoning"] = ""
+                state["content"] = ""
+                self._emit(
+                    {
+                        "type": "model_retry",
+                        "turn": turn,
+                        "attempt": delta.attempt,
+                        "error_type": delta.error_type or "Error",
+                        "error": delta.error,
+                        "error_detail": delta.error_detail,
+                        "reasoning_chars": reasoning_chars,
+                        "content_chars": content_chars,
+                        "elapsed": time.time() - started_at,
+                        **({"fallback": delta.fallback} if delta.fallback else {}),
+                    }
+                )
                 return
-            state["content"] += delta.text
-            self._emit(
-                {
-                    "type": "assistant_delta",
-                    "turn": turn,
-                    "content": state["content"],
-                    "delta": delta.text,
-                    "elapsed": time.time() - started_at,
-                }
-            )
+
+            text = delta.text
+            if not text:
+                return
+
+            if delta.type == "reasoning":
+                state["reasoning"] += text
+                self._emit(
+                    {
+                        "type": "thinking_delta",
+                        "turn": turn,
+                        "content": state["reasoning"],
+                        "delta": text,
+                        "elapsed": time.time() - started_at,
+                    }
+                )
+            elif delta.type == "text":
+                state["content"] += text
+                self._emit(
+                    {
+                        "type": "assistant_delta",
+                        "turn": turn,
+                        "content": state["content"],
+                        "delta": text,
+                        "elapsed": time.time() - started_at,
+                    }
+                )
 
         return sink
 

@@ -2,7 +2,7 @@ version: 1
 agent:
   name: orchestrator
   system_prompt_path: ../../prompts/orchestrator.md
-  tier: orchestrator
+  tier: max
   max_turns: 80
   tools:
     - Grep

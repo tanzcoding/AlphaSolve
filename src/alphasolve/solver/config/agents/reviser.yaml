@@ -2,7 +2,7 @@ version: 1
 agent:
   name: reviser
   system_prompt_path: ../../prompts/reviser.md
-  tier: reviser
+  tier: balanced
   max_turns: 80
   tools:
     - Read

@@ -2,7 +2,7 @@ version: 1
 agent:
   name: compute_subagent
   system_prompt_path: ../../prompts/compute_subagent.md
-  tier: compute_subagent
+  tier: cheap
   max_turns: 80
   when_to_use: Concrete symbolic or numeric computation and verification.
   tools:

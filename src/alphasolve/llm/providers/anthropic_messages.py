@@ -88,6 +88,7 @@ class AnthropicMessagesClient:
         self, request: dict[str, Any], *, delta_sink: ChatDeltaSink
     ) -> CompletionResponse:
         text_parts: list[str] = []
+        thinking_parts: list[str] = []
         tool_blocks: dict[int, dict[str, Any]] = {}  # index -> {"id","name","input_str"}
         stop_reason = "end_turn"
         usage_in = 0
@@ -126,6 +127,11 @@ class AnthropicMessagesClient:
                         if text:
                             text_parts.append(text)
                             delta_sink(StreamDelta(type="text", text=text))
+                    elif dtype == "thinking_delta":
+                        thinking = str(getattr(delta, "thinking", "") or "")
+                        if thinking:
+                            thinking_parts.append(thinking)
+                            delta_sink(StreamDelta(type="reasoning", text=thinking))
                     elif dtype == "input_json_delta":
                         partial = str(getattr(delta, "partial_json", "") or "")
                         if partial and index in tool_blocks:
@@ -153,7 +159,13 @@ class AnthropicMessagesClient:
                 raise
             tool_calls.append(ToolCall(id=block["id"], name=block["name"], args=args))
 
-        msg = Message(role="assistant", content="".join(text_parts), tool_calls=tuple(tool_calls))
+        reasoning_content = "".join(thinking_parts) if thinking_parts else ""
+        msg = Message(
+            role="assistant",
+            content="".join(text_parts),
+            tool_calls=tuple(tool_calls),
+            reasoning_content=reasoning_content,
+        )
         return CompletionResponse(
             message=msg,
             finish_reason=_normalize_stop_reason(stop_reason, has_tool_calls=bool(tool_calls)),
@@ -221,11 +233,14 @@ def _tool_to_anthropic(td: ToolDef) -> dict[str, Any]:
 
 def _anthropic_response_to_completion(response: Any) -> CompletionResponse:
     text_parts: list[str] = []
+    thinking_parts: list[str] = []
     tool_calls: list[ToolCall] = []
     for block in getattr(response, "content", None) or []:
         btype = getattr(block, "type", "")
         if btype == "text":
             text_parts.append(str(getattr(block, "text", "") or ""))
+        elif btype == "thinking":
+            thinking_parts.append(str(getattr(block, "thinking", "") or ""))
         elif btype == "tool_use":
             tool_calls.append(ToolCall(
                 id=str(getattr(block, "id", "")),
@@ -240,7 +255,12 @@ def _anthropic_response_to_completion(response: Any) -> CompletionResponse:
         output_tokens=int(getattr(usage_obj, "output_tokens", 0) or 0) if usage_obj else 0,
         cached_tokens=int(getattr(usage_obj, "cache_read_input_tokens", 0) or 0) if usage_obj else 0,
     )
-    msg = Message(role="assistant", content="".join(text_parts), tool_calls=tuple(tool_calls))
+    msg = Message(
+        role="assistant",
+        content="".join(text_parts),
+        tool_calls=tuple(tool_calls),
+        reasoning_content="".join(thinking_parts) if thinking_parts else "",
+    )
     return CompletionResponse(
         message=msg,
         finish_reason=_normalize_stop_reason(stop_reason, has_tool_calls=bool(tool_calls)),
