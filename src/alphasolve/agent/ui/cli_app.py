@@ -109,10 +109,12 @@ class AgentApp:
         return agent.run(prompt, extra_messages=extra_messages or [])
 
     def _build_config(self) -> AgentConfig:
+        prompt_path = Path(__file__).resolve().parent.parent / "default_prompt.md"
+        prompt = prompt_path.read_text(encoding="utf-8") if prompt_path.is_file() else ""
         return AgentConfig(
             name="agent",
             tier="balanced",
-            system_prompt="",  # phase D 加可配置默认
+            system_prompt=prompt,
             tools=_default_agent_tools(),
             max_turns=self.max_turns,
         )
