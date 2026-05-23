@@ -25,7 +25,7 @@ from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
     from alphasolve.solver.execution import ExecutionGateway
-    from alphasolve.utils.log_session import LogSession
+    from alphasolve.solver.logging.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .curator import CuratorQueue
 

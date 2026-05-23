@@ -13,7 +13,7 @@ from alphasolve.agent import AgentRunError, AgentConfig, load_agent_suite
 from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
 from alphasolve.solver.execution import ExecutionGateway
 from alphasolve.solver.wolfram_probe import check_wolfram_kernel
-from alphasolve.utils.log_session import LogSession
+from alphasolve.solver.logging.log_session import LogSession
 from alphasolve.utils.rich_renderer import PropositionTeamRenderer
 from .curator import CuratorQueue, init_knowledge_base
 from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count

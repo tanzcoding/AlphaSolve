@@ -14,7 +14,7 @@ from .dashboard import make_curator_event_sink
 if TYPE_CHECKING:
     from alphasolve.agent import AgentConfig
     from alphasolve.solver.execution import ExecutionGateway
-    from alphasolve.utils.log_session import LogSession
+    from alphasolve.solver.logging.log_session import LogSession
     from alphasolve.utils.rich_renderer import PropositionTeamRenderer
     from .client_factory import ClientFactory
     from .subagent_service import SubagentService
