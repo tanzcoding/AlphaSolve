@@ -34,7 +34,7 @@ def test_registers_all_basic_tools(registry):
 
 def test_bash_unrestricted_when_available(tmp_path: Path):
     """Bash 解除 ls 限制（如果平台有 bash）。"""
-    from alphasolve.utils.shell import has_bash
+    from alphasolve.agent.shell import has_bash
     if not has_bash():
         pytest.skip("bash not available on this platform")
     ws = Workspace(root=tmp_path)

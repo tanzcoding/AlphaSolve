@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping, Protocol
 
 from .config import AgentConfig
 from .workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, WorkspaceLike
-from alphasolve.utils.shell import find_bash_path, has_bash, run_powershell_command
+from .shell import find_bash_path, has_bash, run_powershell_command
 
 
 ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
