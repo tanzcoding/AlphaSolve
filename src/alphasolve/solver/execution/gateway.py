@@ -10,7 +10,7 @@ import uuid
 from dataclasses import dataclass
 
 from alphasolve.solver.execution.runners import run_python, run_wolfram
-from alphasolve.utils.logger import Logger
+from alphasolve.solver.logging.logger import Logger
 from wolframclient.evaluation import WolframLanguageSession
 
 
