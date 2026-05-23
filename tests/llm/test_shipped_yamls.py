@@ -27,8 +27,7 @@ def test_shipped_presets_load():
 def test_tier_coverage():
     """All required tiers must be mapped in tiers.yaml."""
     tm = load_tier_mapping(repo_path=TIERS_PATH, user_path=None)
-    required = {"orchestrator", "generator", "verifier", "reviser",
-                "curator", "compute_subagent", "proof_subagent"}
+    required = {"cheap", "balanced", "max"}
     assert set(tm.tier_to_preset) == required
 
 
