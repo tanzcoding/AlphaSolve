@@ -13,8 +13,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from alphasolve.agents.team import AlphaSolve
-from alphasolve.agents.team.demo import make_demo_client_factory
+from alphasolve.solver import AlphaSolve
+from alphasolve.solver.demo import make_demo_client_factory
 
 _app: AlphaSolve | None = None
 _interrupt_count = 0
@@ -88,14 +88,45 @@ else:  # Unix
             )
             return
         # Second Ctrl+C
-        if _app is not None and _app._renderer is not None:
-            try:
-                _app._renderer.stop()
-            except Exception:
-                pass
         sys.stderr.write("\nForce quit.\n")
         sys.stderr.flush()
         os._exit(130)
+
+
+def _apply_env_sources(
+    *,
+    cwd_env_path: Path,
+    user_env_path: Path,
+    env_overrides: list[str],
+) -> None:
+    """Populate os.environ from .env files and --env CLI flags.
+
+    Precedence (highest first):
+      1. --env KEY=VAL flags (always win)
+      2. Existing os.environ (shell exports)
+      3. cwd .env (project-local)
+      4. user .env (~/.alphasolve/.env or $ALPHASOLVE_CONFIG_DIR/.env)
+
+    .env files never overwrite already-set env vars. --env flags always do.
+    Raises ValueError on malformed --env arguments.
+    """
+    from dotenv import load_dotenv
+
+    # Load highest-priority .env first; override=False on subsequent loads
+    # means user .env only fills variables not set by cwd .env (or shell).
+    if cwd_env_path.is_file():
+        load_dotenv(cwd_env_path, override=False)
+    if user_env_path.is_file():
+        load_dotenv(user_env_path, override=False)
+
+    # --env always wins, applied after .env loading
+    for entry in env_overrides:
+        if "=" not in entry:
+            raise ValueError(f"--env expects KEY=VAL format, got: {entry!r}")
+        key, _, value = entry.partition("=")
+        if not key:
+            raise ValueError(f"--env key must not be empty: {entry!r}")
+        os.environ[key] = value
 
 
 def main() -> None:
@@ -125,10 +156,10 @@ def main() -> None:
                         help="Maximum recursive depth for subagents (default: from agents.yaml)")
     parser.add_argument("--debug", action="store_true",
                         help="Produce detailed per-agent trace logs under logs/")
-    parser.add_argument("--agent-debug", action="store_true",
-                        help="Run an interactive GeneralPurposeAgent tool-debugging TUI")
-    parser.add_argument("-p", "--print", dest="agent_debug_prompt", metavar="PROMPT",
-                        help="Run --agent-debug once with PROMPT and print the final answer")
+    parser.add_argument("--agent", action="store_true",
+                        help="Run an interactive second-layer Agent REPL")
+    parser.add_argument("-p", "--print", dest="agent_prompt", metavar="PROMPT",
+                        help="Run --agent once with PROMPT and print the final answer")
     parser.add_argument("--demo", action="store_true",
                         help="Run a deterministic local demo without calling an LLM API")
     parser.add_argument("--no_wolfram_prime", action="store_true",
@@ -139,36 +170,82 @@ def main() -> None:
                         help="Number of Python execution worker processes")
     parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
                         help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
+    parser.add_argument("--list-tiers", action="store_true",
+                        help="List available tiers and exit")
+    parser.add_argument("--list-presets", action="store_true",
+                        help="List available presets and exit")
+    parser.add_argument("--env", action="append", default=[], metavar="KEY=VAL",
+                        help="Set an environment variable for this run (repeatable). "
+                             "Overrides shell env and .env files for that key.")
 
     args = parser.parse_args()
-    if args.agent_debug_prompt is not None and not args.agent_debug:
-        parser.error("-p/--print can only be used with --agent-debug")
+    if args.agent_prompt is not None and not args.agent:
+        parser.error("-p/--print can only be used with --agent")
 
-    from alphasolve.agents.general import load_agent_suite_config
-    from alphasolve.config.agent_config import PACKAGE_ROOT
-    config_path = Path(args.config).resolve() if args.config else Path(PACKAGE_ROOT) / "config"
-    suite = load_agent_suite_config(config_path)
-    if args.agent_debug:
-        from alphasolve.agents.team.debug_agent import GeneralAgentDebugApp
-        from alphasolve.agents.team.workflow import make_openai_client_factory
+    from alphasolve.agent import load_agent_suite
 
-        client_factory = make_demo_client_factory() if args.demo else make_openai_client_factory(suite)
-        if args.agent_debug_prompt is not None:
-            _app = GeneralAgentDebugApp(
-                project_dir=Path.cwd(),
-                client_factory=client_factory,
-                suite=suite,
-                renderer_factory=None,
-            )
-        else:
-            _app = GeneralAgentDebugApp(
-                project_dir=Path.cwd(),
-                client_factory=client_factory,
-                suite=suite,
-            )
+    PACKAGE_ROOT = Path(__file__).resolve().parent
+    from alphasolve.llm import load_presets, load_tier_mapping, make_client_factory
+
+    user_dir_env = os.getenv("ALPHASOLVE_CONFIG_DIR")
+    user_dir = Path(user_dir_env) if user_dir_env else Path.home() / ".alphasolve"
+    try:
+        _apply_env_sources(
+            cwd_env_path=Path.cwd() / ".env",
+            user_env_path=user_dir / ".env",
+            env_overrides=args.env,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+
+    presets_path = PACKAGE_ROOT / "config" / "presets.yaml"
+    tiers_path = PACKAGE_ROOT / "config" / "tiers.yaml"
+    user_presets = user_dir / "presets.yaml" if (user_dir / "presets.yaml").is_file() else None
+    user_tiers = user_dir / "tiers.yaml" if (user_dir / "tiers.yaml").is_file() else None
+
+    if args.list_presets:
+        presets = load_presets(repo_path=presets_path, user_path=user_presets)
+        for name in sorted(presets):
+            p = presets[name]
+            print(f"  {name:<28} {p.wire_format:<22} {p.model}")
+        return
+
+    if args.list_tiers:
+        import yaml as _yaml
+        merged: dict[str, str] = {}
+        for path in (tiers_path, user_tiers):
+            if path is None or not path.is_file():
+                continue
+            with path.open("r", encoding="utf-8") as f:
+                data = _yaml.safe_load(f) or {}
+            data.pop("default", None)
+            for k, v in data.items():
+                if isinstance(k, str) and isinstance(v, str):
+                    merged[k] = v
+        for tier in sorted(merged):
+            print(f"  {tier} -> {merged[tier]}")
+        return
+
+    config_path = Path(args.config).resolve() if args.config else PACKAGE_ROOT / "solver" / "config"
+    suite = load_agent_suite(config_path)
+
+    if args.demo:
+        client_factory = make_demo_client_factory()
+    else:
+        tier_mapping = load_tier_mapping(repo_path=tiers_path, user_path=user_tiers)
+        presets = load_presets(repo_path=presets_path, user_path=user_presets)
+        client_factory = make_client_factory(tier_mapping, presets)
+
+    if args.agent:
+        from alphasolve.agent.ui.cli_app import AgentApp
+
+        _app = AgentApp(
+            project_dir=Path.cwd(),
+            client_factory=client_factory,
+        )
         try:
-            if args.agent_debug_prompt is not None:
-                result = _app.run_once(args.agent_debug_prompt)
+            if args.agent_prompt is not None:
+                result = _app.run_once(args.agent_prompt)
                 print(result.final_answer or "")
             else:
                 _app.run()
@@ -201,7 +278,7 @@ def main() -> None:
             max_verify_rounds=max_verify_rounds,
             verifier_scaling_factor=verifier_scaling_factor,
             subagent_max_depth=subagent_max_depth,
-            client_factory=make_demo_client_factory() if args.demo else None,
+            client_factory=client_factory,
             prime_wolfram=not args.no_wolfram_prime,
             print_to_console=not args.no_dashboard,
             tool_executor_size=args.tool_executor_size,

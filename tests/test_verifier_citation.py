@@ -7,15 +7,17 @@ import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agents.general import Workspace, load_agent_suite_config  # noqa: E402
-from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
-from alphasolve.agents.team.tools import RoleWorkspaceAccess, build_workspace_tool_registry  # noqa: E402
-from alphasolve.agents.team.worker import Worker  # noqa: E402
-from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
+import alphasolve  # noqa: E402
+from alphasolve.agent import Workspace, load_agent_suite  # noqa: E402
+from alphasolve.solver.project import ProjectLayout  # noqa: E402
+from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
+from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
+from alphasolve.solver.worker import Worker  # noqa: E402
+PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
 
 
 def test_verifier_citation_is_first_default_attempt():
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
 
     assert "verifier_citation" in suite.agents
     assert suite.settings["verifier_agents"][0] == "verifier_citation"
@@ -23,7 +25,7 @@ def test_verifier_citation_is_first_default_attempt():
     assert "knowledge/" in suite.agents["verifier_citation"].system_prompt
     assert "path relative to `verified_propositions`" in suite.agents["verifier_citation"].system_prompt
     assert r"\ref{coercive\energy-estimate}" in suite.agents["verifier_citation"].system_prompt
-    assert "Agent" not in suite.agents["verifier_citation"].tools
+    assert "Agent" in suite.agents["verifier_citation"].tools
 
 
 def test_verifier_task_offloads_citation_audit_to_first_attempt(tmp_path):
@@ -57,12 +59,14 @@ def test_verifier_task_offloads_citation_audit_to_first_attempt(tmp_path):
         config_name="verifier_stepwise",
     )
 
-    assert "perform only the citation/reference audit" in citation_task
+    assert "citation/reference audit" in citation_task
     assert "path relative to `verified_propositions`" in citation_task
     assert r"\ref{category\filename}" in citation_task
     assert "must not cite, depend on, or present as established any proposition from `knowledge/`" in citation_task
+    assert "reasoning_subagent" in citation_task
+    assert "conditions" in citation_task
     assert "A separate first verifier attempt audits" in math_task
-    assert "perform only the citation/reference audit" not in math_task
+    assert "citation/reference audit" not in math_task
 
 
 def test_worker_tasks_describe_full_verified_proposition_reference_paths(tmp_path):
@@ -109,14 +113,14 @@ def test_citation_access_denies_knowledge_reads(tmp_path):
 
 
 def test_citation_tools_can_list_verified_proposition_subdirectories(tmp_path):
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     config = suite.agents["verifier_citation"]
     workspace = Workspace(tmp_path)
     nested_dir = tmp_path / "verified_propositions" / "coercive" / "local"
     nested_dir.mkdir(parents=True)
     (nested_dir / "energy.md").write_text("# Energy\n", encoding="utf-8")
 
-    registry = build_workspace_tool_registry(RoleWorkspaceAccess(workspace=workspace))
+    registry = build_default_tool_registry(RoleWorkspaceAccess(workspace=workspace))
 
     listed = registry.execute(
         "ListDir",
@@ -143,7 +147,7 @@ def test_grep_defaults_to_regex_matching(tmp_path):
     target.mkdir(parents=True)
     (target / "energy.md").write_text("# Energy\n", encoding="utf-8")
 
-    registry = build_workspace_tool_registry(RoleWorkspaceAccess(workspace=workspace))
+    registry = build_default_tool_registry(RoleWorkspaceAccess(workspace=workspace))
     result = registry.execute(
         "Grep",
         {"path": "verified_propositions", "pattern": r"^# Energy$"},

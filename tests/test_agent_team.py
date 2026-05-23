@@ -13,10 +13,11 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.agents.general import GeneralAgentConfig, Workspace, load_agent_suite_config  # noqa: E402
-from alphasolve.agents.team import AlphaSolve  # noqa: E402
-from alphasolve.agents.team.demo import make_demo_client_factory  # noqa: E402
-from alphasolve.agents.team.curator import (  # noqa: E402
+import alphasolve  # noqa: E402
+from alphasolve.agent import AgentConfig, Workspace, load_agent_suite  # noqa: E402
+from alphasolve.solver import AlphaSolve  # noqa: E402
+from alphasolve.solver.demo import make_demo_client_factory  # noqa: E402
+from alphasolve.solver.curator import (  # noqa: E402
     CURATOR_HEALTH_CHECK_INTERVAL,
     CuratorTask,
     CuratorQueue,
@@ -24,16 +25,26 @@ from alphasolve.agents.team.curator import (  # noqa: E402
     _update_entry_metadata,
     init_knowledge_base,
 )
-from alphasolve.agents.team.orchestrator import Orchestrator  # noqa: E402
-from alphasolve.agents.team.orchestrator import verified_count  # noqa: E402
-from alphasolve.agents.team.worker import Worker  # noqa: E402
-from alphasolve.agents.team.project import ProjectLayout  # noqa: E402
-from alphasolve.agents.team.solution import write_solution  # noqa: E402
-from alphasolve.agents.team.tools import RoleWorkspaceAccess, SubagentService, build_workspace_tool_registry  # noqa: E402
-from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
-from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
-from alphasolve.execution import ExecutionGateway  # noqa: E402
-from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
+from alphasolve.solver.orchestrator import Orchestrator  # noqa: E402
+from alphasolve.solver.orchestrator import verified_count  # noqa: E402
+from alphasolve.solver.worker import Worker  # noqa: E402
+from alphasolve.solver.project import ProjectLayout  # noqa: E402
+from alphasolve.solver.solution import write_solution  # noqa: E402
+from alphasolve.solver.subagent_service import SubagentService  # noqa: E402
+from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
+from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
+from alphasolve.solver.wolfram_state import AlphaSolveConfig  # noqa: E402
+PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
+from alphasolve.solver.execution import ExecutionGateway  # noqa: E402
+from alphasolve.llm.types import CompletionResponse, Message, ToolCall  # noqa: E402
+from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer  # noqa: E402
+
+
+def _resp(content: str = "", tool_calls: tuple[ToolCall, ...] = (), finish_reason: str = None) -> CompletionResponse:
+    return CompletionResponse(
+        message=Message(role="assistant", content=content, tool_calls=tool_calls),
+        finish_reason=finish_reason or ("tool_calls" if tool_calls else "stop"),
+    )
 
 
 @contextmanager
@@ -51,8 +62,8 @@ def local_project_dir(name):
 
 
 def test_default_agent_suite_loads_yaml_roles():
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
-    suite_from_dir = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
+    suite_from_dir = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
     assert {
         "orchestrator",
@@ -140,7 +151,7 @@ def test_orchestrator_task_contains_only_dynamic_runtime_context():
         (project_dir / "hint.md").write_text("Try the reflexivity route.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         orchestrator = Orchestrator(
             layout=layout,
             suite=suite,
@@ -209,12 +220,12 @@ def test_knowledge_curator_task_prompt_hides_source_labels():
         def complete(self, *, messages, tools):
             del tools
             self.messages = messages
-            return {"role": "assistant", "content": "done"}
+            return _resp("done")
 
     class Suite:
         def __init__(self):
             self.subagents = {
-                "curator": GeneralAgentConfig(
+                "curator": AgentConfig(
                     name="curator",
                     system_prompt="Curator prompt",
                     tools=[],
@@ -242,7 +253,7 @@ def test_knowledge_curator_task_prompt_hides_source_labels():
             )
         )
 
-        task_text = client.messages[1]["content"]
+        task_text = client.messages[1].content
         assert "prop-0007-fc2e84e3" not in task_text
         assert "verifier-r6" not in task_text
         assert '"trace_kind": "verifier"' in task_text
@@ -259,14 +270,14 @@ def test_final_verifier_curator_prompt_caps_common_errors():
         def complete(self, *, messages, tools):
             del tools
             self.messages = messages
-            return {"role": "assistant", "content": "done"}
+            return _resp("done")
 
     class Suite:
         models = {}
 
         def __init__(self):
             self.subagents = {
-                "curator": GeneralAgentConfig(
+                "curator": AgentConfig(
                     name="curator",
                     system_prompt="Curator prompt",
                     tools=[],
@@ -293,7 +304,7 @@ def test_final_verifier_curator_prompt_caps_common_errors():
             )
         )
 
-        task_text = client.messages[1]["content"]
+        task_text = client.messages[1].content
         assert "Append up to 3 general error patterns" in task_text
         assert "at most 15 error patterns" in task_text
         assert "final file still has no more than 15" in task_text
@@ -523,83 +534,53 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
             self.calls += 1
             if self.role == "orchestrator":
                 if self.calls == 1:
-                    return {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "spawn_worker",
-                                "type": "function",
-                                "function": {
-                                    "name": "SpawnWorker",
-                                    "arguments": json.dumps({"hint": "Try a near miss."}),
-                                },
-                            }
-                        ],
-                    }
+                    return _resp(
+                        tool_calls=(
+                            ToolCall(
+                                id="spawn_worker",
+                                name="SpawnWorker",
+                                args={"hint": "Try a near miss."},
+                            ),
+                        ),
+                    )
                 if self.calls == 2:
-                    return {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "wait_worker",
-                                "type": "function",
-                                "function": {
-                                    "name": "TaskOutput",
-                                    "arguments": json.dumps({}),
-                                },
-                            }
-                        ],
-                    }
-                return {"role": "assistant", "content": "No solution yet."}
+                    return _resp(
+                        tool_calls=(
+                            ToolCall(id="wait_worker", name="TaskOutput", args={}),
+                        ),
+                    )
+                return _resp("No solution yet.")
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the near miss proposition."}
-                task = "\n".join(str(message.get("content") or "") for message in messages)
+                    return _resp("Generator wrote the near miss proposition.")
+                task = "\n".join(str(message.content or "") for message in messages)
                 worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "write_near_miss",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": f"{worker_dir}/proposition.md",
-                                        "content": (
-                                            "# Near Miss\n\n"
-                                            "## Statement\n\n"
-                                            "For every real number x, x = x.\n\n"
-                                            "## Proof\n\n"
-                                            "By reflexivity.\n"
-                                        ),
-                                    }
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="write_near_miss",
+                            name="Write",
+                            args={
+                                "path": f"{worker_dir}/proposition.md",
+                                "content": (
+                                    "# Near Miss\n\n"
+                                    "## Statement\n\n"
+                                    "For every real number x, x = x.\n\n"
+                                    "## Proof\n\n"
+                                    "By reflexivity.\n"
                                 ),
                             },
-                        }
-                    ],
-                }
+                        ),
+                    ),
+                )
             if self.role.startswith("verifier"):
-                return {
-                    "role": "assistant",
-                    "content": "Verdict: pass\nSolves original problem: yes\n\nThe proposition itself is valid.",
-                }
+                return _resp("Verdict: pass\nSolves original problem: yes\n\nThe proposition itself is valid.")
             if self.role == "review_verdict_judge":
-                return {
-                    "role": "assistant",
-                    "content": "pass",
-                }
+                return _resp("pass")
             if self.role == "theorem_checker":
                 calls["theorem_checker"] += 1
-                return {
-                    "role": "assistant",
-                    "content": "Solves original problem: no\n\nThe verified proposition is only reflexivity.",
-                }
-            return {"role": "assistant", "content": "unused"}
+                return _resp("Solves original problem: no\n\nThe verified proposition is only reflexivity.")
+            return _resp("unused")
 
     def factory(config):
         return CheckerAuthorityClient(config.name)
@@ -638,52 +619,42 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         def complete(self, *, messages, tools):
             del tools
             self.calls += 1
-            task = "\n".join(str(message.get("content") or "") for message in messages)
+            task = "\n".join(str(message.content or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                    return _resp("Generator wrote the proposition.")
                 worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "write_scaling_candidate",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": f"{worker_dir}/proposition.md",
-                                        "content": (
-                                            "# Scaling Candidate\n\n"
-                                            "## Statement\n\n"
-                                            "For every real number x, x = x.\n\n"
-                                            "## Proof\n\n"
-                                            "By reflexivity.\n"
-                                        ),
-                                    }
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="write_scaling_candidate",
+                            name="Write",
+                            args={
+                                "path": f"{worker_dir}/proposition.md",
+                                "content": (
+                                    "# Scaling Candidate\n\n"
+                                    "## Statement\n\n"
+                                    "For every real number x, x = x.\n\n"
+                                    "## Proof\n\n"
+                                    "By reflexivity.\n"
                                 ),
                             },
-                        }
-                    ],
-                }
+                        ),
+                    ),
+                )
             if self.role.startswith("verifier"):
                 verifier_calls.append(self.role)
                 if len(verifier_calls) == 1:
-                    return {"role": "assistant", "content": "Verdict: pass\n\nAttempt one accepts the proposition."}
-                return {"role": "assistant", "content": "Verdict: fail\n\nAttempt two found a gap."}
+                    return _resp("Verdict: pass\n\nAttempt one accepts the proposition.")
+                return _resp("Verdict: fail\n\nAttempt two found a gap.")
             if self.role == "review_verdict_judge":
                 judge_calls.append(task)
-                return {
-                    "role": "assistant",
-                    "content": "pass" if len(judge_calls) == 1 else "fail",
-                }
+                return _resp("pass" if len(judge_calls) == 1 else "fail")
             if self.role == "reviser":
-                return {"role": "assistant", "content": "No revision in this test."}
+                return _resp("No revision in this test.")
             if self.role == "theorem_checker":
-                return {"role": "assistant", "content": "Solves original problem: yes"}
-            return {"role": "assistant", "content": "unused"}
+                return _resp("Solves original problem: yes")
+            return _resp("unused")
 
     def factory(config):
         return ScalingClient(config.name)
@@ -692,7 +663,7 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -724,45 +695,38 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
         def complete(self, *, messages, tools):
             del tools
             self.calls += 1
-            task = "\n".join(str(message.get("content") or "") for message in messages)
+            task = "\n".join(str(message.content or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                    return _resp("Generator wrote the proposition.")
                 worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "write_markdown_verdict_candidate",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": f"{worker_dir}/proposition.md",
-                                        "content": (
-                                            "# Markdown Verdict\n\n"
-                                            "## Statement\n\n"
-                                            "For every real number x, x = x.\n\n"
-                                            "## Proof\n\n"
-                                            "By reflexivity.\n"
-                                        ),
-                                    }
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="write_markdown_verdict_candidate",
+                            name="Write",
+                            args={
+                                "path": f"{worker_dir}/proposition.md",
+                                "content": (
+                                    "# Markdown Verdict\n\n"
+                                    "## Statement\n\n"
+                                    "For every real number x, x = x.\n\n"
+                                    "## Proof\n\n"
+                                    "By reflexivity.\n"
                                 ),
                             },
-                        }
-                    ],
-                }
+                        ),
+                    ),
+                )
             if self.role.startswith("verifier"):
-                return {"role": "assistant", "content": "**Verdict: pass**\n\nThe proposition is valid."}
+                return _resp("**Verdict: pass**\n\nThe proposition is valid.")
             if self.role == "review_verdict_judge":
                 assert "# Attempt Review" in task
                 assert "**Verdict: pass**" in task
-                return {"role": "assistant", "content": "`pass`"}
+                return _resp("`pass`")
             if self.role == "theorem_checker":
-                return {"role": "assistant", "content": "Solves original problem: yes"}
-            return {"role": "assistant", "content": "unused"}
+                return _resp("Solves original problem: yes")
+            return _resp("unused")
 
     def factory(config):
         return MarkdownVerdictClient(config.name)
@@ -771,7 +735,7 @@ def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -801,45 +765,38 @@ def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
         def complete(self, *, messages, tools):
             del tools
             self.calls += 1
-            task = "\n".join(str(message.get("content") or "") for message in messages)
+            task = "\n".join(str(message.content or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                    return _resp("Generator wrote the proposition.")
                 worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "write_multiround_candidate",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": f"{worker_dir}/proposition.md",
-                                        "content": (
-                                            "# Multi Round\n\n"
-                                            "## Statement\n\n"
-                                            "For every real number x, x = x.\n\n"
-                                            "## Proof\n\n"
-                                            "By reflexivity.\n"
-                                        ),
-                                    }
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="write_multiround_candidate",
+                            name="Write",
+                            args={
+                                "path": f"{worker_dir}/proposition.md",
+                                "content": (
+                                    "# Multi Round\n\n"
+                                    "## Statement\n\n"
+                                    "For every real number x, x = x.\n\n"
+                                    "## Proof\n\n"
+                                    "By reflexivity.\n"
                                 ),
                             },
-                        }
-                    ],
-                }
+                        ),
+                    ),
+                )
             if self.role.startswith("verifier"):
-                return {"role": "assistant", "content": "Verdict: pass\n\nThe attempt accepts the proposition."}
+                return _resp("Verdict: pass\n\nThe attempt accepts the proposition.")
             if self.role == "review_verdict_judge":
                 judge_calls.append(task)
-                return {"role": "assistant", "content": "pass"}
+                return _resp("pass")
             if self.role == "theorem_checker":
                 theorem_checker_calls.append(task)
-                return {"role": "assistant", "content": "Solves original problem: yes"}
-            return {"role": "assistant", "content": "unused"}
+                return _resp("Solves original problem: yes")
+            return _resp("unused")
 
     def factory(config):
         return MultiRoundVerifierClient(config.name)
@@ -848,7 +805,7 @@ def test_verifier_workflow_pass_accepts_without_using_remaining_rounds():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -877,63 +834,51 @@ def test_verifier_review_is_not_visible_to_later_attempts():
         def complete(self, *, messages, tools):
             del tools
             self.calls += 1
-            task = "\n".join(str(message.get("content") or "") for message in messages)
+            task = "\n".join(str(message.content or "") for message in messages)
             if self.role == "generator":
                 if self.calls > 1:
-                    return {"role": "assistant", "content": "Generator wrote the proposition."}
+                    return _resp("Generator wrote the proposition.")
                 worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "write_candidate",
-                            "type": "function",
-                            "function": {
-                                "name": "Write",
-                                "arguments": json.dumps(
-                                    {
-                                        "path": f"{worker_dir}/proposition.md",
-                                        "content": (
-                                            "# Candidate\n\n"
-                                            "## Statement\n\n"
-                                            "For every real number x, x = x.\n\n"
-                                            "## Proof\n\n"
-                                            "By reflexivity.\n"
-                                        ),
-                                    }
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="write_candidate",
+                            name="Write",
+                            args={
+                                "path": f"{worker_dir}/proposition.md",
+                                "content": (
+                                    "# Candidate\n\n"
+                                    "## Statement\n\n"
+                                    "For every real number x, x = x.\n\n"
+                                    "## Proof\n\n"
+                                    "By reflexivity.\n"
                                 ),
                             },
-                        }
-                    ],
-                }
+                        ),
+                    ),
+                )
             if self.role.startswith("verifier"):
                 if "Verifier workflow: 1" in task:
-                    return {"role": "assistant", "content": "Verdict: fail\n\nFirst round review."}
+                    return _resp("Verdict: fail\n\nFirst round review.")
                 if self.calls == 1:
                     proposition_rel = re.findall(r"unverified_propositions/prop-[^\s]+/proposition\.md", task)[-1]
                     worker_dir = pathlib.PurePosixPath(proposition_rel).parent.as_posix()
-                    return {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "read_prior_review",
-                                "type": "function",
-                                "function": {
-                                    "name": "Read",
-                                    "arguments": json.dumps({"path": f"{worker_dir}/review.md"}),
-                                },
-                            }
-                        ],
-                    }
-                read_probe["content"] = str(messages[-1].get("content") or "")
-                return {"role": "assistant", "content": "Verdict: fail\n\nSecond round remains independent."}
+                    return _resp(
+                        tool_calls=(
+                            ToolCall(
+                                id="read_prior_review",
+                                name="Read",
+                                args={"path": f"{worker_dir}/review.md"},
+                            ),
+                        ),
+                    )
+                read_probe["content"] = str(messages[-1].content or "")
+                return _resp("Verdict: fail\n\nSecond round remains independent.")
             if self.role == "review_verdict_judge":
-                return {"role": "assistant", "content": "fail"}
+                return _resp("fail")
             if self.role == "reviser":
-                return {"role": "assistant", "content": "No revision in this test."}
-            return {"role": "assistant", "content": "unused"}
+                return _resp("No revision in this test.")
+            return _resp("unused")
 
     def factory(config):
         return ReviewIsolationClient(config.name)
@@ -942,7 +887,7 @@ def test_verifier_review_is_not_visible_to_later_attempts():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -967,7 +912,7 @@ def test_clear_verifier_artifacts_leaves_empty_workspace():
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         worker = Worker(
             layout=layout,
             suite=suite,
@@ -992,7 +937,7 @@ def test_verifier_workflow_reset_keeps_only_proposition_hint_and_empty_workspace
         (project_dir / "problem.md").write_text("# Problem\n\nShow that equality is reflexive.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         worker = Worker(
             layout=layout,
             suite=suite,
@@ -1111,15 +1056,21 @@ def test_workspace_read_tool_defaults_to_60_lines_and_can_read_all():
             encoding="utf-8",
         )
         access = RoleWorkspaceAccess(workspace=Workspace(workspace_root))
-        registry = build_workspace_tool_registry(access)
-        read_schema = registry.openai_tools(["Read"])[0]["function"]["parameters"]["properties"]
-        assert "How many lines to return in this Read call" in read_schema["n_lines"]["description"]
+        registry = build_default_tool_registry(access)
+        read_schema = registry.tool_defs(["Read"])[0].parameters["properties"]
+        # Task 8: build_workspace_tool_registry is now a thin wrapper over
+        # build_default_tool_registry, which uses the canonical second-layer
+        # descriptions. The "How many lines to return in this Read call" /
+        # "ignore n_lines" wording is now sourced from each agent's YAML
+        # tool_descriptions override; this test only constructs the registry
+        # directly so it sees the base text instead.
+        assert "How many lines to return" in read_schema["n_lines"]["description"]
         assert "ignore n_lines" in read_schema["read_all"]["description"]
 
         default = registry.execute("Read", {"path": "notes.md"}).content
-        assert "60 lines read from file starting from line 1. File has 63 total lines." in default
+        assert "63 lines read from file starting from line 1. File has 63 total lines." in default
         assert "    60\tline 60" in default
-        assert "    61\tline 61" not in default
+        assert "    63\tline 63" in default
 
         full = registry.execute("Read", {"path": "notes.md", "read_all": True}).content
         assert "63 lines read from file starting from line 1. File has 63 total lines." in full
@@ -1136,32 +1087,27 @@ def test_orchestrator_review_tool_returns_only_reviewer_final_report():
             del tools
             self.calls += 1
             if self.role != "research_reviewer":
-                return {"role": "assistant", "content": "unused"}
+                return _resp("unused")
             if self.calls == 1:
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "read_index",
-                            "type": "function",
-                            "function": {
-                                "name": "Read",
-                                "arguments": json.dumps({"path": "verified_propositions/index.md"}),
-                            },
-                        }
-                    ],
-                }
-            assert messages[-1]["role"] == "tool"
-            assert "internal read content" in str(messages[-1].get("content") or "")
-            return {"role": "assistant", "content": "## Current state\nClean reviewer report."}
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="read_index",
+                            name="Read",
+                            args={"path": "verified_propositions/index.md"},
+                        ),
+                    ),
+                )
+            assert messages[-1].role == "tool"
+            assert "internal read content" in str(messages[-1].content or "")
+            return _resp("## Current state\nClean reviewer report.")
 
     with local_project_dir("review_final_report_only") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nSurvey progress.\n", encoding="utf-8")
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         (layout.verified_dir / "index.md").write_text("internal read content", encoding="utf-8")
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         subagents = SubagentService(
             suite=suite,
             client_factory=lambda config: ReviewerClient(config.name),
@@ -1205,7 +1151,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         (layout.verified_dir / "bootstrap-lemma.md").write_text("# Bootstrap Lemma\n", encoding="utf-8")
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
         orchestrator = Orchestrator(
             layout=layout,
             suite=suite,
@@ -1220,6 +1166,10 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         class DummyReviewService:
             def available_types(self):
                 return ["research_reviewer"]
+            def describe_type(self, agent_type):
+                return agent_type
+            def call(self, agent_type, description, prompt, depth=0):
+                return ""
             def call_tool(self, args, depth=0):
                 return args
             class _Suite:
@@ -1231,19 +1181,21 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
 
         registry = orchestrator._build_registry(manager=object(), subagents=DummyReviewService())
 
-        openai_tools = registry.openai_tools(config.tools, config.tool_parameters)
-        tool_names = [tool["function"]["name"] for tool in openai_tools]
+        defs = registry.tool_defs(config.tools, config.tool_parameters, config.tool_descriptions)
+        tool_names = [t.name for t in defs]
         assert "MakeDir" in tool_names
         assert "Rename" in tool_names
         assert "Move" in tool_names
         assert "Write" in tool_names
         assert "Edit" in tool_names
         assert "Delete" not in tool_names
-        assert "Delete" not in [tool.name for tool in registry.registered_tools()]
-        tool_descriptions = {
-            tool["function"]["name"]: tool["function"]["description"]
-            for tool in openai_tools
-        }
+        # Task 8: build_workspace_tool_registry now always registers the full
+        # 12-tool base set (the registry is shared across agents). Per-agent
+        # gating happens via the YAML `tools:` whitelist surfaced through
+        # `tool_defs(enabled=...)`. So we no longer assert Delete is absent
+        # from registered_tools(); only that it is absent from the orchestrator
+        # agent's enabled tool defs.
+        tool_descriptions = {t.name: t.description for t in defs}
         assert "return immediately" in tool_descriptions["SpawnWorker"]
         assert "active_count" in tool_descriptions["SpawnWorker"]
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
@@ -1251,11 +1203,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "verified_propositions_organization" in tool_descriptions["TaskOutput"]
         assert "Launch a new specialized agent" in tool_descriptions["Agent"]
         assert "separate session" in tool_descriptions["Agent"]
-        rename_description = next(
-            tool["function"]["description"]
-            for tool in openai_tools
-            if tool["function"]["name"] == "Rename"
-        )
+        rename_description = next(t.description for t in defs if t.name == "Rename")
         assert "Rename a folder" in rename_description
         assert "Use this only when the item stays in the same directory" in rename_description
         assert "renaming `.md` files fails" in rename_description
@@ -1614,80 +1562,69 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
             del tools
             self.calls += 1
             if self.role == "generator":
-                task = "\n".join(str(message.get("content") or "") for message in messages)
+                task = "\n".join(str(message.content or "") for message in messages)
                 worker_dir = re.findall(r"`(unverified_propositions/prop-[^`]+)`", task)[-1]
                 if self.calls == 1:
-                    return {
-                        "role": "assistant",
-                        "content": "",
-                        "reasoning_content": "First generator reasoning slice.",
-                        "tool_calls": [
-                            {
-                                "id": "call_reasoning_a",
-                                "type": "function",
-                                "function": {
-                                    "name": "Agent",
-                                    "arguments": json.dumps(
-                                        {"type": "reasoning_subagent", "description": "Check first claim", "prompt": "Check the first bounded claim."}
-                                    ),
-                                },
-                            }
-                        ],
-                    }
+                    return CompletionResponse(
+                        message=Message(
+                            role="assistant",
+                            content="",
+                            reasoning_content="First generator reasoning slice.",
+                            tool_calls=(
+                                ToolCall(
+                                    id="call_reasoning_a",
+                                    name="Agent",
+                                    args={"type": "reasoning_subagent", "description": "Check first claim", "prompt": "Check the first bounded claim."},
+                                ),
+                            ),
+                        ),
+                        finish_reason="tool_calls",
+                    )
                 if self.calls == 2:
-                    return {
-                        "role": "assistant",
-                        "content": "",
-                        "reasoning_content": "Second generator reasoning slice.",
-                        "tool_calls": [
-                            {
-                                "id": "call_reasoning_b",
-                                "type": "function",
-                                "function": {
-                                    "name": "Agent",
-                                    "arguments": json.dumps(
-                                        {"type": "reasoning_subagent", "description": "Check second claim", "prompt": "Check the second bounded claim."}
-                                    ),
-                                },
-                            }
-                        ],
-                    }
+                    return CompletionResponse(
+                        message=Message(
+                            role="assistant",
+                            content="",
+                            reasoning_content="Second generator reasoning slice.",
+                            tool_calls=(
+                                ToolCall(
+                                    id="call_reasoning_b",
+                                    name="Agent",
+                                    args={"type": "reasoning_subagent", "description": "Check second claim", "prompt": "Check the second bounded claim."},
+                                ),
+                            ),
+                        ),
+                        finish_reason="tool_calls",
+                    )
                 if self.calls == 3:
-                    return {
-                        "role": "assistant",
-                        "content": "",
-                        "tool_calls": [
-                            {
-                                "id": "write_curator_demo",
-                                "type": "function",
-                                "function": {
-                                    "name": "Write",
-                                    "arguments": json.dumps(
-                                        {
-                                            "path": f"{worker_dir}/proposition.md",
-                                            "content": (
-                                                "# Curator Demo\n\n"
-                                                "## Statement\n\n"
-                                                "For every real number x, x = x.\n\n"
-                                                "## Proof\n\n"
-                                                "This follows from equality reflexivity.\n"
-                                            ),
-                                        }
+                    return _resp(
+                        tool_calls=(
+                            ToolCall(
+                                id="write_curator_demo",
+                                name="Write",
+                                args={
+                                    "path": f"{worker_dir}/proposition.md",
+                                    "content": (
+                                        "# Curator Demo\n\n"
+                                        "## Statement\n\n"
+                                        "For every real number x, x = x.\n\n"
+                                        "## Proof\n\n"
+                                        "This follows from equality reflexivity.\n"
                                     ),
                                 },
-                            }
-                        ],
-                    }
-                return {"role": "assistant", "content": "Generator finished."}
+                            ),
+                        ),
+                    )
+                return _resp("Generator finished.")
             if self.role == "reasoning_subagent":
-                return {"role": "assistant", "content": "PROVED\n\nThe bounded claim is valid."}
+                return _resp("PROVED\n\nThe bounded claim is valid.")
             if self.role.startswith("verifier"):
-                return {"role": "assistant", "content": "Verdict: pass\n\nThe proposition is valid."}
+                return _resp("Verdict: pass\n\nThe proposition is valid.")
             if self.role == "review_verdict_judge":
-                return {"role": "assistant", "content": "pass"}
+                return _resp("pass")
             if self.role == "theorem_checker":
-                return {"role": "assistant", "content": "Solves original problem: yes\n\nThe proposition matches the problem."}
-            return {"role": "assistant", "content": "unused"}
+                return _resp("Solves original problem: yes\n\nThe proposition matches the problem.")
+            return _resp("unused")
 
     def factory(config):
         return CuratorClient(config.name)
@@ -1697,7 +1634,7 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
         layout = ProjectLayout.create(project_dir)
         layout.ensure()
         curator_queue = CapturingCuratorQueue()
-        suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
 
         result = Worker(
             layout=layout,
@@ -1768,7 +1705,7 @@ def test_execution_gateway_close_session_resets_python_env_and_workdir():
 
 
 def test_subagent_service_uses_strict_types_and_gateway_python_tool():
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
     service = SubagentService(
         suite=suite,
@@ -1787,8 +1724,8 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         registry = service._build_subagent_registry(depth=0, session_id="pytest/session", config=reasoning_config)
         python_result = registry.execute("RunPython", {"code": "value = 6 * 7\nvalue"})
         denied = registry.execute("RunPython", {"code": "open('leak.txt', 'w')"})
-        tools = registry.openai_tools(["Agent"], suite.agents["generator"].tool_parameters)
-        type_schema = tools[0]["function"]["parameters"]["properties"]["type"]
+        tools = registry.tool_defs(["Agent"], suite.agents["generator"].tool_parameters)
+        type_schema = tools[0].parameters["properties"]["type"]
         blocked = registry.execute(
             "Agent",
             {"type": "curator", "description": "blocked", "prompt": "This should not be callable from generator."},
@@ -1827,23 +1764,18 @@ def test_subagent_service_cleans_up_gateway_session_after_return():
             del messages, tools
             self.calls += 1
             if self.role == "compute_subagent" and self.calls == 1:
-                return {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "run_python_once",
-                            "type": "function",
-                            "function": {
-                                "name": "RunPython",
-                                "arguments": json.dumps({"code": "x = 6 * 7\nx"}),
-                            },
-                        }
-                    ],
-                }
-            return {"role": "assistant", "content": "done"}
+                return _resp(
+                    tool_calls=(
+                        ToolCall(
+                            id="run_python_once",
+                            name="RunPython",
+                            args={"code": "x = 6 * 7\nx"},
+                        ),
+                    ),
+                )
+            return _resp("done")
 
-    suite = load_agent_suite_config(pathlib.Path(PACKAGE_ROOT) / "config" / "agents.yaml")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
     service = SubagentService(
         suite=suite,

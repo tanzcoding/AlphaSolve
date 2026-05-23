@@ -17,13 +17,13 @@ from unittest import mock
 import pytest
 from rich.console import Console
 
-from alphasolve.agents.general.general_agent import (
+from alphasolve.llm.providers.openai_chat import (
     _first_text_delta,
+    _messages_to_openai,
     _object_to_dict,
-    _prepare_messages_for_request,
 )
-from alphasolve.agents.team.dashboard import make_worker_event_sink
-from alphasolve.utils.rich_renderer import (
+from alphasolve.solver.ui.dashboard import make_worker_event_sink
+from alphasolve.solver.ui.team_renderer import (
     PropositionTeamRenderer,
     WorkerRenderState,
 )
@@ -203,26 +203,25 @@ class TestBug2_ReasoningContent:
 
     def test_thinking_mode_tool_call_request_keeps_reasoning_content_key(self):
         """Tool-call assistant messages must carry reasoning_content into the next request."""
+        from alphasolve.llm.types import Message, ToolCall
+
         messages = [
-            {"role": "user", "content": "revise"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_edit",
-                        "type": "function",
-                        "function": {"name": "edit_file", "arguments": "{}"},
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_edit", "content": "ok"},
+            Message(role="user", content="revise"),
+            Message(
+                role="assistant",
+                content="",
+                tool_calls=(
+                    ToolCall(id="call_edit", name="edit_file", args={}),
+                ),
+            ),
+            Message(role="tool", content="ok", tool_call_id="call_edit"),
         ]
 
-        prepared = _prepare_messages_for_request(messages, thinking_mode=True)
+        prepared = _messages_to_openai(messages, thinking_mode=True)
 
         assert prepared[1]["reasoning_content"] == ""
-        assert "reasoning_content" not in messages[1]
+        # The original Message is unchanged (immutable dataclass).
+        assert messages[1].reasoning_content == ""
 
     def test_streaming_message_preserves_reasoning_content(self):
         """Simulate the streaming path and verify the message structure."""

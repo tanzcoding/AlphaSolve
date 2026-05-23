@@ -2,14 +2,14 @@ import threading
 import time
 from types import SimpleNamespace
 
-from alphasolve.agents.general import GeneralAgentConfig
-from alphasolve.agents.team import orchestrator as orchestrator_module
-from alphasolve.agents.team import workflow as workflow_module
-from alphasolve.agents.team import AlphaSolve
-from alphasolve.agents.team.orchestrator import Orchestrator, WorkerManager
-from alphasolve.agents.team.project import ProjectLayout
-from alphasolve.agents.team.orchestrator import OrchestratorRunResult
-from alphasolve.agents.team.worker import WorkerRunResult
+from alphasolve.agent import AgentConfig
+from alphasolve.solver import orchestrator as orchestrator_module
+from alphasolve.solver import app as workflow_module
+from alphasolve.solver import AlphaSolve
+from alphasolve.solver.orchestrator import Orchestrator, WorkerManager
+from alphasolve.solver.project import ProjectLayout
+from alphasolve.solver.orchestrator import OrchestratorRunResult
+from alphasolve.solver.worker import WorkerRunResult
 
 
 class _DummyWorker:
@@ -149,7 +149,7 @@ def test_orchestrator_interrupt_uses_separate_worker_stop_event(tmp_path, monkey
     user_stop_event.set()
     suite = SimpleNamespace(
         agents={
-            "orchestrator": GeneralAgentConfig(
+            "orchestrator": AgentConfig(
                 name="orchestrator",
                 system_prompt="Stop immediately.",
                 tools=[],
@@ -200,7 +200,7 @@ def test_alphasolve_cancel_stops_orchestrator_and_current_workers(tmp_path, monk
     monkeypatch.setattr(workflow_module, "Orchestrator", CapturingOrchestrator)
     monkeypatch.setattr(
         workflow_module,
-        "load_agent_suite_config",
+        "load_agent_suite",
         lambda _path: SimpleNamespace(settings={}, subagents={}, agents={}, models={}),
     )
     (tmp_path / "problem.md").write_text("# Problem\n\nTest.\n", encoding="utf-8")

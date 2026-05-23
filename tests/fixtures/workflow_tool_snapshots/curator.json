@@ -1,0 +1,304 @@
+[
+  {
+    "description": "Read text content from a file.\n\nTips:\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is typically worth using in parallel when you need to inspect multiple files.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.",
+    "name": "Read",
+    "parameters": {
+      "properties": {
+        "line_offset": {
+          "default": 1,
+          "description": "The line number to start reading from. By default read from the beginning of the file. Set this when the file is too large to read at once.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "n_lines": {
+          "default": 250,
+          "description": "How many lines to return in this Read call. Defaults to 250. At most 1000 unless `read_all` is true.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "The path to the file to read (must be absolute or workspace-relative).",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$",
+          "type": "string"
+        },
+        "read_all": {
+          "default": false,
+          "description": "If true, ignore n_lines and return every line from line_offset through the end of the file.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Writes a file within this agent's allowed write area.\n\nUsage:\n- Use `mode=\"overwrite\"` to replace the whole file.\n- Use `mode=\"append\"` to append content to the end of the file.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
+    "name": "Write",
+    "parameters": {
+      "properties": {
+        "content": {
+          "description": "The content to write to the file.",
+          "type": "string"
+        },
+        "mode": {
+          "default": "overwrite",
+          "description": "Whether to overwrite the whole file or append to the end.",
+          "enum": [
+            "overwrite",
+            "append"
+          ],
+          "type": "string"
+        },
+        "path": {
+          "description": "The path to the file to write.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Performs exact string replacements in files.\n\nUsage:\n- The edit will FAIL if old_string is not unique in the file.\n- Provide a larger string with more surrounding context to make it unique.",
+    "name": "Edit",
+    "parameters": {
+      "properties": {
+        "new_str": {
+          "description": "The text to replace it with (must be different from old_string).",
+          "type": "string"
+        },
+        "old_str": {
+          "description": "The text to replace.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The path to the file to modify.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "old_str",
+        "new_str"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Creates a directory within the writable workspace area, including parent directories when needed.",
+    "name": "MakeDir",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Directory path to create.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Renames a file or directory in place within the writable workspace area.\n\nUsage:\n- Use this only when the item stays in the same directory and only its name changes.\n- `directory` is the parent directory that currently contains the item.\n- `old_name` and `new_name` must be plain names, not paths, and must not contain `/` or `\\`.\n- To move a file into another directory, use Move instead.\n- Some agents are configured to preserve Markdown file names; in those sessions, renaming `.md` files fails and Move must keep the same file name.\n- This tool fails if the target path already exists.\n\nExamples:\n- Rename a folder: directory=\"verified_propositions\", old_name=\"bootstrap-A\", new_name=\"bootstrap-attempt-A\".\n- Rename a knowledge page: directory=\"knowledge/fourier\", old_name=\"cutoff.md\", new_name=\"frequency-cutoff.md\".",
+    "name": "Rename",
+    "parameters": {
+      "properties": {
+        "directory": {
+          "description": "Parent directory containing the item to rename.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
+          "type": "string"
+        },
+        "new_name": {
+          "description": "New file or directory name only; no path separators.",
+          "pattern": "^(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?$",
+          "type": "string"
+        },
+        "old_name": {
+          "description": "Current file or directory name only; no path separators.",
+          "pattern": "^(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:\\.md)?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "directory",
+        "old_name",
+        "new_name"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Moves a file into another directory within the writable workspace area while keeping the same file name.\n\nUsage:\n- Use this when reorganizing files into topic folders.\n- `path` must be an existing file.\n- `destination_dir` must be an existing directory.\n- Move never renames the file; it always keeps the source file name.\n- When moving files inside verified_propositions/, Move automatically updates matching `\\ref{old-path}` references across verified_propositions/ to the new backslash-separated path.",
+    "name": "Move",
+    "parameters": {
+      "properties": {
+        "destination_dir": {
+          "description": "Existing destination directory.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
+          "type": "string"
+        },
+        "path": {
+          "description": "Existing file path to move.",
+          "pattern": "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "destination_dir"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Deletes a file or empty directory from the writable workspace area.\n\nUsage:\n- Only delete files after useful content has been consolidated elsewhere.\n- Directories must already be empty; this tool will not recursively delete directory contents.",
+    "name": "Delete",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "The file or empty directory path to delete.",
+          "pattern": "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Lists files and directories under a workspace directory.\n\nUsage:\n- If the directory contains `index.md`, read `index.md` first before exploring other files.\n- The result respects this agent's workspace access restrictions.",
+    "name": "ListDir",
+    "parameters": {
+      "properties": {
+        "max_results": {
+          "default": 100,
+          "description": "Maximum entries to return.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "default": "knowledge",
+          "description": "Directory to list. Defaults to this agent's configured read root.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Fast file pattern matching tool that works with any codebase size. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.",
+    "name": "Glob",
+    "parameters": {
+      "properties": {
+        "max_results": {
+          "default": 100,
+          "description": "Maximum results to return.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "default": "knowledge",
+          "description": "The directory to search in. Defaults to this agent's configured search root.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "The glob pattern to match files against.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
+    "name": "Grep",
+    "parameters": {
+      "properties": {
+        "context_lines": {
+          "default": 1,
+          "description": "Number of context lines around each match.",
+          "maximum": 3,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "max_results": {
+          "default": 20,
+          "description": "Maximum results to return.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "default": "knowledge",
+          "description": "File or directory to search in. Defaults to this agent's configured search root.",
+          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "The text or regular expression pattern to search for in file contents.",
+          "type": "string"
+        },
+        "regex": {
+          "default": true,
+          "description": "Treat pattern as a regex (default: true; set false for substring matching).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n\n## Writing the prompt\n\n- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and bounded to the agent's scope.",
+    "name": "Agent",
+    "parameters": {
+      "properties": {
+        "description": {
+          "description": "A short (3-5 word) description of the task.",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The task for the agent to perform.",
+          "type": "string"
+        },
+        "type": {
+          "description": "The type of specialized agent to use for this task.",
+          "enum": [
+            "compute_subagent",
+            "reasoning_subagent"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "description",
+        "prompt"
+      ],
+      "type": "object"
+    }
+  }
+]

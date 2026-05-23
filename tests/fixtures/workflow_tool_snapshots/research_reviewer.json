@@ -1,0 +1,118 @@
+[
+  {
+    "description": "Read text content from a file.\n\nTips:\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is typically worth using in parallel when you need to inspect multiple files.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.",
+    "name": "Read",
+    "parameters": {
+      "properties": {
+        "line_offset": {
+          "default": 1,
+          "description": "The line number to start reading from. By default read from the beginning of the file. Set this when the file is too large to read at once.",
+          "minimum": 1,
+          "type": "integer"
+        },
+        "n_lines": {
+          "default": 250,
+          "description": "How many lines to return in this Read call. Defaults to 250. At most 1000 unless `read_all` is true.",
+          "maximum": 1000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "description": "The path to the file to read (must be absolute or workspace-relative).",
+          "type": "string"
+        },
+        "read_all": {
+          "default": false,
+          "description": "If true, ignore n_lines and return every line from line_offset through the end of the file.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Lists files and directories under a workspace directory.\n\nUsage:\n- If the directory contains `index.md`, read `index.md` first before exploring other files.\n- The result respects this agent's workspace access restrictions.",
+    "name": "ListDir",
+    "parameters": {
+      "properties": {
+        "max_results": {
+          "default": 200,
+          "description": "Maximum entries to return.",
+          "type": "integer"
+        },
+        "path": {
+          "default": ".",
+          "description": "Directory to list. Defaults to this agent's configured read root.",
+          "type": "string"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Fast file pattern matching tool that works with any codebase size. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.",
+    "name": "Glob",
+    "parameters": {
+      "properties": {
+        "max_results": {
+          "default": 100,
+          "description": "Maximum results to return.",
+          "type": "integer"
+        },
+        "path": {
+          "default": ".",
+          "description": "The directory to search in. Defaults to this agent's configured search root.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "The glob pattern to match files against.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
+    "name": "Grep",
+    "parameters": {
+      "properties": {
+        "context_lines": {
+          "default": 0,
+          "description": "Number of context lines around each match.",
+          "type": "integer"
+        },
+        "max_results": {
+          "default": 50,
+          "description": "Maximum results to return.",
+          "type": "integer"
+        },
+        "path": {
+          "default": ".",
+          "description": "File or directory to search in. Defaults to this agent's configured search root.",
+          "type": "string"
+        },
+        "pattern": {
+          "description": "The text or regular expression pattern to search for in file contents.",
+          "type": "string"
+        },
+        "regex": {
+          "default": true,
+          "description": "Treat pattern as a regex (default: true; set false for substring matching).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "pattern"
+      ],
+      "type": "object"
+    }
+  }
+]

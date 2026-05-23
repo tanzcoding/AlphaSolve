@@ -9,3 +9,4 @@
 - 注意：修改代码时要思考能否破坏graceful ctrl+C exit：第一次ctrl+C停止所有worker，第二次ctrl+C停止整个程序。
 - 注意：当你修改完代码后，记得也相应修改旧的test，使之与时俱进，并思考有没有test未覆盖的地方
 - 每次git push前，向用户进行二次确认，说明更改的内容，以及有无风险（比如暴露api-key）。
+- 不要提交 AI 工具的中间产物：`docs/superpowers/`（plan/spec 等）、`.codegraph/`、`.claude/` 等目录都已在 `.gitignore` 中；新增此类目录时一并加进去，永远不要 `git add` 进仓库。
