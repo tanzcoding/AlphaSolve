@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agent import AgentConfig, Agent, Workspace
-from alphasolve.config.agent_config import AlphaSolveConfig
+from alphasolve.solver.wolfram_state import AlphaSolveConfig
 from alphasolve.llm.types import Message
 from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_worker_event_sink

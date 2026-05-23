@@ -10,7 +10,7 @@ from typing import Any
 import httpx
 
 from alphasolve.agent import AgentRunError, AgentConfig, load_agent_suite
-from alphasolve.config.agent_config import AlphaSolveConfig, PACKAGE_ROOT
+from alphasolve.solver.wolfram_state import AlphaSolveConfig
 from alphasolve.solver.execution import ExecutionGateway
 from alphasolve.solver.wolfram_probe import check_wolfram_kernel
 from alphasolve.solver.logging.log_session import LogSession
@@ -42,7 +42,7 @@ class AlphaSolve:
         debug: bool = False,
     ) -> None:
         self.layout = ProjectLayout.create(project_dir, problem=problem, hint=hint)
-        self.config_path = Path(config_path).resolve() if config_path else Path(PACKAGE_ROOT) / "solver" / "config"
+        self.config_path = Path(config_path).resolve() if config_path else Path(__file__).resolve().parent.parent / "solver" / "config"
         self.max_workers = max(1, int(max_workers))
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor_override = verifier_scaling_factor

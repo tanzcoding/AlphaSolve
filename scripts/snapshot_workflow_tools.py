@@ -29,7 +29,7 @@ from alphasolve.agent import (
 from alphasolve.solver.subagent_service import SubagentService
 from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 from alphasolve.solver.workspace_access import RoleWorkspaceAccess
-from alphasolve.config.agent_config import PACKAGE_ROOT
+PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "src" / "alphasolve"
 
 
 # ---------------------------------------------------------------------------

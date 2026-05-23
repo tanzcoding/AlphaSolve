@@ -13,6 +13,7 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
+import alphasolve  # noqa: E402
 from alphasolve.agent import AgentConfig, Workspace, load_agent_suite  # noqa: E402
 from alphasolve.solver import AlphaSolve  # noqa: E402
 from alphasolve.solver.demo import make_demo_client_factory  # noqa: E402
@@ -32,8 +33,8 @@ from alphasolve.solver.solution import write_solution  # noqa: E402
 from alphasolve.solver.subagent_service import SubagentService  # noqa: E402
 from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
 from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
-from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
-from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
+from alphasolve.solver.wolfram_state import AlphaSolveConfig  # noqa: E402
+PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
 from alphasolve.solver.execution import ExecutionGateway  # noqa: E402
 from alphasolve.llm.types import CompletionResponse, Message, ToolCall  # noqa: E402
 from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer  # noqa: E402

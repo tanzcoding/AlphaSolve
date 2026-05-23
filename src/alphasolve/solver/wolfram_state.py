@@ -1,10 +1,3 @@
-from __future__ import annotations
-
-import os
-
-PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
-
 class AlphaSolveConfig:
     WOLFRAM_AVAILABLE = True
     WOLFRAM_STATUS = "not_checked"

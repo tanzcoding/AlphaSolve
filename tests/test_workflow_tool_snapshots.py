@@ -164,7 +164,8 @@ if _SHIM_SKIP_REASON is not None:
         )
     )
 
-from alphasolve.config.agent_config import PACKAGE_ROOT
+import alphasolve
+PACKAGE_ROOT = Path(alphasolve.__file__).resolve().parent
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures" / "workflow_tool_snapshots"
 
