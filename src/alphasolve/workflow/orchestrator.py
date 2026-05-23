@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 
 from alphasolve.agent import AgentRunError, Agent, Workspace
 from alphasolve.agent.tools import ToolRegistry, ToolResult
-from alphasolve.utils.event_logger import compose_event_sinks
+from alphasolve.solver.logging.event_log import compose_event_sinks
 
 from .dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult

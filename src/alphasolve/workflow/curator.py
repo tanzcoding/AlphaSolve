@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from alphasolve.utils.event_logger import compose_event_sinks
+from alphasolve.solver.logging.event_log import compose_event_sinks
 
 from .dashboard import make_curator_event_sink
 

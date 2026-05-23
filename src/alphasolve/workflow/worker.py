@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from alphasolve.agent import AgentConfig, Agent, Workspace
 from alphasolve.config.agent_config import AlphaSolveConfig
 from alphasolve.llm.types import Message
-from alphasolve.utils.event_logger import compose_event_sinks
+from alphasolve.solver.logging.event_log import compose_event_sinks
 from .dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory

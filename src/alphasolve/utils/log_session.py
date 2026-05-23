@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from alphasolve.utils.event_logger import EventLogWriter
+from alphasolve.solver.logging.event_log import EventLogWriter
 
 
 class LogSession:
