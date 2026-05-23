@@ -8,10 +8,10 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agent import Workspace, load_agent_suite  # noqa: E402
-from alphasolve.workflow.project import ProjectLayout  # noqa: E402
+from alphasolve.solver.project import ProjectLayout  # noqa: E402
 from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
-from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
-from alphasolve.workflow.worker import Worker  # noqa: E402
+from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
+from alphasolve.solver.worker import Worker  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 
 

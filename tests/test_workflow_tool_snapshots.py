@@ -99,13 +99,13 @@ if _SHIM_SKIP_REASON is None:
                 _SHIM_SKIP_REASON = f"load_agent_suite[_config] import failed: {exc}"
 
 # RoleWorkspaceAccess: Task 2 搬到 workflow，Task 4 拆到 workspace_access.py。
-# Task 8 删除了 alphasolve.workflow.tools shim，所以中间过渡分支不再存在。
+# Task 8 删除了 alphasolve.solver.tools shim，所以中间过渡分支不再存在。
 if _SHIM_SKIP_REASON is None:
     try:
         from alphasolve.agents.team.tools import RoleWorkspaceAccess
     except ImportError:
         try:
-            from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # type: ignore[no-redef]
+            from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # type: ignore[no-redef]
         except ImportError as exc:
             _SHIM_SKIP_REASON = f"RoleWorkspaceAccess import failed: {exc}"
 
@@ -115,7 +115,7 @@ if _SHIM_SKIP_REASON is None:
         from alphasolve.agents.team.tools import SubagentService
     except ImportError:
         try:
-            from alphasolve.workflow.subagent_service import SubagentService  # type: ignore[no-redef]
+            from alphasolve.solver.subagent_service import SubagentService  # type: ignore[no-redef]
         except ImportError as exc:
             _SHIM_SKIP_REASON = f"SubagentService import failed: {exc}"
 
@@ -126,7 +126,7 @@ if _SHIM_SKIP_REASON is None:
         from alphasolve.agents.team.tools import build_workspace_tool_registry
     except ImportError:
         try:
-            from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # type: ignore[no-redef]
+            from alphasolve.solver.workflow_tools import build_workspace_tool_registry  # type: ignore[no-redef]
         except ImportError:
             try:
                 from alphasolve.agent.tools import build_default_tool_registry as build_workspace_tool_registry  # type: ignore[no-redef]
@@ -139,7 +139,7 @@ if _SHIM_SKIP_REASON is None:
         from alphasolve.agents.team.tools import register_agent_tool
     except ImportError:
         try:
-            from alphasolve.workflow.workflow_tools import register_agent_tool  # type: ignore[no-redef]
+            from alphasolve.solver.workflow_tools import register_agent_tool  # type: ignore[no-redef]
         except ImportError:
             try:
                 from alphasolve.agent.tools import register_agent_tool  # type: ignore[no-redef]
@@ -152,7 +152,7 @@ if _SHIM_SKIP_REASON is None:
         from alphasolve.agents.team.orchestrator import WorkerManager
     except ImportError:
         try:
-            from alphasolve.workflow.orchestrator import WorkerManager  # type: ignore[no-redef]
+            from alphasolve.solver.orchestrator import WorkerManager  # type: ignore[no-redef]
         except ImportError as exc:
             _SHIM_SKIP_REASON = f"WorkerManager import failed: {exc}"
 

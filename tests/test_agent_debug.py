@@ -7,7 +7,7 @@ from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-from alphasolve.workflow.debug_agent import DEBUG_AGENT_TOOLS, GeneralAgentDebugApp, GeneralAgentDebugRenderer  # noqa: E402
+from alphasolve.solver.debug_agent import DEBUG_AGENT_TOOLS, GeneralAgentDebugApp, GeneralAgentDebugRenderer  # noqa: E402
 from alphasolve.llm.types import CompletionResponse, Message, StreamDelta, ToolCall  # noqa: E402
 
 

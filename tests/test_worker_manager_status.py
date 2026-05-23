@@ -3,13 +3,13 @@ import time
 from types import SimpleNamespace
 
 from alphasolve.agent import AgentConfig
-from alphasolve.workflow import orchestrator as orchestrator_module
-from alphasolve.workflow import app as workflow_module
-from alphasolve.workflow import AlphaSolve
-from alphasolve.workflow.orchestrator import Orchestrator, WorkerManager
-from alphasolve.workflow.project import ProjectLayout
-from alphasolve.workflow.orchestrator import OrchestratorRunResult
-from alphasolve.workflow.worker import WorkerRunResult
+from alphasolve.solver import orchestrator as orchestrator_module
+from alphasolve.solver import app as workflow_module
+from alphasolve.solver import AlphaSolve
+from alphasolve.solver.orchestrator import Orchestrator, WorkerManager
+from alphasolve.solver.project import ProjectLayout
+from alphasolve.solver.orchestrator import OrchestratorRunResult
+from alphasolve.solver.worker import WorkerRunResult
 
 
 class _DummyWorker:

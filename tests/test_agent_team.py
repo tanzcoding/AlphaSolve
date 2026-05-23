@@ -14,9 +14,9 @@ from rich.console import Console
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agent import AgentConfig, Workspace, load_agent_suite  # noqa: E402
-from alphasolve.workflow import AlphaSolve  # noqa: E402
-from alphasolve.workflow.demo import make_demo_client_factory  # noqa: E402
-from alphasolve.workflow.curator import (  # noqa: E402
+from alphasolve.solver import AlphaSolve  # noqa: E402
+from alphasolve.solver.demo import make_demo_client_factory  # noqa: E402
+from alphasolve.solver.curator import (  # noqa: E402
     CURATOR_HEALTH_CHECK_INTERVAL,
     CuratorTask,
     CuratorQueue,
@@ -24,14 +24,14 @@ from alphasolve.workflow.curator import (  # noqa: E402
     _update_entry_metadata,
     init_knowledge_base,
 )
-from alphasolve.workflow.orchestrator import Orchestrator  # noqa: E402
-from alphasolve.workflow.orchestrator import verified_count  # noqa: E402
-from alphasolve.workflow.worker import Worker  # noqa: E402
-from alphasolve.workflow.project import ProjectLayout  # noqa: E402
-from alphasolve.workflow.solution import write_solution  # noqa: E402
-from alphasolve.workflow.subagent_service import SubagentService  # noqa: E402
+from alphasolve.solver.orchestrator import Orchestrator  # noqa: E402
+from alphasolve.solver.orchestrator import verified_count  # noqa: E402
+from alphasolve.solver.worker import Worker  # noqa: E402
+from alphasolve.solver.project import ProjectLayout  # noqa: E402
+from alphasolve.solver.solution import write_solution  # noqa: E402
+from alphasolve.solver.subagent_service import SubagentService  # noqa: E402
 from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
-from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
+from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.solver.execution import ExecutionGateway  # noqa: E402

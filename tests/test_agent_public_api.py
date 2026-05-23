@@ -42,7 +42,7 @@ def test_agent_does_not_reexport_llm_types():
 
 
 def test_agent_does_not_import_workflow():
-    """第二层 import alphasolve.workflow.* 是反向依赖，禁止。"""
+    """第二层 import alphasolve.solver.* 是反向依赖，禁止。"""
     import alphasolve.agent.agent as mod_a
     import alphasolve.agent.config as mod_c
     import alphasolve.agent.tools as mod_t
@@ -51,6 +51,6 @@ def test_agent_does_not_import_workflow():
         for name in dir(mod):
             obj = getattr(mod, name)
             module = getattr(obj, "__module__", "")
-            assert not module.startswith("alphasolve.workflow"), (
+            assert not module.startswith("alphasolve.solver"), (
                 f"{mod.__name__} pulls in {name} from {module}"
             )

@@ -13,8 +13,8 @@ if sys.platform == "win32":
     except Exception:
         pass
 
-from alphasolve.workflow import AlphaSolve
-from alphasolve.workflow.demo import make_demo_client_factory
+from alphasolve.solver import AlphaSolve
+from alphasolve.solver.demo import make_demo_client_factory
 
 _app: AlphaSolve | None = None
 _interrupt_count = 0
@@ -245,7 +245,7 @@ def main() -> None:
         client_factory = make_client_factory(active_profile, presets)
 
     if args.agent_debug:
-        from alphasolve.workflow.debug_agent import GeneralAgentDebugApp
+        from alphasolve.solver.debug_agent import GeneralAgentDebugApp
 
         if args.agent_debug_prompt is not None:
             _app = GeneralAgentDebugApp(
