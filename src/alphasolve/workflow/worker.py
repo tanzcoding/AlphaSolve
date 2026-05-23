@@ -19,7 +19,7 @@ from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService
-from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -325,7 +325,7 @@ class Worker:
                 deny_other_unverified=True,
             ),
         )
-        registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
+        registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = Agent(
             config=config,
@@ -410,7 +410,7 @@ class Worker:
             ),
             curator_queue=self.curator_queue,
         )
-        registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
+        registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = Agent(
             config=config,
@@ -481,7 +481,7 @@ class Worker:
                 read_root_rel="verified_propositions",
             ),
         )
-        registry = build_workspace_tool_registry(access, allow_write=False, subagent_service=subagents)
+        registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = Agent(
             config=config,
@@ -525,7 +525,7 @@ class Worker:
                 deny_other_unverified=True,
             ),
         )
-        registry = build_workspace_tool_registry(access, allow_write=True, subagent_service=subagents)
+        registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
         agent = Agent(
             config=config,
@@ -551,13 +551,12 @@ class Worker:
         agent = Agent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_workspace_tool_registry(
+            tool_registry=build_default_tool_registry(
                 RoleWorkspaceAccess(
                     workspace=self.workspace,
                     worker_rel=self.worker_rel,
                     deny_other_unverified=True,
                 ),
-                allow_write=False,
             ),
             event_sink=self._event_sink(role),
             stop_event=self.stop_event,

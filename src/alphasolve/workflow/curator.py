@@ -134,7 +134,7 @@ class CuratorQueue:
 
         from alphasolve.agent import Agent
         from .subagent_service import SubagentService
-        from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+        from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
         from .workspace_access import RoleWorkspaceAccess
 
         access = RoleWorkspaceAccess(
@@ -156,13 +156,7 @@ class CuratorQueue:
                 read_root_rel="knowledge",
             ),
         )
-        registry = build_workspace_tool_registry(
-            access,
-            allow_write=True,
-            allow_manage=True,
-            allow_delete=True,
-            subagent_service=subagent_svc,
-        )
+        registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagent_svc)
 
         if task.task_kind == "health_check":

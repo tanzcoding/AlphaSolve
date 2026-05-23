@@ -20,7 +20,7 @@ from .project import ProjectLayout
 from .solution import write_solution
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService
-from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -566,7 +566,7 @@ class Orchestrator:
             destructive_protected_file_names=("index.md",),
             preserve_markdown_file_names_on_rename=True,
         )
-        registry = build_workspace_tool_registry(access, allow_write=True, allow_manage=True)
+        registry = build_default_tool_registry(access)
         registry.register(
             name="SpawnWorker",
             description=(

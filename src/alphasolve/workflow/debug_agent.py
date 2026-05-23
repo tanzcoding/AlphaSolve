@@ -15,7 +15,7 @@ from alphasolve.agent.ui._render_shared import RICH_CONSOLE
 
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService
-from .workflow_tools import build_workspace_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 from .workspace_access import RoleWorkspaceAccess
 
 
@@ -331,7 +331,7 @@ class GeneralAgentDebugApp:
             write_root_rel=".",
             allowed_extensions=DEBUG_AGENT_EXTENSIONS,
         )
-        registry = build_workspace_tool_registry(access, allow_write=True)
+        registry = build_default_tool_registry(access)
         if self.suite is not None and self.suite.subagents and self._agent_config is not None and "Agent" in self._agent_config.tools:
             subagent_service = SubagentService(
                 suite=self.suite,

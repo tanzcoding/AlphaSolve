@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from alphasolve.agent import Workspace, load_agent_suite  # noqa: E402
 from alphasolve.workflow.project import ProjectLayout  # noqa: E402
-from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # noqa: E402
+from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
 from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.workflow.worker import Worker  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
@@ -117,7 +117,7 @@ def test_citation_tools_can_list_verified_proposition_subdirectories(tmp_path):
     nested_dir.mkdir(parents=True)
     (nested_dir / "energy.md").write_text("# Energy\n", encoding="utf-8")
 
-    registry = build_workspace_tool_registry(RoleWorkspaceAccess(workspace=workspace))
+    registry = build_default_tool_registry(RoleWorkspaceAccess(workspace=workspace))
 
     listed = registry.execute(
         "ListDir",
@@ -144,7 +144,7 @@ def test_grep_defaults_to_regex_matching(tmp_path):
     target.mkdir(parents=True)
     (target / "energy.md").write_text("# Energy\n", encoding="utf-8")
 
-    registry = build_workspace_tool_registry(RoleWorkspaceAccess(workspace=workspace))
+    registry = build_default_tool_registry(RoleWorkspaceAccess(workspace=workspace))
     result = registry.execute(
         "Grep",
         {"path": "verified_propositions", "pattern": r"^# Energy$"},

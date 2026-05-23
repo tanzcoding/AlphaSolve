@@ -30,7 +30,7 @@ from alphasolve.workflow.worker import Worker  # noqa: E402
 from alphasolve.workflow.project import ProjectLayout  # noqa: E402
 from alphasolve.workflow.solution import write_solution  # noqa: E402
 from alphasolve.workflow.subagent_service import SubagentService  # noqa: E402
-from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # noqa: E402
+from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
 from alphasolve.workflow.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
@@ -1055,7 +1055,7 @@ def test_workspace_read_tool_defaults_to_60_lines_and_can_read_all():
             encoding="utf-8",
         )
         access = RoleWorkspaceAccess(workspace=Workspace(workspace_root))
-        registry = build_workspace_tool_registry(access)
+        registry = build_default_tool_registry(access)
         read_schema = registry.tool_defs(["Read"])[0].parameters["properties"]
         # Task 8: build_workspace_tool_registry is now a thin wrapper over
         # build_default_tool_registry, which uses the canonical second-layer

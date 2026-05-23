@@ -119,15 +119,19 @@ if _SHIM_SKIP_REASON is None:
         except ImportError as exc:
             _SHIM_SKIP_REASON = f"SubagentService import failed: {exc}"
 
-# build_workspace_tool_registry: 同上，Task 4 拆到 workflow_tools.py。
+# build_workspace_tool_registry: A 阶段被 workflow_tools.py 包装；phase C T11 删了
+# workflow_tools 后改用 agent/tools 的 build_default_tool_registry（语义等价）。
 if _SHIM_SKIP_REASON is None:
     try:
         from alphasolve.agents.team.tools import build_workspace_tool_registry
     except ImportError:
         try:
             from alphasolve.workflow.workflow_tools import build_workspace_tool_registry  # type: ignore[no-redef]
-        except ImportError as exc:
-            _SHIM_SKIP_REASON = f"build_workspace_tool_registry import failed: {exc}"
+        except ImportError:
+            try:
+                from alphasolve.agent.tools import build_default_tool_registry as build_workspace_tool_registry  # type: ignore[no-redef]
+            except ImportError as exc:
+                _SHIM_SKIP_REASON = f"build_workspace_tool_registry import failed: {exc}"
 
 # register_agent_tool: Task 5 上移到第二层。
 if _SHIM_SKIP_REASON is None:
@@ -359,12 +363,10 @@ def _build_registry_for_agent(
     workspace = Workspace(root=workspace_root)
     worker_rel = "unverified_propositions/prop-snapshot"
     access, allow_write, allow_manage, allow_delete = _agent_setup(name, workspace, worker_rel)
-    registry = build_workspace_tool_registry(
-        access,
-        allow_write=allow_write,
-        allow_manage=allow_manage,
-        allow_delete=allow_delete,
-    )
+    # allow_* kwargs were silently ignored by the shim and are now gone in phase C T11;
+    # build_default_tool_registry always registers the full default tool set.
+    del allow_write, allow_manage, allow_delete
+    registry = build_workspace_tool_registry(access)
     if name == "orchestrator":
         _register_orchestrator_extra_tools(registry)
     if name in {"compute_subagent", "numerical_experiment_subagent"}:

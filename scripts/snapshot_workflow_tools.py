@@ -27,7 +27,7 @@ from alphasolve.agent import (
     load_agent_suite,
 )
 from alphasolve.workflow.subagent_service import SubagentService
-from alphasolve.workflow.workflow_tools import build_workspace_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 from alphasolve.workflow.workspace_access import RoleWorkspaceAccess
 from alphasolve.config.agent_config import PACKAGE_ROOT
 
@@ -242,12 +242,7 @@ def _build_registry_for_agent(
     workspace = Workspace(root=workspace_root)
     worker_rel = "unverified_propositions/prop-snapshot"
     access, allow_write, allow_manage, allow_delete = _agent_setup(name, workspace, worker_rel)
-    registry = build_workspace_tool_registry(
-        access,
-        allow_write=allow_write,
-        allow_manage=allow_manage,
-        allow_delete=allow_delete,
-    )
+    registry = build_default_tool_registry(access)
     if name == "orchestrator":
         _register_orchestrator_extra_tools(registry)
     if name in {"compute_subagent", "numerical_experiment_subagent"}:
