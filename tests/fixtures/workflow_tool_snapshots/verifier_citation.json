@@ -6,7 +6,7 @@
       "properties": {
         "line_offset": {
           "default": 1,
-          "description": "The line number to start reading from. By default read from the beginning of the file. Set this when the file is too large to read at once.",
+          "description": "The line number to start reading from. By default read from the beginning of the file.",
           "minimum": 1,
           "type": "integer"
         },
@@ -114,6 +114,35 @@
       },
       "required": [
         "pattern"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n\n## Writing the prompt\n\n- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and bounded to the agent's scope.",
+    "name": "Agent",
+    "parameters": {
+      "properties": {
+        "description": {
+          "description": "A short (3-5 word) description of the task.",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The task for the agent to perform.",
+          "type": "string"
+        },
+        "type": {
+          "description": "The type of specialized agent to use for this task.",
+          "enum": [
+            "reasoning_subagent"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "description",
+        "prompt"
       ],
       "type": "object"
     }

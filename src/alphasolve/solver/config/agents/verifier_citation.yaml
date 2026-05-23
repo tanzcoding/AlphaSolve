@@ -9,8 +9,13 @@ agent:
     - ListDir
     - Glob
     - Grep
+    - Agent
     - GetCurrentTime
   tool_parameters:
+    Agent:
+      type:
+        enum:
+          - reasoning_subagent
     ListDir:
       path:
         default: verified_propositions
@@ -30,7 +35,7 @@ agent:
         path:
           description: "The path to the file to read (must be absolute or workspace-relative)."
         line_offset:
-          description: "The line number to start reading from. By default read from the beginning of the file. Set this when the file is too large to read at once."
+          description: "The line number to start reading from. By default read from the beginning of the file."
         n_lines:
           description: "How many lines to return in this Read call. Defaults to 250. At most 1000 unless `read_all` is true."
         read_all:

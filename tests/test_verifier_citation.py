@@ -25,7 +25,7 @@ def test_verifier_citation_is_first_default_attempt():
     assert "knowledge/" in suite.agents["verifier_citation"].system_prompt
     assert "path relative to `verified_propositions`" in suite.agents["verifier_citation"].system_prompt
     assert r"\ref{coercive\energy-estimate}" in suite.agents["verifier_citation"].system_prompt
-    assert "Agent" not in suite.agents["verifier_citation"].tools
+    assert "Agent" in suite.agents["verifier_citation"].tools
 
 
 def test_verifier_task_offloads_citation_audit_to_first_attempt(tmp_path):
@@ -59,12 +59,14 @@ def test_verifier_task_offloads_citation_audit_to_first_attempt(tmp_path):
         config_name="verifier_stepwise",
     )
 
-    assert "perform only the citation/reference audit" in citation_task
+    assert "citation/reference audit" in citation_task
     assert "path relative to `verified_propositions`" in citation_task
     assert r"\ref{category\filename}" in citation_task
     assert "must not cite, depend on, or present as established any proposition from `knowledge/`" in citation_task
+    assert "reasoning_subagent" in citation_task
+    assert "conditions" in citation_task
     assert "A separate first verifier attempt audits" in math_task
-    assert "perform only the citation/reference audit" not in math_task
+    assert "citation/reference audit" not in math_task
 
 
 def test_worker_tasks_describe_full_verified_proposition_reference_paths(tmp_path):

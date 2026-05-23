@@ -681,12 +681,16 @@ class Worker:
         rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
         if config_name == "verifier_citation":
             review_instruction = (
-                "Read the candidate proposition in `proposition.md` and perform only the citation/reference audit. "
+                "Read the candidate proposition in `proposition.md` and perform the citation/reference audit, "
+                "including whether each cited verified proposition is correctly applied. "
                 "Your final answer must include `Verdict: pass` or `Verdict: fail`. "
                 "Check every `\\ref{...}` and every textual dependency claim: each valid citation must refer to an existing "
                 "file in `verified_propositions` by path relative to `verified_propositions` without the `.md` extension. "
                 "Subdirectories must be written with backslashes, such as `\\ref{category\\filename}`. The proposition must not cite, "
-                "depend on, or present as established any proposition from `knowledge/`."
+                "depend on, or present as established any proposition from `knowledge/`. "
+                "For each citation, read the cited verified proposition and delegate a `reasoning_subagent` to check "
+                "whether the hypotheses and conditions of the cited proposition are satisfied in the context where "
+                "the citation is used. Fail the proposition if any cited proposition's conditions are not met."
             )
         else:
             review_instruction = (
