@@ -13,6 +13,7 @@ Important hierarchy:
 Scope:
 - If `verified_propositions/` contains more than 30 files, skim titles/abstracts via Glob/Grep first, then deep-read the most relevant ones. Prioritize recent results.
 - If you are exploring `knowledge/`, read `knowledge/index.md` first, then decide what to read.
+- Do NOT rely on progress summaries in `verified_propositions/index.md` — they may be stale, incomplete, or overstate what has actually been proved. Form your own assessment by reading the actual mathematical content of the proposition files.
 
 Output (plain text, structured):
 
@@ -24,6 +25,9 @@ Output (plain text, structured):
 
 ## Gap analysis
 - What key pieces are still missing to solve the original problem. Known obstructions or negative results.
+
+## Knowledge worth verifying
+- Ideas, lemmas, or conjectures in `knowledge/` that are not yet in `verified_propositions/` but look promising and should be sent to a worker for formal proof. For each: which file, what the claim is, and why verifying it would advance the solution.
 
 ## Recommended next directions (1-3)
 - Ranked, actionable. For each: what proposition to aim for, why it advances the proof, what verified results it builds on. Note risks.
