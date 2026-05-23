@@ -18,15 +18,15 @@ One-shot completion against a single preset::
     )
     print(response.message.content)
 
-Profile-driven factory for the agent layer (the CLI path)::
+Tier-based factory for the agent layer (the CLI path)::
 
     from pathlib import Path
-    from alphasolve.llm import load_active_profile, load_presets, make_client_factory
+    from alphasolve.llm import load_tier_mapping, load_presets, make_client_factory
 
-    profile = load_active_profile(name="balanced", repo_path=Path("profiles.yaml"), user_path=None)
+    tier_mapping = load_tier_mapping(repo_path=Path("tiers.yaml"), user_path=None)
     presets = load_presets(repo_path=Path("presets.yaml"), user_path=None)
-    client_factory = make_client_factory(profile, presets)
-    # client_factory(agent_config) -> ChatClient, dispatched by agent_config.effective_role()
+    client_factory = make_client_factory(tier_mapping, presets)
+    # client_factory(agent_config) -> ChatClient, dispatched by agent_config.effective_tier()
 """
 
 from .types import (
@@ -43,8 +43,8 @@ from .types import (
     FinishReason,
 )
 from .config.preset import Preset, WireFormat
-from .config.profile import Profile
-from .config.loader import load_presets, load_profile, load_active_profile
+from .config.tier import TierMapping
+from .config.loader import load_presets, load_tier_mapping
 from .factory import make_client, make_client_factory
 
 __all__ = [
@@ -60,11 +60,10 @@ __all__ = [
     "StreamDelta",
     "FinishReason",
     "Preset",
-    "Profile",
+    "TierMapping",
     "WireFormat",
     "load_presets",
-    "load_profile",
-    "load_active_profile",
+    "load_tier_mapping",
     "make_client",
     "make_client_factory",
 ]

@@ -8,7 +8,7 @@ from typing import Any
 import yaml
 
 from .preset import Preset
-from .profile import Profile
+from .tier import TierMapping
 
 _VALID_WIRE_FORMATS = {"openai_chat", "anthropic_messages"}
 _REQUIRED_PRESET_FIELDS = ("wire_format", "base_url", "api_key_env", "model")
@@ -58,48 +58,27 @@ def load_presets(*, repo_path: Path, user_path: Path | None) -> dict[str, Preset
     return {name: _build_preset(name, raw) for name, raw in merged.items()}
 
 
-def _load_profiles_raw(repo_path: Path, user_path: Path | None) -> tuple[dict[str, Any], str | None]:
+def _load_tiers_raw(repo_path: Path, user_path: Path | None) -> tuple[dict[str, str], str | None]:
     repo_raw = _read_yaml(repo_path)
     user_raw = _read_yaml(user_path) if user_path is not None else {}
 
     default_name = user_raw.pop("default", None) or repo_raw.pop("default", None)
 
-    merged: dict[str, Any] = {}
-    merged.update(repo_raw)
-    merged.update(user_raw)
+    merged: dict[str, str] = {}
+    for k, v in repo_raw.items():
+        if not isinstance(k, str):
+            continue
+        merged[k] = str(v)
+    for k, v in user_raw.items():
+        if not isinstance(k, str):
+            continue
+        merged[k] = str(v)
     return merged, default_name
 
 
-def _build_profile(name: str, raw: Mapping[str, Any]) -> Profile:
-    if not isinstance(raw, Mapping):
-        raise ValueError(f"profile {name!r}: value must be a mapping (role -> preset)")
-    role_to_preset = {str(role): str(preset) for role, preset in raw.items()}
-    return Profile(name=name, role_to_preset=role_to_preset)
-
-
-def load_profile(name: str, *, repo_path: Path, user_path: Path | None) -> Profile:
-    merged, _ = _load_profiles_raw(repo_path, user_path)
-    if name not in merged:
-        raise KeyError(
-            f"profile {name!r} not defined; "
-            f"available profiles: {sorted(merged)}"
-        )
-    return _build_profile(name, merged[name])
-
-
-def load_active_profile(*, name: str | None, repo_path: Path, user_path: Path | None) -> Profile:
-    merged, default_name = _load_profiles_raw(repo_path, user_path)
-    effective = name or default_name
-    if effective is None:
-        raise ValueError(
-            f"no profile name given and no 'default:' key in profiles.yaml at {repo_path}"
-        )
-    if effective not in merged:
-        raise KeyError(
-            f"profile {effective!r} not defined; "
-            f"available profiles: {sorted(merged)}"
-        )
-    return _build_profile(effective, merged[effective])
+def load_tier_mapping(*, repo_path: Path, user_path: Path | None) -> TierMapping:
+    merged, default_name = _load_tiers_raw(repo_path, user_path)
+    return TierMapping(name="default", tier_to_preset=merged)
 
 
 def _user_config_dir() -> Path:

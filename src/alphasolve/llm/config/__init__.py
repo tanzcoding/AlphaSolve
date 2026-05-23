@@ -1,8 +1,8 @@
 from .preset import Preset, WireFormat
-from .profile import Profile
-from .loader import load_presets, load_profile, load_active_profile
+from .tier import TierMapping
+from .loader import load_presets, load_tier_mapping
 
 __all__ = [
-    "Preset", "WireFormat", "Profile",
-    "load_presets", "load_profile", "load_active_profile",
+    "Preset", "WireFormat", "TierMapping",
+    "load_presets", "load_tier_mapping",
 ]

@@ -6,7 +6,7 @@ import pytest
 
 from alphasolve.llm import make_client, make_client_factory
 from alphasolve.llm.config.preset import Preset
-from alphasolve.llm.config.profile import Profile
+from alphasolve.llm.config.tier import TierMapping
 from alphasolve.llm.providers.openai_chat import OpenAIChatClient
 from alphasolve.llm.providers.anthropic_messages import AnthropicMessagesClient
 
@@ -21,10 +21,10 @@ def _preset(name: str, wire: str = "openai_chat") -> Preset:
 @dataclass
 class _FakeAgentConfig:
     name: str
-    role: str | None = None
+    tier: str = "balanced"
 
-    def effective_role(self) -> str:
-        return self.role or self.name
+    def effective_tier(self) -> str:
+        return self.tier
 
 
 def test_make_client_dispatches_openai(monkeypatch):
@@ -55,35 +55,34 @@ def test_make_client_unknown_wire_format(monkeypatch):
     assert "gemini_native" in str(exc.value)
 
 
-def test_make_client_factory_resolves_role(monkeypatch):
+def test_make_client_factory_resolves_tier(monkeypatch):
     monkeypatch.setenv("X", "sk")
     presets = {"p1": _preset("p1"), "p2": _preset("p2")}
-    profile = Profile(name="t", role_to_preset={"verifier": "p1", "curator": "p2"})
+    tier_mapping = TierMapping(name="t", tier_to_preset={"balanced": "p1", "cheap": "p2"})
 
-    factory = make_client_factory(profile, presets)
-    client_v = factory(_FakeAgentConfig(name="verifier_adversarial", role="verifier"))
-    client_c = factory(_FakeAgentConfig(name="curator"))  # role falls back to name
-    assert isinstance(client_v, OpenAIChatClient)
+    factory = make_client_factory(tier_mapping, presets)
+    client_b = factory(_FakeAgentConfig(name="orchestrator", tier="balanced"))
+    client_c = factory(_FakeAgentConfig(name="curator", tier="cheap"))
+    assert isinstance(client_b, OpenAIChatClient)
     assert isinstance(client_c, OpenAIChatClient)
-    # Different presets selected
-    assert client_v.preset.name == "p1"
+    assert client_b.preset.name == "p1"
     assert client_c.preset.name == "p2"
 
 
-def test_make_client_factory_unknown_role(monkeypatch):
+def test_make_client_factory_unknown_tier(monkeypatch):
     monkeypatch.setenv("X", "sk")
     presets = {"p1": _preset("p1")}
-    profile = Profile(name="t", role_to_preset={"verifier": "p1"})
-    factory = make_client_factory(profile, presets)
+    tier_mapping = TierMapping(name="t", tier_to_preset={"balanced": "p1"})
+    factory = make_client_factory(tier_mapping, presets)
     with pytest.raises(KeyError):
-        factory(_FakeAgentConfig(name="orchestrator"))
+        factory(_FakeAgentConfig(name="x", tier="max"))
 
 
-def test_make_client_factory_role_maps_to_missing_preset(monkeypatch):
+def test_make_client_factory_tier_maps_to_missing_preset(monkeypatch):
     monkeypatch.setenv("X", "sk")
     presets = {"p1": _preset("p1")}
-    profile = Profile(name="t", role_to_preset={"verifier": "p_ghost"})
-    factory = make_client_factory(profile, presets)
+    tier_mapping = TierMapping(name="t", tier_to_preset={"balanced": "p_ghost"})
+    factory = make_client_factory(tier_mapping, presets)
     with pytest.raises(KeyError) as exc:
-        factory(_FakeAgentConfig(name="verifier"))
+        factory(_FakeAgentConfig(name="x", tier="balanced"))
     assert "p_ghost" in str(exc.value)

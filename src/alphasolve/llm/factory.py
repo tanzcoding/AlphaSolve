@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Callable, Protocol
 
 from .config.preset import Preset
-from .config.profile import Profile
+from .config.tier import TierMapping
 from .types import ChatClient
 
 
@@ -11,10 +11,10 @@ class _AgentConfigLike(Protocol):
     """Minimal shape consumed by the client factory.
 
     Why: keeps alphasolve.llm decoupled from alphasolve.agent — any object
-    exposing ``effective_role()`` works, including test doubles.
+    exposing ``effective_tier()`` works, including test doubles.
     """
 
-    def effective_role(self) -> str: ...
+    def effective_tier(self) -> str: ...
 
 
 def make_client(preset: Preset) -> ChatClient:
@@ -29,16 +29,15 @@ def make_client(preset: Preset) -> ChatClient:
 
 
 def make_client_factory(
-    profile: Profile,
+    tier_mapping: TierMapping,
     presets: dict[str, Preset],
 ) -> Callable[[_AgentConfigLike], ChatClient]:
-    """Returns a ClientFactory: agent_config -> ChatClient via profile role lookup."""
     def factory(agent_config: _AgentConfigLike) -> ChatClient:
-        role = agent_config.effective_role()
-        preset_name = profile.preset_for(role)
+        tier = agent_config.effective_tier()
+        preset_name = tier_mapping.preset_for(tier)
         if preset_name not in presets:
             raise KeyError(
-                f"profile {profile.name!r} maps role {role!r} to preset {preset_name!r}, "
+                f"tier mapping maps tier {tier!r} to preset {preset_name!r}, "
                 f"but no such preset is defined; available presets: {sorted(presets)}"
             )
         return make_client(presets[preset_name])
