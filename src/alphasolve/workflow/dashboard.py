@@ -4,7 +4,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from alphasolve.utils.rich_renderer import PropositionTeamRenderer
+from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
 
 
 AgentEventHandler = Callable[[dict[str, Any]], None]

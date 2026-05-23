@@ -36,7 +36,7 @@ from alphasolve.config.agent_config import AlphaSolveConfig  # noqa: E402
 from alphasolve.config.agent_config import PACKAGE_ROOT  # noqa: E402
 from alphasolve.solver.execution import ExecutionGateway  # noqa: E402
 from alphasolve.llm.types import CompletionResponse, Message, ToolCall  # noqa: E402
-from alphasolve.utils.rich_renderer import PropositionTeamRenderer  # noqa: E402
+from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer  # noqa: E402
 
 
 def _resp(content: str = "", tool_calls: tuple[ToolCall, ...] = (), finish_reason: str = None) -> CompletionResponse:

@@ -1,3 +1,8 @@
+"""第三层的多 agent 协同 UI（PropositionTeamRenderer 等）。
+
+从 alphasolve.utils.rich_renderer 拆出。允许 import agent/ui 的共享 helper
+(`from alphasolve.agent.ui._render_shared import ...`)，但不应该再向上 import 任何东西。
+"""
 from __future__ import annotations
 
 import io
@@ -17,11 +22,11 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from alphasolve.agent.ui._render_shared import RICH_CONSOLE
+
 if TYPE_CHECKING:
     from rich.console import RenderableType
 
-
-RICH_CONSOLE = Console()
 
 _DISPLAY_CHAR_LIMIT = 16000
 _MAX_TEAM_LOG_LINES = 80

@@ -11,7 +11,7 @@ from rich.text import Text
 
 from alphasolve.agent import AgentRunError, AgentRunResult, AgentSuite, AgentConfig, Agent, Workspace
 from alphasolve.llm.types import Message
-from alphasolve.utils.rich_renderer import RICH_CONSOLE
+from alphasolve.agent.ui._render_shared import RICH_CONSOLE
 
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService

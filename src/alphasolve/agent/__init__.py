@@ -1,9 +1,8 @@
 """第二层：通用 coding agent runtime。
 
 依赖契约：
-- 允许 import: alphasolve.llm.*（公共 API）、alphasolve.utils.*
-- 禁止 import: alphasolve.workflow.*（反向依赖）
-- 禁止 import: alphasolve.solver.*（execution 是 solver 域的）
+- 允许 import: alphasolve.llm.types（公共类型/协议）
+- 禁止 import: alphasolve.workflow.*、alphasolve.solver.*（反向依赖）
 - 禁止 import: alphasolve.llm.providers.*、alphasolve.llm.config.*（实现细节）
 
 公共 API（__all__）：见下。LLM 类型（Message/ChatClient/ToolDef/...）继续从
