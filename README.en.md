@@ -2,337 +2,434 @@
 
 [中文](README.md) | English
 
-> A multi-agent proof workbench for mathematical research: AlphaSolve lets LLMs carry out long-running research, supports human-in-the-loop collaboration and resumable work, and produces **natural-language** proofs.
-
-Put a `problem.md` file in an empty folder and run `alphasolve`. AlphaSolve will keep exploring until the problem is solved. You can also manually add propositions to `verified_propositions`, or add reference papers and notes to `knowledge/references` (Markdown format required) to guide and intervene in AlphaSolve's later behavior.
+> Put a math problem in an empty folder. AlphaSolve explores autonomously until it's solved — producing natural-language proofs, with resumable research and human-in-the-loop collaboration.
 
 <p align="center">
   <img src="docs/assets/alphasolve-dashboard.png" alt="AlphaSolve live dashboard" width="100%">
 </p>
 
-## What Is This?
+---
 
-AlphaSolve is an automated mathematical theorem-proving system based on large language models (LLMs). It follows a research workflow designed for long-running exploration: the Orchestrator plans directions, multiple Workers try proofs in parallel, Verifiers review proofs from different angles and suppress hallucinations, Revisers repair failed proofs, and the Curator organizes knowledge produced during exploration into `workspace/knowledge/` for later reuse.
+## What It Does
 
-Without manual intervention, AlphaSolve can run autonomously for dozens of hours. It is especially suited to mathematical problems that require long exploration, repeated trial and error, accumulation of intermediate lemmas, and preservation of failed attempts. If hallucinated content passes through the Verifier and appears in `verified_propositions`, a human can delete it manually and restart AlphaSolve to continue the research.
+AlphaSolve is a multi-agent mathematical theorem-proving system. It organizes LLMs into a long-running research pipeline:
+
+- **Orchestrator** plans directions and dispatches parallel Workers
+- **Generator** proposes conjectures and proofs; **Verifier** scrutinizes them from different angles; **Reviser** patches flaws
+- **TheoremChecker** decides whether verified propositions solve the original problem
+- **Curator** continuously organizes accumulated knowledge in the background
+
+Without human intervention, AlphaSolve runs autonomously for dozens of hours. It is especially suited to problems requiring repeated trial and error and accumulation of intermediate lemmas.
+
+You can intervene at any point: add propositions to `verified_propositions`, delete hallucinated content, or put papers and notes into `knowledge/references` — AlphaSolve reads these on resume and adjusts its exploration accordingly.
+
+---
 
 ## Quick Start
 
-> This section is written for mathematicians and math students without programming experience. Follow the steps below one by one.
+> This section is for mathematicians and math students with no programming experience. Just follow the steps.
 
-### Step 1: Get a DeepSeek API Key and Set It as an Environment Variable
+### 1. Get an API Key
 
-AlphaSolve needs to call an LLM for reasoning. **DeepSeek** is recommended.
+AlphaSolve calls an LLM for reasoning. **DeepSeek** is recommended (Chinese phone numbers can register directly; new users get free credits).
 
-1. Open https://platform.deepseek.com/ in your browser and create an account.
-2. Go to the "API Keys" page, click **Create API Key**, and copy the generated key. It should look like `sk-xxxxxxxxxxxxxxxx`. **The key is shown only once, so save it immediately.**
+1. Open https://platform.deepseek.com/ and create an account
+2. Go to "API Keys" → **Create API Key** → copy the key (looks like `sk-xxxxxxxxxxxxxxxx`). **The key is shown only once — save it immediately**
 
-Now set the key as a permanent environment variable. You only need to do this once.
+Set the key as a permanent environment variable (one-time setup):
 
 On Windows:
 
-1. Press `Win`, type **environment**, and open **Edit the system environment variables**.
-2. Click **Environment Variables...**.
-3. Under **System variables**, click **New...**.
-4. Set **Variable name** to `DEEPSEEK_API_KEY`.
-5. Paste your key into **Variable value**.
-6. Click **OK** on all windows to save.
+3. Press `Win`, type **environment**, open **Edit the system environment variables**
+4. Click **Environment Variables...** → under **System variables** click **New...**
+5. Variable name: `DEEPSEEK_API_KEY`, Variable value: paste your key
+6. Click **OK** on all windows
 
-On macOS or Linux, add this to your shell profile:
+On macOS/Linux, add to your shell profile:
 
 ```bash
 export DEEPSEEK_API_KEY=your_key
 ```
 
-### Step 2: Install AlphaSolve
+### 2. Install
 
-On Windows, open Command Prompt (`Win + R`, type `cmd`, press Enter), then paste and run:
+On Windows, open Command Prompt (`Win + R` → `cmd` → Enter) and paste:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tanzcoding/AlphaSolve/main/install.bat -o install.bat && install.bat
 ```
 
-On macOS or Linux:
+On macOS/Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tanzcoding/AlphaSolve/main/install.sh | sh
 ```
 
-The script automatically installs uv, downloads AlphaSolve, and installs dependencies. You do not need to install Python separately. After installation, the `alphasolve` command is available globally.
+The script installs uv, downloads AlphaSolve, and installs dependencies. No separate Python needed. After installation, `alphasolve` is available globally.
 
-### Step 3: Write a Math Problem
+### 3. Write a Math Problem
 
-1. Create a new empty folder anywhere you like, for example `my_problem` on your desktop.
-2. Enter that folder and create a text file named `problem.md`. Make sure the extension is `.md`, not `.txt`.
-3. Open `problem.md` with a text editor and write the theorem or problem you want to prove.
+1. Create a new empty folder (e.g. `my_problem` on your desktop)
+2. Create a file named `problem.md` inside it (extension `.md`, not `.txt`)
+3. Open it with a text editor and write the theorem or problem you want to prove
 
-Describe the problem clearly, including complete assumptions and conclusions. Avoid vague requests such as "generalize this result." LaTeX formulas are recommended. For example:
+> Describe the problem completely — all assumptions and conclusions. Avoid vague directions like "generalize X to Y." LaTeX is recommended:
 
-```text
+```
 Prove that for every positive integer n, the sum of the cubes of the first n
 positive integers equals the square of the sum of the first n positive integers:
 $$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
 ```
 
-Save the file when you are done.
+4. Save the file
 
-### Step 4: Run
+### 4. Run
 
-1. Right-click an empty area inside the `my_problem` folder and choose **Open in Terminal**.
-2. Run:
+1. Right-click an empty area in the folder → **Open in Terminal**
+2. Type `alphasolve` and press Enter
 
-```bash
-alphasolve
+You'll see a live dashboard showing progress. Keep the terminal open. To stop, close the window or press `Ctrl+C`.
+
+### 5. Check Results
+
+After the run, the folder contains:
+
+| Output | Description |
+|--------|-------------|
+| `solution.md` | The complete proof (appears when the problem is solved) |
+| `workspace/verified_propositions/` | All verified intermediate propositions |
+| `workspace/knowledge/` | Accumulated mathematical knowledge and insights |
+
+Stopping and running `alphasolve` again in the same folder resumes automatically — verified propositions and the knowledge base are reused.
+
+---
+
+## What Happens During a Run
+
+AlphaSolve's research loop works like a constantly cycling laboratory:
+
 ```
-
-You will see a live dashboard showing AlphaSolve's current work. Keep the terminal open and let it run. To stop midway, close the terminal window or press `Ctrl+C`.
-
-### Step 5: Check Results
-
-After the run ends, the current folder may contain:
-
-- **`solution.md`** - the complete proof if the problem was solved
-- **`workspace/verified_propositions/`** - all verified intermediate propositions
-- **`workspace/knowledge/`** - mathematical knowledge and research notes accumulated during the run
-
-If you stop midway or the run ends, intermediate results are preserved. Running `alphasolve` again in the same folder automatically resumes the previous work.
-
-### Next Steps
-
-- If something goes wrong, run with `--debug` (`alphasolve --debug`) to generate detailed diagnostic logs under `logs/`.
-- To adjust proof strategy, see [Usage](#usage).
-- To switch models, see [Configuration](#configuration).
-
-## System Architecture
-
-```text
-CLI (alphasolve)
-    └── AlphaSolve.run()                        [workflow.py]
-            ├── Wolfram kernel detection
-            ├── ExecutionGateway (Python / Wolfram process pools)
-            ├── CuratorQueue (background knowledge-management agent)
-            └── Orchestrator.run()              [orchestrator.py]
-                    └── WorkerManager
-                            └── Worker x N (threads)  [worker.py]
-                                    ├── Generator
-                                    ├── Verifier (x verifier_scaling_factor)
-                                    ├── Reviser
-                                    └── TheoremChecker
-```
-
-### Workflow
-
-```text
 problem.md
-    |
-    v
-Orchestrator (LLM)
-    |  reads verified_propositions/ and knowledge/
-    |  calls spawn_worker(hint) / wait()
-    |
-    +--> Worker
-    |        |
-    |        +-- Generator      -> creates proposition.md (statement + proof)
-    |        +-- Verifier x N   -> independent proof reviews, then LLM synthesis
-    |        +-- Reviser        -> repairs based on feedback, up to max_verify_rounds
-    |        +-- TheoremChecker -> checks whether the original problem is solved
-    |
-    v
-verified_propositions/   <- verified propositions read by all workers and Orchestrator
-    |
-    +-- if a proposition solves the original problem -> solution.md
+      |
+      v
++-- Orchestrator ----------------------------------------------------+
+|  Reads verified_propositions and knowledge                         |
+|  Plans directions, dispatches Workers                              |
+|  Waits for results, decides next step                              |
++--------------------------------------------------------------------+
+      |  spawn_worker(hint)
+      v
++-- Worker ----------------------------------------------------------+
+|                                                                    |
+|  Generator  -->  Writes proposition (conjecture + proof draft)     |
+|       |                                                            |
+|       v                                                            |
+|  Verifier x4  -->  Four strategies scrutinize independently        |
+|       |              citation | failure_modes                      |
+|       |              stepwise  | premise_chain                     |
+|       v                                                            |
+|  Review failed? --> Reviser patches, loops back to Verifier        |
+|       |             (up to 6 rounds)                               |
+|       v                                                            |
+|  Review passed --> TheoremChecker: does this solve the problem?    |
+|       |             (5 independent checks)                         |
+|       v                                                            |
+|  Solves problem --> solution.md  [OK]                              |
+|  Otherwise --> proposition enters verified_propositions for reuse  |
+|                                                                    |
++--------------------------------------------------------------------+
+      |
+      v  (concurrently, in background)
++-- Curator ---------------------------------------------------------+
+|  Extracts mathematical knowledge from Worker traces                |
+|  Organizes into knowledge/ for all agents to read                  |
+|  Handles conflicts and cross-checks                                |
++--------------------------------------------------------------------+
 ```
 
-### Core Components
+Each Worker runs in an independent thread with a full generate → verify → revise pipeline. Multiple Workers can run in parallel — control concurrency with `--workers 4`.
 
-| Component | Role |
-|------|------|
-| **Orchestrator** | Reads workspace state, spawns workers with targeted hints, and calls `wait()` for results. It can call `research_reviewer` to summarize large sets of files. |
-| **Worker** | An independent thread that runs the full generate -> verify -> revise pipeline. |
-| **Generator** | Proposes new propositions, including conjectures and proofs, then writes them into the worker directory. |
-| **Verifier** | Strictly reviews proofs. Multiple Verifier strategies are available and may call subagents. |
-| **Reviser** | Repairs propositions according to Verifier feedback and rewrites files in place. |
-| **TheoremChecker** | Determines whether a verified proposition, together with its referenced propositions, proves the original problem. |
-| **compute subagent** | A computational subagent equipped with `run_python` and `run_wolfram`. |
-| **reasoning subagent** | A pure mathematical reasoning subagent without computation tools. |
-| **numerical experiment subagent** | Performs bounded search, branch checks, and local numerical experiments. |
-| **research_reviewer** | Summarizes `verified_propositions/` and `knowledge/`, compares them with `problem.md`, and suggests research directions. |
-| **curator** | A background agent that extracts mathematical knowledge from traces, writes it into `knowledge/`, resolves conflicts, and cross-checks entries. |
+### Four Verifier Strategies
 
-## Installation
+| Strategy | Review Angle |
+|----------|-------------|
+| `verifier_citation` | Checks whether cited propositions are correctly applied |
+| `verifier_failure_modes` | Identifies common reasoning failure patterns |
+| `verifier_stepwise` | Examines each step of the proof chain |
+| `verifier_premise_chain` | Traces premise chains for hidden unstated assumptions |
 
-Using **uv** or pipx is recommended so that `alphasolve` can be run from any directory.
+These four strategies rotate across verification rounds. If any round finds a problem, Reviser fixes it and verification restarts. This is why a seemingly simple proposition may go through 6 verify-revise rounds — each round brings a different perspective.
+
+---
+
+## Human-in-the-Loop
+
+AlphaSolve is not just a "press and run" tool. You can intervene at any point:
+
+### Add propositions to `verified_propositions`
+
+Write key propositions in Markdown + LaTeX and place them in `workspace/verified_propositions/`. AlphaSolve treats them as verified on resume and continues from there.
+
+### Delete hallucinated content
+
+If hallucinations slip through the Verifiers into `verified_propositions`, delete them manually and continue running.
+
+### Add references to `knowledge/references`
+
+Put paper summaries, key theorems, or personal notes (Markdown format) into `workspace/knowledge/references/`. Orchestrator and Workers read these to guide subsequent exploration.
+
+### Provide `hint.md`
+
+Create `hint.md` in the problem folder with solution hints or background knowledge. AlphaSolve reads it on startup.
+
+---
+
+## Command-Line Usage
 
 ```bash
-# Clone the repository
-git clone https://github.com/tanzcoding/AlphaSolve.git
-cd AlphaSolve
-
-# Option 1: uv (recommended)
-uv tool install -e .
-
-# Option 2: pipx
-pipx install -e .
-
-# Option 3: pip (development mode)
-pip install -e .
-```
-
-## Configuration
-
-### API Keys
-
-Set environment variables according to the LLM providers you use:
-
-```bash
-export DEEPSEEK_API_KEY=your_key      # DeepSeek
-export ARK_API_KEY=your_key           # Volcengine
-export MOONSHOT_API_KEY=your_key      # Moonshot / Kimi
-export DASHSCOPE_API_KEY=your_key     # Alibaba Cloud DashScope
-export LONGCAT_API_KEY=your_key       # LongCat
-export PARASAIL_API_KEY=your_key      # Parasail
-export OPENROUTER_API_KEY=your_key    # OpenRouter
-export MIMO_API_KEY=your_key          # Xiaomi MIMO
-```
-
-### Wolfram Engine (Optional)
-
-If the Wolfram kernel is not on the default path, set:
-
-```bash
-export WOLFRAM_KERNEL=/path/to/WolframKernel
-```
-
-### Choose Models
-
-Edit `src/alphasolve/config/agent_config.py` and change the preset configurations used by each component:
-
-```python
-GENERATOR_CONFIG    = {**DEEPSEEK_CONFIG}
-VERIFIER_CONFIG     = {**DEEPSEEK_CONFIG}
-REVISER_CONFIG      = {**DEEPSEEK_CONFIG}
-ORCHESTRATOR_CONFIG = {**DEEPSEEK_PRO_CONFIG}   # Orchestrator uses DeepSeek Pro by default
-```
-
-Supported presets: `DEEPSEEK_CONFIG`, `DEEPSEEK_PRO_CONFIG`, `VOLCANO_CONFIG`, `MOONSHOT_CONFIG`, `DASHSCOPE_CONFIG`, `LONGCAT_CONFIG`, `PARASAIL_CONFIG`, `OPENROUTER_CONFIG`, `MIMO_CONFIG`.
-
-Each agent's detailed parameters, including system prompt, tool list, and `max_turns`, are configured in separate YAML files under `src/alphasolve/config/agents/`. The top-level entry point is `src/alphasolve/config/agents.yaml`.
-
-### Key Parameters (`agents.yaml`)
-
-| Parameter | Default | Description |
-|------|--------|------|
-| `max_verify_rounds` | 6 | Maximum verification-revision rounds for each proposition. |
-| `verifier_scaling_factor` | 5 | Number of independent verification attempts per round. |
-| `verifier_agents` | `verifier_failure_modes`, `verifier_stepwise` | Verifier list to use. |
-| `subagent_max_depth` | 2 | Maximum recursive depth for subagents. |
-
-`CHECK_IS_THEOREM_TIMES` defaults to 5 and is configured in `agent_config.py`. It controls the number of independent theorem-checking attempts.
-
-## Usage
-
-### 1. Prepare a Problem File
-
-Create `problem.md` in any working directory and write your math problem in it. LaTeX is supported.
-
-```bash
-mkdir my_problem && cd my_problem
-cat > problem.md << 'EOF'
-Prove that for every positive integer n, 1 + 2 + ... + n = n(n+1)/2.
-EOF
-```
-
-Optionally, create `hint.md` to provide solution hints or background knowledge.
-
-### 2. Run
-
-```bash
-# Basic run, reading problem.md from the current directory
+# Simplest: just have problem.md in the current directory
 alphasolve
 
-# Common options
+# Specify problem and hint files
 alphasolve --problem ./problem.md --hint ./hint.md
 
 # Adjust concurrency and verification strength
 alphasolve --workers 4 --verifier_scaling_factor 3 --max_verify_rounds 4
 
-# Use a custom configuration directory
+# Custom agent configuration
 alphasolve --config ./my_config/
 
-# Skip Wolfram detection to start faster
+# List tiers and presets (for understanding model config)
+alphasolve --list-tiers
+alphasolve --list-presets
+
+# Temporary env var override via --env
+alphasolve --env DEEPSEEK_API_KEY=sk-xxx
+
+# Skip Wolfram probe (faster startup)
 alphasolve --no_wolfram_prime
 
-# Enable debug logs under logs/
+# Debug logs (detailed agent traces under logs/)
 alphasolve --debug
 
-# Disable the live terminal dashboard
+# Disable live dashboard
 alphasolve --no_dashboard
 
-# Local demo mode without LLM API calls
+# Interactive Agent REPL (single-agent mode)
+alphasolve --agent
+
+# Single-shot Agent mode (non-interactive, prints result)
+alphasolve --agent -p "Prove that 1+2+...+n = n(n+1)/2"
+
+# Local demo (no LLM calls)
 alphasolve --demo
 ```
 
 ### CLI Options
 
 | Option | Default | Description |
-|------|--------|------|
-| `--problem` | `problem.md` | Path to the problem file. |
-| `--hint` | none | Path to the hint file. |
-| `--workers` | 4 | Number of concurrent workers. |
-| `--config` | built-in config | Custom `agents.yaml` path or directory. |
-| `--max_verify_rounds` | from `agents.yaml` | Maximum verification-revision rounds for each proposition. |
-| `--verifier_scaling_factor` | from `agents.yaml` | Number of independent verification attempts per round. |
-| `--subagent_max_depth` | from `agents.yaml` | Maximum recursive depth for subagents. |
-| `--debug` | false | Enables debug logs that record detailed agent behavior traces under `logs/`. |
-| `--tool_executor_size` | 4 | Python execution process-pool size. |
-| `--no_wolfram_prime` | false | Skips Wolfram detection at startup. |
-| `--no_dashboard` | false | Disables the live terminal dashboard. |
-| `--demo` | false | Local demo mode without LLM calls. |
+|--------|---------|-------------|
+| `--problem` | `problem.md` | Path to the problem file |
+| `--hint` | none | Path to hint file (ignored if missing) |
+| `--workers` | 4 | Number of concurrent workers |
+| `--config` | built-in config | Custom agents.yaml path or directory |
+| `--max_verify_rounds` | 6 | Max verify-revise rounds per proposition |
+| `--verifier_scaling_factor` | 4 | Independent verification attempts per round |
+| `--subagent_max_depth` | 1 | Max recursive depth for subagents |
+| `--max_orchestrator_restarts` | 50 | Max Orchestrator restarts |
+| `--debug` | false | Enable debug logs (detailed agent traces under `logs/`) |
+| `--tool_executor_size` | 4 | Python execution process-pool size |
+| `--no_wolfram_prime` | false | Skip Wolfram kernel probe at startup |
+| `--no_dashboard` | false | Disable live terminal dashboard |
+| `--agent` | false | Enter interactive Agent REPL |
+| `-p` / `--print` | none | Single-shot Agent execution (requires `--agent`) |
+| `--list-tiers` | false | List tier mappings and exit |
+| `--list-presets` | false | List presets and exit |
+| `--env KEY=VAL` | none | Temporary env var override (repeatable) |
+| `--demo` | false | Local demo mode (no LLM calls) |
 
-### 3. Resume Research
+---
 
-AlphaSolve can continue from an existing workspace. Run `alphasolve` again in the same working directory:
+## Configuration
+
+### Model Selection: Tier + Preset System
+
+AlphaSolve uses a **Tier → Preset → Model** three-layer mapping for model configuration, rather than per-agent hardcoding.
+
+**Tiers** are three levels. Each agent declares its tier in its YAML config:
+
+| Tier | Default mapping | Usage |
+|------|----------------|-------|
+| `cheap` | `deepseek-flash` | Curator, compute subagent — background/computation tasks |
+| `balanced` | `deepseek-pro` | Generator, Verifier, Reviser — core reasoning tasks |
+| `max` | `qwen-3.7-max` | Orchestrator — needs strongest planning capability |
+
+**Presets** define specific API connection parameters (endpoint, key env var, model name, timeout, etc.). View all presets:
 
 ```bash
-cd my_problem   # a directory that already has workspace/ and problem.md
-alphasolve
+alphasolve --list-presets
 ```
 
-**Resume mechanism:**
+Built-in presets include: `deepseek-flash`, `deepseek-pro`, `parasail-deepseek`, `longcat`, `moonshot-kimi`, `volcano-doubao`, `volcano-deepseek`, `dashscope-deepseek`, `mimo`, `openrouter-gemini`, `deepseek-pro-anthropic`, `moonshot-kimi-anthropic`, `qwen-3.7-max`.
 
-- Verified propositions in `workspace/verified_propositions/` are automatically read by the new Orchestrator and reused as known facts.
-- `workspace/knowledge/index.md` is the knowledge-base roadmap. The Orchestrator uses it to decide which topic entries or folders to read.
-- New worker directories are named `prop-{hash}` and do not use sequence numbers, so they do not collide with directories from previous runs.
+### Customizing Tiers and Presets
 
-**Manually added propositions:**
+Create `tiers.yaml` and `presets.yaml` under `~/.alphasolve/` to override built-in configs or add your own presets. Format follows the built-in files at `src/alphasolve/config/tiers.yaml` and `presets.yaml`.
 
-Human experts can put key propositions directly into `workspace/verified_propositions/` using standard Markdown and LaTeX. On resume, AlphaSolve treats them as verified propositions and continues exploration from them.
+For example, to switch the `balanced` tier to Moonshot Kimi:
 
-### 4. Inspect Results
-
-After a run, the working directory may contain:
-
-```text
-workspace/
-    verified_propositions/    # all verified propositions
-    knowledge/                # knowledge management output, including index.md and topic files
-solution.md                   # final solution, generated when the problem is solved
+```yaml
+# ~/.alphasolve/tiers.yaml
+cheap: deepseek-flash
+balanced: moonshot-kimi
+max: qwen-3.7-max
 ```
 
-When running with `--debug`, `logs/` also records live behavior traces for each agent:
+User files merge with built-in configs, with user files taking priority.
 
-```text
+### API Keys
+
+Set environment variables for the providers you use:
+
+| Env var | Provider |
+|---------|----------|
+| `DEEPSEEK_API_KEY` | DeepSeek |
+| `ARK_API_KEY` | Volcengine (ByteDance) |
+| `MOONSHOT_API_KEY` | Moonshot / Kimi |
+| `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope |
+| `LONGCAT_API_KEY` | LongCat |
+| `PARASAIL_API_KEY` | Parasail |
+| `OPENROUTER_API_KEY` | OpenRouter |
+| `MIMO_API_KEY` | Xiaomi MIMO |
+
+Keys can be provided in three ways (highest priority first):
+
+1. `--env KEY=VAL` command-line flags
+2. System environment variables (the table above)
+3. `.env` files (project-local `.env` or `~/.alphasolve/.env`)
+
+You can also change the config directory location with the `ALPHASOLVE_CONFIG_DIR` env var (default: `~/.alphasolve/`).
+
+### Wolfram Engine (Optional)
+
+AlphaSolve can call the Wolfram kernel for symbolic computation. Without Wolfram installed, it still runs normally — the `RunWolfram` tool simply reports unavailable.
+
+If the Wolfram kernel is not on the default path:
+
+```bash
+export WOLFRAM_KERNEL=/path/to/WolframKernel
+```
+
+### Agent Configuration Files
+
+Each agent's system prompt, tool list, max_turns, etc. are configured in individual YAML files:
+
+```
+src/alphasolve/solver/config/
+    agents.yaml                <- entry point: global params and directories
+    agents/
+        orchestrator.yaml
+        generator.yaml
+        verifier.yaml
+        verifier_citation.yaml
+        verifier_failure_modes.yaml
+        verifier_stepwise.yaml
+        verifier_premise_chain.yaml
+        verifier_adversarial.yaml
+        reviser.yaml
+        theorem_checker.yaml
+    subagents/
+        compute_subagent.yaml
+        reasoning_subagent.yaml
+        numerical_experiment_subagent.yaml
+        curator.yaml
+        research_reviewer.yaml
+```
+
+Use `--config` to specify your own config directory (place same-named YAMLs to override built-in configs).
+
+### Key Parameters (`agents.yaml`)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `max_verify_rounds` | 6 | Max verify-revise rounds per proposition |
+| `verifier_scaling_factor` | 4 | Independent verification attempts per round (four strategies rotate) |
+| `verifier_agents` | `verifier_citation`, `verifier_failure_modes`, `verifier_stepwise`, `verifier_premise_chain` | Verifier strategies to use |
+| `subagent_max_depth` | 1 | Max recursive depth for subagents |
+| `max_orchestrator_restarts` | 50 | Max Orchestrator restarts |
+
+`CHECK_IS_THEOREM_TIMES` (default 5) controls independent theorem-checking attempts and is defined in `src/alphasolve/solver/wolfram_state.py`.
+
+---
+
+## System Architecture
+
+```
+CLI (alphasolve)
+    +-- AlphaSolve.run()                        [solver/app.py]
+            +-- Wolfram kernel probe
+            +-- ExecutionGateway (Python / Wolfram process pools)
+            +-- CuratorQueue (background knowledge-management agent)
+            +-- Orchestrator.run()              [solver/orchestrator.py]
+                    +-- WorkerManager
+                            +-- Worker x N (threads)  [solver/worker.py]
+                                    +-- Generator
+                                    +-- Verifier x verifier_scaling_factor
+                                    +-- Reviser
+                                    +-- TheoremChecker
+```
+
+### Core Components
+
+| Component | Tier | Role |
+|-----------|------|------|
+| **Orchestrator** | max | Plans directions, dispatches Workers, surveys workspace state; can call `research_reviewer` |
+| **Generator** | balanced | Proposes conjectures and proof drafts |
+| **Verifier** (four strategies) | balanced | Scrutinizes proofs from different angles |
+| **Reviser** | balanced | Patches propositions based on Verifier feedback |
+| **TheoremChecker** | balanced | Decides whether a verified proposition solves the original problem |
+| **Curator** | cheap | Background knowledge organizer; handles conflicts and cross-checks |
+| **research_reviewer** | balanced | Surveys `verified_propositions/` and `knowledge/`, suggests research directions |
+| **compute subagent** | cheap | Equipped with `RunPython` / `RunWolfram` |
+| **reasoning subagent** | balanced | Pure mathematical reasoning (no computation tools) |
+| **numerical experiment subagent** | cheap | Bounded exploration and local numerical experiments |
+
+---
+
+## Install from Source
+
+```bash
+git clone https://github.com/tanzcoding/AlphaSolve.git
+cd AlphaSolve
+
+# uv (recommended)
+uv tool install -e .
+
+# pipx
+pipx install -e .
+
+# pip (development mode)
+pip install -e .
+```
+
+---
+
+## Debug Logs
+
+Running with `--debug` records detailed agent behavior traces under `logs/`:
+
+```
 logs/{run_id}/
-    orchestrator.log        # every Orchestrator LLM call and tool use
-    curator/                # one file per curator chat session
+    orchestrator.log        # Every Orchestrator LLM call and tool use
+    curator/                # One file per curator session
         20260428_153045.log
     workers/
-        worker_{hash}.log   # each worker's full generate -> verify -> revise pipeline
+        worker_{hash}.log   # Each Worker's full generate -> verify -> revise pipeline
 ```
+
+---
 
 ## Acknowledgements and Related Work
 
-AlphaSolve's architecture was inspired by:
-
 - [AI Mathematician (AIM)](https://arxiv.org/html/2505.22451v1) and its open-source implementation [Carlos-Mero/AIM](https://github.com/Carlos-Mero/AIM/)
-- [kimi-cli](https://github.com/MoonshotAI/kimi-cli), which informed several tool-parameter designs and tool-result formats
+- [kimi-cli](https://github.com/MoonshotAI/kimi-cli) — informed several tool-parameter designs and tool-result formats
