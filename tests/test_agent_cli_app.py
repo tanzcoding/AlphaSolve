@@ -2,17 +2,41 @@
 from __future__ import annotations
 
 import ast
+import io
 from pathlib import Path
 
+from rich.console import Console
+
 from alphasolve.agent import AgentConfig
-from alphasolve.agent.ui.cli_app import AgentApp
-from alphasolve.llm.types import CompletionResponse, Message
+from alphasolve.agent.ui.cli_app import AgentApp, make_print_debug_event_sink
+from alphasolve.llm.types import CompletionResponse, Message, ToolCall
 
 
 class _StubClient:
     def complete(self, *, messages, tools, delta_sink=None):
         return CompletionResponse(
             message=Message(role="assistant", content="hello from stub"),
+            finish_reason="stop",
+        )
+
+
+class _ToolUsingStubClient:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def complete(self, *, messages, tools, delta_sink=None):
+        self.calls += 1
+        if self.calls == 1:
+            return CompletionResponse(
+                message=Message(
+                    role="assistant",
+                    reasoning_content="I should inspect note.md.",
+                    tool_calls=(ToolCall(id="read-1", name="Read", args={"path": "note.md"}),),
+                ),
+                finish_reason="tool_calls",
+            )
+        return CompletionResponse(
+            message=Message(role="assistant", content="debug complete"),
             finish_reason="stop",
         )
 
@@ -57,3 +81,28 @@ def test_agent_app_uses_default_tools(tmp_path: Path):
     assert "general-purpose coding agent" in config.system_prompt
     assert "Read" in config.system_prompt
     assert "Write" in config.system_prompt
+
+
+def test_print_debug_sink_shows_reasoning_and_tool_events(tmp_path: Path):
+    (tmp_path / "note.md").write_text("important note\n", encoding="utf-8")
+    client = _ToolUsingStubClient()
+    app = AgentApp(
+        project_dir=tmp_path,
+        client_factory=lambda config: client,  # type: ignore[arg-type]
+    )
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None, width=100)
+
+    result = app.run_once(
+        "inspect",
+        event_sink=make_print_debug_event_sink(console),
+    )
+
+    debug_text = output.getvalue()
+    assert result.final_answer == "debug complete"
+    assert "COT" in debug_text
+    assert "I should inspect note.md." in debug_text
+    assert "tool call: Read" in debug_text
+    assert "path: note.md" in debug_text
+    assert "tool result: Read" in debug_text
+    assert "important note" in debug_text

@@ -66,7 +66,7 @@
     }
   },
   {
-    "description": "Lists files and directories under a workspace directory.\n\nUsage:\n- If the directory contains `index.md`, read `index.md` first before exploring other files.\n- The result respects this agent's workspace access restrictions.",
+    "description": "Lists files and directories under a workspace directory.\n\nUsage:\n- Returns plain text with one entry per line; directories end with `/`.\n- If the directory contains `index.md`, read `index.md` first before exploring other files.\n- The result respects this agent's workspace access restrictions.",
     "name": "ListDir",
     "parameters": {
       "properties": {
@@ -112,7 +112,7 @@
     }
   },
   {
-    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
+    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- Returns plain text in `path:line: text` format, optionally with context.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
     "name": "Grep",
     "parameters": {
       "properties": {

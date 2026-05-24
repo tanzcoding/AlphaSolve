@@ -45,6 +45,8 @@ _BASE_AGENT_TOOLS: tuple[str, ...] = (
     "Glob",
     "ListDir",
     "Grep",
+    "ResearchProgressReview",
+    "InspectMarkdown",
     "GetCurrentTime",
 )
 
@@ -120,6 +122,76 @@ def _make_repl_event_sink(console: Console) -> AgentEventSink:
             console.print(f"[red]Error: {error}[/red]")
         elif etype == "run_stopped":
             console.print("[dim]Agent stopped.[/dim]")
+    return sink
+
+
+def make_print_debug_event_sink(console: Console) -> AgentEventSink:
+    """Build an event sink for `alphasolve --agent -p --debug`.
+
+    It is intentionally narrower than the interactive REPL renderer: print mode
+    still prints the final answer exactly once after the run, while this sink
+    shows the intermediate reasoning and tool traffic needed for debugging.
+    """
+    state: dict[str, bool] = {"in_reasoning_stream": False}
+
+    def _plain(text: Any, *, style: str | None = None) -> None:
+        console.print(str(text), style=style, markup=False)
+
+    def sink(event: dict[str, Any]) -> None:
+        etype = event.get("type", "")
+        if etype == "run_start":
+            console.rule("[bold cyan]agent debug[/bold cyan]")
+            _plain(f"agent: {event.get('agent', '')}", style="dim")
+            enabled = ", ".join(event.get("enabled_tools", []) or [])
+            if enabled:
+                _plain(f"tools: {enabled}", style="dim")
+        elif etype == "model_request":
+            console.rule(f"[bold blue]turn {event.get('turn', '?')}[/bold blue]")
+            state["in_reasoning_stream"] = False
+        elif etype == "thinking_delta":
+            delta = event.get("delta", "")
+            if delta:
+                if not state["in_reasoning_stream"]:
+                    console.print("[bold bright_blue]COT[/bold bright_blue]")
+                    state["in_reasoning_stream"] = True
+                console.print(delta, end="", style="bright_blue dim", markup=False)
+        elif etype == "thinking":
+            reasoning = event.get("content", "")
+            streamed = event.get("streamed", False)
+            if reasoning and not streamed:
+                console.print("[bold bright_blue]COT[/bold bright_blue]")
+                _plain(reasoning, style="bright_blue dim")
+            if state["in_reasoning_stream"]:
+                console.print()
+                state["in_reasoning_stream"] = False
+        elif etype == "assistant_message":
+            content = event.get("content", "")
+            tool_call_count = int(event.get("tool_call_count") or 0)
+            if content and tool_call_count:
+                console.print("[bold]assistant before tool call[/bold]")
+                _plain(content)
+            if tool_call_count:
+                _plain(f"calling {tool_call_count} tool(s)", style="dim")
+        elif etype == "tool_call":
+            name = event.get("name", "")
+            console.rule(f"[bold green]tool call: {name}[/bold green]")
+            args = event.get("arguments", {}) or {}
+            for key, value in args.items():
+                _plain(f"{key}: {value}")
+        elif etype == "tool_result":
+            name = event.get("name", "")
+            is_error = bool(event.get("is_error"))
+            label = "error" if is_error else "result"
+            style = "red" if is_error else "green"
+            console.rule(f"[bold {style}]tool {label}: {name}[/bold {style}]")
+            _plain(event.get("content", ""))
+        elif etype == "run_error":
+            console.rule("[bold red]agent error[/bold red]")
+            _plain(event.get("error", ""), style="red")
+        elif etype == "run_stopped":
+            console.rule("[bold yellow]agent stopped[/bold yellow]")
+            _plain(event.get("reason", ""), style="yellow")
+
     return sink
 
 

@@ -43,6 +43,28 @@ class RegisteredTool:
     handler: ToolHandler
 
 
+_MARKDOWN_SECTION_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+.*("
+    r"statement|proposition|lemma|theorem|claim|corollary|conjecture|"
+    r"result|conclusion|summary|progress|insight|finding|next|open"
+    r").*$",
+    re.IGNORECASE,
+)
+_MARKDOWN_IMPORTANT_LINE_RE = re.compile(
+    r"("
+    r"therefore|hence|thus|consequently|it follows|we get|we obtain|"
+    r"proved|shown|strict|strictly|contradiction|answer|conclusion|"
+    r"boxed|\\ge|\\le|\\gt|\\lt|>=|<=|>|<|=|\u2265|\u2264"
+    r")",
+    re.IGNORECASE,
+)
+_MARKDOWN_PROOF_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+.*(proof|argument|verification).*$", re.IGNORECASE)
+_MARKDOWN_STATEMENT_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+.*(statement|proposition|theorem|claim|lemma|corollary).*$",
+    re.IGNORECASE,
+)
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, RegisteredTool] = {}
@@ -239,15 +261,517 @@ def _matches_json_type(value: Any, schema_type: str) -> bool:
     return True
 
 
+def _tool_error(message: str) -> str:
+    return f"ERROR: {message}"
+
+
+def _format_list_result(title: str, items: list[str], *, max_results: int) -> str:
+    lines = [title, f"returned: {len(items)}", f"limit: {max_results}"]
+    if len(items) >= max_results:
+        lines.append("note: result hit max_results; rerun with a narrower path/pattern or higher max_results if needed.")
+    if items:
+        lines.extend(f"- {item}" for item in items)
+    else:
+        lines.append("(no results)")
+    return "\n".join(lines)
+
+
+def _format_grep_result(hits: list[dict[str, Any]], *, pattern: str, path: str, max_results: int) -> str:
+    lines = [
+        "Grep results",
+        f"pattern: {pattern}",
+        f"path: {path}",
+        f"returned: {len(hits)}",
+        f"limit: {max_results}",
+    ]
+    if len(hits) >= max_results:
+        lines.append("note: result hit max_results; rerun with a narrower path/pattern or higher max_results if needed.")
+    if not hits:
+        lines.append("(no matches)")
+        return "\n".join(lines)
+    for hit in hits:
+        hit_path = hit.get("path", "")
+        line = hit.get("line", "")
+        text = hit.get("text", "")
+        lines.append(f"{hit_path}:{line}: {text}")
+        context = str(hit.get("context") or "").strip()
+        if context and context != f"{line}: {text}":
+            lines.append(context)
+    return "\n".join(lines)
+
+
+def _parse_numbered_read_output(output: str) -> list[tuple[int, str]]:
+    rows: list[tuple[int, str]] = []
+    for raw_line in output.splitlines():
+        prefix, separator, text = raw_line.partition("\t")
+        if not separator:
+            continue
+        try:
+            line_no = int(prefix.strip())
+        except ValueError:
+            continue
+        rows.append((line_no, text))
+    return rows
+
+
+def _extract_markdown_section(
+    rows: list[tuple[int, str]],
+    *,
+    start_index: int,
+    max_lines: int,
+) -> list[tuple[int, str]]:
+    heading = rows[start_index][1]
+    marker = re.match(r"^\s{0,3}(#{1,6})\s+", heading)
+    level = len(marker.group(1)) if marker else 6
+    out: list[tuple[int, str]] = []
+    for index in range(start_index, min(len(rows), start_index + max_lines)):
+        line_no, text = rows[index]
+        if index > start_index:
+            next_marker = re.match(r"^\s{0,3}(#{1,6})\s+", text)
+            if next_marker and len(next_marker.group(1)) <= level:
+                break
+        out.append((line_no, text))
+    return out
+
+
+def _format_markdown_rows(rows: list[tuple[int, str]], *, max_chars: int = 16000) -> str:
+    text = "\n".join(f"{line_no}: {line}" for line_no, line in rows)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 80].rstrip() + "\n...[truncated by InspectMarkdown output budget]"
+
+
+def _strip_markdown_math_noise(text: str) -> str:
+    return re.sub(r"\s+", "", text.lower())
+
+
+def _markdown_statement_span(rows: list[tuple[int, str]]) -> tuple[int, int] | None:
+    start_index: int | None = None
+    start_level = 6
+    for index, (_line_no, text) in enumerate(rows):
+        if not _MARKDOWN_STATEMENT_HEADING_RE.search(text):
+            continue
+        marker = re.match(r"^\s{0,3}(#{1,6})\s+", text)
+        start_index = index
+        start_level = len(marker.group(1)) if marker else 6
+        break
+    if start_index is None:
+        return None
+    end_index = len(rows)
+    for index in range(start_index + 1, len(rows)):
+        marker = re.match(r"^\s{0,3}(#{1,6})\s+", rows[index][1])
+        if marker and len(marker.group(1)) <= start_level:
+            end_index = index
+            break
+    return start_index, end_index
+
+
+def _markdown_underclaimed_tail_highlights(
+    rows: list[tuple[int, str]],
+    *,
+    max_highlights: int = 10,
+) -> list[tuple[int, str]]:
+    has_proof = any(_MARKDOWN_PROOF_HEADING_RE.search(text) for _line_no, text in rows)
+    statement_span = _markdown_statement_span(rows)
+    if statement_span is None or not has_proof:
+        return []
+
+    start, end = statement_span
+    statement_text = "\n".join(text for _line_no, text in rows[start:end])
+    normalized_statement = _strip_markdown_math_noise(statement_text)
+
+    tail_window = rows[-min(45, len(rows)):]
+    conclusion_rows = [
+        (line_no, text)
+        for line_no, text in tail_window
+        if _MARKDOWN_IMPORTANT_LINE_RE.search(text)
+    ]
+    novel_rows = [
+        (line_no, text)
+        for line_no, text in conclusion_rows
+        if _strip_markdown_math_noise(text) not in normalized_statement
+    ]
+    if not novel_rows:
+        return []
+
+    last_line_no = rows[-1][0]
+    novel_rows = sorted(
+        novel_rows,
+        key=lambda item: _markdown_tail_priority(item[0], item[1], last_line_no=last_line_no),
+        reverse=True,
+    )[:max_highlights]
+    return sorted(novel_rows, key=lambda item: item[0])
+
+
+def _markdown_tail_priority(line_no: int, text: str, *, last_line_no: int) -> tuple[int, int]:
+    lower = text.lower()
+    score = 0
+    if any(token in lower for token in ("therefore", "hence", "consequently", "it follows", "we get", "we obtain", "since")):
+        score += 5
+    if any(token in lower for token in ("strict", "strictly", ">", "<", "\u2265", "\u2264", r"\ge", r"\le")):
+        score += 4
+    if any(token in lower for token in ("boxed", "conclusion", "proved", "shown", "answer")):
+        score += 3
+    if "=" in text:
+        score += 1
+    return score, line_no - last_line_no
+
+
+def _markdown_read_review_hint(path: str, result_output: str, result_message: str) -> str:
+    if not path.lower().endswith((".md", ".markdown")):
+        return ""
+    rows = _parse_numbered_read_output(result_output)
+    if not rows:
+        return ""
+
+    has_statement = any(_MARKDOWN_STATEMENT_HEADING_RE.search(text) for _line_no, text in rows)
+    has_proof = any(_MARKDOWN_PROOF_HEADING_RE.search(text) for _line_no, text in rows)
+    if "more lines remain" in result_message.lower() and (has_statement or has_proof):
+        return (
+            "<system>Markdown review hint: this file continues beyond the lines shown. "
+            "For research/proof review, inspect the proof ending as well as the statement; "
+            "important conclusions are often near the tail. Use a later line_offset, read_all=true, "
+            "or InspectMarkdown.</system>"
+        )
+
+    novel_rows = _markdown_underclaimed_tail_highlights(rows, max_highlights=10)
+    if not novel_rows:
+        return ""
+
+    lines = [
+        "<system>Markdown proof-review hint: compare the Statement section with the proof tail. "
+        "The tail contains conclusion-like or comparison-heavy lines that are not verbatim in the statement. "
+        "For research progress review, treat this as a possible underclaimed proof. "
+        "If a highlighted tail conclusion changes an answer, bound, stopping condition, or planning premise, "
+        "the next proposition should normally be an explicit statement of that already-established conclusion, "
+        "before proposing harder downstream mathematics, so future reviewers and orchestrators can see it from the statement. "
+        "When asked what proposition to do next, prefer this consolidation step unless another already-read Statement explicitly records the same conclusion.",
+        "tail highlights:",
+    ]
+    lines.extend(f"{line_no}: {text}" for line_no, text in novel_rows)
+    lines.append("</system>")
+    return "\n".join(lines)
+
+
+def _inspect_markdown_file(
+    workspace: WorkspaceLike,
+    path: str,
+    *,
+    statement_lines: int,
+    tail_lines: int,
+) -> str:
+    result = workspace.read_text_page(path, line_offset=1, read_all=True)
+    rows = _parse_numbered_read_output(result.output)
+    lines = [f"== {path} ==", result.message]
+    if not rows:
+        lines.append("(empty file)")
+        return "\n".join(lines)
+
+    headings = [(line_no, text) for line_no, text in rows if re.match(r"^\s{0,3}#{1,6}\s+", text)]
+    if headings:
+        lines.append("headings:")
+        for line_no, text in headings[:60]:
+            lines.append(f"- {line_no}: {text.strip()}")
+        if len(headings) > 60:
+            lines.append(f"... {len(headings) - 60} more headings omitted")
+
+    selected_sections: list[list[tuple[int, str]]] = []
+    seen_starts: set[int] = set()
+    for index, (_line_no, text) in enumerate(rows):
+        if _MARKDOWN_SECTION_HEADING_RE.search(text):
+            section = _extract_markdown_section(rows, start_index=index, max_lines=statement_lines)
+            if section and section[0][0] not in seen_starts:
+                selected_sections.append(section)
+                seen_starts.add(section[0][0])
+        if len(selected_sections) >= 8:
+            break
+    if selected_sections:
+        lines.append("selected theorem/progress sections:")
+        for section in selected_sections:
+            lines.append(_format_markdown_rows(section, max_chars=5000))
+
+    tail = rows[-tail_lines:]
+    important_tail = [(line_no, text) for line_no, text in tail if _MARKDOWN_IMPORTANT_LINE_RE.search(text)]
+    if important_tail:
+        lines.append("important-looking lines near file end:")
+        lines.append(_format_markdown_rows(important_tail, max_chars=4000))
+    lines.append(f"file tail (last {min(tail_lines, len(rows))} lines):")
+    lines.append(_format_markdown_rows(tail, max_chars=6000))
+    return "\n".join(lines)
+
+
+def _run_inspect_markdown(workspace: WorkspaceLike, args: dict[str, Any]) -> ToolResult:
+    path = str(args.get("path", "."))
+    max_files = int(args.get("max_files", 20))
+    tail_lines = int(args.get("tail_lines", 40))
+    statement_lines = int(args.get("statement_lines", 80))
+    try:
+        if path.lower().endswith(".md"):
+            files = [path]
+        else:
+            files = [
+                item for item in workspace.glob("**/*.md", path=path, max_results=max_files)
+                if not item.endswith("/")
+            ]
+        parts = [
+            "Markdown inspection",
+            f"path: {path}",
+            f"files inspected: {len(files)}",
+            f"file limit: {max_files}",
+            (
+                "purpose: surface statements, theorem-like/progress sections, and proof endings; "
+                "use Read for the full context before relying on a claim."
+            ),
+        ]
+        if len(files) >= max_files and not path.lower().endswith(".md"):
+            parts.append("note: file list hit max_files; inspect a narrower directory if important files may be omitted.")
+        if not files:
+            parts.append("(no markdown files found)")
+        candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=8)
+        if candidates:
+            parts.append(_format_underclaimed_proof_candidates(
+                candidates,
+                heading="progress audit: possible underclaimed proof statements",
+                include_rule=True,
+            ))
+        for file_path in files:
+            parts.append(_inspect_markdown_file(
+                workspace,
+                file_path,
+                statement_lines=statement_lines,
+                tail_lines=tail_lines,
+            ))
+        return ToolResult("\n\n".join(parts))
+    except Exception as exc:
+        return ToolResult(_tool_error(str(exc)), is_error=True)
+
+
+def _underclaimed_candidate_score(file_path: str, highlights: list[tuple[int, str]]) -> tuple[int, int]:
+    text = f"{file_path}\n" + "\n".join(line for _line_no, line in highlights)
+    lower = text.lower()
+    normalized_path = file_path.strip("/").replace("\\", "/")
+    path_parts = [part for part in normalized_path.split("/") if part]
+    score = 0
+    if len(path_parts) <= 2:
+        score += 6
+    elif len(path_parts) <= 3:
+        score += 2
+    if "/" not in normalized_path:
+        score += 4
+    for token in (
+        "answer",
+        "target",
+        "original problem",
+        "supremum",
+        "infimum",
+        "lower bound",
+        "upper bound",
+        "sharp constant",
+        "sharp bound",
+        "actual value",
+        "stopping",
+        "stop condition",
+    ):
+        if token in lower:
+            score += 4
+    if any(token in lower for token in (r"\ge", ">=", r"\le", "<=")) and any(
+        token in lower for token in ("strict", "strictly", ">", "<", r"\gt", r"\lt")
+    ):
+        score += 5
+    for token in ("strict", "strictly", ">", "<", r"\gt", r"\lt"):
+        if token in lower:
+            score += 3
+    for token in ("therefore", "hence", "consequently", "it follows", "we obtain", "we get"):
+        if token in lower:
+            score += 2
+    if "proposition" in lower or "statement" in lower:
+        score += 1
+    return score, -len(file_path)
+
+
+def _collect_underclaimed_proof_candidates(
+    workspace: WorkspaceLike,
+    files: list[str],
+    *,
+    max_candidates: int,
+) -> list[tuple[str, list[tuple[int, str]]]]:
+    candidates: list[tuple[str, list[tuple[int, str]]]] = []
+    for file_path in files:
+        try:
+            result = workspace.read_text_page(file_path, line_offset=1, read_all=True)
+        except Exception:
+            continue
+        rows = _parse_numbered_read_output(result.output)
+        highlights = _markdown_underclaimed_tail_highlights(rows, max_highlights=6)
+        if highlights:
+            candidates.append((file_path, highlights))
+    candidates.sort(
+        key=lambda item: _underclaimed_candidate_score(item[0], item[1]),
+        reverse=True,
+    )
+    return candidates[:max_candidates]
+
+
+def _format_underclaimed_proof_candidates(
+    candidates: list[tuple[str, list[tuple[int, str]]]],
+    *,
+    heading: str,
+    include_rule: bool,
+) -> str:
+    lines = [heading, f"count shown: {len(candidates)}"]
+    if include_rule:
+        lines.append(
+            "general next-action rule: if a highlighted proof tail already establishes a conclusion that matters for the original problem, "
+            "stopping criterion, bound, answer, or future planning, the next proposition should normally be an explicit statement of that "
+            "already-established conclusion before pursuing harder downstream mathematics. When choosing the next proposition, prefer this "
+            "consolidation step unless another already-read Statement explicitly records the same conclusion."
+        )
+    for file_path, highlights in candidates:
+        lines.append(f"- {file_path}")
+        lines.append("  why: proof tail has conclusion-like/comparison-heavy lines not verbatim in the Statement section.")
+        lines.append("  review action: Read this file, compare Statement vs proof ending, and, when it affects the answer/bounds/planning, make the stronger tail conclusion explicit as the next proposition statement.")
+        for line_no, text in highlights:
+            lines.append(f"  tail {line_no}: {text}")
+    return "\n".join(lines)
+
+
+def _markdown_index_progress_audit_hint(workspace: WorkspaceLike, path: str) -> str:
+    normalized_path = path.replace("\\", "/")
+    if not normalized_path.lower().endswith("/index.md") and normalized_path.lower() != "index.md":
+        return ""
+    parent = normalized_path.rsplit("/", 1)[0] if "/" in normalized_path else "."
+    try:
+        files = [
+            item for item in workspace.glob("**/*.md", path=parent, max_results=80)
+            if not item.endswith("/") and item != normalized_path
+        ]
+    except Exception:
+        return ""
+    candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=6)
+    if not candidates:
+        return ""
+    audit = _format_underclaimed_proof_candidates(
+        candidates,
+        heading="index-adjacent progress audit: possible underclaimed proof statements",
+        include_rule=True,
+    )
+    return (
+        "<system>"
+        "Because this is an index file, also inspect whether nearby verified/proof Markdown files contain stronger conclusions "
+        "than their Statement sections expose. Index summaries can lag behind proof tails.\n"
+        f"{audit}\n"
+        "</system>"
+    )
+
+
+def _research_progress_scan_paths(workspace: WorkspaceLike, root: str, paths: list[str]) -> list[str]:
+    if paths:
+        return paths
+    try:
+        entries = set(workspace.list_dir(root, max_results=500))
+    except Exception:
+        return [root]
+    preferred = [
+        f"{root.rstrip('/')}/{name}".lstrip("./")
+        for name in ("verified_propositions", "knowledge")
+        if f"{name}/" in entries
+    ]
+    return preferred or [root]
+
+
+def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]) -> ToolResult:
+    root = str(args.get("path", "."))
+    raw_paths = args.get("paths", [])
+    paths = [str(path) for path in raw_paths] if isinstance(raw_paths, list) else []
+    max_files = int(args.get("max_files", 120))
+    try:
+        scan_paths = _research_progress_scan_paths(workspace, root, paths)
+        files: list[str] = []
+        seen: set[str] = set()
+        per_path_limit = max(1, max_files)
+        for scan_path in scan_paths:
+            if scan_path.lower().endswith((".md", ".markdown")):
+                found = [scan_path]
+            else:
+                found = [
+                    item for item in workspace.glob("**/*.md", path=scan_path, max_results=per_path_limit)
+                    if not item.endswith("/")
+                ]
+            for file_path in found:
+                if file_path not in seen:
+                    files.append(file_path)
+                    seen.add(file_path)
+                if len(files) >= max_files:
+                    break
+            if len(files) >= max_files:
+                break
+
+        lines = [
+            "Research progress review",
+            f"root: {root}",
+            f"scan paths: {', '.join(scan_paths)}",
+            f"markdown files scanned: {len(files)}",
+            (
+                "purpose: find progress that is hard for reviewers/orchestrators to consume, especially "
+                "verified-style Markdown proofs whose tail establishes a stronger or more actionable conclusion "
+                "than the Statement section explicitly records."
+            ),
+        ]
+        if len(files) >= max_files:
+            lines.append("note: file list hit max_files; run again on a narrower path if important files may be omitted.")
+
+        candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=20)
+
+        if not candidates:
+            lines.extend([
+                "",
+                "possible underclaimed proof statements: none found by the structural scan",
+                (
+                    "next review move: inspect the proposition index and the most central proof files directly; "
+                    "this tool only detects statement-vs-proof-tail mismatches, not all mathematical gaps."
+                ),
+            ])
+            return ToolResult("\n".join(lines))
+
+        lines.extend([
+            "",
+            _format_underclaimed_proof_candidates(
+                candidates,
+                heading=f"possible underclaimed proof statements: {len(candidates)}",
+                include_rule=True,
+            ),
+        ])
+        return ToolResult("\n".join(lines))
+    except Exception as exc:
+        return ToolResult(_tool_error(str(exc)), is_error=True)
+
+
+def _format_list_dir_result(path: str, entries: list[str], *, max_results: int) -> str:
+    text = _format_list_result(
+        f"ListDir results for {path}",
+        entries,
+        max_results=max_results,
+    )
+    entry_set = set(entries)
+    if "problem.md" in entry_set and ("verified_propositions/" in entry_set or "knowledge/" in entry_set):
+        text += (
+            "\n\n<system>research workspace hint: this directory has problem.md plus research/proof folders. "
+            "For progress review, consider ResearchProgressReview before deciding what is already known or what to do next; "
+            "it looks for verified-style proof files whose conclusions are buried in proof tails rather than explicit statements. "
+            "If such a buried conclusion affects the answer, bounds, stopping criterion, or planning, surface it as an explicit proposition before harder new work.</system>"
+        )
+    return text
+
+
 def build_default_tool_registry(
     workspace: WorkspaceLike,
     *,
     bash_timeout_seconds: int = 120,
 ) -> ToolRegistry:
-    """构造第二层默认 ToolRegistry，注册 12 个通用 coding agent 基础工具。
+    """构造第二层默认 ToolRegistry，注册通用 coding agent 基础工具。
 
     第三层用法：传入 RoleWorkspaceAccess 实例（满足 WorkspaceLike），即可自动
-    获得带角色权限检查的 12 工具。Bash 在第二层不做命令白名单——具体安全策略
+    获得带角色权限检查的基础工具。Bash 在第二层不做命令白名单——具体安全策略
     由调用方通过 YAML 工具白名单或自定义 handler 控制。
     """
     import datetime
@@ -264,8 +788,18 @@ def build_default_tool_registry(
                 read_all=bool(args.get("read_all", False)),
             )
         except Exception as exc:
-            return ToolResult(f"<system>ERROR: {exc}</system>", is_error=True)
-        return ToolResult(result.to_tool_content())
+            return ToolResult(f"<system>ERROR reading {args['path']}: {exc}</system>", is_error=True)
+        system = f"path: {args['path']}\n{result.message}"
+        hint = _markdown_read_review_hint(str(args["path"]), result.output, result.message)
+        index_audit_hint = _markdown_index_progress_audit_hint(workspace, str(args["path"]))
+        if not result.output:
+            return ToolResult(f"<system>{system}</system>")
+        parts = [f"<system>{system}</system>", result.output]
+        if hint:
+            parts.append(hint)
+        if index_audit_hint:
+            parts.append(index_audit_hint)
+        return ToolResult("\n".join(parts))
 
     registry.register(
         name="Read",
@@ -451,7 +985,11 @@ def build_default_tool_registry(
     # Glob
     registry.register(
         name="Glob",
-        description="Fast file pattern matching tool. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.",
+        description=(
+            "Fast file pattern matching tool. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.\n\n"
+            "Usage:\n"
+            "- Returns plain text with one path per line."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -461,12 +999,11 @@ def build_default_tool_registry(
             },
             "required": ["pattern"],
         },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                workspace.glob(args["pattern"], path=args.get("path", "."), max_results=int(args.get("max_results", 100))),
-                ensure_ascii=False,
-            )
-        ),
+        handler=lambda args: ToolResult(_format_list_result(
+            "Glob results",
+            workspace.glob(args["pattern"], path=args.get("path", "."), max_results=int(args.get("max_results", 100))),
+            max_results=int(args.get("max_results", 100)),
+        )),
     )
 
     # ListDir
@@ -475,6 +1012,7 @@ def build_default_tool_registry(
         description=(
             "Lists files and directories under a workspace directory.\n\n"
             "Usage:\n"
+            "- Returns plain text with one entry per line; directories end with `/`.\n"
             "- If the directory contains `index.md`, read `index.md` first before exploring other files."
         ),
         parameters={
@@ -485,12 +1023,63 @@ def build_default_tool_registry(
             },
             "required": [],
         },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                workspace.list_dir(args.get("path", "."), max_results=int(args.get("max_results", 200))),
-                ensure_ascii=False,
-            )
+        handler=lambda args: ToolResult(_format_list_dir_result(
+            args.get("path", "."),
+            workspace.list_dir(args.get("path", "."), max_results=int(args.get("max_results", 200))),
+            max_results=int(args.get("max_results", 200)),
+        )),
+    )
+
+    # ResearchProgressReview
+    registry.register(
+        name="ResearchProgressReview",
+        description=(
+            "Audit a Markdown research/proof workspace before deciding current progress or next propositions.\n\n"
+            "Usage:\n"
+            "- Use this early when a workspace has problem.md, knowledge notes, and verified propositions.\n"
+            "- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n"
+            "- If it reports an underclaimed proof that affects an answer, bound, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder mathematics.\n"
+            "- This is a progress-navigation tool, not a verifier; it does not prove new claims."
         ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Workspace root or directory to audit.", "default": "."},
+                "paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional specific files/directories to scan instead of auto-detecting research folders.",
+                    "default": [],
+                },
+                "max_files": {"type": "integer", "description": "Maximum Markdown files to scan.", "default": 120, "minimum": 1, "maximum": 500},
+            },
+            "required": [],
+        },
+        handler=lambda args: _run_research_progress_review(workspace, args),
+    )
+
+    # InspectMarkdown
+    registry.register(
+        name="InspectMarkdown",
+        description=(
+            "Survey Markdown files and surface the parts most likely to summarize research progress.\n\n"
+            "Usage:\n"
+            "- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n"
+            "- It lists headings, extracts theorem-like/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n"
+            "- Its progress audit highlights underclaimed proof tails; if one affects an answer, bound, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n"
+            "- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "Markdown file or directory to inspect.", "default": "."},
+                "max_files": {"type": "integer", "description": "Maximum Markdown files to inspect when path is a directory.", "default": 20, "minimum": 1, "maximum": 100},
+                "tail_lines": {"type": "integer", "description": "How many ending lines to show for each file.", "default": 40, "minimum": 1, "maximum": 200},
+                "statement_lines": {"type": "integer", "description": "Maximum lines to show from each selected theorem/progress section.", "default": 80, "minimum": 1, "maximum": 300},
+            },
+            "required": [],
+        },
+        handler=lambda args: _run_inspect_markdown(workspace, args),
     )
 
     # Grep
@@ -500,6 +1089,7 @@ def build_default_tool_registry(
             "Searches readable text files under a specific file or directory.\n\n"
             "Usage:\n"
             "- Prefer Grep for exact symbol/string searches.\n"
+            "- Returns plain text in `path:line: text` format, optionally with context.\n"
             "- `regex` defaults to true; set `regex=false` to force plain substring matching."
         ),
         parameters={
@@ -513,18 +1103,18 @@ def build_default_tool_registry(
             },
             "required": ["pattern"],
         },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                workspace.grep(
-                    args["pattern"],
-                    path=args.get("path", "."),
-                    regex=bool(args.get("regex", True)),
-                    max_results=int(args.get("max_results", 50)),
-                    context_lines=int(args.get("context_lines", 0)),
-                ),
-                ensure_ascii=False,
-            )
-        ),
+        handler=lambda args: ToolResult(_format_grep_result(
+            workspace.grep(
+                args["pattern"],
+                path=args.get("path", "."),
+                regex=bool(args.get("regex", True)),
+                max_results=int(args.get("max_results", 50)),
+                context_lines=int(args.get("context_lines", 0)),
+            ),
+            pattern=args["pattern"],
+            path=args.get("path", "."),
+            max_results=int(args.get("max_results", 50)),
+        )),
     )
 
     # GetCurrentTime
