@@ -12,6 +12,8 @@ class ToolCall:
     id: str
     name: str
     args: dict[str, Any]
+    raw_args: str | None = None      # original JSON string when parsing failed
+    parse_error: str | None = None   # smart error message when parsing failed
 
 
 @dataclass(frozen=True)

@@ -326,9 +326,17 @@ def _openai_response_to_completion(raw_message: dict[str, Any]) -> CompletionRes
         try:
             args = json.loads(args_str) if isinstance(args_str, str) else dict(args_str)
         except json.JSONDecodeError as exc:
-            raise ChatCompletionError(
-                f"tool call {tc_raw.get('id', '?')} returned invalid JSON args: {exc}; raw: {args_str!r}"
-            ) from exc
+            # Instead of crashing the agent, create a ToolCall with error info
+            # so the agent loop can return a helpful message to the LLM.
+            smart_error = _smart_json_error(args_str, exc)
+            tool_calls.append(ToolCall(
+                id=str(tc_raw.get("id") or ""),
+                name=str(fn.get("name") or ""),
+                args={},
+                raw_args=args_str,
+                parse_error=smart_error,
+            ))
+            continue
         tool_calls.append(ToolCall(id=str(tc_raw.get("id") or ""), name=str(fn.get("name") or ""), args=args))
 
     msg = Message(
@@ -356,3 +364,88 @@ def _format_exception_detail(exc: BaseException) -> str:
         if cause_detail and cause_detail not in detail:
             detail = f"{detail} | caused by {cause_detail}" if detail else cause_detail
     return detail
+
+
+def _find_json_key(s: str, pos: int) -> str | None:
+    """Try to identify which JSON key an error position falls under.
+
+    Walks backwards from *pos* looking for the most recent "key": pattern
+    at the same nesting depth.  Returns None if it can't determine the key.
+    """
+    depth = 0
+    for i in range(pos - 1, -1, -1):
+        ch = s[i]
+        if ch == '}':
+            depth += 1
+        elif ch == '{':
+            if depth > 0:
+                depth -= 1
+            else:
+                break
+        elif ch == ':' and depth == 0:
+            # Found a top-level colon — extract the quoted key before it
+            j = i - 1
+            while j > 0 and s[j] in (' ', '\t', '\n'):
+                j -= 1
+            if j > 0 and s[j] == '"':
+                quote_end = j
+                j -= 1
+                while j >= 0 and s[j] != '"':
+                    j -= 1
+                if j >= 0 and s[j] == '"':
+                    return s[j + 1:quote_end]
+    return None
+
+
+def _smart_json_error(args_str: str, exc: json.JSONDecodeError) -> str:
+    """Build a human-friendly JSON parse error message with surrounding context.
+
+    Instead of just reporting "Unterminated string at char 60", shows the
+    context around the error position and explains what went wrong so the
+    LLM can understand and correct the mistake.
+    """
+    pos = exc.pos
+    msg = exc.msg
+    total = len(args_str)
+
+    # Show ~50 chars of context on each side of the error position
+    ctx_radius = 50
+    ctx_start = max(0, pos - ctx_radius)
+    ctx_end = min(total, pos + ctx_radius)
+    before = args_str[ctx_start:pos]
+    at_char = args_str[pos] if pos < total else ""
+    after = args_str[pos:ctx_end]
+    context_snippet = f"{before}>>>{at_char}<<<{after}"
+
+    # Try to identify which key the error falls under
+    key_name = _find_json_key(args_str, pos)
+
+    # Build the message
+    lines = [f"JSON arguments parse error: {msg}"]
+    if key_name:
+        lines.append(f"The error appears to be in the value for key \"{key_name}\".")
+    lines.append(f"Position {pos} of {total} total characters.")
+
+    # Detect truncation (error at/near end, or object never closed)
+    if pos >= total - 1 or (total > 0 and args_str.rstrip()[-1] != '}'):
+        lines.append("The arguments string ended unexpectedly (likely truncated mid-value).")
+
+    lines.append(f"Context around the error:\n  {context_snippet}")
+
+    # Targeted advice by error type
+    lower_msg = msg.lower()
+    if "unterminated string" in lower_msg:
+        lines.append(
+            "A string value was not closed with a quote mark. "
+            "Regenerate the complete tool call with all string values properly "
+            "quoted and the JSON object closed with }."
+        )
+    elif "expecting" in lower_msg or "unexpected" in lower_msg:
+        lines.append(
+            "The JSON structure has a syntax error at the marked position. "
+            "Regenerate the tool call with valid JSON arguments."
+        )
+    else:
+        lines.append("Regenerate the tool call with valid JSON arguments.")
+
+    return "\n".join(lines)

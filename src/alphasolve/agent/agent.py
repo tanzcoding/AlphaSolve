@@ -221,6 +221,51 @@ class Agent:
                     )
                 name = tool_call.name
                 parsed_args = tool_call.args
+
+                # Handle JSON parse failures — return error to LLM instead of crashing
+                if tool_call.parse_error is not None:
+                    trace.append(
+                        {
+                            "type": "tool_call",
+                            "turn": turn,
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "arguments": parsed_args,
+                            "parse_error": tool_call.parse_error,
+                            "raw_args": tool_call.raw_args,
+                        }
+                    )
+                    self._emit(trace[-1])
+                    raw_preview = tool_call.raw_args[:500] if tool_call.raw_args else ""
+                    result_content = (
+                        f"Error: the arguments for tool '{name}' could not be parsed "
+                        f"as valid JSON.\n\n"
+                        f"{tool_call.parse_error}\n\n"
+                        f"Raw arguments (first 500 chars):\n{raw_preview}\n\n"
+                        "Please retry the tool call with properly formatted JSON arguments."
+                    )
+                    trace.append(
+                        {
+                            "type": "tool_result",
+                            "turn": turn,
+                            "tool_call_id": tool_call.id,
+                            "name": name,
+                            "content": result_content,
+                            "is_error": True,
+                            "stop_agent": False,
+                        }
+                    )
+                    self._emit(trace[-1])
+                    messages.append(
+                        Message(
+                            role="tool",
+                            content=result_content,
+                            tool_call_id=tool_call.id,
+                            name=name,
+                        )
+                    )
+                    continue
+
                 trace.append(
                     {
                         "type": "tool_call",

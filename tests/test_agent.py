@@ -524,3 +524,59 @@ def _run_as_script():
 
 if __name__ == "__main__":
     _run_as_script()
+
+
+def test_agent_handles_tool_call_parse_error_gracefully():
+    """When a ToolCall has parse_error set, the agent loop should return an
+    error message to the LLM instead of crashing."""
+    with local_test_dir("parse_error") as tmp_path:
+        workspace = Workspace(tmp_path)
+
+        class FakeClientWithParseError:
+            def __init__(self):
+                self.calls = 0
+
+            def complete(self, *, messages, tools):
+                self.calls += 1
+                if self.calls == 1:
+                    # First turn: return a tool call with parse_error
+                    return _resp(
+                        tool_calls=(
+                            ToolCall(
+                                id="call_bad_json",
+                                name="Read",
+                                args={},
+                                raw_args='{"description": "Verify divergence", "prompt": "I need you to verify the compu',
+                                parse_error=(
+                                    "JSON arguments parse error: Unterminated string starting at position 60\n"
+                                    "The error appears to be in the value for key \"prompt\".\n"
+                                    "A string value was not closed with a quote mark."
+                                ),
+                            ),
+                        ),
+                    )
+                # Second turn: LLM retries with valid response
+                return _resp("retry succeeded")
+
+        registry = build_default_tool_registry(workspace)
+
+        config = AgentConfig(
+            name="test_agent",
+            system_prompt="You are a test agent.",
+            tools=("Read",),
+            max_turns=5,
+        )
+
+        agent = Agent(config=config, client=FakeClientWithParseError(), tool_registry=registry)
+        result = agent.run("test task")
+
+        # Agent should not crash — it should complete normally
+        assert result.final_answer == "retry succeeded"
+        # The trace should record the parse_error tool call and its error result
+        tc_events = [e for e in result.trace if e.get("type") == "tool_call"]
+        assert len(tc_events) == 1
+        assert tc_events[0]["parse_error"] is not None
+        tr_events = [e for e in result.trace if e.get("type") == "tool_result"]
+        assert len(tr_events) == 1
+        assert tr_events[0]["is_error"] is True
+        assert "could not be parsed" in tr_events[0]["content"]

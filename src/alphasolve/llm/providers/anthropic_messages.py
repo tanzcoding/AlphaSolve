@@ -155,8 +155,19 @@ class AnthropicMessagesClient:
             block = tool_blocks[idx]
             try:
                 args = _parse_json_strict(block["input_str"] or "{}", context=f"tool_call {block['id']}")
-            except ChatCompletionError:
-                raise
+            except ChatCompletionError as exc:
+                # Instead of crashing, create ToolCall with error info so the
+                # agent loop can return a helpful message to the LLM.
+                raw = block["input_str"] or "{}"
+                smart_error = _smart_json_error_anthropic(raw, exc)
+                tool_calls.append(ToolCall(
+                    id=block["id"],
+                    name=block["name"],
+                    args={},
+                    raw_args=raw,
+                    parse_error=smart_error,
+                ))
+                continue
             tool_calls.append(ToolCall(id=block["id"], name=block["name"], args=args))
 
         reasoning_content = "".join(thinking_parts) if thinking_parts else ""
@@ -286,3 +297,83 @@ def _parse_json_strict(s: str, *, context: str) -> dict[str, Any]:
         return _json.loads(s)
     except _json.JSONDecodeError as exc:
         raise ChatCompletionError(f"{context}: invalid JSON input from stream: {exc}; raw: {s!r}") from exc
+
+
+def _smart_json_error_anthropic(raw: str, exc: ChatCompletionError) -> str:
+    """Build a human-friendly JSON parse error message from a ChatCompletionError.
+
+    The Anthropic provider wraps json.JSONDecodeError inside ChatCompletionError.
+    We unwrap the original JSONDecodeError to get position info, then use the
+    same smart-error logic as the OpenAI provider.
+    """
+    import json as _json
+
+    original = exc.__cause__
+    if isinstance(original, _json.JSONDecodeError):
+        pos = original.pos
+        msg = original.msg
+        total = len(raw)
+
+        ctx_radius = 50
+        ctx_start = max(0, pos - ctx_radius)
+        ctx_end = min(total, pos + ctx_radius)
+        before = raw[ctx_start:pos]
+        at_char = raw[pos] if pos < total else ""
+        after = raw[pos:ctx_end]
+        context_snippet = f"{before}>>>{at_char}<<<{after}"
+
+        key_name = _find_json_key(raw, pos)
+
+        lines = [f"JSON arguments parse error: {msg}"]
+        if key_name:
+            lines.append(f"The error appears to be in the value for key \"{key_name}\".")
+        lines.append(f"Position {pos} of {total} total characters.")
+        if pos >= total - 1 or (total > 0 and raw.rstrip()[-1] != '}'):
+            lines.append("The arguments string ended unexpectedly (likely truncated mid-value).")
+        lines.append(f"Context around the error:\n  {context_snippet}")
+
+        lower_msg = msg.lower()
+        if "unterminated string" in lower_msg:
+            lines.append(
+                "A string value was not closed with a quote mark. "
+                "Regenerate the complete tool call with all string values properly "
+                "quoted and the JSON object closed with }."
+            )
+        elif "expecting" in lower_msg or "unexpected" in lower_msg:
+            lines.append(
+                "The JSON structure has a syntax error at the marked position. "
+                "Regenerate the tool call with valid JSON arguments."
+            )
+        else:
+            lines.append("Regenerate the tool call with valid JSON arguments.")
+
+        return "\n".join(lines)
+
+    # Fallback: no JSONDecodeError wrapped — just show the ChatCompletionError message
+    return str(exc)
+
+
+def _find_json_key(s: str, pos: int) -> str | None:
+    """Try to identify which JSON key an error position falls under."""
+    depth = 0
+    for i in range(pos - 1, -1, -1):
+        ch = s[i]
+        if ch == '}':
+            depth += 1
+        elif ch == '{':
+            if depth > 0:
+                depth -= 1
+            else:
+                break
+        elif ch == ':' and depth == 0:
+            j = i - 1
+            while j > 0 and s[j] in (' ', '\t', '\n'):
+                j -= 1
+            if j > 0 and s[j] == '"':
+                quote_end = j
+                j -= 1
+                while j >= 0 and s[j] != '"':
+                    j -= 1
+                if j >= 0 and s[j] == '"':
+                    return s[j + 1:quote_end]
+    return None

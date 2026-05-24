@@ -108,7 +108,7 @@ def test_complete_tool_call_response(monkeypatch):
         assert tc.args["new_str"] == "\\frac{2}{3}"
 
 
-def test_complete_invalid_tool_args_raises(monkeypatch):
+def test_complete_invalid_tool_args_returns_parse_error(monkeypatch):
     monkeypatch.setenv("TEST_KEY", "sk-test")
     with patch("alphasolve.llm.providers.openai_chat.OpenAI") as MockOpenAI:
         mock_client = MagicMock()
@@ -123,11 +123,14 @@ def test_complete_invalid_tool_args_raises(monkeypatch):
             finish_reason="tool_calls",
         )
 
-        from alphasolve.llm.types import ChatCompletionError
         client = OpenAIChatClient(_preset())
-        with pytest.raises(ChatCompletionError) as exc:
-            client.complete(messages=[Message(role="user", content="x")], tools=[])
-        assert "call_bad" in str(exc.value)
+        result = client.complete(messages=[Message(role="user", content="x")], tools=[])
+        tc = result.message.tool_calls[0]
+        assert tc.id == "call_bad"
+        assert tc.name == "Edit"
+        assert tc.args == {}
+        assert tc.parse_error is not None
+        assert "unterminated string" in tc.parse_error.lower() or "JSON" in tc.parse_error
 
 
 def test_messages_serialize_tool_calls_to_openai_dict(monkeypatch):
