@@ -63,6 +63,22 @@ _MARKDOWN_STATEMENT_HEADING_RE = re.compile(
     r"^\s{0,3}#{1,6}\s+.*(statement|proposition|theorem|claim|lemma|corollary).*$",
     re.IGNORECASE,
 )
+_MARKDOWN_REVIEW_HEADING_RE = re.compile(
+    r"^\s{0,3}#{1,6}\s+.*("
+    r"current|progress|insight|status|summary|overview|todo|next|recommend|"
+    r"remaining|open|gap|block|blocked|warning|fail|failed|review|decision|"
+    r"risk|issue|missing|known|unknown"
+    r").*$",
+    re.IGNORECASE,
+)
+_MARKDOWN_REVIEW_LINE_RE = re.compile(
+    r"("
+    r"current|progress|insight|status|todo|next|recommend|remaining|open|"
+    r"gap|block|blocked|warning|fail|failed|review|decision|risk|issue|"
+    r"missing|known|unknown|should|must|cannot|not yet|not proved"
+    r")",
+    re.IGNORECASE,
+)
 
 
 class ToolRegistry:
@@ -442,9 +458,9 @@ def _markdown_read_review_hint(path: str, result_output: str, result_message: st
         "<system>Markdown proof-review hint: compare the Statement section with the proof tail. "
         "The tail contains conclusion-like or comparison-heavy lines that are not verbatim in the statement. "
         "For research progress review, treat this as a possible underclaimed proof. "
-        "If a highlighted tail conclusion changes an answer, bound, stopping condition, or planning premise, "
+        "If a highlighted tail conclusion changes an answer, stopping condition, or planning premise, "
         "the next proposition should normally be an explicit statement of that already-established conclusion, "
-        "before proposing harder downstream mathematics, so future reviewers and orchestrators can see it from the statement. "
+        "before proposing harder downstream work, so future reviewers and orchestrators can see it from the statement. "
         "When asked what proposition to do next, prefer this consolidation step unless another already-read Statement explicitly records the same conclusion.",
         "tail highlights:",
     ]
@@ -562,13 +578,10 @@ def _underclaimed_candidate_score(file_path: str, highlights: list[tuple[int, st
         "answer",
         "target",
         "original problem",
-        "supremum",
-        "infimum",
-        "lower bound",
-        "upper bound",
-        "sharp constant",
-        "sharp bound",
-        "actual value",
+        "result",
+        "goal",
+        "objective",
+        "value",
         "stopping",
         "stop condition",
     ):
@@ -622,16 +635,219 @@ def _format_underclaimed_proof_candidates(
     if include_rule:
         lines.append(
             "general next-action rule: if a highlighted proof tail already establishes a conclusion that matters for the original problem, "
-            "stopping criterion, bound, answer, or future planning, the next proposition should normally be an explicit statement of that "
-            "already-established conclusion before pursuing harder downstream mathematics. When choosing the next proposition, prefer this "
+            "stopping criterion, answer, or future planning, the next proposition should normally be an explicit statement of that "
+            "already-established conclusion before pursuing harder downstream work. When choosing the next proposition, prefer this "
             "consolidation step unless another already-read Statement explicitly records the same conclusion."
         )
+        lines.append("why shown: each listed file has conclusion-like or comparison-heavy proof-tail lines not verbatim in the Statement section.")
     for file_path, highlights in candidates:
         lines.append(f"- {file_path}")
-        lines.append("  why: proof tail has conclusion-like/comparison-heavy lines not verbatim in the Statement section.")
-        lines.append("  review action: Read this file, compare Statement vs proof ending, and, when it affects the answer/bounds/planning, make the stronger tail conclusion explicit as the next proposition statement.")
         for line_no, text in highlights:
             lines.append(f"  tail {line_no}: {text}")
+    return "\n".join(lines)
+
+
+def _contains_word(text: str, tokens: tuple[str, ...], *, hyphen_is_boundary: bool = True) -> bool:
+    word_chars = "A-Za-z0-9_" if hyphen_is_boundary else "A-Za-z0-9_-"
+    for token in tokens:
+        pattern = rf"(?<![{word_chars}])" + re.escape(token) + rf"(?![{word_chars}])"
+        if re.search(pattern, text, re.IGNORECASE):
+            return True
+    return False
+
+
+def _underclaimed_default_candidate_score(file_path: str, highlights: list[tuple[int, str]]) -> int:
+    normalized_path = file_path.strip("/").replace("\\", "/")
+    path_parts = [part for part in normalized_path.split("/") if part]
+    highlights_text = "\n".join(line for _line_no, line in highlights)
+    lower_path = file_path.lower()
+    lower_highlights = highlights_text.lower()
+    lower = f"{lower_path}\n{lower_highlights}"
+    score = 0
+    if len(path_parts) <= 2:
+        score += 4
+    elif len(path_parts) >= 4:
+        score -= 4
+    path_impact_tokens = (
+        "answer",
+        "target",
+        "original problem",
+        "stopping",
+        "stop condition",
+        "value",
+        "result",
+        "goal",
+        "objective",
+    )
+    highlight_impact_tokens = path_impact_tokens
+    if _contains_word(lower_path, path_impact_tokens) or _contains_word(
+        lower_highlights,
+        highlight_impact_tokens,
+        hyphen_is_boundary=False,
+    ):
+        score += 8
+    has_non_strict_comparison = any(token in lower for token in (r"\ge", ">=", r"\le", "<=", "\u2265", "\u2264"))
+    has_strict_comparison = any(token in lower for token in ("strict", "strictly", ">", "<", r"\gt", r"\lt"))
+    if has_non_strict_comparison and has_strict_comparison:
+        score += 8
+    elif has_strict_comparison:
+        score += 3
+    if "boxed" in lower or "conclusion" in lower:
+        score += 2
+    if any(token in normalized_path.lower() for token in ("technical", "auxiliary", "helper", "local")):
+        score -= 3
+    return score
+
+
+def _select_underclaimed_default_candidate(
+    candidates: list[tuple[str, list[tuple[int, str]]]],
+) -> tuple[str, list[tuple[int, str]]] | None:
+    if not candidates:
+        return None
+    verified_candidates = [
+        item for item in candidates
+        if item[0].replace("\\", "/").startswith("verified_propositions/")
+    ]
+    search_pool = verified_candidates or candidates
+    selected = max(search_pool, key=lambda item: _underclaimed_default_candidate_score(item[0], item[1]))
+    if _underclaimed_default_candidate_score(selected[0], selected[1]) < 15:
+        return None
+    return selected
+
+
+def _safe_read_markdown_rows(workspace: WorkspaceLike, path: str) -> list[tuple[int, str]]:
+    try:
+        result = workspace.read_text_page(path, line_offset=1, read_all=True)
+    except Exception:
+        return []
+    return _parse_numbered_read_output(result.output)
+
+
+def _extract_review_sections(
+    rows: list[tuple[int, str]],
+    *,
+    max_sections: int,
+    max_lines_per_section: int,
+) -> list[list[tuple[int, str]]]:
+    sections: list[list[tuple[int, str]]] = []
+    seen: set[int] = set()
+    for index, (_line_no, text) in enumerate(rows):
+        if not _MARKDOWN_REVIEW_HEADING_RE.search(text):
+            continue
+        section = _extract_markdown_section(rows, start_index=index, max_lines=max_lines_per_section)
+        if not section or section[0][0] in seen:
+            continue
+        sections.append(section)
+        seen.add(section[0][0])
+        if len(sections) >= max_sections:
+            break
+    return sections
+
+
+def _extract_review_lines(rows: list[tuple[int, str]], *, max_lines: int) -> list[tuple[int, str]]:
+    selected: list[tuple[int, str]] = []
+    for line_no, text in rows:
+        stripped = text.strip()
+        if not stripped:
+            continue
+        if _MARKDOWN_REVIEW_LINE_RE.search(stripped):
+            selected.append((line_no, stripped))
+        if len(selected) >= max_lines:
+            break
+    return selected
+
+
+def _workspace_note_files(workspace: WorkspaceLike, root: str) -> list[str]:
+    prefix = "" if root in {"", "."} else root.rstrip("/") + "/"
+    candidates = [
+        "problem.md",
+        "hint.md",
+        "README.md",
+        "readme.md",
+        "verified_propositions/index.md",
+        "knowledge/index.md",
+    ]
+    files: list[str] = []
+    seen: set[str] = set()
+    for rel_path in candidates:
+        path = prefix + rel_path
+        if path in seen:
+            continue
+        if _safe_read_markdown_rows(workspace, path):
+            files.append(path)
+            seen.add(path)
+    return files
+
+
+def _format_workspace_notes(workspace: WorkspaceLike, root: str) -> str:
+    files = _workspace_note_files(workspace, root)
+    if not files:
+        return ""
+    lines = [
+        "workspace notes",
+        (
+            "purpose: show compact source excerpts about current state, warnings, gaps, and next actions. "
+            "These are navigation evidence, not a substitute for reading the cited files."
+        ),
+    ]
+    for file_path in files:
+        rows = _safe_read_markdown_rows(workspace, file_path)
+        if not rows:
+            continue
+        sections = _extract_review_sections(rows, max_sections=3, max_lines_per_section=24)
+        review_lines = _extract_review_lines(rows, max_lines=10)
+        if not sections and not review_lines:
+            review_lines = rows[: min(12, len(rows))]
+        lines.append(f"- {file_path}")
+        if sections:
+            for section in sections:
+                lines.append(_format_markdown_rows(section, max_chars=2400))
+        elif review_lines:
+            lines.append(_format_markdown_rows(review_lines, max_chars=1600))
+    return "\n".join(lines)
+
+
+def _unfinished_attempt_files(workspace: WorkspaceLike, root: str, *, max_files: int) -> list[str]:
+    prefix = "" if root in {"", "."} else root.rstrip("/") + "/"
+    base = prefix + "unverified_propositions"
+    try:
+        files = [
+            item for item in workspace.glob("**/*.md", path=base, max_results=max_files * 4)
+            if not item.endswith("/") and item.replace("\\", "/").endswith(("/review.md", "/worker_hint.md"))
+        ]
+    except Exception:
+        return []
+    return files[:max_files]
+
+
+def _format_unfinished_attempt_notes(workspace: WorkspaceLike, root: str, *, max_files: int = 16) -> str:
+    files = _unfinished_attempt_files(workspace, root, max_files=max_files)
+    if not files:
+        return ""
+    lines = [
+        "unfinished attempt notes",
+        (
+            "purpose: surface review and hint excerpts from unfinished work so the next step does not repeat known failures. "
+            "If broad unfinished attempts cite missing prerequisites, prefer a smaller explicit prerequisite or interface step."
+        ),
+    ]
+    for file_path in files:
+        rows = _safe_read_markdown_rows(workspace, file_path)
+        if not rows:
+            continue
+        sections = _extract_review_sections(rows, max_sections=2, max_lines_per_section=18)
+        review_lines = _extract_review_lines(rows, max_lines=8)
+        tail = rows[-min(14, len(rows)):]
+        lines.append(f"- {file_path}")
+        if sections:
+            for section in sections:
+                lines.append(_format_markdown_rows(section, max_chars=1800))
+        elif review_lines:
+            lines.append(_format_markdown_rows(review_lines, max_chars=1400))
+        else:
+            lines.append(_format_markdown_rows(tail, max_chars=1200))
+    if len(files) >= max_files:
+        lines.append("note: unfinished attempt list hit max_files; inspect a narrower path if later attempts may matter.")
     return "\n".join(lines)
 
 
@@ -720,6 +936,14 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
         if len(files) >= max_files:
             lines.append("note: file list hit max_files; run again on a narrower path if important files may be omitted.")
 
+        workspace_notes = _format_workspace_notes(workspace, root)
+        if workspace_notes:
+            lines.extend(["", workspace_notes])
+
+        unfinished_notes = _format_unfinished_attempt_notes(workspace, root)
+        if unfinished_notes:
+            lines.extend(["", unfinished_notes])
+
         candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=20)
 
         if not candidates:
@@ -741,6 +965,17 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
                 include_rule=True,
             ),
         ])
+        default_candidate = _select_underclaimed_default_candidate(candidates)
+        if default_candidate is not None:
+            default_path, _default_highlights = default_candidate
+            lines.extend([
+                "",
+                "suggested next proposition: make the selected underclaimed proof-tail conclusion explicit in its Statement",
+                (
+                    f"selected target: {default_path}. Read it, compare the Statement with the highlighted proof ending, "
+                    "and only use this suggestion if the tail changes the answer, stopping condition, or planning premise."
+                ),
+            ])
         return ToolResult("\n".join(lines))
     except Exception as exc:
         return ToolResult(_tool_error(str(exc)), is_error=True)
@@ -758,7 +993,7 @@ def _format_list_dir_result(path: str, entries: list[str], *, max_results: int) 
             "\n\n<system>research workspace hint: this directory has problem.md plus research/proof folders. "
             "For progress review, consider ResearchProgressReview before deciding what is already known or what to do next; "
             "it looks for verified-style proof files whose conclusions are buried in proof tails rather than explicit statements. "
-            "If such a buried conclusion affects the answer, bounds, stopping criterion, or planning, surface it as an explicit proposition before harder new work.</system>"
+            "If such a buried conclusion affects the answer, stopping criterion, or planning, surface it as an explicit proposition before harder new work.</system>"
         )
     return text
 
@@ -1038,7 +1273,7 @@ def build_default_tool_registry(
             "Usage:\n"
             "- Use this early when a workspace has problem.md, knowledge notes, and verified propositions.\n"
             "- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n"
-            "- If it reports an underclaimed proof that affects an answer, bound, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder mathematics.\n"
+            "- If it reports an underclaimed proof that affects an answer, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder work.\n"
             "- This is a progress-navigation tool, not a verifier; it does not prove new claims."
         ),
         parameters={
@@ -1065,8 +1300,8 @@ def build_default_tool_registry(
             "Survey Markdown files and surface the parts most likely to summarize research progress.\n\n"
             "Usage:\n"
             "- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n"
-            "- It lists headings, extracts theorem-like/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n"
-            "- Its progress audit highlights underclaimed proof tails; if one affects an answer, bound, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n"
+            "- It lists headings, extracts statement/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n"
+            "- Its progress audit highlights underclaimed proof tails; if one affects an answer, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n"
             "- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim."
         ),
         parameters={

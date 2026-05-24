@@ -10,6 +10,7 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agent import Workspace  # noqa: E402
+from alphasolve.agent import workspace as workspace_module  # noqa: E402
 from alphasolve.agent.workspace import WorkspaceError  # noqa: E402
 
 
@@ -120,3 +121,42 @@ def test_grep_substring(ws: Workspace):
     result = ws.grep("beta", path=".", regex=False)
     assert len(result) == 1
     assert result[0]["text"] == "alpha beta"
+
+
+def test_grep_prefers_rg_without_context(ws: Workspace, monkeypatch: pytest.MonkeyPatch):
+    ws.write_text("a.txt", "alpha beta\n")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+
+        class Result:
+            returncode = 0
+            stdout = "a.txt:1:alpha beta\n"
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(workspace_module.shutil, "which", lambda name: "rg" if name == "rg" else None)
+    monkeypatch.setattr(workspace_module.subprocess, "run", fake_run)
+
+    result = ws.grep("beta", path=".", regex=False, max_results=5)
+
+    assert result == [{"path": "a.txt", "line": 1, "text": "alpha beta", "context": ""}]
+    assert calls
+    assert "--fixed-strings" in calls[0]
+
+
+def test_grep_context_uses_python_fallback(ws: Workspace, monkeypatch: pytest.MonkeyPatch):
+    ws.write_text("a.txt", "alpha\nbeta\ngamma\n")
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("rg should not be used when context_lines is requested")
+
+    monkeypatch.setattr(workspace_module.shutil, "which", lambda name: "rg" if name == "rg" else None)
+    monkeypatch.setattr(workspace_module.subprocess, "run", fail_run)
+
+    result = ws.grep("beta", path=".", regex=False, context_lines=1)
+
+    assert len(result) == 1
+    assert result[0]["context"] == "1: alpha\n2: beta\n3: gamma"

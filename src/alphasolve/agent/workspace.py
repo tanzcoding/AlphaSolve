@@ -3,6 +3,8 @@ from __future__ import annotations
 import fnmatch
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -38,6 +40,7 @@ READ_PAGE_DEFAULT_LINES = 250
 READ_PAGE_MAX_LINES = 1000
 READ_PAGE_MAX_LINE_LENGTH = 2000
 READ_PAGE_MAX_BYTES = 100 << 10
+GREP_TIMEOUT_SECONDS = 20
 
 
 @dataclass(frozen=True)
@@ -271,6 +274,10 @@ class Workspace:
         root = self.resolve(path)
         if not root.exists():
             raise WorkspaceError(f"path does not exist: {path}")
+        if context_lines == 0:
+            rg_hits = self._grep_with_rg(pattern, root, regex=regex, max_results=max_results)
+            if rg_hits is not None:
+                return rg_hits
         if root.is_file():
             files: list[Path] = [root]
         else:
@@ -304,6 +311,82 @@ class Workspace:
                 if len(out) >= max_results:
                     return out
         return out
+
+    def _grep_with_rg(
+        self,
+        pattern: str,
+        root: Path,
+        *,
+        regex: bool,
+        max_results: int,
+    ) -> list[dict[str, Any]] | None:
+        rg_path = shutil.which("rg")
+        if rg_path is None:
+            return None
+        search_path = self._rel(root)
+        command = [
+            rg_path,
+            "--line-number",
+            "--with-filename",
+            "--no-heading",
+            "--color",
+            "never",
+            "--max-columns",
+            str(READ_PAGE_MAX_LINE_LENGTH),
+            "--max-count",
+            str(max(1, max_results)),
+            "--glob",
+            "!.git",
+            "--glob",
+            "!__pycache__",
+            "--glob",
+            "!.venv",
+            "--glob",
+            "!node_modules",
+        ]
+        if not regex:
+            command.append("--fixed-strings")
+        command.extend(["--regexp", pattern, search_path])
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.root,
+                text=True,
+                capture_output=True,
+                timeout=GREP_TIMEOUT_SECONDS,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode == 1:
+            return []
+        if result.returncode != 0:
+            return None
+        hits: list[dict[str, Any]] = []
+        for raw_line in result.stdout.splitlines():
+            hit_path, sep, rest = raw_line.partition(":")
+            if not sep:
+                continue
+            line_text, sep, text = rest.partition(":")
+            if not sep:
+                continue
+            try:
+                line_no = int(line_text)
+            except ValueError:
+                continue
+            normalized_path = hit_path.replace("\\", "/")
+            if normalized_path.startswith("./"):
+                normalized_path = normalized_path[2:]
+            hits.append({
+                "path": normalized_path,
+                "line": line_no,
+                "text": text,
+                "context": "",
+            })
+            if len(hits) >= max_results:
+                break
+        return hits
 
     def search_files(self, pattern: str, *, path: str | Path = ".", max_results: int = 50) -> list[str]:
         """已废弃：保留为兼容旧测试。请使用 glob。"""
