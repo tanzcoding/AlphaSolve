@@ -41,6 +41,46 @@ class _ToolUsingStubClient:
         )
 
 
+class _SubagentUsingStubClient:
+    def __init__(self, config: AgentConfig, seen_tools: dict[str, list[list[str]]]) -> None:
+        self.config = config
+        self.seen_tools = seen_tools
+        self.calls = 0
+
+    def complete(self, *, messages, tools, delta_sink=None):
+        self.calls += 1
+        tool_names = [tool.name for tool in tools]
+        self.seen_tools.setdefault(self.config.name, []).append(tool_names)
+        if self.config.name == "agent:scoped_explorer":
+            return CompletionResponse(
+                message=Message(role="assistant", content="subagent evidence report"),
+                finish_reason="stop",
+            )
+        if self.calls == 1:
+            return CompletionResponse(
+                message=Message(
+                    role="assistant",
+                    tool_calls=(
+                        ToolCall(
+                            id="agent-1",
+                            name="Agent",
+                            args={
+                                "type": "scoped_explorer",
+                                "description": "inspect notes",
+                                "prompt": "Inspect note.md and report evidence.",
+                            },
+                        ),
+                    ),
+                ),
+                finish_reason="tool_calls",
+            )
+        assert any(message.role == "tool" and "subagent evidence report" in message.content for message in messages)
+        return CompletionResponse(
+            message=Message(role="assistant", content="parent complete"),
+            finish_reason="stop",
+        )
+
+
 def test_agent_app_run_once_returns_result(tmp_path: Path):
     app = AgentApp(
         project_dir=tmp_path,
@@ -67,7 +107,7 @@ def test_agent_app_does_not_import_solver():
 
 
 def test_agent_app_uses_default_tools(tmp_path: Path):
-    """AgentApp 默认使用 build_default_tool_registry 注册的工具集，不挂 Agent 工具。"""
+    """AgentApp 默认使用 build_default_tool_registry 注册的工具集，并挂通用 Agent 工具。"""
     app = AgentApp(
         project_dir=tmp_path,
         client_factory=lambda config: _StubClient(),  # type: ignore[arg-type]
@@ -77,10 +117,26 @@ def test_agent_app_uses_default_tools(tmp_path: Path):
     assert "Write" in config.tools
     # Bash 或 Shell 二选一（按平台），至少有一个
     assert "Bash" in config.tools or "Shell" in config.tools
-    assert "Agent" not in config.tools  # subagent 调度不属于第二层 CLI
+    assert "Agent" in config.tools
     assert "general-purpose coding agent" in config.system_prompt
     assert "Read" in config.system_prompt
     assert "Write" in config.system_prompt
+
+
+def test_agent_app_agent_tool_launches_non_recursive_scoped_explorer(tmp_path: Path):
+    (tmp_path / "note.md").write_text("subagent should inspect this\n", encoding="utf-8")
+    seen_tools: dict[str, list[list[str]]] = {}
+    app = AgentApp(
+        project_dir=tmp_path,
+        client_factory=lambda config: _SubagentUsingStubClient(config, seen_tools),  # type: ignore[arg-type]
+    )
+
+    result = app.run_once("split the review", event_sink=None)
+
+    assert result.final_answer == "parent complete"
+    assert "Agent" in seen_tools["agent"][0]
+    assert "Agent" not in seen_tools["agent:scoped_explorer"][0]
+    assert "Read" in seen_tools["agent:scoped_explorer"][0]
 
 
 def test_print_debug_sink_shows_reasoning_and_tool_events(tmp_path: Path):

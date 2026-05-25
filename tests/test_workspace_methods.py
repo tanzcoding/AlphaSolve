@@ -1,6 +1,7 @@
 """第二层 Workspace 新方法的单元测试。"""
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -147,13 +148,66 @@ def test_grep_prefers_rg_without_context(ws: Workspace, monkeypatch: pytest.Monk
     assert "--fixed-strings" in calls[0]
 
 
-def test_grep_context_uses_python_fallback(ws: Workspace, monkeypatch: pytest.MonkeyPatch):
+def test_grep_context_prefers_rg_when_available(ws: Workspace, monkeypatch: pytest.MonkeyPatch):
+    ws.write_text("a.txt", "alpha\nbeta\ngamma\n")
+    calls: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+
+        class Result:
+            returncode = 0
+            stdout = "\n".join([
+                json.dumps({"type": "begin", "data": {"path": {"text": "a.txt"}}}),
+                json.dumps({
+                    "type": "context",
+                    "data": {
+                        "path": {"text": "a.txt"},
+                        "lines": {"text": "alpha\n"},
+                        "line_number": 1,
+                    },
+                }),
+                json.dumps({
+                    "type": "match",
+                    "data": {
+                        "path": {"text": "a.txt"},
+                        "lines": {"text": "beta\n"},
+                        "line_number": 2,
+                    },
+                }),
+                json.dumps({
+                    "type": "context",
+                    "data": {
+                        "path": {"text": "a.txt"},
+                        "lines": {"text": "gamma\n"},
+                        "line_number": 3,
+                    },
+                }),
+            ])
+            stderr = ""
+
+        return Result()
+
+    monkeypatch.setattr(workspace_module.shutil, "which", lambda name: "rg" if name == "rg" else None)
+    monkeypatch.setattr(workspace_module.subprocess, "run", fake_run)
+
+    result = ws.grep("beta", path=".", regex=False, context_lines=1)
+
+    assert len(result) == 1
+    assert result[0]["context"] == "1: alpha\n2: beta\n3: gamma"
+    assert calls
+    assert "--json" in calls[0]
+    assert "--context" in calls[0]
+    assert "--fixed-strings" in calls[0]
+
+
+def test_grep_context_uses_python_fallback_without_rg(ws: Workspace, monkeypatch: pytest.MonkeyPatch):
     ws.write_text("a.txt", "alpha\nbeta\ngamma\n")
 
     def fail_run(*_args, **_kwargs):
-        raise AssertionError("rg should not be used when context_lines is requested")
+        raise AssertionError("rg should not be used when rg is unavailable")
 
-    monkeypatch.setattr(workspace_module.shutil, "which", lambda name: "rg" if name == "rg" else None)
+    monkeypatch.setattr(workspace_module.shutil, "which", lambda _name: None)
     monkeypatch.setattr(workspace_module.subprocess, "run", fail_run)
 
     result = ws.grep("beta", path=".", regex=False, context_lines=1)

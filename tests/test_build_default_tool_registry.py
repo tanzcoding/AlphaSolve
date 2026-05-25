@@ -115,6 +115,7 @@ def test_list_dir_suggests_progress_review_for_research_workspace(registry, tmp_
     assert not result.is_error
     assert "research workspace hint" in result.content
     assert "ResearchProgressReview" in result.content
+    assert "before broad Read or InspectMarkdown sweeps" in result.content
 
 
 def test_research_progress_review_surfaces_workspace_and_attempt_notes(registry, tmp_path: Path):
@@ -145,11 +146,68 @@ def test_research_progress_review_surfaces_workspace_and_attempt_notes(registry,
     result = registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
+    assert "review stopping guide" in result.content
+    assert "scoped exploration guide" in result.content
+    assert "priority guide" in result.content
     assert "workspace notes" in result.content
     assert "The target is not complete yet." in result.content
     assert "A compact interface step is still missing." in result.content
     assert "unfinished attempt notes" in result.content
     assert "failed because it skipped a prerequisite" in result.content
+
+
+def test_research_progress_review_surfaces_repairable_failed_attempt(registry, tmp_path: Path):
+    (tmp_path / "problem.md").write_text("Decide the final response.\n", encoding="utf-8")
+    (tmp_path / "verified_propositions").mkdir()
+    (tmp_path / "knowledge").mkdir()
+    attempt_dir = tmp_path / "unverified_propositions" / "attempt-a"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "review.md").write_text(
+        "## Review\n\n"
+        "**Candidate**: `unverified_propositions/attempt-a/proposition.md`\n\n"
+        "### Critical Gap Found\n"
+        "One local step is missing.\n\n"
+        "### Assessment\n"
+        "The overall architecture is sound and the gap is localized and fixable.\n\n"
+        "### Verdict: fail\n",
+        encoding="utf-8",
+    )
+
+    result = registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "repairable attempt candidates" in result.content
+    assert "evidence budget" in result.content
+    assert "unverified_propositions/attempt-a/review.md" in result.content
+    assert "selected target: unverified_propositions/attempt-a/review.md" in result.content
+    assert "localized and fixable" in result.content
+
+
+def test_research_progress_review_prioritizes_unreviewed_high_level_attempt(registry, tmp_path: Path):
+    (tmp_path / "problem.md").write_text("Decide the final response.\n", encoding="utf-8")
+    (tmp_path / "verified_propositions").mkdir()
+    (tmp_path / "knowledge").mkdir()
+    attempt_dir = tmp_path / "unverified_propositions" / "attempt-final"
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "proposition.md").write_text(
+        "## Statement\n"
+        "This final assembly claims a complete solution using several cited pieces.\n\n"
+        "## Proof\n"
+        "The argument closes the main interface.\n",
+        encoding="utf-8",
+    )
+    (attempt_dir / "worker_hint.md").write_text(
+        "## Target\n\n"
+        "Finish the end-to-end assembly. Check each hypothesis, interface, restriction, and level change.\n",
+        encoding="utf-8",
+    )
+
+    result = registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "unreviewed high-level attempts" in result.content
+    assert "selected target: unverified_propositions/attempt-final/proposition.md" in result.content
+    assert "make the high-level attempt's exact interface explicit" in result.content
 
 
 def test_research_progress_review_surfaces_underclaimed_proof(registry, tmp_path: Path):
@@ -217,3 +275,57 @@ def test_research_progress_review_prioritizes_shallow_answer_changing_candidates
     assert main_pos < technical_pos
     assert "selected target: verified_propositions/main-result.md" in result.content
     assert "selected target: knowledge/notes.md" not in result.content
+
+
+def test_research_progress_review_prefers_problem_focused_tail(registry, tmp_path: Path):
+    verified_dir = tmp_path / "verified_propositions"
+    verified_dir.mkdir()
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "problem.md").write_text("Resolve ticket_2026 and report final_code.\n", encoding="utf-8")
+    (verified_dir / "generic-result.md").write_text(
+        "## Statement\n"
+        "A generic result reaches L.\n\n"
+        "## Proof\n"
+        "Therefore the generic result is strictly above L.\n",
+        encoding="utf-8",
+    )
+    (verified_dir / "ticket-result.md").write_text(
+        "## Statement\n"
+        "The ticket_2026 result reaches L.\n\n"
+        "## Proof\n"
+        "The final_code calculation gives an extra positive adjustment.\n"
+        "Therefore ticket_2026 final_code is strictly above L.\n",
+        encoding="utf-8",
+    )
+
+    result = registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "selected target: verified_propositions/ticket-result.md" in result.content
+
+
+def test_research_progress_review_ignores_tail_already_in_statement(registry, tmp_path: Path):
+    verified_dir = tmp_path / "verified_propositions"
+    verified_dir.mkdir()
+    (tmp_path / "knowledge").mkdir()
+    (tmp_path / "problem.md").write_text("Resolve ticket_2026.\n", encoding="utf-8")
+    (verified_dir / "repeated.md").write_text(
+        "## Statement\n"
+        "The ticket_2026 value is at least 5.\n\n"
+        "## Proof\n"
+        "Therefore the ticket_2026 value is at least 5.\n",
+        encoding="utf-8",
+    )
+    (verified_dir / "stronger.md").write_text(
+        "## Statement\n"
+        "The ticket_2026 value is at least 5.\n\n"
+        "## Proof\n"
+        "Therefore the ticket_2026 value is strictly above 5.\n",
+        encoding="utf-8",
+    )
+
+    result = registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "verified_propositions/repeated.md" not in result.content
+    assert "selected target: verified_propositions/stronger.md" in result.content
