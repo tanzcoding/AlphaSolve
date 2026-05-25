@@ -84,6 +84,48 @@ def test_spawn_reports_active_workers_and_enforces_limit(tmp_path, monkeypatch):
         manager.close(timeout=0)
 
 
+def test_spawn_warns_research_reviewer_after_each_five_new_verified_props(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    try:
+        topic_dir = manager.layout.verified_dir / "topic"
+        topic_dir.mkdir()
+        for index in range(4):
+            (topic_dir / f"lemma-{index:02d}.md").write_text(
+                f"# Lemma {index}\n",
+                encoding="utf-8",
+            )
+
+        first = manager.spawn("first branch")
+        assert "research_reviewer_required_warning" not in first
+
+        _drain_manager(manager, "w1")
+        (topic_dir / "lemma-04.md").write_text("# Lemma 4\n", encoding="utf-8")
+        second = manager.spawn("second branch")
+
+        warning = second["research_reviewer_required_warning"]
+        assert warning["verified_proposition_count"] == 5
+        assert warning["increment"] == 5
+        assert "STRICT WARNING" in warning["message"]
+        assert "research_reviewer" in warning["message"]
+        assert "ResearchProgressReview" in warning["message"]
+        assert "InspectMarkdown" in warning["message"]
+
+        _drain_manager(manager, "w2")
+        third = manager.spawn("third branch")
+        assert "research_reviewer_required_warning" not in third
+
+        _drain_manager(manager, "w3")
+        for index in range(5, 10):
+            (topic_dir / f"lemma-{index:02d}.md").write_text(
+                f"# Lemma {index}\n",
+                encoding="utf-8",
+            )
+        fourth = manager.spawn("fourth branch")
+        assert fourth["research_reviewer_required_warning"]["verified_proposition_count"] == 10
+    finally:
+        manager.close(timeout=0)
+
+
 def test_graceful_close_waits_for_workers_without_setting_stop_event(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch, max_workers=1)
     try:
@@ -303,6 +345,10 @@ def test_task_output_omits_verified_organization_prompt_at_directory_threshold(t
                 f"# Lemma {index}\n",
                 encoding="utf-8",
             )
+        (manager.layout.verified_dir / "index.md").write_text(
+            "# Verified Propositions Index\n",
+            encoding="utf-8",
+        )
 
         payload = manager.wait(timeout_seconds=0)
 

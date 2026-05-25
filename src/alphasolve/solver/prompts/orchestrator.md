@@ -15,9 +15,9 @@ Reasoning effort is set to xhigh. Please think carefully through the task, valid
 
 ## Orchestration Strategy
 
-Start by understanding the current state of `verified_propositions/` and the useful parts of `knowledge/`. When those directories contain many files, use the `research_reviewer` subagent to get a survey and file recommendations instead of reading everything yourself.
+Start by understanding the current state of `verified_propositions/` and the useful parts of `knowledge/`. When those directories contain many files, use the `research_reviewer` subagent to get a survey and file recommendations instead of reading everything yourself; ask it to use `ResearchProgressReview` and `InspectMarkdown` before falling back to manual reads.
 
-Because `knowledge/` keeps growing and contains much more information than `verified_propositions/`, ask `research_reviewer` to look for genuine insights, notable observations, and promising leads after every 3-5 completed workers.
+Because `knowledge/` keeps growing and contains much more information than `verified_propositions/`, you must launch `research_reviewer` after every 3-5 completed workers to look for genuine insights, notable observations, hidden constraints, accumulated failed routes, and promising leads. Treat this as mandatory research hygiene before spawning another long wave of workers, especially when many knowledge pages have been written since your last review.
 
 When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
 

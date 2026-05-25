@@ -1,5 +1,71 @@
 [
   {
+    "description": "Audit a Markdown research/proof workspace before deciding current progress or next propositions.\n\nUsage:\n- Use this early when a workspace has problem.md, knowledge notes, and verified propositions.\n- Prefer this over broad InspectMarkdown or many manual reads when starting from a workspace root.\n- If the result cites several major directories or competing evidence areas, use scoped Agent calls to inspect those areas separately, then compare the reports in the main agent.\n- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n- If it reports an underclaimed proof that affects an answer, best-known objective value or estimate, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder work.\n- This is a progress-navigation tool, not a verifier; it does not prove new claims.",
+    "name": "ResearchProgressReview",
+    "parameters": {
+      "properties": {
+        "max_files": {
+          "default": 120,
+          "description": "Maximum Markdown files to scan.",
+          "maximum": 500,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "default": ".",
+          "description": "Workspace root or directory to audit.",
+          "type": "string"
+        },
+        "paths": {
+          "default": [],
+          "description": "Optional specific files/directories to scan instead of auto-detecting research folders.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Survey Markdown files and surface the parts most likely to summarize research progress.\n\nUsage:\n- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n- It lists headings, extracts statement/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n- Its progress audit highlights underclaimed proof tails; if one affects an answer, best-known objective value or estimate, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim.",
+    "name": "InspectMarkdown",
+    "parameters": {
+      "properties": {
+        "max_files": {
+          "default": 8,
+          "description": "Maximum Markdown files to inspect when path is a directory.",
+          "maximum": 100,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "path": {
+          "default": ".",
+          "description": "Markdown file or directory to inspect.",
+          "type": "string"
+        },
+        "statement_lines": {
+          "default": 80,
+          "description": "Maximum lines to show from each selected statement/progress section.",
+          "maximum": 300,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "tail_lines": {
+          "default": 40,
+          "description": "How many ending lines to show for each file.",
+          "maximum": 200,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [],
+      "type": "object"
+    }
+  },
+  {
     "description": "Read text content from a file.\n\nTips:\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is typically worth using in parallel when you need to inspect multiple files.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.",
     "name": "Read",
     "parameters": {

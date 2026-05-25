@@ -6,6 +6,8 @@ agent:
   max_turns: 100
   when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, and recommend research directions.
   tools:
+    - ResearchProgressReview
+    - InspectMarkdown
     - Read
     - ListDir
     - Glob

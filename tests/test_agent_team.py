@@ -1384,6 +1384,11 @@ def test_verified_count_ignores_verified_index_file():
         (verified_dir / "lemma.md").write_text("# Lemma\n", encoding="utf-8")
         assert verified_count(verified_dir) == 1
 
+        (verified_dir / "topic").mkdir()
+        (verified_dir / "topic" / "index.md").write_text("# Topic Index\n", encoding="utf-8")
+        (verified_dir / "topic" / "nested-lemma.md").write_text("# Nested Lemma\n", encoding="utf-8")
+        assert verified_count(verified_dir) == 2
+
 
 def test_move_file_updates_verified_proposition_references():
     with local_project_dir("verified_move_references") as project_dir:

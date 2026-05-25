@@ -128,6 +128,7 @@ class RuntimeInjectionMonitor:
 class WorkerManager:
     DEFAULT_WAIT_TIMEOUT_SECONDS = 3600.0
     VERIFIED_PROPOSITIONS_ORGANIZATION_THRESHOLD = 20
+    RESEARCH_REVIEW_WARNING_INCREMENT = 5
 
     def __init__(
         self,
@@ -166,22 +167,27 @@ class WorkerManager:
         self.solution_path: Path | None = None
         self.solved_result: WorkerRunResult | None = None
         self.injection_monitor = RuntimeInjectionMonitor(layout=self.layout, curator_queue=self.curator_queue)
+        self._last_reviewer_warning_verified_count = self._verified_proposition_total_count()
 
     def spawn(self, hint: str | None = None) -> dict[str, Any]:
         self._collect_done()
         if self.solved_result is not None:
-            return {
+            payload = {
                 "spawned": False,
                 "reason": "problem_already_solved",
                 "solution_path": str(self.solution_path) if self.solution_path else None,
                 **self._pool_status(),
             }
+            self._add_research_reviewer_warning_if_due(payload)
+            return payload
         if len(self.active) >= self.max_workers:
-            return {
+            payload = {
                 "spawned": False,
                 "reason": "parallelism_limit_reached",
                 **self._pool_status(),
             }
+            self._add_research_reviewer_warning_if_due(payload)
+            return payload
         worker = Worker(
             layout=self.layout,
             suite=self.suite,
@@ -219,11 +225,13 @@ class WorkerManager:
             }
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
-        return {
+        payload = {
             "spawned": True,
             "worker_id": worker_id,
             **self._pool_status(),
         }
+        self._add_research_reviewer_warning_if_due(payload)
+        return payload
 
     def wait(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         self._collect_done()
@@ -377,13 +385,13 @@ class WorkerManager:
             (path for path in self.layout.verified_dir.rglob("*") if path.is_dir()),
             key=lambda item: item.relative_to(self.layout.verified_dir).as_posix(),
         ):
-            direct_markdown_count = sum(1 for path in directory.glob("*.md") if path.is_file())
+            direct_markdown_count = sum(1 for path in directory.glob("*.md") if _is_verified_proposition_file(path))
             if direct_markdown_count > threshold:
                 overloaded.append({
                     "path": directory.relative_to(self.layout.workspace_dir).as_posix(),
                     "markdown_file_count": direct_markdown_count,
                 })
-        root_markdown_count = sum(1 for path in self.layout.verified_dir.glob("*.md") if path.is_file())
+        root_markdown_count = sum(1 for path in self.layout.verified_dir.glob("*.md") if _is_verified_proposition_file(path))
         if root_markdown_count > threshold:
             overloaded.insert(0, {
                 "path": "verified_propositions",
@@ -426,6 +434,27 @@ class WorkerManager:
 
     def _verified_count(self) -> int:
         return verified_count(self.layout.verified_dir)
+
+    def _verified_proposition_total_count(self) -> int:
+        return verified_proposition_total_count(self.layout.verified_dir)
+
+    def _add_research_reviewer_warning_if_due(self, payload: dict[str, Any]) -> None:
+        current_count = self._verified_proposition_total_count()
+        increment = self.RESEARCH_REVIEW_WARNING_INCREMENT
+        if current_count - self._last_reviewer_warning_verified_count < increment:
+            return
+        self._last_reviewer_warning_verified_count = current_count
+        payload["research_reviewer_required_warning"] = {
+            "verified_proposition_count": current_count,
+            "increment": increment,
+            "message": (
+                "STRICT WARNING: At least five new verified propositions have accumulated since the last "
+                "research-review warning. Stop spawning routine workers until you launch the research_reviewer "
+                "subagent and ask it to use ResearchProgressReview and InspectMarkdown to audit verified_propositions/ "
+                "and knowledge/. You are likely to waste compute, duplicate failed routes, and miss important "
+                "knowledge-base insights if you ignore this."
+            ),
+        }
 
     def _append_worker_result_log(self, payload: dict[str, Any]) -> None:
         try:
@@ -617,9 +646,17 @@ class Orchestrator:
 
 
 def verified_count(verified_dir: Path) -> int:
+    return verified_proposition_total_count(verified_dir)
+
+
+def verified_proposition_total_count(verified_dir: Path) -> int:
     if not verified_dir.exists():
         return 0
-    return sum(1 for path in verified_dir.glob("*.md") if path.is_file() and path.name != "index.md")
+    return sum(1 for path in verified_dir.rglob("*.md") if _is_verified_proposition_file(path))
+
+
+def _is_verified_proposition_file(path: Path) -> bool:
+    return path.is_file() and path.suffix == ".md" and path.name != "index.md"
 
 
 def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:
