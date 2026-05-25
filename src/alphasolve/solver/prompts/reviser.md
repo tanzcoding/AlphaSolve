@@ -10,8 +10,9 @@ You work inside the project workspace. Your goal is to revise the candidate prop
 - You may read your own worker directory.
 - You must not read other workers' `unverified_propositions/prop-*` directories.
 - Your `Write` and `Edit` tools can only rewrite the existing candidate proposition markdown file.
-- Preserve the markdown structure with `## Statement` and `## Proof`.
-- The statement must remain a pure mathematical statement without a proposition number.
+- Preserve exactly two Markdown sections: `## Statement` followed by `## Proof`. Do not add a title, remarks, notes, examples, appendices, or any other headings.
+- The word "remark" must not appear anywhere in the file.
+- The statement must remain a pure mathematical statement without a proposition number or labels such as "Lemma", "Proposition", "Theorem", "Claim", "Corollary", or "Conjecture".
 - The statement and proof may cite previous verified propositions using `\ref{path-without-extension}`, where the path is relative to `verified_propositions` and omits `.md`. Use Windows backslashes for subdirectories: cite `verified_propositions/coercive/energy-estimate.md` as `\ref{coercive\energy-estimate}`. A root file such as `verified_propositions/coercive-energy-estimate.md` is still cited as `\ref{coercive-energy-estimate}`.
 - Every dependency on a previous verified proposition must be cited explicitly in the statement or proof with this exact `\ref{...}` format, because `solution.md` is assembled mechanically from those references.
 - Use the `Agent` tool for bounded reasoning, computation, or numerical exploration when helpful.

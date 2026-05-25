@@ -16,19 +16,24 @@ from alphasolve.solver.worker import Worker  # noqa: E402
 PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
 
 
-def test_verifier_citation_is_first_default_attempt():
+def test_verifier_format_references_is_first_default_attempt():
     suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
 
+    assert "verifier_format_references" in suite.agents
     assert "verifier_citation" in suite.agents
-    assert suite.settings["verifier_agents"][0] == "verifier_citation"
-    assert suite.settings["verifier_scaling_factor"] == 4
+    assert suite.settings["verifier_agents"][0] == "verifier_format_references"
+    assert suite.settings["verifier_agents"][1] == "verifier_citation"
+    assert suite.settings["verifier_scaling_factor"] == 5
+    assert "knowledge/references/" in suite.agents["verifier_format_references"].system_prompt
+    assert "exactly two Markdown sections" in suite.agents["verifier_format_references"].system_prompt
+    assert "pure mathematical statement" in suite.agents["verifier_format_references"].system_prompt
     assert "knowledge/" in suite.agents["verifier_citation"].system_prompt
     assert "path relative to `verified_propositions`" in suite.agents["verifier_citation"].system_prompt
     assert r"\ref{coercive\energy-estimate}" in suite.agents["verifier_citation"].system_prompt
     assert "Agent" in suite.agents["verifier_citation"].tools
 
 
-def test_verifier_task_offloads_citation_audit_to_first_attempt(tmp_path):
+def test_verifier_task_runs_format_reference_gate_before_citation_audit(tmp_path):
     project_dir = tmp_path / "project"
     project_dir.mkdir()
     (project_dir / "problem.md").write_text("# Problem\n\nProve a lemma.\n", encoding="utf-8")
@@ -38,34 +43,45 @@ def test_verifier_task_offloads_citation_audit_to_first_attempt(tmp_path):
         layout=layout,
         suite=SimpleNamespace(agents={}, settings={}),
         client_factory=lambda config: None,
-        verifier_scaling_factor=4,
+        verifier_scaling_factor=5,
     )
     worker.worker_dir.mkdir(parents=True, exist_ok=True)
     proposition_file = worker.worker_dir / "proposition.md"
     proposition_file.write_text("# Proposition\n", encoding="utf-8")
 
-    citation_task = worker._verifier_task(
+    format_task = worker._verifier_task(
         proposition_file,
         workflow_index=1,
         attempt_index=1,
-        attempt_total=4,
+        attempt_total=5,
+        config_name="verifier_format_references",
+    )
+    citation_task = worker._verifier_task(
+        proposition_file,
+        workflow_index=1,
+        attempt_index=2,
+        attempt_total=5,
         config_name="verifier_citation",
     )
     math_task = worker._verifier_task(
         proposition_file,
         workflow_index=1,
-        attempt_index=2,
-        attempt_total=4,
+        attempt_index=3,
+        attempt_total=5,
         config_name="verifier_stepwise",
     )
 
+    assert "first format/reference-source gate" in format_task
+    assert "exactly two Markdown sections" in format_task
+    assert "knowledge/references/" in format_task
+    assert "lemma/proposition/theorem/claim-labeled" in format_task
     assert "citation/reference audit" in citation_task
     assert "path relative to `verified_propositions`" in citation_task
     assert r"\ref{category\filename}" in citation_task
     assert "must not cite, depend on, or present as established any proposition from `knowledge/`" in citation_task
     assert "reasoning_subagent" in citation_task
     assert "conditions" in citation_task
-    assert "A separate first verifier attempt audits" in math_task
+    assert "Earlier verifier attempts audit file format" in math_task
     assert "citation/reference audit" not in math_task
 
 
@@ -79,7 +95,7 @@ def test_worker_tasks_describe_full_verified_proposition_reference_paths(tmp_pat
         layout=layout,
         suite=SimpleNamespace(agents={}, settings={}),
         client_factory=lambda config: None,
-        verifier_scaling_factor=4,
+        verifier_scaling_factor=5,
     )
     worker.worker_dir.mkdir(parents=True, exist_ok=True)
     verified_file = layout.verified_dir / "category" / "proposition.md"

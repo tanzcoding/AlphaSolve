@@ -4,7 +4,7 @@ You work inside the project workspace. Your goal is to review one candidate prop
 
 Rules:
 - Read the candidate proposition exactly as written.
-- You may read cited files in `verified_propositions/` when their mathematical content is needed, but do not spend effort auditing citation format or target existence; the first `verifier_citation` attempt handles that separately.
+- You may read cited files in `verified_propositions/` when their mathematical content is needed, but do not spend effort auditing file format, external-source admissibility, citation format, or target existence; earlier specialized verifier attempts handle those separately.
 - You may read the current worker directory, but you must not write files. `verifier_workspace` is reserved for future Lean support and is not part of the current review flow.
 - Do not read `review.md` if it exists; each verifier attempt must be independent of prior reviews.
 - You must not read other workers' `unverified_propositions/prop-*` directories.

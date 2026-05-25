@@ -40,6 +40,7 @@ Thumbs.db
 # Cache & testing
 .pytest_cache/
 .pytest_tmp/
+_pytest_tmp/
 pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/

@@ -1,7 +1,8 @@
 settings:
   max_verify_rounds: 6
-  verifier_scaling_factor: 4
+  verifier_scaling_factor: 5
   verifier_agents:
+    - verifier_format_references
     - verifier_citation
     - verifier_failure_modes
     - verifier_stepwise

@@ -253,6 +253,7 @@ def _agent_setup(name: str, workspace: Workspace, worker_rel: str) -> tuple[Role
         "verifier_adversarial",
         "verifier_citation",
         "verifier_failure_modes",
+        "verifier_format_references",
         "verifier_premise_chain",
         "verifier_stepwise",
     }
@@ -350,6 +351,7 @@ def test_workflow_tool_snapshot_matches(snapshot_path: Path) -> None:
             "unverified_propositions/prop-snapshot",
             "unverified_propositions/prop-snapshot/verifier_workspace",
             "knowledge",
+            "knowledge/references",
         ):
             (workspace_root / sub).mkdir(parents=True, exist_ok=True)
 

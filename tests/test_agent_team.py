@@ -69,6 +69,7 @@ def test_default_agent_suite_loads_yaml_roles():
         "orchestrator",
         "generator",
         "verifier",
+        "verifier_format_references",
         "verifier_stepwise",
         "verifier_premise_chain",
         "verifier_adversarial",
@@ -115,8 +116,9 @@ def test_default_agent_suite_loads_yaml_roles():
         "reasoning_subagent",
     ]
     assert suite.settings["max_verify_rounds"] == 6
-    assert suite.settings["verifier_scaling_factor"] == 4
+    assert suite.settings["verifier_scaling_factor"] == 5
     assert suite.settings["verifier_agents"] == [
+        "verifier_format_references",
         "verifier_citation",
         "verifier_failure_modes",
         "verifier_stepwise",
@@ -679,9 +681,9 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         review = result.review_file.read_text(encoding="utf-8")
         assert "Attempt two found a gap." in review
         assert "Attempt one accepts the proposition." not in review
-        assert verifier_calls[:2] == ["verifier_citation", "verifier_failure_modes"]
+        assert verifier_calls[:2] == ["verifier_format_references", "verifier_citation"]
         verifier_traces = [item for item in result.trace if item["role"] == "verifier_attempt"]
-        assert [item["config"] for item in verifier_traces] == ["verifier_citation", "verifier_failure_modes"]
+        assert [item["config"] for item in verifier_traces] == ["verifier_format_references", "verifier_citation"]
         assert result.trace[-1]["role"] == "verifier_workflow"
         assert result.trace[-1]["attempts_run"] == 2
 

@@ -550,7 +550,9 @@ class Worker:
                 (
                     "Create a file named `proposition.md` directly in your own directory "
                     f"`{self.worker_rel}`. The file must contain "
-                    "a Statement section and a Proof section. You may reference verified propositions that have been established in `verified_propositions` directory with "
+                    "exactly two sections, `## Statement` and `## Proof`, with no remarks or extra headings. "
+                    "The statement must be a pure mathematical statement, not a lemma/proposition/theorem-labeled block. "
+                    "You may reference verified propositions that have been established in `verified_propositions` directory with "
                     "\\ref{path-without-extension}, where the path is relative to `verified_propositions` and subdirectories use backslashes, "
                     "for example \\ref{category\\filename}."
                 ),
@@ -568,7 +570,18 @@ class Worker:
         config_name: str,
     ) -> str:
         rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
-        if config_name == "verifier_citation":
+        if config_name == "verifier_format_references":
+            review_instruction = (
+                "Read the candidate proposition in `proposition.md` and perform the first format/reference-source gate. "
+                "Your final answer must include `Verdict: pass` or `Verdict: fail`. "
+                "Check that the file contains exactly two Markdown sections, `## Statement` followed by `## Proof`, "
+                "with no other headings and no `remark` anywhere. The statement must be only a pure mathematical "
+                "statement, not a lemma/proposition/theorem/claim-labeled block and not mixed with proof commentary. "
+                "Also check whether the proposition cites, invokes, or relies on any paper, book, textbook, monograph, "
+                "named author result, named external theorem, or similar external mathematical source that is not present "
+                "under `knowledge/references/`. Fail if any such external result is absent from `knowledge/references/`."
+            )
+        elif config_name == "verifier_citation":
             review_instruction = (
                 "Read the candidate proposition in `proposition.md` and perform the citation/reference audit, "
                 "including whether each cited verified proposition is correctly applied. "
@@ -586,7 +599,7 @@ class Worker:
                 "Read the candidate proposition in `proposition.md` and write a rigorous review of the statement and proof. "
                 "Your final answer must include `Verdict: pass` or `Verdict: fail`. "
                 "Focus on mathematical correctness, completeness, hidden assumptions, and logical rigor. "
-                "A separate first verifier attempt audits `\\ref{...}` targets and `knowledge/` misuse."
+                "Earlier verifier attempts audit file format, external-source admissibility, `\\ref{...}` targets, and `knowledge/` misuse."
             )
         return (
             "# Problem\n"

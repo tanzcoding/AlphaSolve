@@ -1,33 +1,28 @@
 version: 1
 agent:
-  name: verifier_citation
-  system_prompt_path: ../../prompts/verifier_citation.md
+  name: verifier_format_references
+  system_prompt_path: ../../prompts/verifier_format_references.md
   tier: balanced
-  max_turns: 40
+  max_turns: 80
   tools:
     - Read
     - ListDir
     - Glob
     - Grep
-    - Agent
     - GetCurrentTime
   tool_parameters:
-    Agent:
-      type:
-        enum:
-          - reasoning_subagent
     ListDir:
       path:
-        default: verified_propositions
-        pattern: "^(verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
+        default: knowledge/references
+        pattern: "^(knowledge/references(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
     Glob:
       path:
-        default: verified_propositions
-        pattern: "^(verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
+        default: knowledge/references
+        pattern: "^(knowledge/references(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?|unverified_propositions/prop-[A-Za-z0-9_-]+/?)$"
     Grep:
       path:
-        default: verified_propositions
-        pattern: "^(unverified_propositions/prop-[A-Za-z0-9_-]+/?|unverified_propositions/prop-[A-Za-z0-9_-]+/proposition\\.md|verified_propositions/?|verified_propositions/.*)$"
+        default: knowledge/references
+        pattern: "^(knowledge/references/?|knowledge/references/.*|unverified_propositions/prop-[A-Za-z0-9_-]+/?|unverified_propositions/prop-[A-Za-z0-9_-]+/proposition\\.md)$"
   tool_descriptions:
     Read:
       suffix: "- Results respect this agent's workspace access restrictions."
@@ -41,7 +36,7 @@ agent:
         read_all:
           description: "If true, ignore n_lines and return every line from line_offset through the end of the file."
     Glob:
-      override: "Fast file pattern matching tool that works with any codebase size. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents."
+      override: "Fast file pattern matching tool that works with any codebase size. Supports glob patterns like ``**/*.md`` or ``*`` to list directory contents."
       parameters:
         path:
           description: "The directory to search in. Defaults to this agent's configured search root."

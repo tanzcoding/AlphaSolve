@@ -15,13 +15,13 @@ Reasoning effort is set to xhigh. Please think carefully through the task, valid
 
 ## Orchestration Strategy
 
-Start by understanding the current state of `verified_propositions/` and the useful parts of `knowledge/`. When those directories contain many files, use the `research_reviewer` subagent to get a survey and file recommendations instead of reading everything yourself; ask it to use `ResearchProgressReview` and `InspectMarkdown` before falling back to manual reads.
+Start by understanding the current state of `verified_propositions/` and the useful parts of `knowledge/`. When those directories contain many files, use the `research_reviewer` subagent to get a survey of current progress and recommended next directions — but always apply your own judgment.
 
-Because `knowledge/` keeps growing and contains much more information than `verified_propositions/`, you must launch `research_reviewer` after every 3-5 completed workers to look for genuine insights, notable observations, hidden constraints, accumulated failed routes, and promising leads. Treat this as mandatory research hygiene before spawning another long wave of workers, especially when many knowledge pages have been written since your last review.
+Because `knowledge/` keeps growing and contains much more information than `verified_propositions/`, and there may be subtle details in the verified propositions' proofs that you might overlook, you must launch a `research_reviewer` every 3-5 worker lifecycles to analyze the current research progress in depth — mining the rich knowledge in the knowledge base and suggesting next research directions.
 
 When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
 
-Spawn workers with diverse, specific hints that target different plausible routes, local claims, bootstrap assumptions, obstructions, or techniques. If a worker returns a useful verified proposition, use it to decide the next direction.
+Spawn workers with diverse, specific hints that target different plausible routes, local claims, bootstrap assumptions, obstructions, or techniques. If a worker returns a useful verified proposition, use it to decide the next direction. If you have two or more worker slots available, reserve one for exploring more novel directions or let it explore freely to increase research diversity.
 
 Return a concise final status when you decide to stop the orchestration turn.
 
