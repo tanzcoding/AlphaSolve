@@ -505,9 +505,8 @@ class Orchestrator:
                 execution_gateway=self.execution_gateway,
                 session_prefix="orchestrator",
                 log_session=self.log_session,
-                file_access_factory=lambda: RoleWorkspaceAccess(
-                    workspace=Workspace(self.layout.workspace_dir),
-                    deny_read_rel="unverified_propositions",
+                file_access_factory=lambda: RoleWorkspaceAccess.orchestrator_subagent(
+                    Workspace(self.layout.workspace_dir)
                 ),
                 stop_event=self.stop_event,
             )
@@ -560,12 +559,7 @@ class Orchestrator:
         return config.effective_tier()
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
-        access = RoleWorkspaceAccess(
-            workspace=Workspace(self.layout.workspace_dir),
-            write_root_rel="verified_propositions",
-            destructive_protected_file_names=("index.md",),
-            preserve_markdown_file_names_on_rename=True,
-        )
+        access = RoleWorkspaceAccess.orchestrator(Workspace(self.layout.workspace_dir))
         registry = build_default_tool_registry(access)
         registry.register(
             name="SpawnWorker",

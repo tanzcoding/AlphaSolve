@@ -302,12 +302,7 @@ class Worker:
     def _run_generator(self) -> Path | None:
         config = self.suite.agents["generator"]
         self._set_phase("generator", status="thinking", model=self._model_name(config))
-        access = RoleWorkspaceAccess(
-            workspace=self.workspace,
-            worker_rel=self.worker_rel,
-            deny_other_unverified=True,
-            single_proposition_file=True,
-        )
+        access = RoleWorkspaceAccess.generator(self.workspace, self.worker_rel)
         curator_context = GeneratorCuratorContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
         subagents = SubagentService(
             suite=self.suite,
@@ -319,11 +314,7 @@ class Worker:
             curator_context_provider=curator_context.consume,
             log_session=self.log_session,
             stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess(
-                workspace=self.workspace,
-                worker_rel=self.worker_rel,
-                deny_other_unverified=True,
-            ),
+            file_access_factory=lambda: RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
         )
         registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
@@ -383,15 +374,11 @@ class Worker:
         config = self._verifier_attempt_config(config_name)
         self._set_phase(role, status="thinking", model=self._model_name(config))
         all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
-        deny_read_rels = (all_verifier_ws_rel,)
-        if config_name == "verifier_citation":
-            deny_read_rels = ("knowledge", *deny_read_rels)
-        access = RoleWorkspaceAccess(
-            workspace=self.workspace,
-            worker_rel=self.worker_rel,
-            deny_other_unverified=True,
-            deny_read_rels=deny_read_rels,
-            deny_read_file_names=("review.md",),
+        access = RoleWorkspaceAccess.verifier_attempt(
+            self.workspace,
+            self.worker_rel,
+            all_verifier_ws_rel=all_verifier_ws_rel,
+            config_name=config_name,
         )
         subagents = SubagentService(
             suite=self.suite,
@@ -401,12 +388,11 @@ class Worker:
             session_prefix=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
             log_session=self.log_session,
             stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess(
-                workspace=self.workspace,
-                worker_rel=self.worker_rel,
-                deny_other_unverified=True,
-                deny_read_rels=deny_read_rels,
-                deny_read_file_names=("review.md",),
+            file_access_factory=lambda: RoleWorkspaceAccess.verifier_attempt(
+                self.workspace,
+                self.worker_rel,
+                all_verifier_ws_rel=all_verifier_ws_rel,
+                config_name=config_name,
             ),
             curator_queue=self.curator_queue,
         )
@@ -459,12 +445,7 @@ class Worker:
         role = "theorem_checker"
         config = self.suite.agents["theorem_checker"]
         self._set_phase(role, status="thinking", model=self._model_name(config))
-        access = RoleWorkspaceAccess(
-            workspace=self.workspace,
-            worker_rel=self.worker_rel,
-            deny_other_unverified=True,
-            read_root_rel="verified_propositions",
-        )
+        access = RoleWorkspaceAccess.theorem_checker(self.workspace, self.worker_rel)
         subagents = SubagentService(
             suite=self.suite,
             client_factory=self.client_factory,
@@ -474,12 +455,7 @@ class Worker:
             curator_queue=self.curator_queue,
             log_session=self.log_session,
             stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess(
-                workspace=self.workspace,
-                worker_rel=self.worker_rel,
-                deny_other_unverified=True,
-                read_root_rel="verified_propositions",
-            ),
+            file_access_factory=lambda: RoleWorkspaceAccess.theorem_checker(self.workspace, self.worker_rel),
         )
         registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
@@ -504,11 +480,8 @@ class Worker:
         config = self.suite.agents["reviser"]
         self._set_phase(role, status="thinking", model=self._model_name(config))
         exact_rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
-        access = RoleWorkspaceAccess(
-            workspace=self.workspace,
-            worker_rel=self.worker_rel,
-            deny_other_unverified=True,
-            exact_write_rel=exact_rel,
+        access = RoleWorkspaceAccess.reviser(
+            self.workspace, self.worker_rel, proposition_rel=exact_rel
         )
         subagents = SubagentService(
             suite=self.suite,
@@ -519,11 +492,7 @@ class Worker:
             curator_queue=self.curator_queue,
             log_session=self.log_session,
             stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess(
-                workspace=self.workspace,
-                worker_rel=self.worker_rel,
-                deny_other_unverified=True,
-            ),
+            file_access_factory=lambda: RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
         )
         registry = build_default_tool_registry(access)
         register_agent_tool(registry, agent_config=config, dispatcher=subagents)
@@ -552,11 +521,7 @@ class Worker:
             config=config,
             client=self.client_factory(config),
             tool_registry=build_default_tool_registry(
-                RoleWorkspaceAccess(
-                    workspace=self.workspace,
-                    worker_rel=self.worker_rel,
-                    deny_other_unverified=True,
-                ),
+                RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
             ),
             event_sink=self._event_sink(role),
             stop_event=self.stop_event,
