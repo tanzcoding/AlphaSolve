@@ -155,7 +155,7 @@ def main() -> None:
     parser.add_argument("--subagent_max_depth", type=int, default=None,
                         help="Maximum recursive depth for subagents (default: from agents.yaml)")
     parser.add_argument("--debug", action="store_true",
-                        help="Produce detailed per-agent trace logs under logs/")
+                        help="Produce detailed solver trace logs under logs/. With --agent -p, print intermediate reasoning and tool events to stderr.")
     parser.add_argument("--agent", action="store_true",
                         help="Run an interactive second-layer Agent REPL")
     parser.add_argument("-p", "--print", dest="agent_prompt", metavar="PROMPT",
@@ -237,7 +237,7 @@ def main() -> None:
         client_factory = make_client_factory(tier_mapping, presets)
 
     if args.agent:
-        from alphasolve.agent.ui.cli_app import AgentApp
+        from alphasolve.agent.ui.cli_app import AgentApp, make_print_debug_event_sink
 
         _app = AgentApp(
             project_dir=Path.cwd(),
@@ -245,7 +245,13 @@ def main() -> None:
         )
         try:
             if args.agent_prompt is not None:
-                result = _app.run_once(args.agent_prompt, event_sink=None)
+                if args.debug:
+                    from rich.console import Console
+
+                    debug_sink = make_print_debug_event_sink(Console(stderr=True))
+                else:
+                    debug_sink = None
+                result = _app.run_once(args.agent_prompt, event_sink=debug_sink)
                 print(result.final_answer or "")
             else:
                 _app.run()

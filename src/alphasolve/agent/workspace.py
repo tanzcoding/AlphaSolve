@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -38,6 +41,7 @@ READ_PAGE_DEFAULT_LINES = 250
 READ_PAGE_MAX_LINES = 1000
 READ_PAGE_MAX_LINE_LENGTH = 2000
 READ_PAGE_MAX_BYTES = 100 << 10
+GREP_TIMEOUT_SECONDS = 20
 
 
 @dataclass(frozen=True)
@@ -271,6 +275,17 @@ class Workspace:
         root = self.resolve(path)
         if not root.exists():
             raise WorkspaceError(f"path does not exist: {path}")
+        max_results = max(1, int(max_results))
+        context_lines = max(0, int(context_lines))
+        rg_hits = self._grep_with_rg(
+            pattern,
+            root,
+            regex=regex,
+            max_results=max_results,
+            context_lines=context_lines,
+        )
+        if rg_hits is not None:
+            return rg_hits
         if root.is_file():
             files: list[Path] = [root]
         else:
@@ -304,6 +319,193 @@ class Workspace:
                 if len(out) >= max_results:
                     return out
         return out
+
+    def _grep_with_rg(
+        self,
+        pattern: str,
+        root: Path,
+        *,
+        regex: bool,
+        max_results: int,
+        context_lines: int,
+    ) -> list[dict[str, Any]] | None:
+        rg_path = shutil.which("rg")
+        if rg_path is None:
+            return None
+        if context_lines > 0:
+            return self._grep_with_rg_context(
+                rg_path,
+                pattern,
+                root,
+                regex=regex,
+                max_results=max_results,
+                context_lines=context_lines,
+            )
+        search_path = self._rel(root)
+        command = [
+            rg_path,
+            "--line-number",
+            "--with-filename",
+            "--no-heading",
+            "--color",
+            "never",
+            "--max-columns",
+            str(READ_PAGE_MAX_LINE_LENGTH),
+            "--max-columns-preview",
+            "--max-count",
+            str(max(1, max_results)),
+            "--glob",
+            "!.git",
+            "--glob",
+            "!__pycache__",
+            "--glob",
+            "!.venv",
+            "--glob",
+            "!node_modules",
+        ]
+        if not regex:
+            command.append("--fixed-strings")
+        command.extend(["--regexp", pattern, search_path])
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.root,
+                text=True,
+                capture_output=True,
+                timeout=GREP_TIMEOUT_SECONDS,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode == 1:
+            return []
+        if result.returncode != 0:
+            return None
+        hits: list[dict[str, Any]] = []
+        for raw_line in result.stdout.splitlines():
+            hit_path, sep, rest = raw_line.partition(":")
+            if not sep:
+                continue
+            line_text, sep, text = rest.partition(":")
+            if not sep:
+                continue
+            try:
+                line_no = int(line_text)
+            except ValueError:
+                continue
+            normalized_path = hit_path.replace("\\", "/")
+            if normalized_path.startswith("./"):
+                normalized_path = normalized_path[2:]
+            hits.append({
+                "path": normalized_path,
+                "line": line_no,
+                "text": text,
+                "context": "",
+            })
+            if len(hits) >= max_results:
+                break
+        return hits
+
+    def _grep_with_rg_context(
+        self,
+        rg_path: str,
+        pattern: str,
+        root: Path,
+        *,
+        regex: bool,
+        max_results: int,
+        context_lines: int,
+    ) -> list[dict[str, Any]] | None:
+        search_path = self._rel(root)
+        command = [
+            rg_path,
+            "--json",
+            "--color",
+            "never",
+            "--max-columns",
+            str(READ_PAGE_MAX_LINE_LENGTH),
+            "--max-columns-preview",
+            "--max-count",
+            str(max(1, max_results)),
+            "--context",
+            str(context_lines),
+            "--glob",
+            "!.git",
+            "--glob",
+            "!__pycache__",
+            "--glob",
+            "!.venv",
+            "--glob",
+            "!node_modules",
+        ]
+        if not regex:
+            command.append("--fixed-strings")
+        command.extend(["--regexp", pattern, search_path])
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.root,
+                text=True,
+                capture_output=True,
+                timeout=GREP_TIMEOUT_SECONDS,
+                encoding="utf-8",
+                errors="replace",
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode == 1:
+            return []
+        if result.returncode != 0:
+            return None
+
+        events_by_path: dict[str, dict[int, str]] = {}
+        matches: list[tuple[str, int, str]] = []
+        for raw_line in result.stdout.splitlines():
+            try:
+                event = json.loads(raw_line)
+            except json.JSONDecodeError:
+                continue
+            event_type = event.get("type")
+            if event_type not in {"match", "context"}:
+                continue
+            data = event.get("data") or {}
+            path_data = data.get("path") or {}
+            raw_path = str(path_data.get("text") or "")
+            if not raw_path:
+                continue
+            normalized_path = raw_path.replace("\\", "/")
+            if normalized_path.startswith("./"):
+                normalized_path = normalized_path[2:]
+            try:
+                line_no = int(data.get("line_number"))
+            except (TypeError, ValueError):
+                continue
+            line_data = data.get("lines") or {}
+            text = str(line_data.get("text") or "").rstrip("\r\n")
+            text = _truncate_line(text, READ_PAGE_MAX_LINE_LENGTH)
+            events_by_path.setdefault(normalized_path, {})[line_no] = text
+            if event_type == "match":
+                matches.append((normalized_path, line_no, text))
+                if len(matches) >= max_results:
+                    break
+
+        hits: list[dict[str, Any]] = []
+        for hit_path, line_no, text in matches[:max_results]:
+            start = max(1, line_no - context_lines)
+            end = line_no + context_lines
+            context_rows = [
+                f"{row_no}: {events_by_path.get(hit_path, {}).get(row_no, '')}"
+                for row_no in range(start, end + 1)
+                if row_no in events_by_path.get(hit_path, {})
+            ]
+            hits.append({
+                "path": hit_path,
+                "line": line_no,
+                "text": text,
+                "context": "\n".join(context_rows),
+            })
+        return hits
 
     def search_files(self, pattern: str, *, path: str | Path = ".", max_results: int = 50) -> list[str]:
         """已废弃：保留为兼容旧测试。请使用 glob。"""

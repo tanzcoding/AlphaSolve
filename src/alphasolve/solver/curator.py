@@ -134,15 +134,10 @@ class CuratorQueue:
 
         from alphasolve.agent import Agent
         from .subagent_service import SubagentService
-        from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
+        from .tool_runtime import build_solver_tool_registry
         from .workspace_access import RoleWorkspaceAccess
 
-        access = RoleWorkspaceAccess(
-            workspace=_make_workspace(self.workspace_dir),
-            read_root_rel="knowledge",
-            write_root_rel="knowledge",
-            destructive_protected_file_names=("index.md", "common-errors.md"),
-        )
+        access = RoleWorkspaceAccess.curator(_make_workspace(self.workspace_dir))
         subagent_svc = SubagentService(
             suite=self.suite,
             client_factory=self.client_factory,
@@ -151,13 +146,11 @@ class CuratorQueue:
             session_prefix="curator",
             log_session=self.log_session,
             stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess(
-                workspace=_make_workspace(self.workspace_dir),
-                read_root_rel="knowledge",
+            file_access_factory=lambda: RoleWorkspaceAccess.curator_subagent(
+                _make_workspace(self.workspace_dir)
             ),
         )
-        registry = build_default_tool_registry(access)
-        register_agent_tool(registry, agent_config=config, dispatcher=subagent_svc)
+        registry = build_solver_tool_registry(access, agent_config=config, dispatcher=subagent_svc)
 
         if task.task_kind == "health_check":
             task_prompt = _health_check_prompt(self.knowledge_dir)

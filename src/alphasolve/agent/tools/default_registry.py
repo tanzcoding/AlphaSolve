@@ -1,242 +1,17 @@
 from __future__ import annotations
 
+import datetime
 import json
-import re
 import subprocess
-from copy import deepcopy
-from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any
 
-from .config import AgentConfig
-from .workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, WorkspaceLike
-from .shell import find_bash_path, has_bash, run_powershell_command
-
-
-ToolHandler = Callable[[dict[str, Any]], "ToolResult"]
-
-
-class SubagentDispatcher(Protocol):
-    """第二层 Agent 工具的最小调度器协议。
-
-    Why: 第二层不知道也不应该知道 reasoning/compute/numerical 等业务
-    subagent 类型；这套方法让第三层 SubagentService 把"业务上的
-    subagent 角色"翻译成"第二层认识的调度协议"。
-    """
-    def available_types(self) -> list[str]: ...
-    def describe_type(self, agent_type: str) -> str: ...
-    def call(self, agent_type: str, description: str, prompt: str, *, depth: int = ...) -> str: ...
-
-
-@dataclass(frozen=True)
-class ToolResult:
-    content: str
-    is_error: bool = False
-    stop_agent: bool = False
-    stop_answer: str | None = None
-
-
-@dataclass(frozen=True)
-class RegisteredTool:
-    name: str
-    description: str
-    parameters: dict[str, Any]
-    handler: ToolHandler
-
-
-class ToolRegistry:
-    def __init__(self) -> None:
-        self._tools: dict[str, RegisteredTool] = {}
-
-    def register(
-        self,
-        *,
-        name: str,
-        description: str,
-        parameters: dict[str, Any],
-        handler: ToolHandler,
-    ) -> None:
-        if name in self._tools:
-            raise ValueError(f"tool already registered: {name}")
-        self._tools[name] = RegisteredTool(
-            name=name,
-            description=description,
-            parameters=parameters,
-            handler=handler,
-        )
-
-    def tool_defs(
-        self,
-        enabled: tuple[str, ...] | list[str] | None = None,
-        tool_parameters: Mapping[str, Mapping[str, Any]] | None = None,
-        tool_descriptions: Mapping[str, Mapping[str, Any]] | None = None,
-    ) -> list["ToolDef"]:
-        from alphasolve.llm.types import ToolDef
-        names = list(enabled) if enabled is not None else list(self._tools)
-        missing = [name for name in names if name not in self._tools]
-        if missing:
-            raise KeyError(f"unknown tools: {missing}")
-        constraints = tool_parameters or {}
-        descriptions = tool_descriptions or {}
-        out: list[ToolDef] = []
-        for name in names:
-            tool = self._tools[name]
-            params = deepcopy(tool.parameters)
-            constraint = constraints.get(name)
-            if constraint:
-                _apply_parameter_constraints(params, constraint)
-            description = tool.description
-            desc_override = descriptions.get(name)
-            if desc_override:
-                if "override" in desc_override:
-                    description = desc_override["override"]
-                elif "suffix" in desc_override:
-                    description = description + "\n" + desc_override["suffix"]
-                if "parameters" in desc_override:
-                    _apply_parameter_description_overrides(params, desc_override["parameters"])
-            out.append(ToolDef(name=tool.name, description=description, parameters=params))
-        return out
-
-    def registered_tools(self) -> list[RegisteredTool]:
-        return list(self._tools.values())
-
-    def execute(
-        self,
-        name: str,
-        args: Mapping[str, Any],
-        *,
-        enabled: list[str] | None = None,
-        tool_parameters: Mapping[str, Mapping[str, Any]] | None = None,
-    ) -> ToolResult:
-        if enabled is not None and name not in enabled:
-            return ToolResult(json.dumps({"error": f"tool is not enabled for this agent: {name}"}, ensure_ascii=False), is_error=True)
-        tool = self._tools.get(name)
-        if tool is None:
-            return ToolResult(json.dumps({"error": f"unknown tool: {name}"}, ensure_ascii=False), is_error=True)
-        constraints = (tool_parameters or {}).get(name) or {}
-        effective_args = _apply_argument_defaults(args, tool.parameters, constraints)
-        error = _validate_tool_arguments(name, effective_args, constraints)
-        if error:
-            return ToolResult(json.dumps({"error": error}, ensure_ascii=False), is_error=True)
-        try:
-            return tool.handler(effective_args)
-        except Exception as exc:
-            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
-
-
-def _apply_parameter_constraints(parameters: dict[str, Any], constraints: Mapping[str, Any]) -> None:
-    properties = parameters.setdefault("properties", {})
-    if not isinstance(properties, dict):
-        return
-    for param_name, constraint in constraints.items():
-        if not isinstance(constraint, Mapping):
-            continue
-        prop = properties.setdefault(str(param_name), {})
-        if isinstance(prop, dict):
-            prop.update(dict(constraint))
-
-
-def _apply_parameter_description_overrides(parameters: dict[str, Any], overrides: Mapping[str, Mapping[str, str]]) -> None:
-    """覆盖某个参数自己的 description 文本。未知参数名直接跳过，避免 YAML 笔误悄悄造出
-    没有 type 的空参数 schema。"""
-    properties = parameters.get("properties")
-    if not isinstance(properties, dict):
-        return
-    for param_name, spec in overrides.items():
-        prop = properties.get(str(param_name))
-        if isinstance(prop, dict) and "description" in spec:
-            prop["description"] = str(spec["description"])
-
-
-def _validate_tool_arguments(tool_name: str, args: Mapping[str, Any], constraints: Mapping[str, Any]) -> str | None:
-    for param_name, constraint in constraints.items():
-        if param_name not in args:
-            continue
-        if not isinstance(constraint, Mapping):
-            continue
-        error = _validate_value(args[param_name], constraint, path=f"{tool_name}.{param_name}")
-        if error:
-            return error
-    return None
-
-
-def _apply_argument_defaults(
-    args: Mapping[str, Any],
-    parameters: Mapping[str, Any],
-    constraints: Mapping[str, Any],
-) -> dict[str, Any]:
-    out = dict(args)
-    properties = parameters.get("properties", {})
-    if not isinstance(properties, Mapping):
-        properties = {}
-    names = set(properties) | set(constraints)
-    for name in names:
-        key = str(name)
-        if key in out:
-            continue
-        merged: dict[str, Any] = {}
-        base = properties.get(key)
-        if isinstance(base, Mapping):
-            merged.update(dict(base))
-        constraint = constraints.get(key)
-        if isinstance(constraint, Mapping):
-            merged.update(dict(constraint))
-        if "default" in merged:
-            out[key] = deepcopy(merged["default"])
-    return out
-
-
-def _validate_value(value: Any, schema: Mapping[str, Any], *, path: str) -> str | None:
-    if "const" in schema and value != schema["const"]:
-        return f"{path} must be {schema['const']!r}"
-    if "enum" in schema and value not in schema["enum"]:
-        return f"{path} must be one of {list(schema['enum'])!r}"
-
-    schema_type = schema.get("type")
-    if schema_type:
-        allowed = schema_type if isinstance(schema_type, list) else [schema_type]
-        if not any(_matches_json_type(value, str(item)) for item in allowed):
-            return f"{path} must have type {allowed!r}"
-
-    for key, check in (
-        ("minimum", lambda current, bound: current >= bound),
-        ("maximum", lambda current, bound: current <= bound),
-        ("exclusiveMinimum", lambda current, bound: current > bound),
-        ("exclusiveMaximum", lambda current, bound: current < bound),
-    ):
-        if key in schema:
-            if not isinstance(value, (int, float)) or isinstance(value, bool):
-                return f"{path} must be numeric to satisfy {key}"
-            if not check(value, schema[key]):
-                return f"{path} violates {key}={schema[key]!r}"
-
-    if "minLength" in schema:
-        if not isinstance(value, str) or len(value) < int(schema["minLength"]):
-            return f"{path} violates minLength={schema['minLength']!r}"
-    if "maxLength" in schema:
-        if not isinstance(value, str) or len(value) > int(schema["maxLength"]):
-            return f"{path} violates maxLength={schema['maxLength']!r}"
-    if "pattern" in schema:
-        if not isinstance(value, str) or re.search(str(schema["pattern"]), value) is None:
-            return f"{path} must match pattern {schema['pattern']!r}"
-    return None
-
-
-def _matches_json_type(value: Any, schema_type: str) -> bool:
-    if schema_type == "string":
-        return isinstance(value, str)
-    if schema_type == "integer":
-        return isinstance(value, int) and not isinstance(value, bool)
-    if schema_type == "number":
-        return isinstance(value, (int, float)) and not isinstance(value, bool)
-    if schema_type == "boolean":
-        return isinstance(value, bool)
-    if schema_type == "object":
-        return isinstance(value, Mapping)
-    if schema_type == "array":
-        return isinstance(value, list)
-    if schema_type == "null":
-        return value is None
-    return True
+from ..shell import find_bash_path, has_bash, run_powershell_command
+from ..workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, WorkspaceLike
+from .common import _format_grep_result, _format_list_result
+from .filesystem import _format_list_dir_result
+from .markdown import _markdown_index_progress_audit_hint, _markdown_read_review_hint
+from .registry import ToolRegistry
+from .types import ToolResult
 
 
 def build_default_tool_registry(
@@ -244,14 +19,12 @@ def build_default_tool_registry(
     *,
     bash_timeout_seconds: int = 120,
 ) -> ToolRegistry:
-    """构造第二层默认 ToolRegistry，注册 12 个通用 coding agent 基础工具。
+    """构造第二层默认 ToolRegistry，注册通用 coding agent 基础工具。
 
     第三层用法：传入 RoleWorkspaceAccess 实例（满足 WorkspaceLike），即可自动
-    获得带角色权限检查的 12 工具。Bash 在第二层不做命令白名单——具体安全策略
+    获得带角色权限检查的基础工具。Bash 在第二层不做命令白名单——具体安全策略
     由调用方通过 YAML 工具白名单或自定义 handler 控制。
     """
-    import datetime
-
     registry = ToolRegistry()
 
     # Read
@@ -264,8 +37,18 @@ def build_default_tool_registry(
                 read_all=bool(args.get("read_all", False)),
             )
         except Exception as exc:
-            return ToolResult(f"<system>ERROR: {exc}</system>", is_error=True)
-        return ToolResult(result.to_tool_content())
+            return ToolResult(f"<system>ERROR reading {args['path']}: {exc}</system>", is_error=True)
+        system = f"path: {args['path']}\n{result.message}"
+        hint = _markdown_read_review_hint(str(args["path"]), result.output, result.message)
+        index_audit_hint = _markdown_index_progress_audit_hint(workspace, str(args["path"]))
+        if not result.output:
+            return ToolResult(f"<system>{system}</system>")
+        parts = [f"<system>{system}</system>", result.output]
+        if hint:
+            parts.append(hint)
+        if index_audit_hint:
+            parts.append(index_audit_hint)
+        return ToolResult("\n".join(parts))
 
     registry.register(
         name="Read",
@@ -451,7 +234,12 @@ def build_default_tool_registry(
     # Glob
     registry.register(
         name="Glob",
-        description="Fast file pattern matching tool. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.",
+        description=(
+            "Fast file pattern matching tool. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.\n\n"
+            "Usage:\n"
+            "- Returns plain text with one path per line.\n"
+            "- In large workspaces, narrow `path` or `pattern` when you know the likely area."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -461,12 +249,11 @@ def build_default_tool_registry(
             },
             "required": ["pattern"],
         },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                workspace.glob(args["pattern"], path=args.get("path", "."), max_results=int(args.get("max_results", 100))),
-                ensure_ascii=False,
-            )
-        ),
+        handler=lambda args: ToolResult(_format_list_result(
+            "Glob results",
+            workspace.glob(args["pattern"], path=args.get("path", "."), max_results=int(args.get("max_results", 100))),
+            max_results=int(args.get("max_results", 100)),
+        )),
     )
 
     # ListDir
@@ -475,6 +262,7 @@ def build_default_tool_registry(
         description=(
             "Lists files and directories under a workspace directory.\n\n"
             "Usage:\n"
+            "- Returns plain text with one entry per line; directories end with `/`.\n"
             "- If the directory contains `index.md`, read `index.md` first before exploring other files."
         ),
         parameters={
@@ -485,12 +273,11 @@ def build_default_tool_registry(
             },
             "required": [],
         },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                workspace.list_dir(args.get("path", "."), max_results=int(args.get("max_results", 200))),
-                ensure_ascii=False,
-            )
-        ),
+        handler=lambda args: ToolResult(_format_list_dir_result(
+            args.get("path", "."),
+            workspace.list_dir(args.get("path", "."), max_results=int(args.get("max_results", 200))),
+            max_results=int(args.get("max_results", 200)),
+        )),
     )
 
     # Grep
@@ -499,7 +286,10 @@ def build_default_tool_registry(
         description=(
             "Searches readable text files under a specific file or directory.\n\n"
             "Usage:\n"
-            "- Prefer Grep for exact symbol/string searches.\n"
+            "- Prefer Grep for exact symbol/string searches before reading many files.\n"
+            "- Narrow `path` when you know the likely directory; broad searches can hit the result limit quickly.\n"
+            "- Returns plain text in `path:line: text` format, optionally with context.\n"
+            "- Use `context_lines` when the surrounding lines matter; keep it small for compact output.\n"
             "- `regex` defaults to true; set `regex=false` to force plain substring matching."
         ),
         parameters={
@@ -513,18 +303,18 @@ def build_default_tool_registry(
             },
             "required": ["pattern"],
         },
-        handler=lambda args: ToolResult(
-            json.dumps(
-                workspace.grep(
-                    args["pattern"],
-                    path=args.get("path", "."),
-                    regex=bool(args.get("regex", True)),
-                    max_results=int(args.get("max_results", 50)),
-                    context_lines=int(args.get("context_lines", 0)),
-                ),
-                ensure_ascii=False,
-            )
-        ),
+        handler=lambda args: ToolResult(_format_grep_result(
+            workspace.grep(
+                args["pattern"],
+                path=args.get("path", "."),
+                regex=bool(args.get("regex", True)),
+                max_results=int(args.get("max_results", 50)),
+                context_lines=int(args.get("context_lines", 0)),
+            ),
+            pattern=args["pattern"],
+            path=args.get("path", "."),
+            max_results=int(args.get("max_results", 50)),
+        )),
     )
 
     # GetCurrentTime
@@ -620,71 +410,3 @@ def build_default_tool_registry(
         )
 
     return registry
-
-
-def register_agent_tool(
-    registry: ToolRegistry,
-    *,
-    agent_config: AgentConfig,
-    dispatcher: SubagentDispatcher,
-    depth: int = 0,
-) -> None:
-    """Register the Agent tool with a description and enum scoped to this agent's permissions.
-
-    第三层（或其他实现）通过提供 SubagentDispatcher 实例注入业务 subagent 类型清单。
-    """
-    if "Agent" not in agent_config.tools:
-        return
-    agent_tool_params = agent_config.tool_parameters.get("Agent", {})
-    type_constraint = agent_tool_params.get("type", {})
-    allowed_types = type_constraint.get("enum", dispatcher.available_types())
-    known = set(dispatcher.available_types())
-    allowed_types = [t for t in allowed_types if t in known]
-    if not allowed_types:
-        return
-    lines = [
-        "Launch a new specialized agent and return its final report.",
-        "",
-        "The launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.",
-        "",
-        "Available agent types:",
-    ]
-    for stype in allowed_types:
-        when = dispatcher.describe_type(stype)
-        lines.append(f"- {stype}: {when}")
-    lines.extend([
-        "",
-        "## Writing the prompt",
-        "",
-        "- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.",
-        "- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.",
-        "- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.",
-        "- Keep the task self-contained and bounded to the agent's scope.",
-    ])
-
-    def _handler(args: dict[str, Any]) -> ToolResult:
-        agent_type = str(args.get("type") or "")
-        description = str(args.get("description") or "")
-        prompt = str(args.get("prompt") or "")
-        if not prompt.strip():
-            return ToolResult("ERROR: prompt must not be empty", is_error=True)
-        try:
-            text = dispatcher.call(agent_type, description, prompt, depth=depth)
-            return ToolResult(text)
-        except Exception as exc:
-            return ToolResult(f"ERROR: {exc}", is_error=True)
-
-    registry.register(
-        name="Agent",
-        description="\n".join(lines),
-        parameters={
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": allowed_types, "description": "The type of specialized agent to use for this task."},
-                "description": {"type": "string", "description": "A short (3-5 word) description of the task."},
-                "prompt": {"type": "string", "description": "The task for the agent to perform."},
-            },
-            "required": ["type", "description", "prompt"],
-        },
-        handler=_handler,
-    )

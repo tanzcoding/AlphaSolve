@@ -1,6 +1,6 @@
 [
   {
-    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
+    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches before reading many files.\n- Narrow `path` when you know the likely directory; broad searches can hit the result limit quickly.\n- Returns plain text in `path:line: text` format, optionally with context.\n- Use `context_lines` when the surrounding lines matter; keep it small for compact output.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
     "name": "Grep",
     "parameters": {
       "properties": {
@@ -153,7 +153,7 @@
     }
   },
   {
-    "description": "Lists files and directories under a workspace directory.\n\nUsage:\n- If the directory contains `index.md`, read `index.md` first before exploring other files.\n- The result respects this agent's workspace access restrictions.",
+    "description": "Lists files and directories under a workspace directory.\n\nUsage:\n- Returns plain text with one entry per line; directories end with `/`.\n- If the directory contains `index.md`, read `index.md` first before exploring other files.\n- The result respects this agent's workspace access restrictions.",
     "name": "ListDir",
     "parameters": {
       "properties": {
@@ -257,7 +257,7 @@
     }
   },
   {
-    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- curator: Incrementally update the knowledge wiki after each subagent trace.\n- numerical_experiment_subagent: Bounded exploration, branch checks, and local numerical experiments.\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n- research_reviewer: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, and recommend research directions.\n\n## Writing the prompt\n\n- State the exact mathematical claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and bounded to the agent's scope.",
+    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- curator: Incrementally update the knowledge wiki after each subagent trace.\n- numerical_experiment_subagent: Bounded exploration, branch checks, and local numerical experiments.\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n- research_reviewer: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, and recommend research directions.\n\n## Writing the prompt\n\n- For broad workspace review, split by directory or file group: ask each subagent to inspect one scoped area and return a concise evidence report with file paths, line references when available, current status, open issues, and recommended next local step.\n- Use the main agent to compare subagent reports and decide the global next step; do not ask a subagent with a narrow scope to make the final workspace-wide decision.\n- State the exact claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and limited to the agent's scope.",
     "name": "Agent",
     "parameters": {
       "properties": {

@@ -31,6 +31,120 @@ class RoleWorkspaceAccess:
         self._locked_proposition_rel: str | None = None
         self._touched_paths: set[Path] = set()
 
+    # ------------------------------------------------------------------
+    # 角色策略工厂：每个 solver 角色的访问规则在这里集中定义。
+    # 调用方写 ``RoleWorkspaceAccess.generator(workspace, worker_rel)``，
+    # 不再在调用点散落 22 字段的匿名组合。新增/修改一条规则只动一处。
+    # ------------------------------------------------------------------
+    @classmethod
+    def generator(cls, workspace: Workspace, worker_rel: str) -> "RoleWorkspaceAccess":
+        """主 generator：只能在自己 worker_dir 下写入 ``proposition.md``，不可访问其他 worker 的未验证目录。"""
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+            single_proposition_file=True,
+        )
+
+    @classmethod
+    def worker_read_only(cls, workspace: Workspace, worker_rel: str) -> "RoleWorkspaceAccess":
+        """worker 域内只读策略：可读 worker_dir 子树，不可写。
+
+        共享于：generator 的 subagent、reviser 的 subagent、review_verdict_judge 主 agent。
+        三者的访问需求完全一致——能读自己 worker_dir 的资料，但禁止任何写。
+        """
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+        )
+
+    @classmethod
+    def verifier_attempt(
+        cls,
+        workspace: Workspace,
+        worker_rel: str,
+        *,
+        all_verifier_ws_rel: str,
+        config_name: str,
+    ) -> "RoleWorkspaceAccess":
+        """verifier_attempt：禁止跨 attempt 互读，verifier_citation 还禁止访问 knowledge/。
+
+        主 agent 和 subagent 共用这条策略（worker 当前实现中两者一致）。
+        """
+        deny_read_rels: tuple[str, ...] = (all_verifier_ws_rel,)
+        if config_name == "verifier_citation":
+            deny_read_rels = ("knowledge", *deny_read_rels)
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+            deny_read_rels=deny_read_rels,
+            deny_read_file_names=("review.md",),
+        )
+
+    @classmethod
+    def theorem_checker(cls, workspace: Workspace, worker_rel: str) -> "RoleWorkspaceAccess":
+        """theorem_checker：只能读 ``verified_propositions/``。主 agent 和 subagent 共用。"""
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+            read_root_rel="verified_propositions",
+        )
+
+    @classmethod
+    def reviser(
+        cls,
+        workspace: Workspace,
+        worker_rel: str,
+        *,
+        proposition_rel: str,
+    ) -> "RoleWorkspaceAccess":
+        """主 reviser：唯一可写文件被锁定为传入的 ``proposition_rel``（通常是 worker_dir/proposition.md）。"""
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+            exact_write_rel=proposition_rel,
+        )
+
+    @classmethod
+    def orchestrator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """主 orchestrator：可整理 ``verified_propositions/``，禁止重命名 index.md 等关键文件。"""
+        return cls(
+            workspace=workspace,
+            write_root_rel="verified_propositions",
+            destructive_protected_file_names=("index.md",),
+            preserve_markdown_file_names_on_rename=True,
+        )
+
+    @classmethod
+    def orchestrator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """orchestrator 的 research_reviewer subagent：只读，且不可看 ``unverified_propositions/``。"""
+        return cls(
+            workspace=workspace,
+            deny_read_rel="unverified_propositions",
+        )
+
+    @classmethod
+    def curator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """主 curator：读写均限于 ``knowledge/``，禁止重命名 index.md / common-errors.md。"""
+        return cls(
+            workspace=workspace,
+            read_root_rel="knowledge",
+            write_root_rel="knowledge",
+            destructive_protected_file_names=("index.md", "common-errors.md"),
+        )
+
+    @classmethod
+    def curator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """curator 的 subagent：只读 ``knowledge/``。"""
+        return cls(
+            workspace=workspace,
+            read_root_rel="knowledge",
+        )
+
     def read_text_page(
         self,
         path: str,

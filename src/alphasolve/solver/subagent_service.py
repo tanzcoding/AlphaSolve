@@ -13,10 +13,11 @@ from alphasolve.agent import (
     ToolRegistry,
     ToolResult,
 )
-from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
+from alphasolve.agent.tools import register_agent_tool
 from alphasolve.solver.execution.runners import run_python, run_wolfram
 
 from .client_factory import ClientFactory
+from .tool_runtime import build_solver_tool_registry, clone_agent_config_with_tools, register_execution_tools
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -172,19 +173,7 @@ class SubagentService:
         if depth >= self.max_depth and "Agent" in enabled_tools:
             enabled_tools = [name for name in enabled_tools if name != "Agent"]
         if enabled_tools != list(config.tools):
-            config = AgentConfig(
-                name=config.name,
-                system_prompt=config.system_prompt,
-                tools=tuple(enabled_tools),
-                tool_parameters=config.tool_parameters,
-                max_turns=config.max_turns,
-                tier=config.tier,
-                skills=config.skills,
-                when_to_use=config.when_to_use,
-                system_prompt_template=config.system_prompt_template,
-                system_prompt_args=config.system_prompt_args,
-                metadata=config.metadata,
-            )
+            config = clone_agent_config_with_tools(config, enabled_tools)
         subagent_sink = self.log_session.create_subagent_sink(agent_type) if self.log_session is not None else None
         try:
             agent = Agent(
@@ -203,48 +192,29 @@ class SubagentService:
         return session_id, result
 
     def _build_subagent_registry(self, *, depth: int, session_id: str, config: AgentConfig) -> ToolRegistry:
-        """子 agent 的工具集：第二层基础工具 + workflow 专属 RunPython/RunWolfram。
+        """子 agent 的工具集：第三层基础工具 + RunPython/RunWolfram。
 
-        当 ``file_access_factory`` 提供时直接走第二层 ``build_default_tool_registry``；
+        当 ``file_access_factory`` 提供时直接走 ``build_solver_tool_registry``；
         否则用空 registry（基础文件工具由 ``enabled_tools`` 过滤逻辑剔除）。差异化
         措辞统一由 agent YAML 的 ``tool_descriptions`` 表达，本方法不再重复注册基础工具。
         """
         if self.file_access_factory is not None:
             access = self.file_access_factory()
-            registry = build_default_tool_registry(access)
+            registry = build_solver_tool_registry(access)
         else:
             registry = ToolRegistry()
         python_env: dict[str, Any] = {}
         wolfram_session = {"session": None}
 
-        registry.register(
-            name="RunPython",
-            description="Executes Python code in a persistent in-memory environment without filesystem access.\n\nUsage:\n- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n- The Python environment persists across calls within the same session.\n- No filesystem access is permitted; use file tools separately if needed.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "The Python code to execute."},
-                },
-                "required": ["code"],
-            },
-            handler=lambda args: _python_tool(
+        register_execution_tools(
+            registry,
+            run_python_handler=lambda args: _python_tool(
                 args,
                 python_env,
                 execution_gateway=self.execution_gateway,
                 session_id=session_id,
             ),
-        )
-        registry.register(
-            name="RunWolfram",
-            description="Execute Wolfram Language code in a short-lived Wolfram session when Wolfram is available.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "code": {"type": "string", "description": "The Wolfram Language code to execute."},
-                },
-                "required": ["code"],
-            },
-            handler=lambda args: _wolfram_tool(
+            run_wolfram_handler=lambda args: _wolfram_tool(
                 args,
                 wolfram_session,
                 execution_gateway=self.execution_gateway,
