@@ -11,15 +11,15 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from alphasolve.agent import AgentConfig, Agent, Workspace
+from alphasolve.agent import AgentConfig, Agent, AgentEventSink, Workspace
 from alphasolve.solver.wolfram_state import AlphaSolveConfig
 from alphasolve.llm.types import Message
 from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory
-from .subagent_service import SubagentService
-from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
+from alphasolve.agent.tools import build_default_tool_registry
+from .role import Role, RoleContext
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -214,6 +214,20 @@ class Worker:
         self.log_session = log_session
         self.progress_callback = progress_callback
         self._worker_log_sink = log_session.create_worker_sink(prop_hash) if log_session is not None else None
+        self._role_ctx = RoleContext(
+            workspace=self.workspace,
+            worker_rel=self.worker_rel,
+            worker_dir=self.worker_dir,
+            suite=self.suite,
+            client_factory=self.client_factory,
+            subagent_max_depth=self.subagent_max_depth,
+            execution_gateway=self.execution_gateway,
+            curator_queue=self.curator_queue,
+            log_session=self.log_session,
+            stop_event=self.stop_event,
+            event_sink_factory=self._event_sink,
+            trace=self.trace,
+        )
 
     def run(self) -> WorkerRunResult:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
@@ -302,31 +316,21 @@ class Worker:
     def _run_generator(self) -> Path | None:
         config = self.suite.agents["generator"]
         self._set_phase("generator", status="thinking", model=self._model_name(config))
-        access = RoleWorkspaceAccess.generator(self.workspace, self.worker_rel)
         curator_context = GeneratorCuratorContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
-        subagents = SubagentService(
-            suite=self.suite,
-            client_factory=self.client_factory,
-            max_depth=self.subagent_max_depth,
-            execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/generator",
-            curator_queue=self.curator_queue,
+
+        def event_sink_decorator(base: AgentEventSink | None) -> AgentEventSink | None:
+            def sink(event: dict[str, Any]) -> None:
+                curator_context.record_event(event)
+                if base is not None:
+                    base(event)
+            return sink
+
+        role = Role.for_generator(
+            self._role_ctx,
             curator_context_provider=curator_context.consume,
-            log_session=self.log_session,
-            stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
+            event_sink_decorator=event_sink_decorator,
         )
-        registry = build_default_tool_registry(access)
-        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = Agent(
-            config=config,
-            client=self.client_factory(config),
-            tool_registry=registry,
-            event_sink=self._generator_event_sink(curator_context),
-            stop_event=self.stop_event,
-        )
-        result = agent.run(self._generator_task())
-        self.trace.append({"role": "generator", "trace": result.trace, "final_answer": result.final_answer})
+        role.run(self._generator_task())
         return self._find_proposition_file()
 
     def _run_verifier_workflow(self, proposition_file: Path, *, workflow_index: int) -> VerifierWorkflowResult:
@@ -370,42 +374,17 @@ class Worker:
         return VerifierWorkflowResult(last_review_text, passed, last_review_file, attempts_run)
 
     def _run_verifier_attempt_agent(self, proposition_file: Path, *, workflow_index: int, attempt_index: int, config_name: str) -> str:
-        role = f"verifier_attempt w{workflow_index}.{attempt_index}"
+        phase_label = f"verifier_attempt w{workflow_index}.{attempt_index}"
         config = self._verifier_attempt_config(config_name)
-        self._set_phase(role, status="thinking", model=self._model_name(config))
-        all_verifier_ws_rel = (self.worker_dir / "verifier_workspace").relative_to(self.layout.workspace_dir).as_posix()
-        access = RoleWorkspaceAccess.verifier_attempt(
-            self.workspace,
-            self.worker_rel,
-            all_verifier_ws_rel=all_verifier_ws_rel,
-            config_name=config_name,
-        )
-        subagents = SubagentService(
-            suite=self.suite,
-            client_factory=self.client_factory,
-            max_depth=self.subagent_max_depth,
-            execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/verifier-workflow-{workflow_index}-attempt-{attempt_index}-{config_name}",
-            log_session=self.log_session,
-            stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess.verifier_attempt(
-                self.workspace,
-                self.worker_rel,
-                all_verifier_ws_rel=all_verifier_ws_rel,
-                config_name=config_name,
-            ),
-            curator_queue=self.curator_queue,
-        )
-        registry = build_default_tool_registry(access)
-        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = Agent(
+        self._set_phase(phase_label, status="thinking", model=self._model_name(config))
+        role = Role.for_verifier_attempt(
+            self._role_ctx,
             config=config,
-            client=self.client_factory(config),
-            tool_registry=registry,
-            event_sink=self._event_sink(role),
-            stop_event=self.stop_event,
+            config_name=config_name,
+            workflow_index=workflow_index,
+            attempt_index=attempt_index,
         )
-        result = agent.run(
+        result = role.run(
             self._verifier_task(
                 proposition_file,
                 workflow_index=workflow_index,
@@ -414,14 +393,6 @@ class Worker:
                 config_name=config_name,
             )
         )
-        self.trace.append({
-            "role": "verifier_attempt",
-            "workflow": workflow_index,
-            "attempt": attempt_index,
-            "config": config_name,
-            "trace": result.trace,
-            "final_answer": result.final_answer,
-        })
         if self.curator_queue is not None:
             from .curator import CuratorTask
             self.curator_queue.submit(CuratorTask(
@@ -442,69 +413,22 @@ class Worker:
         return True, _format_theorem_check_attempts(attempts)
 
     def _run_theorem_checker(self, verified_file: Path, *, attempt_index: int) -> str:
-        role = "theorem_checker"
         config = self.suite.agents["theorem_checker"]
-        self._set_phase(role, status="thinking", model=self._model_name(config))
-        access = RoleWorkspaceAccess.theorem_checker(self.workspace, self.worker_rel)
-        subagents = SubagentService(
-            suite=self.suite,
-            client_factory=self.client_factory,
-            max_depth=self.subagent_max_depth,
-            execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/theorem-checker",
-            curator_queue=self.curator_queue,
-            log_session=self.log_session,
-            stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess.theorem_checker(self.workspace, self.worker_rel),
-        )
-        registry = build_default_tool_registry(access)
-        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = Agent(
-            config=config,
-            client=self.client_factory(config),
-            tool_registry=registry,
-            event_sink=self._event_sink(role),
-            stop_event=self.stop_event,
-        )
-        result = agent.run(self._theorem_checker_task(verified_file, attempt_index=attempt_index))
-        self.trace.append({
-            "role": "theorem_checker",
-            "attempt": attempt_index,
-            "trace": result.trace,
-            "final_answer": result.final_answer,
-        })
+        self._set_phase("theorem_checker", status="thinking", model=self._model_name(config))
+        role = Role.for_theorem_checker(self._role_ctx, attempt_index=attempt_index)
+        result = role.run(self._theorem_checker_task(verified_file, attempt_index=attempt_index))
         return result.final_answer
 
     def _run_reviser(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> None:
-        role = f"reviser w{workflow_index}"
         config = self.suite.agents["reviser"]
-        self._set_phase(role, status="thinking", model=self._model_name(config))
+        self._set_phase(f"reviser w{workflow_index}", status="thinking", model=self._model_name(config))
         exact_rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
-        access = RoleWorkspaceAccess.reviser(
-            self.workspace, self.worker_rel, proposition_rel=exact_rel
+        role = Role.for_reviser(
+            self._role_ctx,
+            proposition_rel=exact_rel,
+            workflow_index=workflow_index,
         )
-        subagents = SubagentService(
-            suite=self.suite,
-            client_factory=self.client_factory,
-            max_depth=self.subagent_max_depth,
-            execution_gateway=self.execution_gateway,
-            session_prefix=f"{self.worker_dir.name}/reviser-workflow-{workflow_index}",
-            curator_queue=self.curator_queue,
-            log_session=self.log_session,
-            stop_event=self.stop_event,
-            file_access_factory=lambda: RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
-        )
-        registry = build_default_tool_registry(access)
-        register_agent_tool(registry, agent_config=config, dispatcher=subagents)
-        agent = Agent(
-            config=config,
-            client=self.client_factory(config),
-            tool_registry=registry,
-            event_sink=self._event_sink(role),
-            stop_event=self.stop_event,
-        )
-        result = agent.run(self._reviser_task(proposition_file, review_text, workflow_index=workflow_index))
-        self.trace.append({"role": "reviser", "workflow": workflow_index, "trace": result.trace, "final_answer": result.final_answer})
+        role.run(self._reviser_task(proposition_file, review_text, workflow_index=workflow_index))
 
     def _run_review_verdict_judge(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
         role = f"review_verdict_judge w{workflow_index}.{attempt_index}"
@@ -745,16 +669,6 @@ class Worker:
             make_worker_event_sink(self.renderer, worker_id=self.worker_id, role=role),
             self._worker_log_sink,
         )
-
-    def _generator_event_sink(self, curator_context: GeneratorCuratorContext):
-        worker_sink = self._event_sink("generator")
-
-        def sink(event: dict[str, Any]) -> None:
-            curator_context.record_event(event)
-            if worker_sink is not None:
-                worker_sink(event)
-
-        return sink
 
     def _set_phase(self, phase: str, *, status: str, model: str = "") -> None:
         if self.progress_callback is not None:
