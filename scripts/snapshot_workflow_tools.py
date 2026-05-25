@@ -27,7 +27,11 @@ from alphasolve.agent import (
     load_agent_suite,
 )
 from alphasolve.solver.subagent_service import SubagentService
-from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
+from alphasolve.solver.tool_runtime import (
+    build_solver_tool_registry,
+    register_execution_tools,
+    register_orchestrator_worker_tools,
+)
 from alphasolve.solver.workspace_access import RoleWorkspaceAccess
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent / "src" / "alphasolve"
 
@@ -137,35 +141,10 @@ def _register_compute_subagent_extra_tools(registry: ToolRegistry) -> None:
     描述文本必须与 ``alphasolve.solver.subagent_service.SubagentService._build_subagent_registry``
     内对应注册一字一句保持一致。
     """
-    registry.register(
-        name="RunPython",
-        description=(
-            "Executes Python code in a persistent in-memory environment without filesystem access.\n\n"
-            "Usage:\n"
-            "- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n"
-            "- The Python environment persists across calls within the same session.\n"
-            "- No filesystem access is permitted; use file tools separately if needed."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "The Python code to execute."},
-            },
-            "required": ["code"],
-        },
-        handler=lambda _args: ToolResult(""),
-    )
-    registry.register(
-        name="RunWolfram",
-        description="Execute Wolfram Language code in a short-lived Wolfram session when Wolfram is available.",
-        parameters={
-            "type": "object",
-            "properties": {
-                "code": {"type": "string", "description": "The Wolfram Language code to execute."},
-            },
-            "required": ["code"],
-        },
-        handler=lambda _args: ToolResult(""),
+    register_execution_tools(
+        registry,
+        run_python_handler=lambda _args: ToolResult(""),
+        run_wolfram_handler=lambda _args: ToolResult(""),
     )
 
 
@@ -180,55 +159,11 @@ def _register_orchestrator_extra_tools(registry: ToolRegistry) -> None:
     # WorkerManager 的默认等待时长嵌在 TaskOutput 描述里，需要导入。
     from alphasolve.solver.orchestrator import WorkerManager
 
-    registry.register(
-        name="SpawnWorker",
-        description=(
-            "Start one worker and return immediately; this tool does not wait for the worker to finish.\n\n"
-            "Worker lifecycle:\n"
-            "- The worker first runs generator to draft one candidate proposition.\n"
-            "- It then runs verifier; if verification fails and rounds remain, it runs reviser and repeats verifier -> reviser.\n"
-            "- After verification, theorem-checking decides whether the verified proposition resolves the original problem.\n\n"
-            "Return content is JSON containing whether a worker was spawned, plus active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-            "If the parallelism limit has been reached, call TaskOutput before spawning more workers."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "hint": {
-                    "type": "string",
-                    "description": (
-                        "Optional targeted hint for this worker only. Suggest a direction, method, "
-                        "branch, local target, or bootstrap assumption. This is different from the user's hint.md."
-                    ),
-                },
-            },
-            "required": [],
-        },
-        handler=lambda _args: ToolResult(""),
-    )
-    registry.register(
-        name="TaskOutput",
-        description=(
-            "Wait until one active worker finishes, or until the timeout is reached.\n\n"
-            "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
-            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-            "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
-            "human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "seconds": {
-                    "type": "number",
-                    "description": "Maximum seconds to wait before returning active worker status.",
-                    "default": WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
-                    "minimum": 1200,
-                    "maximum": 3600,
-                },
-            },
-            "required": [],
-        },
-        handler=lambda _args: ToolResult(""),
+    register_orchestrator_worker_tools(
+        registry,
+        spawn_handler=lambda _args: ToolResult(""),
+        wait_handler=lambda _args: ToolResult(""),
+        default_wait_timeout_seconds=WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
     )
 
 
@@ -242,11 +177,11 @@ def _build_registry_for_agent(
     workspace = Workspace(root=workspace_root)
     worker_rel = "unverified_propositions/prop-snapshot"
     access, allow_write, allow_manage, allow_delete = _agent_setup(name, workspace, worker_rel)
-    registry = build_default_tool_registry(access)
+    extra_registrars = []
     if name == "orchestrator":
-        _register_orchestrator_extra_tools(registry)
+        extra_registrars.append(_register_orchestrator_extra_tools)
     if name in {"compute_subagent", "numerical_experiment_subagent"}:
-        _register_compute_subagent_extra_tools(registry)
+        extra_registrars.append(_register_compute_subagent_extra_tools)
 
     # SubagentService 仅用于让 Agent 工具的 enum 与运行期一致；client_factory
     # 永远不会被调用，因为我们只 dump 工具描述，不真正运行 agent。
@@ -255,10 +190,11 @@ def _build_registry_for_agent(
         client_factory=lambda _cfg: None,  # type: ignore[arg-type, return-value]
         max_depth=2,
     )
-    register_agent_tool(
-        registry,
+    registry = build_solver_tool_registry(
+        access,
         agent_config=config,
         dispatcher=subagent_service,
+        extra_registrars=tuple(extra_registrars),
     )
     tool_defs = registry.tool_defs(
         enabled=list(config.tools),

@@ -9,12 +9,7 @@ from ..shell import find_bash_path, has_bash, run_powershell_command
 from ..workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, WorkspaceLike
 from .common import _format_grep_result, _format_list_result
 from .filesystem import _format_list_dir_result
-from .markdown import (
-    _markdown_index_progress_audit_hint,
-    _markdown_read_review_hint,
-    _run_inspect_markdown,
-    _run_research_progress_review,
-)
+from .markdown import _markdown_index_progress_audit_hint, _markdown_read_review_hint
 from .registry import ToolRegistry
 from .types import ToolResult
 
@@ -243,7 +238,7 @@ def build_default_tool_registry(
             "Fast file pattern matching tool. Supports glob patterns like ``**/*.md`` or ``src/**/*.py``, or ``*`` to list directory contents.\n\n"
             "Usage:\n"
             "- Returns plain text with one path per line.\n"
-            "- In large research/proof workspaces, avoid starting with broad patterns like `**/*.md`; run ResearchProgressReview first, then Glob a narrower directory or filename pattern from that review."
+            "- In large workspaces, narrow `path` or `pattern` when you know the likely area."
         ),
         parameters={
             "type": "object",
@@ -283,60 +278,6 @@ def build_default_tool_registry(
             workspace.list_dir(args.get("path", "."), max_results=int(args.get("max_results", 200))),
             max_results=int(args.get("max_results", 200)),
         )),
-    )
-
-    # ResearchProgressReview
-    registry.register(
-        name="ResearchProgressReview",
-        description=(
-            "Audit a Markdown research/proof workspace before deciding current progress or next propositions.\n\n"
-            "Usage:\n"
-            "- Use this early when a workspace has problem.md, knowledge notes, and verified propositions.\n"
-            "- Prefer this over broad InspectMarkdown or many manual reads when starting from a workspace root.\n"
-            "- If the result cites several major directories or competing evidence areas, use scoped Agent calls to inspect those areas separately, then compare the reports in the main agent.\n"
-            "- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n"
-            "- If it reports an underclaimed proof that affects an answer, best-known objective value or estimate, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder work.\n"
-            "- This is a progress-navigation tool, not a verifier; it does not prove new claims."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Workspace root or directory to audit.", "default": "."},
-                "paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Optional specific files/directories to scan instead of auto-detecting research folders.",
-                    "default": [],
-                },
-                "max_files": {"type": "integer", "description": "Maximum Markdown files to scan.", "default": 120, "minimum": 1, "maximum": 500},
-            },
-            "required": [],
-        },
-        handler=lambda args: _run_research_progress_review(workspace, args),
-    )
-
-    # InspectMarkdown
-    registry.register(
-        name="InspectMarkdown",
-        description=(
-            "Survey Markdown files and surface the parts most likely to summarize research progress.\n\n"
-            "Usage:\n"
-            "- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n"
-            "- It lists headings, extracts statement/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n"
-            "- Its progress audit highlights underclaimed proof tails; if one affects an answer, best-known objective value or estimate, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n"
-            "- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "path": {"type": "string", "description": "Markdown file or directory to inspect.", "default": "."},
-                "max_files": {"type": "integer", "description": "Maximum Markdown files to inspect when path is a directory.", "default": 8, "minimum": 1, "maximum": 100},
-                "tail_lines": {"type": "integer", "description": "How many ending lines to show for each file.", "default": 40, "minimum": 1, "maximum": 200},
-                "statement_lines": {"type": "integer", "description": "Maximum lines to show from each selected statement/progress section.", "default": 80, "minimum": 1, "maximum": 300},
-            },
-            "required": [],
-        },
-        handler=lambda args: _run_inspect_markdown(workspace, args),
     )
 
     # Grep

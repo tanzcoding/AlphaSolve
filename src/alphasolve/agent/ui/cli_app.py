@@ -31,7 +31,7 @@ from alphasolve.llm.types import ChatClient
 
 # 第二层 default registry 提供的全部基础工具。具体可用清单由
 # build_default_tool_registry 决定；这里硬编码白名单，避免把需要第三层专门
-# 注册的 SpawnWorker/TaskOutput 误开。Bash vs Shell 由平台决定（has_bash 探测一次）。
+# 注册的研究/编排工具误开。Bash vs Shell 由平台决定（has_bash 探测一次）。
 _sentinel = object()
 
 _BASE_AGENT_TOOLS: tuple[str, ...] = (
@@ -45,8 +45,6 @@ _BASE_AGENT_TOOLS: tuple[str, ...] = (
     "Glob",
     "ListDir",
     "Grep",
-    "ResearchProgressReview",
-    "InspectMarkdown",
     "GetCurrentTime",
 )
 _SCOPED_EXPLORER_TYPE = "scoped_explorer"

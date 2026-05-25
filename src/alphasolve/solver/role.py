@@ -12,7 +12,7 @@ Agent → agent.run + 写 trace）集中到此处。调用方只看 ``Role.for_<
 - ``Role.run`` 只做 "跑 agent + 写一条 base trace 条目"；任何附加 post-processing
   （比如 verifier_attempt 的 curator 提交、verdict_judge 的 verdict 解析）
   仍由调用方在 ``Role.run`` 返回的 ``AgentRunResult`` 上完成。
-- 第二层公共 API（Agent / ToolRegistry / build_default_tool_registry / SubagentDispatcher）
+- 第二层公共 API（Agent / ToolRegistry / SubagentDispatcher）
   通过参数注入；本模块不暴露这些类型给上游调用方。
 """
 from __future__ import annotations
@@ -30,10 +30,10 @@ from alphasolve.agent import (
     AgentSuite,
     Workspace,
 )
-from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
 
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService
+from .tool_runtime import build_solver_tool_registry
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -262,8 +262,7 @@ def _assemble_agent(
     event_sink_decorator: Callable[[AgentEventSink | None], AgentEventSink | None] | None = None,
 ) -> Agent:
     """Wire up the 5 standard pieces: registry → Agent tool → Agent."""
-    registry = build_default_tool_registry(access)
-    register_agent_tool(registry, agent_config=config, dispatcher=subagents)
+    registry = build_solver_tool_registry(access, agent_config=config, dispatcher=subagents)
     event_sink = ctx.event_sink_factory(event_sink_label)
     if event_sink_decorator is not None:
         event_sink = event_sink_decorator(event_sink)

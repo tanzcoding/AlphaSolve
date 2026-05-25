@@ -18,8 +18,8 @@ from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory
-from alphasolve.agent.tools import build_default_tool_registry
 from .role import Role, RoleContext
+from .tool_runtime import build_solver_tool_registry
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -444,7 +444,7 @@ class Worker:
         agent = Agent(
             config=config,
             client=self.client_factory(config),
-            tool_registry=build_default_tool_registry(
+            tool_registry=build_solver_tool_registry(
                 RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
             ),
             event_sink=self._event_sink(role),

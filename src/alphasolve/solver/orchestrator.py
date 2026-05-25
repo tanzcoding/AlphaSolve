@@ -20,7 +20,7 @@ from .project import ProjectLayout
 from .solution import write_solution
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService
-from alphasolve.agent.tools import build_default_tool_registry, register_agent_tool
+from .tool_runtime import build_solver_tool_registry, register_orchestrator_worker_tools
 from .workspace_access import RoleWorkspaceAccess
 
 if TYPE_CHECKING:
@@ -560,55 +560,18 @@ class Orchestrator:
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
         access = RoleWorkspaceAccess.orchestrator(Workspace(self.layout.workspace_dir))
-        registry = build_default_tool_registry(access)
-        registry.register(
-            name="SpawnWorker",
-            description=(
-                "Start one worker and return immediately; this tool does not wait for the worker to finish.\n\n"
-                "Worker lifecycle:\n"
-                "- The worker first runs generator to draft one candidate proposition.\n"
-                "- It then runs verifier; if verification fails and rounds remain, it runs reviser and repeats verifier -> reviser.\n"
-                "- After verification, theorem-checking decides whether the verified proposition resolves the original problem.\n\n"
-                "Return content is JSON containing whether a worker was spawned, plus active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-                "If the parallelism limit has been reached, call TaskOutput before spawning more workers."
+        extra_registrars = (
+            lambda registry: register_orchestrator_worker_tools(
+                registry,
+                spawn_handler=lambda args: self._spawn_tool(manager, args),
+                wait_handler=lambda args: self._wait_tool(manager, args),
+                default_wait_timeout_seconds=WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "hint": {"type": "string", "description": "Optional targeted hint for this worker only. Suggest a direction, method, branch, local target, or bootstrap assumption. This is different from the user's hint.md."},
-                },
-                "required": [],
-            },
-            handler=lambda args: self._spawn_tool(manager, args),
-        )
-        registry.register(
-            name="TaskOutput",
-            description=(
-                "Wait until one active worker finishes, or until the timeout is reached.\n\n"
-                "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
-                "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-                "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
-                "human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "seconds": {
-                        "type": "number",
-                        "description": "Maximum seconds to wait before returning active worker status.",
-                        "default": WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
-                        "minimum": 1200,
-                        "maximum": 3600,
-                    },
-                },
-                "required": [],
-            },
-            handler=lambda args: self._wait_tool(manager, args),
         )
         if subagents is not None:
             from alphasolve.agent import AgentConfig
-            register_agent_tool(
-                registry,
+            return build_solver_tool_registry(
+                access,
                 agent_config=AgentConfig(
                     name="_orchestrator_subagent",
                     system_prompt="",
@@ -616,8 +579,9 @@ class Orchestrator:
                     tool_parameters={"Agent": {"type": {"enum": ["research_reviewer"]}}},
                 ),
                 dispatcher=subagents,
+                extra_registrars=extra_registrars,
             )
-        return registry
+        return build_solver_tool_registry(access, extra_registrars=extra_registrars)
 
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         payload = manager.spawn(args.get("hint"))

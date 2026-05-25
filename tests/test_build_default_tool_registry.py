@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 
 from alphasolve.agent import Workspace  # noqa: E402
 from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
+from alphasolve.solver.tool_runtime import register_research_markdown_tools  # noqa: E402
 
 
 @pytest.fixture
@@ -19,11 +20,19 @@ def registry(tmp_path: Path):
     return build_default_tool_registry(ws)
 
 
+@pytest.fixture
+def research_registry(tmp_path: Path):
+    ws = Workspace(root=tmp_path)
+    registry = build_default_tool_registry(ws)
+    register_research_markdown_tools(registry, ws)
+    return registry
+
+
 def test_registers_all_basic_tools(registry):
     names = {tool.name for tool in registry.registered_tools()}
     expected = {
         "Read", "Write", "Edit", "MakeDir", "Rename", "Move", "Delete",
-        "Glob", "ListDir", "Grep", "ResearchProgressReview", "InspectMarkdown", "GetCurrentTime",
+        "Glob", "ListDir", "Grep", "GetCurrentTime",
     }
     # Bash 或 Shell（按平台二选一）
     shell_tool = ({"Bash"} & names) or ({"Shell"} & names)
@@ -53,7 +62,7 @@ def test_write_mode_in_parameters(registry):
     assert mode_param["default"] == "overwrite"
 
 
-def test_inspect_markdown_surfaces_statement_and_tail(registry, tmp_path: Path):
+def test_inspect_markdown_surfaces_statement_and_tail(research_registry, tmp_path: Path):
     (tmp_path / "proof.md").write_text(
         "# Proposition\n"
         "Statement: enough conditions imply the target result.\n\n"
@@ -63,7 +72,7 @@ def test_inspect_markdown_surfaces_statement_and_tail(registry, tmp_path: Path):
         encoding="utf-8",
     )
 
-    result = registry.execute("InspectMarkdown", {"path": "proof.md"})
+    result = research_registry.execute("InspectMarkdown", {"path": "proof.md"})
 
     assert not result.is_error
     assert "== proof.md ==" in result.content
@@ -105,7 +114,7 @@ def test_read_markdown_does_not_warn_without_statement_and_proof(registry, tmp_p
     assert "Markdown proof-review hint" not in result.content
 
 
-def test_list_dir_suggests_progress_review_for_research_workspace(registry, tmp_path: Path):
+def test_list_dir_does_not_expose_research_tool_hint_from_default_registry(registry, tmp_path: Path):
     (tmp_path / "problem.md").write_text("Problem\n", encoding="utf-8")
     (tmp_path / "verified_propositions").mkdir()
     (tmp_path / "knowledge").mkdir()
@@ -113,12 +122,11 @@ def test_list_dir_suggests_progress_review_for_research_workspace(registry, tmp_
     result = registry.execute("ListDir", {"path": "."})
 
     assert not result.is_error
-    assert "research workspace hint" in result.content
-    assert "ResearchProgressReview" in result.content
-    assert "before broad Read or InspectMarkdown sweeps" in result.content
+    assert "ResearchProgressReview" not in result.content
+    assert "InspectMarkdown" not in result.content
 
 
-def test_research_progress_review_surfaces_workspace_and_attempt_notes(registry, tmp_path: Path):
+def test_research_progress_review_surfaces_workspace_and_attempt_notes(research_registry, tmp_path: Path):
     (tmp_path / "problem.md").write_text(
         "# Problem\n\n"
         "## Current status\n"
@@ -143,7 +151,7 @@ def test_research_progress_review_surfaces_workspace_and_attempt_notes(registry,
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     assert "review stopping guide" in result.content
@@ -156,7 +164,7 @@ def test_research_progress_review_surfaces_workspace_and_attempt_notes(registry,
     assert "failed because it skipped a prerequisite" in result.content
 
 
-def test_research_progress_review_surfaces_repairable_failed_attempt(registry, tmp_path: Path):
+def test_research_progress_review_surfaces_repairable_failed_attempt(research_registry, tmp_path: Path):
     (tmp_path / "problem.md").write_text("Decide the final response.\n", encoding="utf-8")
     (tmp_path / "verified_propositions").mkdir()
     (tmp_path / "knowledge").mkdir()
@@ -173,7 +181,7 @@ def test_research_progress_review_surfaces_repairable_failed_attempt(registry, t
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     assert "repairable attempt candidates" in result.content
@@ -183,7 +191,7 @@ def test_research_progress_review_surfaces_repairable_failed_attempt(registry, t
     assert "localized and fixable" in result.content
 
 
-def test_research_progress_review_prioritizes_unreviewed_high_level_attempt(registry, tmp_path: Path):
+def test_research_progress_review_prioritizes_unreviewed_high_level_attempt(research_registry, tmp_path: Path):
     (tmp_path / "problem.md").write_text("Decide the final response.\n", encoding="utf-8")
     (tmp_path / "verified_propositions").mkdir()
     (tmp_path / "knowledge").mkdir()
@@ -202,7 +210,7 @@ def test_research_progress_review_prioritizes_unreviewed_high_level_attempt(regi
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     assert "unreviewed high-level attempts" in result.content
@@ -210,7 +218,7 @@ def test_research_progress_review_prioritizes_unreviewed_high_level_attempt(regi
     assert "make the high-level attempt's exact interface explicit" in result.content
 
 
-def test_research_progress_review_surfaces_underclaimed_proof(registry, tmp_path: Path):
+def test_research_progress_review_surfaces_underclaimed_proof(research_registry, tmp_path: Path):
     (tmp_path / "problem.md").write_text("Decide the final response.\n", encoding="utf-8")
     verified_dir = tmp_path / "verified_propositions"
     verified_dir.mkdir()
@@ -224,7 +232,7 @@ def test_research_progress_review_surfaces_underclaimed_proof(registry, tmp_path
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     assert "possible underclaimed proof statements: 1" in result.content
@@ -235,7 +243,7 @@ def test_research_progress_review_surfaces_underclaimed_proof(registry, tmp_path
     assert "strictly above L" in result.content
 
 
-def test_research_progress_review_prioritizes_shallow_answer_changing_candidates(registry, tmp_path: Path):
+def test_research_progress_review_prioritizes_shallow_answer_changing_candidates(research_registry, tmp_path: Path):
     verified_dir = tmp_path / "verified_propositions"
     technical_dir = verified_dir / "technical"
     technical_dir.mkdir(parents=True)
@@ -267,7 +275,7 @@ def test_research_progress_review_prioritizes_shallow_answer_changing_candidates
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     main_pos = result.content.index("verified_propositions/main-result.md")
@@ -277,7 +285,7 @@ def test_research_progress_review_prioritizes_shallow_answer_changing_candidates
     assert "selected target: knowledge/notes.md" not in result.content
 
 
-def test_research_progress_review_prefers_problem_focused_tail(registry, tmp_path: Path):
+def test_research_progress_review_prefers_problem_focused_tail(research_registry, tmp_path: Path):
     verified_dir = tmp_path / "verified_propositions"
     verified_dir.mkdir()
     (tmp_path / "knowledge").mkdir()
@@ -298,13 +306,13 @@ def test_research_progress_review_prefers_problem_focused_tail(registry, tmp_pat
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     assert "selected target: verified_propositions/ticket-result.md" in result.content
 
 
-def test_research_progress_review_ignores_tail_already_in_statement(registry, tmp_path: Path):
+def test_research_progress_review_ignores_tail_already_in_statement(research_registry, tmp_path: Path):
     verified_dir = tmp_path / "verified_propositions"
     verified_dir.mkdir()
     (tmp_path / "knowledge").mkdir()
@@ -324,7 +332,7 @@ def test_research_progress_review_ignores_tail_already_in_statement(registry, tm
         encoding="utf-8",
     )
 
-    result = registry.execute("ResearchProgressReview", {"path": "."})
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
     assert "verified_propositions/repeated.md" not in result.content
