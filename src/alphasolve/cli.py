@@ -158,6 +158,8 @@ def main() -> None:
                         help="Produce detailed solver trace logs under logs/. With --agent -p, print intermediate reasoning and tool events to stderr.")
     parser.add_argument("--agent", action="store_true",
                         help="Run an interactive second-layer Agent REPL")
+    parser.add_argument("--profile", choices=["generic", "orchestrator"], default="generic",
+                        help="Agent profile to use with --agent (default: generic)")
     parser.add_argument("-p", "--print", dest="agent_prompt", metavar="PROMPT",
                         help="Run --agent once with PROMPT and print the final answer")
     parser.add_argument("--demo", action="store_true",
@@ -181,6 +183,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.agent_prompt is not None and not args.agent:
         parser.error("-p/--print can only be used with --agent")
+    if args.profile != "generic" and not args.agent:
+        parser.error("--profile can only be used with --agent")
 
     from alphasolve.agent import load_agent_suite
 
@@ -236,13 +240,40 @@ def main() -> None:
         presets = load_presets(repo_path=presets_path, user_path=user_presets)
         client_factory = make_client_factory(tier_mapping, presets)
 
+    suite_settings = suite.settings
+    max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
+    verifier_scaling_factor = (
+        args.verifier_scaling_factor
+        if args.verifier_scaling_factor is not None
+        else int(suite_settings.get("verifier_scaling_factor", 1))
+    )
+    subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
+    max_orchestrator_restarts = (
+        args.max_orchestrator_restarts
+        if args.max_orchestrator_restarts is not None
+        else int(suite_settings.get("max_orchestrator_restarts", 5))
+    )
+
     if args.agent:
         from alphasolve.agent.ui.cli_app import AgentApp, make_print_debug_event_sink
 
-        _app = AgentApp(
-            project_dir=Path.cwd(),
-            client_factory=client_factory,
-        )
+        if args.profile == "generic":
+            _app = AgentApp(
+                project_dir=Path.cwd(),
+                client_factory=client_factory,
+            )
+        else:
+            from alphasolve.solver.orchestrator_agent_app import OrchestratorAgentApp
+
+            _app = OrchestratorAgentApp(
+                project_dir=Path.cwd(),
+                suite=suite,
+                client_factory=client_factory,
+                max_workers=args.workers or default_max_workers,
+                max_verify_rounds=max_verify_rounds,
+                verifier_scaling_factor=verifier_scaling_factor,
+                subagent_max_depth=subagent_max_depth,
+            )
         try:
             if args.agent_prompt is not None:
                 if args.debug:
@@ -258,21 +289,11 @@ def main() -> None:
         except KeyboardInterrupt:
             print("\nInterrupted.")
             sys.exit(130)
+        finally:
+            close = getattr(_app, "close", None)
+            if callable(close):
+                close()
         return
-
-    suite_settings = suite.settings
-    max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
-    verifier_scaling_factor = (
-        args.verifier_scaling_factor
-        if args.verifier_scaling_factor is not None
-        else int(suite_settings.get("verifier_scaling_factor", 1))
-    )
-    subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
-    max_orchestrator_restarts = (
-        args.max_orchestrator_restarts
-        if args.max_orchestrator_restarts is not None
-        else int(suite_settings.get("max_orchestrator_restarts", 5))
-    )
 
     try:
         _app = AlphaSolve(

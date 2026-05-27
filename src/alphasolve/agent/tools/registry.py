@@ -19,8 +19,9 @@ class ToolRegistry:
         description: str,
         parameters: dict[str, Any],
         handler: ToolHandler,
+        replace: bool = False,
     ) -> None:
-        if name in self._tools:
+        if name in self._tools and not replace:
             raise ValueError(f"tool already registered: {name}")
         self._tools[name] = RegisteredTool(
             name=name,

@@ -9,7 +9,6 @@ from ..shell import find_bash_path, has_bash, run_powershell_command
 from ..workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES, WorkspaceLike
 from .common import _format_grep_result, _format_list_result
 from .filesystem import _format_list_dir_result
-from .markdown import _markdown_index_progress_audit_hint, _markdown_read_review_hint
 from .registry import ToolRegistry
 from .types import ToolResult
 
@@ -39,16 +38,9 @@ def build_default_tool_registry(
         except Exception as exc:
             return ToolResult(f"<system>ERROR reading {args['path']}: {exc}</system>", is_error=True)
         system = f"path: {args['path']}\n{result.message}"
-        hint = _markdown_read_review_hint(str(args["path"]), result.output, result.message)
-        index_audit_hint = _markdown_index_progress_audit_hint(workspace, str(args["path"]))
         if not result.output:
             return ToolResult(f"<system>{system}</system>")
-        parts = [f"<system>{system}</system>", result.output]
-        if hint:
-            parts.append(hint)
-        if index_audit_hint:
-            parts.append(index_audit_hint)
-        return ToolResult("\n".join(parts))
+        return ToolResult("\n".join([f"<system>{system}</system>", result.output]))
 
     registry.register(
         name="Read",

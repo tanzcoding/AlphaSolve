@@ -23,6 +23,8 @@ from .tools import ToolRegistry
 
 __all__ = [
     "Agent",
+    "AgentContextPolicy",
+    "AgentContextPolicyInput",
     "AgentEventSink",
     "AgentRunError",
     "AgentRunResult",
@@ -48,6 +50,23 @@ class AgentRunError(RuntimeError):
 AgentEventSink = Callable[[dict[str, Any]], None]
 
 
+@dataclass(frozen=True)
+class AgentContextPolicyInput:
+    """模型请求前消息选择/压缩策略的输入。
+
+    策略收到的是规范会话历史的快照，返回本轮真正发送给模型的消息；Agent 自身仍保留
+    未压缩的规范历史，用于 trace 和最终结果。
+    """
+
+    messages: list[Message]
+    config: AgentConfig
+    turn: int
+    trace: list[dict[str, Any]]
+
+
+AgentContextPolicy = Callable[[AgentContextPolicyInput], list[Message]]
+
+
 class Agent:
     def __init__(
         self,
@@ -58,6 +77,7 @@ class Agent:
         event_sink: AgentEventSink | None = None,
         stop_event: threading.Event | None = None,
         caller_context: dict[str, Any] | None = None,
+        context_policy: AgentContextPolicy | None = None,
     ) -> None:
         self.config = config
         self.client = client
@@ -69,6 +89,7 @@ class Agent:
         # 等）；第三层（或未来的扩展编排）通过它注入调用关系元数据，curator /
         # verify_subagent 拦截策略据此识别调用树。原样拷贝一份避免外部修改。
         self.caller_context = dict(caller_context) if caller_context else None
+        self.context_policy = context_policy
 
     def run(
         self,
@@ -118,7 +139,8 @@ class Agent:
             stream_state = {"reasoning": "", "content": ""}
             delta_sink = self._make_delta_sink(turn=turn, state=stream_state) if self.event_sink is not None else None
             try:
-                response = self._complete(messages=messages, tools=tools, delta_sink=delta_sink)
+                request_messages = self._messages_for_model(messages, turn=turn, trace=trace)
+                response = self._complete(messages=request_messages, tools=tools, delta_sink=delta_sink)
             except KeyboardInterrupt:
                 trace.append(
                     {"type": "run_stopped", "turn": turn, "reason": "keyboard_interrupt"}
@@ -331,6 +353,39 @@ class Agent:
         self.last_trace = trace
         self._emit(trace[-1])
         raise AgentRunError(f"agent exceeded max_turns={self.config.max_turns}", trace=trace)
+
+    def _messages_for_model(
+        self,
+        messages: list[Message],
+        *,
+        turn: int,
+        trace: list[dict[str, Any]],
+    ) -> list[Message]:
+        if self.context_policy is None:
+            return messages
+        original_count = len(messages)
+        request_messages = self.context_policy(
+            AgentContextPolicyInput(
+                messages=list(messages),
+                config=self.config,
+                turn=turn,
+                trace=trace,
+            )
+        )
+        if not request_messages:
+            raise ValueError("context_policy returned no messages")
+        if request_messages[0].role != "system":
+            raise ValueError("context_policy must preserve a leading system message")
+        trace.append(
+            {
+                "type": "context_policy",
+                "turn": turn,
+                "original_message_count": original_count,
+                "request_message_count": len(request_messages),
+            }
+        )
+        self._emit(trace[-1])
+        return request_messages
 
     def _emit(self, event: dict[str, Any]) -> None:
         if self.caller_context is not None and "caller_context" not in event:

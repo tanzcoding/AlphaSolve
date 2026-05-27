@@ -10,7 +10,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from alphasolve.agent import AgentRunError, Agent, Workspace
+from alphasolve.agent import AgentRunError, Agent, AgentContextPolicy, AgentEventSink, Workspace
 from alphasolve.agent.tools import ToolRegistry, ToolResult
 from alphasolve.solver.logging.event_log import compose_event_sinks
 
@@ -540,20 +540,13 @@ class Orchestrator:
                 stop_event=self.stop_event,
             )
             try:
-                registry = self._build_registry(manager, subagents=subagents)
-                config = self.suite.agents["orchestrator"]
-                if self.renderer is not None:
-                    model_name = self._model_name(config)
-                    self.renderer.set_orchestrator_model(model_name)
-                agent = Agent(
-                    config=config,
-                    client=self.client_factory(config),
-                    tool_registry=registry,
+                agent = self.build_agent(
+                    manager,
+                    subagents=subagents,
                     event_sink=compose_event_sinks(
                         make_orchestrator_event_sink(self.renderer),
                         orchestrator_log_sink,
                     ),
-                    stop_event=self.stop_event,
                 )
                 result = agent.run(self._task())
             except AgentRunError as exc:
@@ -586,6 +579,29 @@ class Orchestrator:
 
     def _model_name(self, config) -> str:
         return config.effective_tier()
+
+    def build_agent(
+        self,
+        manager: WorkerManager,
+        *,
+        subagents: SubagentService | None = None,
+        event_sink: AgentEventSink | None = None,
+        context_policy: AgentContextPolicy | None = None,
+    ) -> Agent:
+        """按真实 orchestrator 配方装配单个 Agent，供 run() 和外部入口共用。"""
+        registry = self._build_registry(manager, subagents=subagents)
+        config = self.suite.agents["orchestrator"]
+        if self.renderer is not None:
+            model_name = self._model_name(config)
+            self.renderer.set_orchestrator_model(model_name)
+        return Agent(
+            config=config,
+            client=self.client_factory(config),
+            tool_registry=registry,
+            event_sink=event_sink,
+            stop_event=self.stop_event,
+            context_policy=context_policy,
+        )
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:
         access = RoleWorkspaceAccess.orchestrator(Workspace(self.layout.workspace_dir))

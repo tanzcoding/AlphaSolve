@@ -91,7 +91,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Examples:" in suite.agents["orchestrator"].system_prompt
     assert "task is complete if and only if" in suite.agents["orchestrator"].system_prompt
     assert "current active worker count" not in suite.agents["orchestrator"].system_prompt
-    assert "after every 3-5 completed workers" in suite.agents["orchestrator"].system_prompt
+    assert "every 3-5 worker lifecycles" in suite.agents["orchestrator"].system_prompt
     assert "Verified Propositions Index" in suite.agents["orchestrator"].system_prompt
     assert "Current Progress And Insights" in suite.agents["orchestrator"].system_prompt
     assert "Current Progress And Insights section" in suite.agents["orchestrator"].system_prompt

@@ -3,9 +3,9 @@ from __future__ import annotations
 import re
 from typing import Any, Mapping
 
-from ..workspace import WorkspaceLike
-from .common import _tool_error
-from .types import ToolResult
+from alphasolve.agent import WorkspaceLike
+from alphasolve.agent.tools.common import _tool_error
+from alphasolve.agent.tools.types import ToolResult
 
 
 _MARKDOWN_SECTION_HEADING_RE = re.compile(

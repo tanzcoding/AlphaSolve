@@ -127,7 +127,7 @@ class _CliSubagentDispatcher:
         return result.final_answer
 
 
-def _make_repl_event_sink(console: Console) -> AgentEventSink:
+def make_repl_event_sink(console: Console) -> AgentEventSink:
     """Build an event_sink that renders intermediate agent events to the console.
 
     每个 turn 的事件顺序（streaming reasoning model）：
@@ -285,7 +285,7 @@ class AgentApp:
         self.console = console
         self.max_turns = max_turns
         self.stop_event = threading.Event()
-        self._event_sink = _make_repl_event_sink(console)
+        self._event_sink = make_repl_event_sink(console)
 
     def cancel(self) -> None:
         self.stop_event.set()

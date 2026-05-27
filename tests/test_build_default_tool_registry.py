@@ -81,7 +81,7 @@ def test_inspect_markdown_surfaces_statement_and_tail(research_registry, tmp_pat
     assert "Therefore target_value > baseline_value." in result.content
 
 
-def test_read_markdown_warns_when_proof_tail_outclaims_statement(registry, tmp_path: Path):
+def test_default_read_markdown_has_no_research_tail_hint(registry, tmp_path: Path):
     (tmp_path / "proof.md").write_text(
         "## Statement\n"
         "The target quantity is at least L.\n\n"
@@ -94,6 +94,23 @@ def test_read_markdown_warns_when_proof_tail_outclaims_statement(registry, tmp_p
     result = registry.execute("Read", {"path": "proof.md", "read_all": True})
 
     assert not result.is_error
+    assert "Markdown proof-review hint" not in result.content
+    assert "strictly greater than L" in result.content
+
+
+def test_research_read_markdown_warns_when_proof_tail_outclaims_statement(research_registry, tmp_path: Path):
+    (tmp_path / "proof.md").write_text(
+        "## Statement\n"
+        "The target quantity is at least L.\n\n"
+        "## Proof\n"
+        "After the main estimate, the remaining correction is positive.\n"
+        "Therefore the target quantity is strictly greater than L.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("Read", {"path": "proof.md", "read_all": True})
+
+    assert not result.is_error
     assert "Markdown proof-review hint" in result.content
     assert "proof tail" in result.content
     assert "possible underclaimed proof" in result.content
@@ -101,14 +118,14 @@ def test_read_markdown_warns_when_proof_tail_outclaims_statement(registry, tmp_p
     assert "strictly greater than L" in result.content
 
 
-def test_read_markdown_does_not_warn_without_statement_and_proof(registry, tmp_path: Path):
+def test_research_read_markdown_does_not_warn_without_statement_and_proof(research_registry, tmp_path: Path):
     (tmp_path / "problem.md").write_text(
         "Decide the final response.\n\n"
         "The answer should be compared against the reference value.\n",
         encoding="utf-8",
     )
 
-    result = registry.execute("Read", {"path": "problem.md", "read_all": True})
+    result = research_registry.execute("Read", {"path": "problem.md", "read_all": True})
 
     assert not result.is_error
     assert "Markdown proof-review hint" not in result.content

@@ -55,6 +55,33 @@ def test_parameters_description_override():
     assert props["path"]["description"] == "File path."  # 未覆盖
 
 
+def test_register_rejects_duplicate_without_replace():
+    reg = _registry_with_one_tool()
+    with pytest.raises(ValueError, match="tool already registered"):
+        reg.register(
+            name="Read",
+            description="replacement",
+            parameters={"type": "object", "properties": {}, "required": []},
+            handler=lambda args: ToolResult("new"),
+        )
+
+
+def test_register_replace_overrides_existing_tool():
+    reg = _registry_with_one_tool()
+    reg.register(
+        name="Read",
+        description="replacement",
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=lambda args: ToolResult("new"),
+        replace=True,
+    )
+
+    defs = reg.tool_defs(enabled=["Read"])
+    result = reg.execute("Read", {})
+    assert defs[0].description == "replacement"
+    assert result.content == "new"
+
+
 def test_suffix_and_override_mutually_exclusive(tmp_path: Path):
     yaml = tmp_path / "agent.yaml"
     yaml.write_text(

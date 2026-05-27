@@ -12,7 +12,10 @@
 
 公共 API（__all__）：见下。LLM 类型继续从 alphasolve.llm 拿，第二层不 re-export。
 """
-from .agent import Agent, AgentRunResult, AgentRunError, AgentEventSink
+from .agent import (
+    Agent, AgentRunResult, AgentRunError, AgentEventSink,
+    AgentContextPolicy, AgentContextPolicyInput,
+)
 from .config import (
     AgentConfig, AgentSuite,
     load_agent_config, load_agent_suite,
@@ -27,6 +30,7 @@ from .workspace import Workspace, WorkspaceLike, PagedReadResult
 __all__ = [
     # Agent runtime
     "Agent", "AgentRunResult", "AgentRunError", "AgentEventSink",
+    "AgentContextPolicy", "AgentContextPolicyInput",
     # Config
     "AgentConfig", "AgentSuite", "load_agent_config", "load_agent_suite",
     # Tools

@@ -8,6 +8,7 @@ def test_agent_public_api_complete():
     expected = {
         # Agent runtime
         "Agent", "AgentRunResult", "AgentRunError", "AgentEventSink",
+        "AgentContextPolicy", "AgentContextPolicyInput",
         # Config
         "AgentConfig", "AgentSuite", "load_agent_config", "load_agent_suite",
         # Tools

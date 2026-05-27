@@ -13,6 +13,7 @@ import alphasolve.agent.agent as general_agent_module  # noqa: E402
 from alphasolve.agent import (  # noqa: E402
     AgentConfig,
     Agent,
+    AgentContextPolicyInput,
     ToolRegistry,
     ToolResult,
     Workspace,
@@ -79,6 +80,37 @@ def local_test_dir(name):
 def test_general_agent_can_write_and_read_workspace_file():
     with local_test_dir("write_read") as tmp_path:
         _assert_agent_can_write_and_read_workspace_file(tmp_path)
+
+
+def test_agent_context_policy_controls_model_request_without_mutating_history():
+    seen_messages: list[list[Message]] = []
+
+    class CapturingClient:
+        def complete(self, *, messages, tools, delta_sink=None):
+            seen_messages.append(list(messages))
+            return _resp("done")
+
+    def policy(payload: AgentContextPolicyInput) -> list[Message]:
+        assert payload.turn == 1
+        assert payload.messages[-1].content == "full user task"
+        return [
+            payload.messages[0],
+            Message(role="user", content="compressed user task"),
+        ]
+
+    agent = Agent(
+        config=AgentConfig(name="policy-test", system_prompt="system", max_turns=1),
+        client=CapturingClient(),
+        tool_registry=ToolRegistry(),
+        context_policy=policy,
+    )
+
+    result = agent.run("full user task")
+
+    assert result.final_answer == "done"
+    assert seen_messages[0][-1].content == "compressed user task"
+    assert result.messages[-2].content == "full user task"
+    assert any(event["type"] == "context_policy" for event in result.trace)
 
 
 def test_default_read_tool_defaults_to_250_lines_reports_total_and_supports_read_all():

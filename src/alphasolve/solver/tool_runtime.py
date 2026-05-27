@@ -9,7 +9,13 @@ from typing import Any, Callable
 
 from alphasolve.agent import AgentConfig, WorkspaceLike
 from alphasolve.agent.tools import ToolRegistry, ToolResult, build_default_tool_registry, register_agent_tool
-from alphasolve.agent.tools.markdown import _run_inspect_markdown, _run_research_progress_review
+from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES
+from .research_markdown import (
+    _markdown_index_progress_audit_hint,
+    _markdown_read_review_hint,
+    _run_inspect_markdown,
+    _run_research_progress_review,
+)
 
 
 ToolRegistrar = Callable[[ToolRegistry], None]
@@ -35,6 +41,50 @@ def clone_agent_config_with_tools(config: AgentConfig, tools: list[str] | tuple[
 
 def register_research_markdown_tools(registry: ToolRegistry, workspace: WorkspaceLike) -> None:
     """注册 AlphaSolve 研究/证明工作区导航工具。"""
+    registry.register(
+        name="Read",
+        description=(
+            "Read text content from a file.\n\n"
+            "Tips:\n"
+            "- A `<system>` tag will be given before the read file content.\n"
+            "- The system will notify you when there is anything wrong when reading the file.\n"
+            "- This tool is typically worth using in parallel when you need to inspect multiple files.\n"
+            "- If you want to search for a certain content or pattern, prefer Grep over Read.\n"
+            "- Content will be returned with a line number before each line like `cat -n` format.\n"
+            f"- By default, Read returns {READ_PAGE_DEFAULT_LINES} lines.\n"
+            "- `line_offset` is the first line to return.\n"
+            f"- `n_lines` is how many lines to return in this call; default is {READ_PAGE_DEFAULT_LINES}.\n"
+            "- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n"
+            f"- Without `read_all`, the maximum `n_lines` value is {READ_PAGE_MAX_LINES}."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "path": {"type": "string", "description": "The path to the file to read."},
+                "line_offset": {
+                    "type": "integer",
+                    "default": 1,
+                    "minimum": 1,
+                    "description": "The line number to start reading from.",
+                },
+                "n_lines": {
+                    "type": "integer",
+                    "default": READ_PAGE_DEFAULT_LINES,
+                    "minimum": 1,
+                    "maximum": READ_PAGE_MAX_LINES,
+                    "description": f"How many lines to return. Defaults to {READ_PAGE_DEFAULT_LINES}, max {READ_PAGE_MAX_LINES}.",
+                },
+                "read_all": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, ignore n_lines and read to end of file.",
+                },
+            },
+            "required": ["path"],
+        },
+        handler=lambda args: _run_research_read(workspace, args),
+        replace=True,
+    )
     registry.register(
         name="ResearchProgressReview",
         description=(
@@ -109,6 +159,29 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
         },
         handler=lambda args: _run_inspect_markdown(workspace, args),
     )
+
+
+def _run_research_read(workspace: WorkspaceLike, args: dict[str, Any]) -> ToolResult:
+    try:
+        result = workspace.read_text_page(
+            args["path"],
+            line_offset=int(args.get("line_offset", 1)),
+            n_lines=int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
+            read_all=bool(args.get("read_all", False)),
+        )
+    except Exception as exc:
+        return ToolResult(f"<system>ERROR reading {args['path']}: {exc}</system>", is_error=True)
+    system = f"path: {args['path']}\n{result.message}"
+    if not result.output:
+        return ToolResult(f"<system>{system}</system>")
+    parts = [f"<system>{system}</system>", result.output]
+    hint = _markdown_read_review_hint(str(args["path"]), result.output, result.message)
+    index_audit_hint = _markdown_index_progress_audit_hint(workspace, str(args["path"]))
+    if hint:
+        parts.append(hint)
+    if index_audit_hint:
+        parts.append(index_audit_hint)
+    return ToolResult("\n".join(parts))
 
 
 def register_execution_tools(
