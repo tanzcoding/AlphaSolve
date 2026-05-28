@@ -114,8 +114,31 @@ def test_research_read_markdown_warns_when_proof_tail_outclaims_statement(resear
     assert "Markdown proof-review hint" in result.content
     assert "proof tail" in result.content
     assert "possible underclaimed proof" in result.content
-    assert "next proposition should normally be an explicit statement" in result.content
+    assert "research plan should normally first create an explicit Statement" in result.content
+    assert "proposition-index gap" in result.content
     assert "strictly greater than L" in result.content
+
+
+def test_research_read_default_markdown_statement_tail_preview(research_registry, tmp_path: Path):
+    middle_lines = "\n".join(f"Middle proof computation {index}." for index in range(1, 80))
+    (tmp_path / "proof.md").write_text(
+        "## Statement\n"
+        "The target quantity is at least L.\n\n"
+        "## Proof\n"
+        f"{middle_lines}\n"
+        "Therefore the target quantity is strictly greater than L.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("Read", {"path": "proof.md"})
+
+    assert not result.is_error
+    assert "Default research Read preview" in result.content
+    assert "The target quantity is at least L." in result.content
+    assert "Middle proof computation 1." not in result.content
+    assert "Middle proof computation 79." in result.content
+    assert "Therefore the target quantity is strictly greater than L." in result.content
+    assert "read_all=true" in result.content
 
 
 def test_research_read_markdown_does_not_warn_without_statement_and_proof(research_registry, tmp_path: Path):
@@ -252,12 +275,166 @@ def test_research_progress_review_surfaces_underclaimed_proof(research_registry,
     result = research_registry.execute("ResearchProgressReview", {"path": "."})
 
     assert not result.is_error
-    assert "possible underclaimed proof statements: 1" in result.content
+    assert "high-priority proposition-index gap" in result.content
+    assert "highest-priority underclaimed proof statements: 1 shown" in result.content
+    assert "workspace notes" in result.content
     assert "verified_propositions/answer.md" in result.content
     assert "general next-action rule" in result.content
-    assert "suggested next proposition: make the selected underclaimed proof-tail conclusion explicit" in result.content
+    assert "recommended first check: make an already-established proof-tail conclusion explicit" in result.content
     assert "selected target: verified_propositions/answer.md" in result.content
     assert "strictly above L" in result.content
+
+
+def test_research_progress_review_keeps_context_for_strict_tail_that_later_weakens(
+    research_registry,
+    tmp_path: Path,
+):
+    (tmp_path / "problem.md").write_text("Find the objective value.\n", encoding="utf-8")
+    verified_dir = tmp_path / "verified_propositions"
+    verified_dir.mkdir()
+    (tmp_path / "knowledge").mkdir()
+    (verified_dir / "objective.md").write_text(
+        "## Statement\n"
+        "The objective is at least L.\n\n"
+        "## Proof\n"
+        "A direct construction gives the objective value\n"
+        "objective >= L + positive_correction\n"
+        "> L.\n"
+        "Hence the objective is at least L.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "selected target: verified_propositions/objective.md" in result.content
+    assert "objective >= L + positive_correction" in result.content
+    assert "> L" in result.content
+
+
+def test_research_progress_review_shows_selected_verified_underclaim_first(
+    research_registry,
+    tmp_path: Path,
+):
+    (tmp_path / "problem.md").write_text("Find the contest objective value.\n", encoding="utf-8")
+    verified_dir = tmp_path / "verified_propositions"
+    knowledge_dir = tmp_path / "knowledge"
+    verified_dir.mkdir()
+    knowledge_dir.mkdir()
+    (knowledge_dir / "technical-condition.md").write_text(
+        "## Statement\n"
+        "A technical condition is useful.\n\n"
+        "## Proof\n"
+        "A side calculation is strictly negative under this condition.\n",
+        encoding="utf-8",
+    )
+    (verified_dir / "objective.md").write_text(
+        "## Statement\n"
+        "The contest objective is at least L.\n\n"
+        "## Proof\n"
+        "The construction gives the contest objective value\n"
+        "contest objective >= L + correction\n"
+        "> L.\n"
+        "Hence the contest objective is at least L.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    selected_pos = result.content.index("selected target: verified_propositions/objective.md")
+    verified_pos = result.content.index("- verified_propositions/objective.md")
+    knowledge_pos = result.content.index("- knowledge/technical-condition.md")
+    assert selected_pos >= 0
+    assert verified_pos < knowledge_pos
+
+
+def test_research_read_index_prioritizes_problem_focused_strict_tail_context(
+    research_registry,
+    tmp_path: Path,
+):
+    (tmp_path / "problem.md").write_text("Find ticket_1985 objective value.\n", encoding="utf-8")
+    verified_dir = tmp_path / "verified_propositions"
+    verified_dir.mkdir()
+    (verified_dir / "index.md").write_text("# Index\n", encoding="utf-8")
+    (verified_dir / "local.md").write_text(
+        "## Statement\n"
+        "A local monotonicity fact holds.\n\n"
+        "## Proof\n"
+        "Set h(r)=r-1.\n"
+        "Hence h(r)>0 for r>1.\n",
+        encoding="utf-8",
+    )
+    (verified_dir / "objective.md").write_text(
+        "## Statement\n"
+        "The ticket_1985 objective is at least L.\n\n"
+        "## Proof\n"
+        "The construction gives\n"
+        "ticket_1985 objective >= L + correction\n"
+        "> L.\n"
+        "Hence the ticket_1985 objective is at least L.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("Read", {"path": "verified_propositions/index.md", "read_all": True})
+
+    assert not result.is_error
+    objective_pos = result.content.index("verified_propositions/objective.md")
+    local_pos = result.content.index("verified_propositions/local.md")
+    assert objective_pos < local_pos
+    assert "ticket_1985 objective >= L + correction" in result.content
+    assert "> L" in result.content
+
+
+def test_research_progress_review_ignores_markdown_blockquote_marker_as_strict_tail(
+    research_registry,
+    tmp_path: Path,
+):
+    (tmp_path / "problem.md").write_text("Assess the argument.\n", encoding="utf-8")
+    verified_dir = tmp_path / "verified_propositions"
+    verified_dir.mkdir()
+    (tmp_path / "knowledge").mkdir()
+    (verified_dir / "quoted.md").write_text(
+        "## Statement\n"
+        "The cited argument applies.\n\n"
+        "## Proof\n"
+        "The final paragraph quotes a note.\n"
+        "> Therefore the cited argument applies.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "verified_propositions/quoted.md" not in result.content
+    assert "Therefore the cited argument applies" not in result.content
+
+
+def test_research_progress_review_does_not_promote_proof_mechanics_when_statement_covers_result(
+    research_registry,
+    tmp_path: Path,
+):
+    (tmp_path / "problem.md").write_text("Establish the final containment property.\n", encoding="utf-8")
+    verified_dir = tmp_path / "verified_propositions"
+    verified_dir.mkdir()
+    (tmp_path / "knowledge").mkdir()
+    (verified_dir / "containment.md").write_text(
+        "## Statement\n"
+        "For every time t, the supported state stays inside the certified region R(t).\n\n"
+        "## Proof\n"
+        "The local energy on an auxiliary box vanishes.\n"
+        "Therefore the state is zero outside the half-space x < s + t.\n"
+        "Intersecting the half-spaces gives the certified region R(t).\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "compact review mode" not in result.content
+    assert "primary research action signal" not in result.content
+    assert "verified_propositions/containment.md" not in result.content
+    assert "state is zero outside the half-space" not in result.content
 
 
 def test_research_progress_review_prioritizes_shallow_answer_changing_candidates(research_registry, tmp_path: Path):
@@ -327,6 +504,57 @@ def test_research_progress_review_prefers_problem_focused_tail(research_registry
 
     assert not result.is_error
     assert "selected target: verified_propositions/ticket-result.md" in result.content
+
+
+def test_research_progress_review_surfaces_choice_classification_signal(research_registry, tmp_path: Path):
+    (tmp_path / "problem.md").write_text(
+        "Prove there exists a model and parameter choice satisfying the theorem hypotheses.\n",
+        encoding="utf-8",
+    )
+    verified_dir = tmp_path / "verified_propositions"
+    knowledge_dir = tmp_path / "knowledge"
+    verified_dir.mkdir()
+    knowledge_dir.mkdir()
+    (verified_dir / "conditional-chain.md").write_text(
+        "## Statement\n"
+        "A conditional theorem chain proves the target if hypotheses H1-H3 hold.\n\n"
+        "## Proof\n"
+        "The verified infrastructure establishes the conditional theorem chain.\n",
+        encoding="utf-8",
+    )
+    (knowledge_dir / "choices.md").write_text(
+        "Remaining blocker: choose admissible parameters and input families so the hypotheses hold.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "selected target: choice-classification proposition over admissible models" in result.content
+    assert "choice-classification proposition before proposing stronger general analytic machinery" in result.content
+    assert "conditional assembly with the choice-dependent hypothesis left" in result.content
+    assert "support, positivity/lower-bound, nonlinear remainder, regularity" in result.content
+    assert "verified-infrastructure guardrail" in result.content
+    assert "method-change guardrail" in result.content
+
+
+def test_research_progress_review_does_not_make_local_repair_default_over_interface(research_registry, tmp_path: Path):
+    (tmp_path / "problem.md").write_text("Assemble the final energy interface.\n", encoding="utf-8")
+    unverified_dir = tmp_path / "unverified_propositions" / "prop-local"
+    unverified_dir.mkdir(parents=True)
+    (tmp_path / "verified_propositions").mkdir()
+    (tmp_path / "knowledge").mkdir()
+    (unverified_dir / "review.md").write_text(
+        "## Verdict\n"
+        "fail but repairable. The proof is mostly correct and the gap is a one-line localized fix.\n",
+        encoding="utf-8",
+    )
+
+    result = research_registry.execute("ResearchProgressReview", {"path": "."})
+
+    assert not result.is_error
+    assert "repair is only one component needed to make levels, constants, remainders, and restrictions compose" in result.content
+    assert "decide whether this should be a direct repair or a named prerequisite/subclaim" in result.content
 
 
 def test_research_progress_review_ignores_tail_already_in_statement(research_registry, tmp_path: Path):

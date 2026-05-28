@@ -4,7 +4,7 @@ agent:
   system_prompt_path: ../../prompts/research_reviewer.md
   tier: balanced
   max_turns: 100
-  when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, and recommend research directions.
+  when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, identify the current global blocker, and recommend research directions.
   tools:
     - ResearchProgressReview
     - InspectMarkdown
@@ -14,7 +14,9 @@ agent:
     - Grep
   tool_descriptions:
     Read:
-      suffix: "- Results respect this agent's workspace access restrictions."
+      suffix: |-
+        - Results respect this agent's workspace access restrictions.
+        - When reading a proof, compare its statement, proof tail, and any stated objective conversion. Important research conclusions are sometimes proved in the body but not exposed in the statement or index.
       parameters:
         path:
           description: "The path to the file to read (must be absolute or workspace-relative)."
@@ -35,7 +37,9 @@ agent:
         path:
           description: "Directory to list. Defaults to this agent's configured read root."
     Grep:
-      suffix: "- Results respect this agent's workspace access restrictions."
+      suffix: |-
+        - Results respect this agent's workspace access restrictions.
+        - Use targeted Grep to check whether a suspected blocker is already resolved elsewhere before recommending work on it.
       parameters:
         pattern:
           description: "The text or regular expression pattern to search for in file contents."

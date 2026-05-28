@@ -112,6 +112,33 @@ def _format_markdown_rows(rows: list[tuple[int, str]], *, max_chars: int = 16000
     return text[: max_chars - 80].rstrip() + "\n...[truncated by InspectMarkdown output budget]"
 
 
+def _markdown_statement_tail_preview(
+    numbered_output: str,
+    *,
+    tail_lines: int = 40,
+    max_chars: int = 16000,
+) -> str:
+    rows = _parse_numbered_read_output(numbered_output)
+    has_proof = any(_MARKDOWN_PROOF_HEADING_RE.search(text) for _line_no, text in rows)
+    statement_span = _markdown_statement_span(rows)
+    if statement_span is None or not has_proof:
+        return ""
+
+    start, end = statement_span
+    selected: list[tuple[int, str]] = rows[start:end]
+    tail_start = max(0, len(rows) - tail_lines)
+    if tail_start > end:
+        selected.append((-1, "..."))
+    for row in rows[tail_start:]:
+        if row[0] not in {line_no for line_no, _text in selected if line_no >= 0}:
+            selected.append(row)
+
+    text = "\n".join("..." if line_no < 0 else f"{line_no}\t{line}" for line_no, line in selected)
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 80].rstrip() + "\n...[truncated by research Read preview budget]"
+
+
 def _normalize_markdown_review_text(text: str) -> str:
     return re.sub(r"\s+", "", text.lower())
 
@@ -128,11 +155,55 @@ def _markdown_content_tokens(text: str) -> list[str]:
 
 
 def _tail_line_is_redundant(text: str, statement_text: str) -> bool:
+    if re.match(r"^\s{0,3}>\s+[A-Za-z]", text):
+        text = re.sub(r"^\s{0,3}>\s?", "", text)
     tokens = [token for token in _markdown_content_tokens(text) if token not in _TAIL_COMPARISON_STOPWORDS]
     if len(tokens) < 3:
         return False
+    lower = text.lower()
+    statement_lower = statement_text.lower()
+    if any(token in lower for token in ("strict", "strictly", "greater", "above", r"\gt", ">")) and not any(
+        token in statement_lower for token in ("strict", "strictly", "greater", "above", r"\gt", ">")
+    ):
+        return False
+    if any(token in lower for token in ("smaller", "below", r"\lt", "<")) and not any(
+        token in statement_lower for token in ("smaller", "below", r"\lt", "<")
+    ):
+        return False
     statement_tokens = set(_markdown_content_tokens(statement_text))
-    return all(token in statement_tokens for token in tokens)
+    matching = sum(1 for token in tokens if token in statement_tokens)
+    if matching == len(tokens):
+        return True
+    return len(tokens) >= 5 and matching >= 3 and matching / len(tokens) >= 0.4
+
+
+def _tail_line_has_strict_strengthening(text: str, statement_text: str) -> bool:
+    lower = text.lower()
+    statement_lower = statement_text.lower()
+    objective_context = any(
+        token in lower
+        for token in ("answer", "objective", "value", "bound", "estimate", "result", "conclusion", "best-known")
+    )
+    statement_objective_context = any(
+        token in statement_lower
+        for token in ("answer", "objective", "value", "bound", "estimate", "result", "conclusion", "best-known")
+    )
+    if any(token in lower for token in ("strict", "strictly", "greater", "above", r"\gt")):
+        return not any(token in statement_lower for token in ("strict", "strictly", "greater", "above", r"\gt"))
+    if any(token in lower for token in ("smaller", "below", r"\lt")):
+        return not any(token in statement_lower for token in ("smaller", "below", r"\lt"))
+    stripped = text.lstrip()
+    starts_math_comparison = (
+        re.match(r"^[><]\s*(?:\\|[-+0-9({[])", stripped) is not None
+        or stripped.startswith((r"\gt", r"\lt"))
+    )
+    if starts_math_comparison and not any(mark in statement_text for mark in (">", "<", r"\gt", r"\lt")):
+        return True
+    if ">" in text and ">" not in statement_text and (objective_context or statement_objective_context):
+        return True
+    if "<" in text and "<" not in statement_text and (objective_context or statement_objective_context):
+        return True
+    return False
 
 
 def _markdown_statement_span(rows: list[tuple[int, str]]) -> tuple[int, int] | None:
@@ -176,6 +247,19 @@ def _markdown_underclaimed_tail_highlights(
         for line_no, text in tail_window
         if _MARKDOWN_IMPORTANT_LINE_RE.search(text)
     ]
+    covered_tail_line_nos = [
+        line_no
+        for line_no, text in tail_window
+        if _normalize_markdown_review_text(text) in normalized_statement
+        or _tail_line_is_redundant(text, statement_text)
+    ]
+    if covered_tail_line_nos:
+        conclusion_rows = [
+            (line_no, text)
+            for line_no, text in conclusion_rows
+            if line_no > covered_tail_line_nos[-1]
+            or _tail_line_has_strict_strengthening(text, statement_text)
+        ]
     novel_rows = [
         (line_no, text)
         for line_no, text in conclusion_rows
@@ -191,7 +275,34 @@ def _markdown_underclaimed_tail_highlights(
         key=lambda item: _markdown_tail_priority(item[0], item[1], last_line_no=last_line_no),
         reverse=True,
     )[:max_highlights]
-    return sorted(novel_rows, key=lambda item: item[0])
+    selected_line_nos = {line_no for line_no, _text in novel_rows}
+    expanded_rows: list[tuple[int, str]] = []
+    seen_line_nos: set[int] = set()
+    tail_by_line = {line_no: text for line_no, text in tail_window}
+    tail_line_nos = [line_no for line_no, _text in tail_window]
+    for line_no, text in sorted(novel_rows, key=lambda item: item[0]):
+        if _tail_line_has_strict_strengthening(text, statement_text):
+            try:
+                index = tail_line_nos.index(line_no)
+            except ValueError:
+                index = -1
+            if index >= 0:
+                for nearby_line_no in tail_line_nos[max(0, index - 4):index]:
+                    nearby_text = tail_by_line[nearby_line_no]
+                    if not nearby_text.strip():
+                        continue
+                    if _MARKDOWN_SECTION_HEADING_RE.search(nearby_text):
+                        continue
+                    if nearby_line_no not in seen_line_nos:
+                        expanded_rows.append((nearby_line_no, nearby_text))
+                        seen_line_nos.add(nearby_line_no)
+        if line_no not in seen_line_nos:
+            expanded_rows.append((line_no, text))
+            seen_line_nos.add(line_no)
+    return [
+        row for row in expanded_rows
+        if row[0] in selected_line_nos or len(expanded_rows) <= max_highlights
+    ][:max_highlights]
 
 
 def _markdown_tail_priority(line_no: int, text: str, *, last_line_no: int) -> tuple[int, int]:
@@ -234,9 +345,11 @@ def _markdown_read_review_hint(path: str, result_output: str, result_message: st
         "The tail contains conclusion-like or comparison-heavy lines that are not verbatim in the statement. "
         "For research progress review, treat this as a possible underclaimed proof. "
         "If a highlighted tail conclusion changes an answer, best-known objective value or estimate, stopping condition, or planning premise, "
-        "the next proposition should normally be an explicit statement of that already-established conclusion, "
-        "before proposing harder downstream work, so future reviewers and orchestrators can see it from the statement. "
-        "When asked what proposition to do next, prefer this consolidation step unless another already-read Statement explicitly records the same conclusion.",
+        "the research plan should normally first create an explicit Statement for that already-established conclusion, "
+        "so future reviewers and orchestrators can see it from the statement. "
+        "Treat this as a proposition-index gap unless another already-read Statement explicitly records the same conclusion. "
+        "An index note or knowledge note mentioning the stronger conclusion does not by itself close the gap. "
+        "If this file is under verified_propositions/, do not re-prove the proof; use the tail to restate verified progress accurately.",
         "tail highlights:",
     ]
     lines.extend(f"{line_no}: {text}" for line_no, text in novel_rows)
@@ -343,6 +456,10 @@ def _underclaimed_candidate_score(file_path: str, highlights: list[tuple[int, st
     normalized_path = file_path.strip("/").replace("\\", "/")
     path_parts = [part for part in normalized_path.split("/") if part]
     score = 0
+    if normalized_path.startswith("verified_propositions/"):
+        score += 10
+    elif normalized_path.startswith("knowledge/"):
+        score -= 4
     if len(path_parts) <= 2:
         score += 6
     elif len(path_parts) <= 3:
@@ -410,9 +527,14 @@ def _format_underclaimed_proof_candidates(
     if include_rule:
         lines.append(
             "general next-action rule: if a highlighted proof tail already establishes a conclusion that matters for the original problem, "
-            "stopping criterion, answer, best-known objective value, best-known estimate, or future planning, the next proposition should normally be an explicit statement of that "
-            "already-established conclusion before pursuing harder downstream work. When choosing the next proposition, prefer this "
-            "consolidation step unless another already-read Statement explicitly records the same conclusion."
+            "stopping criterion, answer, best-known objective value, best-known estimate, or future planning, the research plan should normally first "
+            "create an explicit Statement for that already-established conclusion. Treat this as a proposition-index gap unless another already-read "
+            "Statement explicitly records the same conclusion; an index or knowledge note is useful evidence but does not replace the verified Statement."
+        )
+        lines.append(
+            "evidence budget: inspect the first listed candidate before broadening. If that candidate changes the original objective, "
+            "a best-known value or estimate, or the stopping condition, recommend exposing that already-established conclusion first; "
+            "treat harder unsolved theorem work as downstream unless the cited evidence is irrelevant or already recorded in a Statement."
         )
         lines.append("why shown: each listed file has conclusion-like or comparison-heavy proof-tail lines not verbatim in the Statement section.")
     for file_path, highlights in candidates:
@@ -705,6 +827,362 @@ def _format_workspace_notes(workspace: WorkspaceLike, root: str) -> str:
     return "\n".join(lines)
 
 
+def _line_has_any(text: str, tokens: tuple[str, ...]) -> bool:
+    lower = text.lower()
+    return any(token in lower for token in tokens)
+
+
+def _join_workspace_path(root: str, child: str) -> str:
+    normalized = root.replace("\\", "/").strip("/")
+    if normalized in {"", "."}:
+        return child
+    return f"{normalized}/{child}"
+
+
+def _collect_decision_signal_lines(
+    workspace: WorkspaceLike,
+    root: str,
+    *,
+    max_per_group: int = 8,
+) -> dict[str, list[tuple[str, int, str]]]:
+    files = _workspace_note_files(workspace, root)
+    groups: dict[str, list[tuple[str, int, str]]] = {
+        "underexposed objective conclusions": [],
+        "verified infrastructure to build on": [],
+        "possible blocker/assembly language evidence": [],
+    }
+    objective_tokens = (
+        "answer",
+        "objective",
+        "value",
+        "original problem",
+        "stopping",
+        "stop condition",
+    )
+    strengthened_tokens = (
+        "strict",
+        "strictly",
+        "greater",
+        "larger",
+        "smaller",
+        "stronger",
+        "improve",
+        "improvement",
+        "positive",
+        "correction",
+        "caution",
+    )
+    infrastructure_tokens = (
+        "verified",
+        "complete",
+        "available",
+        "solved",
+        "unconditional",
+        "exact",
+        "infrastructure",
+        "discharged",
+    )
+    blocker_tokens = (
+        "gap",
+        "block",
+        "blocked",
+        "obstruction",
+        "missing",
+        "not yet",
+        "unproved",
+        "restriction",
+        "condition",
+        "assembly",
+        "assemble",
+        "scan",
+        "which",
+        "choose",
+        "regime",
+        "parameter",
+        "data",
+        "hypothesis",
+    )
+    for file_path in files:
+        rows = _safe_read_markdown_rows(workspace, file_path)
+        for line_no, text in rows:
+            stripped = text.strip()
+            if not stripped:
+                continue
+            lower = stripped.lower()
+            if (
+                _line_has_any(lower, objective_tokens)
+                and _line_has_any(lower, strengthened_tokens)
+                and len(groups["underexposed objective conclusions"]) < max_per_group
+            ):
+                groups["underexposed objective conclusions"].append((file_path, line_no, stripped))
+            if _line_has_any(lower, infrastructure_tokens) and len(groups["verified infrastructure to build on"]) < max_per_group:
+                groups["verified infrastructure to build on"].append((file_path, line_no, stripped))
+            if _line_has_any(lower, blocker_tokens) and len(groups["possible blocker/assembly language evidence"]) < max_per_group:
+                groups["possible blocker/assembly language evidence"].append((file_path, line_no, stripped))
+    return {name: rows for name, rows in groups.items() if rows}
+
+
+def _format_decision_signals(workspace: WorkspaceLike, root: str) -> str:
+    groups = _collect_decision_signal_lines(workspace, root)
+    if not groups:
+        return ""
+    lines = [
+        "high-priority navigation signals",
+        (
+            "purpose: highlight compact evidence that should shape the research plan before routine local work. "
+            "Read the cited source before relying on any signal."
+        ),
+        (
+            "priority rule: if the first group shows a stronger objective conclusion that is not explicit in a proposition statement, "
+            "consider stating that conclusion before harder unresolved work. A rigorous strict improvement remains decision-critical "
+            "even when the improvement is not expected to be final."
+        ),
+        (
+            "priority rule: if the problem asks for an existence or choice result and verified infrastructure already exists, "
+            "consider a comparative scan over admissible choices, assumptions, input families, or hypotheses before deepening only one candidate."
+        ),
+        (
+            "priority rule: if a conditional theorem chain exists and its remaining hypotheses depend on choices such as "
+            "models, parameters, data, weights, or ansatzes, use obstruction and timescale notes as constraints for a "
+            "choice-classification proposition before proposing stronger general analytic machinery."
+        ),
+        (
+            "priority rule: do not let a framework-formalization or gap-naming task outrank choice classification when "
+            "the formalization would only restate that admissible choices must satisfy the existing chain's hypotheses."
+        ),
+        (
+            "priority rule: if a restricted or conditional assembly is still missing, prefer making that assembly exact before "
+            "trying to remove restrictions or prove full generality."
+        ),
+    ]
+    for group_name, rows in groups.items():
+        lines.append(f"{group_name}:")
+        for file_path, line_no, text in rows:
+            lines.append(f"- {file_path}:{line_no}: {text}")
+    objective_rows = groups.get("underexposed objective conclusions", [])
+    infrastructure_rows = groups.get("verified infrastructure to build on", [])
+    blocker_rows = groups.get("possible blocker/assembly language evidence", [])
+    if objective_rows:
+        lines.extend([
+            "candidate priority hint:",
+            (
+                "- A cited objective conclusion appears stronger or more explicit than ordinary index summaries. "
+                "If it is not already visible as a verified proposition Statement, make an explicit Statement proposition "
+                "for that conclusion before pursuing harder unresolved work. Do not dismiss a strict improvement merely "
+                "because another summary is simpler to state."
+            ),
+            f"  first evidence: {objective_rows[0][0]}:{objective_rows[0][1]}: {objective_rows[0][2]}",
+        ])
+    if infrastructure_rows and blocker_rows:
+        lines.extend([
+            "candidate priority hint:",
+            (
+                "- The notes contain both verified infrastructure and remaining blocker/choice language. "
+                "Treat that language as evidence to inspect, not as a deterministic tool verdict. "
+                "If the original problem permits alternatives, prefer a comparative scan over viable choices, assumptions, "
+                "or input families before deepening only one candidate route."
+            ),
+            f"  infrastructure evidence: {infrastructure_rows[0][0]}:{infrastructure_rows[0][1]}: {infrastructure_rows[0][2]}",
+            f"  blocker-language evidence: {blocker_rows[0][0]}:{blocker_rows[0][1]}: {blocker_rows[0][2]}",
+        ])
+    if blocker_rows:
+        lines.extend([
+            "candidate priority hint:",
+            (
+                "- These notes contain blocker/assembly/restriction language. Treat that wording as evidence to inspect, not as "
+                "a deterministic tool verdict. If review confirms an assembly or restriction gap, first consider an exact "
+                "restricted/conditional assembly that exposes every remaining assumption. Do not treat full generality as the "
+                "next step until the restricted assembly itself is explicit."
+            ),
+            f"  blocker-language evidence: {blocker_rows[0][0]}:{blocker_rows[0][1]}: {blocker_rows[0][2]}",
+        ])
+    return "\n".join(lines)
+
+
+def _choice_classification_signal(
+    workspace: WorkspaceLike,
+    root: str,
+    groups: dict[str, list[tuple[str, int, str]]] | None = None,
+) -> str:
+    problem_rows = _safe_read_markdown_rows(workspace, _join_workspace_path(root, "problem.md"))
+    if not problem_rows and root not in {"", "."}:
+        problem_rows = _safe_read_markdown_rows(workspace, "problem.md")
+    problem_text = "\n".join(text for _line_no, text in problem_rows).lower()
+    if not problem_text:
+        return ""
+    has_choice_objective = _line_has_any(
+        problem_text,
+        (
+            "there exist",
+            "exists",
+            "find one",
+            "identify a",
+            "choose",
+            "stored energy",
+            "model",
+            "parameter",
+            "initial data",
+            "ansatz",
+        ),
+    )
+    has_choice_surface = _line_has_any(
+        problem_text,
+        (
+            "model",
+            "parameter",
+            "data",
+            "initial",
+            "stored energy",
+            "weight",
+            "ansatz",
+            "hypotheses",
+        ),
+    )
+    if not (has_choice_objective and has_choice_surface):
+        return ""
+
+    signal_groups = groups if groups is not None else _collect_decision_signal_lines(workspace, root)
+    infrastructure_rows = signal_groups.get("verified infrastructure to build on", [])
+    blocker_rows = signal_groups.get("possible blocker/assembly language evidence", [])
+    if not (infrastructure_rows or blocker_rows):
+        return ""
+
+    lines = [
+        "primary research action signal",
+        (
+            "recommended first check: classify admissible choices that make an existing conditional theorem chain usable"
+        ),
+        (
+            "selected target: choice-classification proposition over admissible models, parameters, input families, weights, "
+            "or ansatzes for the active conditional theorem chain"
+        ),
+        (
+            "why selected: the problem statement has an existence/choice surface, and the workspace has verified "
+            "infrastructure plus choice, hypothesis, obstruction, or assembly evidence. Treat this as a navigation signal, "
+            "not a deterministic verdict; inspect the cited files before acting."
+        ),
+        (
+            "next-proposition shape: state which models, parameters, input families, weights, or ansatz choices can satisfy "
+            "the current chain's hypotheses, including support, positivity/lower-bound, nonlinear remainder, regularity, "
+            "and timescale constraints that the scan must respect."
+        ),
+        (
+            "deprioritize for now: framework formalization, conditional assembly with the choice-dependent hypothesis left "
+            "open, gap naming, or stronger general analytic machinery that only restates the need for such choices."
+        ),
+        (
+            "verified-infrastructure guardrail: do not recommend re-proving or formalizing infrastructure already visible "
+            "in verified propositions unless the cited verified Statement is insufficient for the active theorem interface."
+        ),
+        (
+            "method-change guardrail: alternative test functions, sharper constants, or stronger PDE/ODE machinery are "
+            "downstream unless the choice classification is already complete or shows no admissible choice can make the "
+            "existing chain work."
+        ),
+    ]
+    if infrastructure_rows:
+        lines.append(f"infrastructure evidence: {infrastructure_rows[0][0]}:{infrastructure_rows[0][1]}: {infrastructure_rows[0][2]}")
+    if blocker_rows:
+        lines.append(f"choice/gap evidence: {blocker_rows[0][0]}:{blocker_rows[0][1]}: {blocker_rows[0][2]}")
+    return "\n".join(lines)
+
+
+def _format_primary_research_action(
+    *,
+    default_candidate: tuple[str, list[tuple[int, str]]] | None,
+    top_repairable: tuple[int, str, list[tuple[int, str]]] | None,
+    top_unreviewed: tuple[int, str, list[tuple[int, str]], list[tuple[int, str]]] | None,
+) -> str:
+    lines = [
+        "primary research action signal",
+        (
+            "purpose: put the strongest structural scan result near the top of this review so later reading does not bury it. "
+            "Treat this as a research-planning signal, then verify the cited file before acting."
+        ),
+    ]
+    if top_unreviewed is not None:
+        high_score, high_path, _high_rows, _hint_rows = top_unreviewed
+        lines.extend([
+            "recommended first check: make a broad unreviewed attempt's exact interface explicit before relying on it as a final claim",
+            f"selected target: {high_path} (high-level signal: {high_score})",
+        ])
+        if default_candidate is not None:
+            lines.append(f"secondary underclaimed comparison target: {default_candidate[0]}")
+        return "\n".join(lines)
+    if top_repairable is not None:
+        repair_score, repair_path, _repair_rows = top_repairable
+        lines.extend([
+            "recommended first check: decide whether the selected failed attempt is a direct repair or a premise inside an exact system/interface proposition",
+            f"selected target: {repair_path} (repair signal: {repair_score})",
+        ])
+        if default_candidate is not None:
+            lines.append(f"secondary underclaimed comparison target: {default_candidate[0]}")
+        return "\n".join(lines)
+    if default_candidate is None:
+        return ""
+    default_path, highlights = default_candidate
+    lines.extend([
+        "recommended first check: make an already-established proof-tail conclusion explicit in its Statement",
+        f"selected target: {default_path}",
+        (
+            "why this matters: if the highlighted conclusion affects the original problem, a best-known value or estimate, "
+            "the stopping condition, or future planning, it is a proposition-index gap. Do not let harder unresolved work hide "
+            "that already-established conclusion."
+        ),
+        (
+            "planning note: an index or knowledge note mentioning the stronger conclusion is not equivalent to a verified "
+            "proposition Statement. If the orchestrator cannot directly edit proposition files, this is still a valid worker "
+            "task: create or revise a proposition whose Statement exposes the already-proved conclusion."
+        ),
+        (
+            "verification note: when the selected target is in verified_propositions/, treat its proof-tail conclusion as "
+            "verified progress for planning. Do not spend the main review re-proving its admissibility or recomputing the proof; "
+            "read only enough to restate the already-proved conclusion accurately."
+        ),
+        (
+            "conflict note: if the verified proof-tail gives a strict improvement over an older route summary, do not keep "
+            "recommending work whose stated payoff is the older weaker statement. First expose the verified improvement as "
+            "the best-known conclusion."
+        ),
+    ])
+    for line_no, text in highlights[:4]:
+        lines.append(f"evidence {line_no}: {text}")
+    return "\n".join(lines)
+
+
+def _underclaimed_candidate_is_planning_critical(candidate: tuple[str, list[tuple[int, str]]] | None) -> bool:
+    if candidate is None:
+        return False
+    file_path, highlights = candidate
+    score, _path_bias = _underclaimed_candidate_score(file_path, highlights)
+    text = f"{file_path}\n" + "\n".join(line for _line_no, line in highlights)
+    lower = text.lower()
+    normalized_path = file_path.strip("/").replace("\\", "/")
+    is_shallow_verified_file = normalized_path.startswith("verified_propositions/") and len(normalized_path.split("/")) <= 2
+    has_objective_language = any(
+        token in lower
+        for token in (
+            "answer",
+            "objective",
+            "original problem",
+            "value",
+            "estimate",
+            "stopping",
+            "stop condition",
+        )
+    )
+    has_strict_word = any(token in lower for token in ("strict", "strictly", r"\gt", r"\lt"))
+    has_order_symbol = any(token in lower for token in (">", "<"))
+    has_formula_chain = "=" in text and any(token in lower for token in ("therefore", "hence", "consequently", "we obtain", "we get"))
+    return (
+        score >= 14 and (has_objective_language or has_strict_word)
+    ) or (
+        score >= 8
+        and is_shallow_verified_file
+        and (has_strict_word or (has_objective_language and (has_order_symbol or has_formula_chain)))
+    )
+
+
 def _unfinished_attempt_files(workspace: WorkspaceLike, root: str, *, max_files: int) -> list[str]:
     prefix = "" if root in {"", "."} else root.rstrip("/") + "/"
     base = prefix + "unverified_propositions"
@@ -829,20 +1307,22 @@ def _format_repairable_attempt_notes(
     lines = [
         "repairable attempt candidates",
         (
-            "purpose: failed reviews with localized fixes can be the smallest useful next step; "
-            "read the cited review and proposition before choosing broad new work."
+            "purpose: failed reviews with localized fixes are useful evidence; read the cited review and proposition "
+            "before choosing broad new work."
         ),
         (
             "evidence budget: first read the top candidate review and proposition; if the defect is local and the result "
-            "still matters, stop the broad survey and recommend that repair unless stronger already-read evidence supersedes it."
+            "still matters, decide whether it should be repaired directly or listed as a premise inside a broader "
+            "system/interface proposition."
         ),
         (
             "next review move: inspect the top candidate's review and related files before proposing a new direction; "
-            "if most of the attempt is sound and the defect is local, prefer an explicit repair or missing prerequisite."
+            "if most of the attempt is sound and the defect is local, prefer an explicit repair only when the larger "
+            "system/interface is already statement-visible."
         ),
         (
-            "priority rule: a high-signal local repair is normally the default next proposition unless an already verified "
-            "Statement supersedes it; broad new directions should explain why they outrank this shorter path."
+            "priority rule: a high-signal local repair should not outrank an exact system/interface assembly when the "
+            "repair is only one component needed to make levels, constants, remainders, and restrictions compose."
         ),
     ]
     for score, file_path, rows in candidates[:max_files]:
@@ -851,8 +1331,8 @@ def _format_repairable_attempt_notes(
         if related_files:
             lines.append("related files: " + ", ".join(related_files))
         lines.append(
-            "suggested immediate target: make a repaired explicit proposition from this candidate, or state the missing "
-            "local prerequisite, so later reviewers can see the usable conclusion from the Statement."
+            "suggested immediate target: decide whether this should be a direct repair or a named prerequisite/subclaim "
+            "inside the exact system/interface proposition, so later reviewers can see the usable conclusion from the Statement."
         )
         selected = _review_repair_lines(rows)
         if selected:
@@ -981,7 +1461,10 @@ def _markdown_index_progress_audit_hint(workspace: WorkspaceLike, path: str) -> 
     normalized_path = path.replace("\\", "/")
     if not normalized_path.lower().endswith("/index.md") and normalized_path.lower() != "index.md":
         return ""
+    if normalized_path == "knowledge/index.md" or normalized_path.startswith("knowledge/"):
+        return ""
     parent = normalized_path.rsplit("/", 1)[0] if "/" in normalized_path else "."
+    focus_root = "." if normalized_path in {"index.md", "verified_propositions/index.md", "knowledge/index.md"} else parent
     try:
         files = [
             item for item in workspace.glob("**/*.md", path=parent, max_results=80)
@@ -989,9 +1472,34 @@ def _markdown_index_progress_audit_hint(workspace: WorkspaceLike, path: str) -> 
         ]
     except Exception:
         return ""
-    candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=6)
+    candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=60)
     if not candidates:
         return ""
+    default_candidate = _select_underclaimed_default_candidate(
+        candidates,
+        focus_terms=_problem_focus_terms(workspace, focus_root),
+    )
+    if default_candidate is not None and default_candidate in candidates:
+        candidates = [default_candidate, *[candidate for candidate in candidates if candidate != default_candidate]]
+    primary = _format_primary_research_action(
+        default_candidate=default_candidate,
+        top_repairable=None,
+        top_unreviewed=None,
+    )
+    if primary and _underclaimed_candidate_is_planning_critical(default_candidate):
+        audit = _format_underclaimed_proof_candidates(
+            [default_candidate, *[candidate for candidate in candidates if candidate != default_candidate][:2]],
+            heading="index-adjacent priority audit: highest-priority underclaimed proof statements",
+            include_rule=True,
+        )
+        return (
+            "<system>"
+            "Because this is an index file in a research workspace, check proposition-index gaps before following the index into broad gap analysis. "
+            "An index summary is useful evidence but does not replace a verified proposition Statement.\n"
+            f"{primary}\n"
+            f"{audit}\n"
+            "</system>"
+        )
     audit = _format_underclaimed_proof_candidates(
         candidates,
         heading="index-adjacent progress audit: possible underclaimed proof statements",
@@ -999,9 +1507,45 @@ def _markdown_index_progress_audit_hint(workspace: WorkspaceLike, path: str) -> 
     )
     return (
         "<system>"
-        "Because this is an index file, also inspect whether nearby verified/proof Markdown files contain stronger conclusions "
-        "than their Statement sections expose. Index summaries can lag behind proof tails.\n"
+        "Because this is an index file in a research workspace, do not use broad manual Read calls as the primary progress map. "
+        "Run ResearchProgressReview on the workspace root or this directory before reading many linked files, unless the current task already has a narrower cited target. "
+        "Also inspect whether nearby verified/proof Markdown files contain stronger conclusions than their Statement sections expose. "
+        "Index summaries can lag behind proof tails.\n"
         f"{audit}\n"
+        "</system>"
+    )
+
+
+def _markdown_knowledge_index_hint(workspace: WorkspaceLike, path: str) -> str:
+    normalized_path = path.replace("\\", "/")
+    if normalized_path != "knowledge/index.md" and not normalized_path.startswith("knowledge/"):
+        return ""
+    try:
+        files = [
+            item for item in workspace.glob("**/*.md", path="verified_propositions", max_results=200)
+            if not item.endswith("/")
+        ]
+    except Exception:
+        return ""
+    candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=60)
+    default_candidate = _select_underclaimed_default_candidate(
+        candidates,
+        focus_terms=_problem_focus_terms(workspace, "."),
+    )
+    if not _underclaimed_candidate_is_planning_critical(default_candidate):
+        return ""
+    primary = _format_primary_research_action(
+        default_candidate=default_candidate,
+        top_repairable=None,
+        top_unreviewed=None,
+    )
+    return (
+        "<system>"
+        "Knowledge files are non-verified navigation notes. If a knowledge bottleneck, answer claim, or route summary conflicts "
+        "with a verified proposition proof-tail or a proposition-index gap, treat the verified proof-tail as progress evidence and "
+        "recommend reconciling the verified Statement before following the knowledge route. Do not prefer a simpler or older "
+        "route summary over a strict verified improvement merely because the route summary is simpler.\n"
+        f"{primary}\n"
         "</system>"
     )
 
@@ -1019,6 +1563,25 @@ def _research_progress_scan_paths(workspace: WorkspaceLike, root: str, paths: li
         if f"{name}/" in entries
     ]
     return preferred or [root]
+
+
+def _research_markdown_file_priority(path: str) -> tuple[int, int, str]:
+    normalized = path.replace("\\", "/").strip("/")
+    parts = normalized.split("/") if normalized else []
+    basename = parts[-1] if parts else ""
+    if normalized == "problem.md":
+        group = 0
+    elif basename == "index.md":
+        group = 1
+    elif normalized.startswith("verified_propositions/"):
+        group = 2
+    elif normalized.startswith("knowledge/"):
+        group = 3
+    elif normalized.startswith("unverified_propositions/"):
+        group = 4
+    else:
+        group = 5
+    return (group, len(parts), normalized)
 
 
 def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]) -> ToolResult:
@@ -1039,6 +1602,7 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
                     item for item in workspace.glob("**/*.md", path=scan_path, max_results=per_path_limit)
                     if not item.endswith("/")
                 ]
+                found.sort(key=_research_markdown_file_priority)
             for file_path in found:
                 if file_path not in seen:
                     files.append(file_path)
@@ -1047,6 +1611,17 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
                     break
             if len(files) >= max_files:
                 break
+
+        repairable_candidates = _collect_repairable_attempt_candidates(workspace, root)
+        top_repairable = repairable_candidates[0] if repairable_candidates and repairable_candidates[0][0] >= 8 else None
+        unreviewed_candidates = _collect_unreviewed_high_level_attempts(workspace, root)
+        top_unreviewed = unreviewed_candidates[0] if unreviewed_candidates and unreviewed_candidates[0][0] >= 6 else None
+        candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=60)
+        focus_terms = _problem_focus_terms(workspace, root)
+        default_candidate = _select_underclaimed_default_candidate(
+            candidates,
+            focus_terms=focus_terms,
+        )
 
         lines = [
             "Research progress review",
@@ -1069,18 +1644,57 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
         ),
         (
             "priority guide: separate easy local cleanup from the issue that blocks the most ambitious current claim; "
-            "recommend cleanup only when it is the actual global blocker or when an already-proved result must be surfaced first."
+            "treat cleanup as a candidate main action only when later review confirms it blocks the most ambitious current claim "
+            "or when an already-proved result must be surfaced first."
         ),
     ]
         if len(files) >= max_files:
             lines.append("note: file list hit max_files; run again on a narrower path if important files may be omitted.")
 
+        choice_signal = _choice_classification_signal(workspace, root)
+        if choice_signal:
+            lines.extend(["", choice_signal])
+
+        planning_critical_default = _underclaimed_candidate_is_planning_critical(default_candidate)
+        primary_action = ""
+        if not choice_signal:
+            primary_action = _format_primary_research_action(
+                default_candidate=default_candidate if planning_critical_default or top_repairable is not None or top_unreviewed is not None else None,
+                top_repairable=top_repairable,
+                top_unreviewed=top_unreviewed,
+            )
+            if primary_action:
+                lines.extend(["", primary_action])
+        if (
+            not choice_signal
+            and top_repairable is None
+            and top_unreviewed is None
+            and planning_critical_default
+        ):
+            display_candidates = [default_candidate, *[candidate for candidate in candidates if candidate != default_candidate][:2]]
+            lines.extend([
+                "",
+                "high-priority proposition-index gap",
+                (
+                    "reason: the structural scan found a proposition-index gap that appears to affect the original problem, "
+                    "a best-known value or estimate, the stopping condition, or future planning. Treat this as a priority signal, "
+                    "then compare it with the broader workspace notes below before choosing the final research action."
+                ),
+                _format_underclaimed_proof_candidates(
+                    display_candidates,
+                    heading=f"highest-priority underclaimed proof statements: {len(display_candidates)} shown",
+                    include_rule=True,
+                ),
+            ])
+
+        decision_signals = _format_decision_signals(workspace, root)
+        if decision_signals:
+            lines.extend(["", decision_signals])
+
         workspace_notes = _format_workspace_notes(workspace, root)
         if workspace_notes:
             lines.extend(["", workspace_notes])
 
-        repairable_candidates = _collect_repairable_attempt_candidates(workspace, root)
-        top_repairable = repairable_candidates[0] if repairable_candidates and repairable_candidates[0][0] >= 8 else None
         repairable_notes = _format_repairable_attempt_notes(
             workspace,
             root,
@@ -1089,8 +1703,6 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
         if repairable_notes:
             lines.extend(["", repairable_notes])
 
-        unreviewed_candidates = _collect_unreviewed_high_level_attempts(workspace, root)
-        top_unreviewed = unreviewed_candidates[0] if unreviewed_candidates and unreviewed_candidates[0][0] >= 6 else None
         unreviewed_notes = _format_unreviewed_high_level_attempts(unreviewed_candidates)
         if unreviewed_notes:
             lines.extend(["", unreviewed_notes])
@@ -1098,8 +1710,6 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
         unfinished_notes = _format_unfinished_attempt_notes(workspace, root)
         if unfinished_notes:
             lines.extend(["", unfinished_notes])
-
-        candidates = _collect_underclaimed_proof_candidates(workspace, files, max_candidates=60)
 
         if not candidates:
             if top_unreviewed is not None:
@@ -1136,15 +1746,13 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
             ])
             return ToolResult("\n".join(lines))
 
-        focus_terms = _problem_focus_terms(workspace, root)
-        default_candidate = _select_underclaimed_default_candidate(
-            candidates,
-            focus_terms=focus_terms,
-        )
         display_limit = 10 if (top_unreviewed is not None or top_repairable is not None) else 20
         display_candidates = candidates[:display_limit]
-        if default_candidate is not None and default_candidate not in display_candidates:
-            display_candidates = [default_candidate, *display_candidates[: max(0, display_limit - 1)]]
+        if default_candidate is not None:
+            display_candidates = [
+                default_candidate,
+                *[candidate for candidate in display_candidates if candidate != default_candidate],
+            ][:display_limit]
 
         lines.extend([
             "",

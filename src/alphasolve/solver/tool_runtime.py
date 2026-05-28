@@ -12,7 +12,9 @@ from alphasolve.agent.tools import ToolRegistry, ToolResult, build_default_tool_
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES
 from .research_markdown import (
     _markdown_index_progress_audit_hint,
+    _markdown_knowledge_index_hint,
     _markdown_read_review_hint,
+    _markdown_statement_tail_preview,
     _run_inspect_markdown,
     _run_research_progress_review,
 )
@@ -46,9 +48,12 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
         description=(
             "Read text content from a file.\n\n"
             "Tips:\n"
+            "- In AlphaSolve research workspaces, this is an exact file-inspection tool, not the primary way to survey progress across many propositions or notes.\n"
+            "- For broad progress review over `problem.md`, `verified_propositions/`, and `knowledge/`, run ResearchProgressReview first; then use Read on the cited files that need line-level precision.\n"
             "- A `<system>` tag will be given before the read file content.\n"
             "- The system will notify you when there is anything wrong when reading the file.\n"
-            "- This tool is typically worth using in parallel when you need to inspect multiple files.\n"
+            "- This tool is worth using in parallel only after a progress map or explicit citation has narrowed the files to inspect.\n"
+            "- For Markdown proposition files with Statement and Proof sections, the default call with only `path` returns the Statement section plus the file tail; set `read_all=true` or pass `line_offset`/`n_lines` for exact proof inspection.\n"
             "- If you want to search for a certain content or pattern, prefer Grep over Read.\n"
             "- Content will be returned with a line number before each line like `cat -n` format.\n"
             f"- By default, Read returns {READ_PAGE_DEFAULT_LINES} lines.\n"
@@ -95,6 +100,7 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
             "- If the result cites several major directories or competing evidence areas, use scoped Agent calls to inspect those areas separately, then compare the reports in the main agent.\n"
             "- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n"
             "- If it reports an underclaimed proof that affects an answer, best-known objective value or estimate, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder work.\n"
+            "- Also use it to distinguish local cleanups from the current global blocker: theorem-level assembly gaps, unresolved restrictions, missing constant checks, and already-verified infrastructure that should not be reproved.\n"
             "- This is a progress-navigation tool, not a verifier; it does not prove new claims."
         ),
         parameters={
@@ -127,6 +133,7 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
             "- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n"
             "- It lists headings, extracts statement/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n"
             "- Its progress audit highlights underclaimed proof tails; if one affects an answer, best-known objective value or estimate, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n"
+            "- Prefer inspecting cited blocker, obstruction, index, and synthesis files before choosing a local lemma as the next global step.\n"
             "- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim."
         ),
         parameters={
@@ -162,25 +169,48 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
 
 
 def _run_research_read(workspace: WorkspaceLike, args: dict[str, Any]) -> ToolResult:
+    explicit_range = (
+        int(args.get("line_offset", 1)) != 1
+        or int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)) != READ_PAGE_DEFAULT_LINES
+        or bool(args.get("read_all", False))
+    )
+    use_statement_tail_preview = not explicit_range and str(args["path"]).lower().endswith((".md", ".markdown"))
+    read_args = dict(args)
+    if use_statement_tail_preview:
+        read_args["line_offset"] = 1
+        read_args["read_all"] = True
     try:
         result = workspace.read_text_page(
-            args["path"],
-            line_offset=int(args.get("line_offset", 1)),
-            n_lines=int(args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
-            read_all=bool(args.get("read_all", False)),
+            read_args["path"],
+            line_offset=int(read_args.get("line_offset", 1)),
+            n_lines=int(read_args.get("n_lines", READ_PAGE_DEFAULT_LINES)),
+            read_all=bool(read_args.get("read_all", False)),
         )
     except Exception as exc:
         return ToolResult(f"<system>ERROR reading {args['path']}: {exc}</system>", is_error=True)
     system = f"path: {args['path']}\n{result.message}"
     if not result.output:
         return ToolResult(f"<system>{system}</system>")
-    parts = [f"<system>{system}</system>", result.output]
+    parts = [f"<system>{system}</system>"]
     hint = _markdown_read_review_hint(str(args["path"]), result.output, result.message)
     index_audit_hint = _markdown_index_progress_audit_hint(workspace, str(args["path"]))
-    if hint:
-        parts.append(hint)
+    knowledge_index_hint = _markdown_knowledge_index_hint(workspace, str(args["path"]))
     if index_audit_hint:
         parts.append(index_audit_hint)
+    if knowledge_index_hint:
+        parts.append(knowledge_index_hint)
+    if hint:
+        parts.append(hint)
+    preview = _markdown_statement_tail_preview(result.output) if use_statement_tail_preview else ""
+    if preview:
+        parts.append(
+            "<system>Default research Read preview: this Markdown file has Statement and Proof sections, "
+            "so only the Statement section and file tail are shown. Use read_all=true or pass line_offset/n_lines "
+            "to inspect the full proof.</system>"
+        )
+        parts.append(preview)
+    else:
+        parts.append(result.output)
     return ToolResult("\n".join(parts))
 
 

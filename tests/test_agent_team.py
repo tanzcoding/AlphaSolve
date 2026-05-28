@@ -87,6 +87,40 @@ def test_default_agent_suite_loads_yaml_roles():
     index_pattern = r"^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\.md$"
     assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["pattern"] == index_pattern
     assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["pattern"] == index_pattern
+    assert "index writes as bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Write"]["override"]
+    assert "index edits as bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Edit"]["override"]
+    assert "preserve that ranking" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "rank that candidate against broader theorem work" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "constraint on the choice-classification target" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "answer-facing inequality" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "exact system levels, constants, remainders, and restrictions" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "repair listed as a premise" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "rank that prerequisite before the downstream promotion" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "classify choices that make the existing chain's hypotheses hold" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "cover the whole theorem interface" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "framework-formalization, conditional assembly, or gap-naming task" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "re-proving verified infrastructure" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "selected target is choice-classification" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
+    assert "underclaimed answer-facing bound" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
+    assert "treat the verified Statement as authoritative" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "passed review and records a system interface" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "do not demote it as bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "inspect that target before broadening" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
+    assert "not as a deterministic verdict" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
+    assert "not ordinary bookkeeping" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
+    assert "Do not demote it to ordinary bookkeeping" in suite.subagents["research_reviewer"].system_prompt
+    assert "use that quantified obstruction as a constraint for the choice-classification proposition" in suite.subagents["research_reviewer"].system_prompt
+    assert "do not list it as a low-effort cleanup" in suite.subagents["research_reviewer"].system_prompt
+    assert "treat the verified Statement as authoritative for planning" in suite.subagents["research_reviewer"].system_prompt
+    assert "exact derivative levels, loss budget, absorption constants" in suite.subagents["research_reviewer"].system_prompt
+    assert "still matches the current global proof interface" in suite.subagents["research_reviewer"].system_prompt
+    assert "repair as a required premise or subclaim" in suite.subagents["research_reviewer"].system_prompt
+    assert "not describe exact system/interface assembly as mere bookkeeping" in suite.subagents["research_reviewer"].system_prompt
+    assert "Name the downstream propositions as results that this prerequisite would unlock" in suite.subagents["research_reviewer"].system_prompt
+    assert "scans or classifies the admissible choices satisfying those hypotheses" in suite.subagents["research_reviewer"].system_prompt
+    assert "framework-formalization, conditional assembly, or gap-naming proposition" in suite.subagents["research_reviewer"].system_prompt
+    assert "sharpening constants, alternative test functions" in suite.subagents["research_reviewer"].system_prompt
+    assert "cover the whole active theorem interface" in suite.subagents["research_reviewer"].system_prompt
     assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
     assert "Examples:" in suite.agents["orchestrator"].system_prompt
     assert "task is complete if and only if" in suite.agents["orchestrator"].system_prompt
