@@ -486,7 +486,7 @@ class Worker:
         prompt = (
             "Read the following verified mathematical proposition and return a short kebab-case filename "
             "(2-5 words, lowercase, hyphens only, no extension) that captures its mathematical content. "
-            "Examples: energy-identity-bootstrap, compactness-criterion, sobolev-embedding-estimate. "
+            "Examples: parity-obstruction, matrix-rank-bound, convexity-extremal-case, orbit-counting-invariant. "
             "Return ONLY the filename, nothing else.\n\n"
             + content
         )

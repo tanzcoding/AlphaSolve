@@ -35,7 +35,7 @@ Write like a mathematical research notebook:
 - Preserve calculations and assumptions, not just conclusions.
 - Explain why a route fails when the failure teaches something reusable.
 - State unresolved gaps honestly.
-- Use semantic headings such as `Energy Identity`, `Obstruction`, `Counterexample`, `Open Gap`, and `Related`.
+- Use semantic headings such as `Invariant`, `Case Split`, `Counterexample`, `Open Gap`, and `Related`.
 - Use LaTeX for mathematics and wiki links such as `[[entry-name]]` or `[[topic/entry-name]]`.
 
 ## References

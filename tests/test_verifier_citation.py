@@ -29,7 +29,7 @@ def test_verifier_format_references_is_first_default_attempt():
     assert "pure mathematical statement" in suite.agents["verifier_format_references"].system_prompt
     assert "knowledge/" in suite.agents["verifier_citation"].system_prompt
     assert "path relative to `verified_propositions`" in suite.agents["verifier_citation"].system_prompt
-    assert r"\ref{coercive\energy-estimate}" in suite.agents["verifier_citation"].system_prompt
+    assert r"\ref{number-theory\order-lifting}" in suite.agents["verifier_citation"].system_prompt
     assert "Agent" in suite.agents["verifier_citation"].tools
 
 

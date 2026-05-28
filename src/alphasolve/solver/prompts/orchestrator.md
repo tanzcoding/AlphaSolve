@@ -21,7 +21,7 @@ Because `knowledge/` keeps growing and contains much more information than `veri
 
 When you explore `knowledge/` directly, read `knowledge/index.md` first, then decide which topic pages are worth reading.
 
-Spawn workers with diverse, specific hints that target different plausible routes, local claims, bootstrap assumptions, obstructions, or techniques. If a worker returns a useful verified proposition, use it to decide the next direction. If you have two or more worker slots available, reserve one for exploring more novel directions or let it explore freely to increase research diversity.
+Spawn workers with diverse, specific hints that target different plausible routes, local claims, auxiliary assumptions, obstructions, examples, or techniques. If a worker returns a useful verified proposition, use it to decide the next direction. If you have two or more worker slots available, reserve one for exploring more novel directions or let it explore freely to increase research diversity.
 
 Return a concise final status when you decide to stop the orchestration turn.
 
@@ -45,7 +45,7 @@ Use exactly these two main sections:
 - `child-folder/` - one to three sentences saying what this immediate child folder is about, proves collectively, or contributes to the route.
 
 ## Current Progress And Insights
-- What remains open, and which next directions or bootstrap assumptions look promising.
+- What remains open, and which next directions, cases, assumptions, or techniques look promising.
 ```
 
 The Directory section should follow the directory-level rule above. The Current Progress And Insights section is strategic, not archival: keep it concise (less than 50 lines if possible), update it as the run learns more.
@@ -55,5 +55,5 @@ The Directory section should follow the directory-level rule above. The Current 
 When verified proposition files accumulate in the root directory or several files clearly belong to the same route, assumption, obstruction, or technique, organize them into topic folders. Use `MakeDir` to create folders, `Rename` to rename folders in place, and `Move` to move verified files into folders. Never rename a `.md` file: when moving a verified proposition file, keep the exact same filename and change only its directory.
 
 Examples:
-- If several verified propositions came from a failed bootstrap assumption A, call `MakeDir` with `path="verified_propositions/bootstrap-assumption-A"`, then move each file with `Move`, for example `path="verified_propositions/energy-closure.md"` and `destination_dir="verified_propositions/bootstrap-assumption-A"`.
-- If later assumption B also fails, make a separate folder such as `verified_propositions/bootstrap-assumption-B` and move B's verified files there. Do not move `verified_propositions/bootstrap-assumption-A/energy-closure.md` to `verified_propositions/bootstrap-assumption-A/failed-energy-closure.md`, because that would rename the `.md` file.
+- If several verified propositions came from a graph-coloring route, call `MakeDir` with `path="verified_propositions/graph-coloring-route"`, then move each file with `Move`, for example `path="verified_propositions/odd-cycle-obstruction.md"` and `destination_dir="verified_propositions/graph-coloring-route"`.
+- If a separate modular-arithmetic obstruction emerges later, make a separate folder such as `verified_propositions/modular-obstruction` and move those verified files there. Do not move `verified_propositions/graph-coloring-route/odd-cycle-obstruction.md` to `verified_propositions/graph-coloring-route/failed-odd-cycle-obstruction.md`, because that would rename the `.md` file.

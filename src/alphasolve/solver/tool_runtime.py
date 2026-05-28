@@ -249,7 +249,7 @@ def register_orchestrator_worker_tools(
                     "type": "string",
                     "description": (
                         "Optional targeted hint for this worker only. Suggest a direction, method, "
-                        "branch, local target, or bootstrap assumption. This is different from the user's hint.md."
+                        "branch, local target, or auxiliary assumption. This is different from the user's hint.md."
                     ),
                 },
             },

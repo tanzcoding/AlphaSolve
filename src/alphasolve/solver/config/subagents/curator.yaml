@@ -130,8 +130,8 @@ agent:
         - This tool fails if the target path already exists.
 
         Examples:
-        - Rename a folder: directory="verified_propositions", old_name="bootstrap-A", new_name="bootstrap-attempt-A".
-        - Rename a knowledge page: directory="knowledge/fourier", old_name="cutoff.md", new_name="frequency-cutoff.md".
+        - Rename a folder: directory="verified_propositions", old_name="graph-route", new_name="graph-coloring-route".
+        - Rename a knowledge page: directory="knowledge/number-theory", old_name="orders.md", new_name="multiplicative-orders.md".
       parameters:
         directory:
           description: "Parent directory containing the item to rename."

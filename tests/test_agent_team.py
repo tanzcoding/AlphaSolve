@@ -102,7 +102,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "less than 50 lines" in suite.agents["orchestrator"].system_prompt
     assert "responsible for keeping `verified_propositions/` tidy and easy to navigate" in suite.agents["orchestrator"].system_prompt
     assert "You may organize `verified_propositions/`" not in suite.agents["orchestrator"].system_prompt
-    assert "bootstrap-assumption-A" in suite.agents["orchestrator"].system_prompt
+    assert "graph-coloring-route" in suite.agents["orchestrator"].system_prompt
     assert "that would rename the `.md` file" in suite.agents["orchestrator"].system_prompt
     assert "Agent" in suite.agents["generator"].tools
     assert suite.agents["generator"].tool_parameters["Agent"]["type"]["enum"] == [
@@ -144,7 +144,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "<source_label>" not in curator.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
     assert "path is relative to `verified_propositions`" in suite.agents["generator"].system_prompt
-    assert r"\ref{coercive\energy-estimate}" in suite.agents["generator"].system_prompt
+    assert r"\ref{number-theory\order-lifting}" in suite.agents["generator"].system_prompt
     assert "path is relative to `verified_propositions`" in suite.agents["reviser"].system_prompt
 
 
