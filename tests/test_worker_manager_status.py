@@ -6,7 +6,7 @@ from alphasolve.agent import AgentConfig
 from alphasolve.solver import orchestrator as orchestrator_module
 from alphasolve.solver import app as workflow_module
 from alphasolve.solver import AlphaSolve
-from alphasolve.solver.orchestrator import Orchestrator, WorkerManager
+from alphasolve.solver.orchestrator import Orchestrator, WorkerManager, FREE_EXPLORATION_WORKER_HINT
 from alphasolve.solver.project import ProjectLayout
 from alphasolve.solver.orchestrator import OrchestratorRunResult
 from alphasolve.solver.worker import WorkerRunResult
@@ -300,6 +300,47 @@ def test_task_output_returns_completed_result_and_remaining_active_snapshot(tmp_
         assert "second branch" not in payload["active_workers"][0]["progress"]
     finally:
         manager.close(timeout=0)
+
+
+def test_task_output_tool_spawns_free_exploration_worker_when_slot_is_available():
+    class StubManager:
+        def __init__(self):
+            self.solved_result = None
+            self.solution_path = None
+            self.active = {}
+            self.max_workers = 2
+            self.spawned_hints = []
+
+        def spawn(self, hint):
+            self.spawned_hints.append(hint)
+            self.active[object()] = "w-free"
+            return {"spawned": True, "worker_id": "w-free"}
+
+        def has_available_worker_slot(self):
+            return self.solved_result is None and len(self.active) < self.max_workers
+
+        def spawn_free_exploration_if_available(self):
+            if not self.has_available_worker_slot():
+                return {"spawned": False, "reason": "no_available_worker_slot"}
+            return self.spawn(FREE_EXPLORATION_WORKER_HINT)
+
+        def wait(self, *, timeout_seconds=None):
+            return {
+                "completed": [],
+                "timeout_seconds": timeout_seconds,
+                "active_count": len(self.active),
+                "available_worker_slots": self.max_workers - len(self.active),
+            }
+
+    manager = StubManager()
+
+    result = Orchestrator._wait_tool(Orchestrator.__new__(Orchestrator), manager, {"seconds": 1200})
+
+    assert manager.spawned_hints == [FREE_EXPLORATION_WORKER_HINT]
+    assert "freely" in manager.spawned_hints[0]
+    assert "different angles" in manager.spawned_hints[0]
+    assert '"active_count": 1' in result.content
+    assert '"free_exploration_worker": {"spawned": true' in result.content
 
 
 def test_task_output_syncs_changed_root_hint_and_reports_update(tmp_path, monkeypatch):

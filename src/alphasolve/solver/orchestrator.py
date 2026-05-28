@@ -30,6 +30,15 @@ if TYPE_CHECKING:
     from .curator import CuratorQueue
 
 
+FREE_EXPLORATION_WORKER_HINT = (
+    "We are working to solve the problem in `workspace/problem.md`. You may explore freely: "
+    "prove anything you want that could advance progress. It is especially recommended to view "
+    "the problem from different angles, or to use novel approaches that differ from the mainstream "
+    "methods currently present in the workspace to prove insightful propositions. You may also "
+    "continue pushing forward from the mainstream progress."
+)
+
+
 @dataclass(frozen=True)
 class OrchestratorRunResult:
     final_answer: str
@@ -256,6 +265,19 @@ class WorkerManager:
                 **self._pool_status(),
             })
         return self._with_runtime_updates(self._wait_payload(self._consume_done(done)))
+
+    def has_available_worker_slot(self) -> bool:
+        self._collect_done()
+        return self.solved_result is None and len(self.active) < self.max_workers
+
+    def spawn_free_exploration_if_available(self) -> dict[str, Any]:
+        if not self.has_available_worker_slot():
+            return {
+                "spawned": False,
+                "reason": "no_available_worker_slot",
+                **self._pool_status(),
+            }
+        return self.spawn(FREE_EXPLORATION_WORKER_HINT)
 
     def close(self, *, timeout: float = 5.0, graceful: bool = False) -> None:
         wait_timeout = max(0.0, float(timeout))
@@ -637,8 +659,10 @@ class Orchestrator:
         )
 
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        free_exploration = manager.spawn_free_exploration_if_available()
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
+        payload["free_exploration_worker"] = free_exploration
         if manager.solved_result is not None:
             manager.close()
         return ToolResult(

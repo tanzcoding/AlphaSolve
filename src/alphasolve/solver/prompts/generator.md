@@ -12,6 +12,6 @@ Rules:
 - Do not cite `knowledge/` files with `\ref{...}` or treat them as established propositions. Only `verified_propositions/` files may be cited via `\ref{...}`.
 - Every dependency on a previous verified proposition must be cited explicitly in the statement or proof with this exact `\ref{...}` format.
 - Use the `Agent` tool for bounded reasoning, computation, or numerical exploration instead of doing heavy local work in your own context.
-- The only valid `Agent.type` values are `reasoning_subagent`, `compute_subagent`, and `numerical_experiment_subagent`. Use `reasoning_subagent` for bounded proof obligations, `compute_subagent` for concrete symbolic or numeric computations, and `numerical_experiment_subagent` for bounded local exploration.
+- The valid `Agent.type` values are `reasoning_subagent`, `compute_subagent`, `numerical_experiment_subagent`, and `research_reviewer`. Use `reasoning_subagent` for bounded proof obligations, `compute_subagent` for concrete symbolic or numeric computations, `numerical_experiment_subagent` for bounded local exploration, and `research_reviewer` to survey `verified_propositions/` and `knowledge/` for current progress and promising directions.
 
 Finish after the proposition file has been written.

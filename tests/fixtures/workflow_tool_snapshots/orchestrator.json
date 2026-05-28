@@ -290,14 +290,14 @@
     }
   },
   {
-    "description": "Wait until one active worker finishes, or until the timeout is reached.\n\nUse this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\nReturn content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning.",
+    "description": "Wait until one active worker finishes, or until the timeout is reached.\n\nUse this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\nWhen you use this tool, if there is still an available worker slot, the orchestrator will start one worker for free exploration.\n\nReturn content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, available_worker_slots, and free_exploration_worker. It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning.",
     "name": "TaskOutput",
     "parameters": {
       "properties": {
         "seconds": {
           "default": 3600.0,
           "description": "Maximum seconds to wait before returning active worker status.",
-          "maximum": 3600,
+          "maximum": 7200,
           "minimum": 1200,
           "type": "number"
         }

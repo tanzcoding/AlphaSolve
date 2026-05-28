@@ -262,7 +262,8 @@ def register_orchestrator_worker_tools(
         description=(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
-            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
+            "When you use this tool, if there is still an available worker slot, the orchestrator will start one worker for free exploration.\n\n"
+            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, available_worker_slots, and free_exploration_worker. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
             "human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning."
         ),
@@ -274,7 +275,7 @@ def register_orchestrator_worker_tools(
                     "description": "Maximum seconds to wait before returning active worker status.",
                     "default": default_wait_timeout_seconds,
                     "minimum": 1200,
-                    "maximum": 3600,
+                    "maximum": 7200,
                 },
             },
             "required": [],

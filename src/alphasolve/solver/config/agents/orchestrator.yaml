@@ -51,7 +51,7 @@ agent:
       seconds:
         type: number
         minimum: 1200
-        maximum: 3600
+        maximum: 7200
   tool_descriptions:
     Read:
       suffix: "- Results respect this agent's workspace access restrictions."

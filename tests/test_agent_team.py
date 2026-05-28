@@ -108,6 +108,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert suite.agents["generator"].tool_parameters["Agent"]["type"]["enum"] == [
         "compute_subagent",
         "numerical_experiment_subagent",
+        "research_reviewer",
         "reasoning_subagent",
     ]
     assert suite.subagents["reasoning_subagent"].tool_parameters["Agent"]["type"]["enum"] == [
@@ -1201,6 +1202,9 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "return immediately" in tool_descriptions["SpawnWorker"]
         assert "active_count" in tool_descriptions["SpawnWorker"]
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
+        assert "available worker slot" in tool_descriptions["TaskOutput"]
+        assert "free exploration" in tool_descriptions["TaskOutput"]
+        assert "free_exploration_worker" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
         assert "verified_propositions_organization" in tool_descriptions["TaskOutput"]
         assert "Launch a new specialized agent" in tool_descriptions["Agent"]
@@ -1747,6 +1751,7 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         assert type_schema["enum"] == [
             "compute_subagent",
             "numerical_experiment_subagent",
+            "research_reviewer",
             "reasoning_subagent",
         ]
         assert blocked.is_error

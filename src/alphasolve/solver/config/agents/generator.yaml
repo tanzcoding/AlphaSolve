@@ -19,6 +19,7 @@ agent:
         enum:
           - compute_subagent
           - numerical_experiment_subagent
+          - research_reviewer
           - reasoning_subagent
   tool_descriptions:
     Read:
