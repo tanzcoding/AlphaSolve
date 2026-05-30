@@ -44,6 +44,7 @@ Rules:
 
 
 _REMOVE_RETRY_DELAYS = (0.1, 0.3, 0.7)
+_EXTERNAL_YEAR_RE = re.compile(r"(?<![A-Za-z0-9])(?:1[7-9]\d{2}|20\d{2}|2100)(?![A-Za-z0-9])")
 
 
 def _make_path_writable(path: Path) -> None:
@@ -64,6 +65,39 @@ def _make_tree_writable(path: Path) -> None:
         return
     for child in children:
         _make_path_writable(child)
+
+
+def _external_reference_parentheticals(text: str) -> list[tuple[int, str]]:
+    results: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for match in _EXTERNAL_YEAR_RE.finditer(text):
+        year_start = match.start()
+        year_end = match.end()
+        left = text.rfind("(", max(0, year_start - 50), year_start)
+        if left == -1:
+            continue
+        depth = 0
+        right = -1
+        for index in range(left, len(text)):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    right = index
+                    break
+                if depth < 0:
+                    break
+        if right == -1 or right < year_end or right - year_end > 50:
+            continue
+        parenthetical = " ".join(text[left + 1:right].split())
+        line_number = text.count("\n", 0, left) + 1
+        key = (line_number, parenthetical)
+        if parenthetical and key not in seen:
+            seen.add(key)
+            results.append(key)
+    return results
 
 
 def _rmtree_onerror(func, path, _exc_info) -> None:
@@ -585,6 +619,14 @@ class Worker:
                 "under `knowledge/references/`. Fail if any such external result is absent from `knowledge/references/`."
             )
         elif config_name == "verifier_citation":
+            possible_external_citations = _external_reference_parentheticals(proposition_file.read_text(encoding="utf-8"))
+            external_citation_hint = ""
+            if possible_external_citations:
+                external_citation_hint = (
+                    "\n\nPotential external paper/book citation parentheticals detected in `proposition.md`; "
+                    "pay special attention to whether these are external-source dependencies rather than verified-proposition citations:\n"
+                    + "\n".join(f"- line {line_number}: ({item})" for line_number, item in possible_external_citations)
+                )
             review_instruction = (
                 "Read the candidate proposition in `proposition.md` and perform the citation/reference audit, "
                 "including whether each cited verified proposition is correctly applied. "
@@ -596,6 +638,7 @@ class Worker:
                 "For each citation, read the cited verified proposition and delegate a `reasoning_subagent` to check "
                 "whether the hypotheses and conditions of the cited proposition are satisfied in the context where "
                 "the citation is used. Fail the proposition if any cited proposition's conditions are not met."
+                + external_citation_hint
             )
         else:
             review_instruction = (
