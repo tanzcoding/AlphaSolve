@@ -266,7 +266,7 @@ def _health_check_prompt(knowledge_dir: Path | None = None) -> str:
         scan_section = (
             "\n\nProgram scan before curator:\n"
             f"{scan_text}\n"
-            "Use this scan as a triage list, then inspect the files before renaming, splitting, or editing."
+            "Use this scan as a triage list, then inspect the files before renaming, moving, editing wiki notes, or splitting references with SplitReference."
         )
     return (
         "# Knowledge Base Health Check\n\n"
@@ -279,7 +279,7 @@ def _health_check_prompt(knowledge_dir: Path | None = None) -> str:
         "- Each topic directory should have its own `index.md`; every index should track only immediate child files and folders.\n"
         "- Keep broad or oversized topics in topic folders. Files over 250 lines should usually be split, "
         "except `knowledge/common-errors.md` which stays as one compressed file.\n"
-        "- Keep user-provided papers, OCR markdown, and personal notes under `knowledge/references/`; rename paper files by title.\n"
+        "- Keep user-provided papers, OCR markdown, and personal notes under `knowledge/references/`; rename and move reference files for organization, but do not Write/Edit reference text.\n"
         "- Check for stale links, confusing names, redundant pages, obvious duplicates, and program-reported untracked files.\n"
         "- Keep `knowledge/common-errors.md` concise and capped at 15 error patterns. If it has more than 15 bullets, "
         "or if several bullets describe similar mistakes, consolidate them by abstracting their shared failure mode "

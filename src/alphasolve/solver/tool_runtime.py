@@ -5,6 +5,7 @@ AlphaSolve 研究工作区、执行网关、编排等第三层工具注册到同
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from alphasolve.agent import AgentConfig, WorkspaceLike
@@ -158,6 +159,47 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
             "required": [],
         },
         handler=lambda args: _run_inspect_markdown(workspace, args),
+    )
+    registry.register(
+        name="SplitReference",
+        description=(
+            "Split a large user-provided Markdown reference into smaller Markdown files without rewriting its text.\n\n"
+            "Usage:\n"
+            "- Use this only for files under `knowledge/references/`.\n"
+            "- Each part copies an exact inclusive line range from the source file into a new Markdown file.\n"
+            "- SplitReference never edits the source file and never rewrites, summarizes, or paraphrases reference text.\n"
+            "- Create destination folders first with MakeDir when needed.\n"
+            "- Use this when a long reference file is hard for LLM agents to read as one piece."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source_path": {
+                    "type": "string",
+                    "description": "Existing Markdown reference file to split.",
+                },
+                "parts": {
+                    "type": "array",
+                    "description": (
+                        "Split parts. Each object must have path, start_line, and end_line. "
+                        "Line ranges are 1-based and inclusive."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "New Markdown file path for this part."},
+                            "start_line": {"type": "integer", "minimum": 1},
+                            "end_line": {"type": "integer", "minimum": 1},
+                        },
+                        "required": ["path", "start_line", "end_line"],
+                    },
+                },
+            },
+            "required": ["source_path", "parts"],
+        },
+        handler=lambda args: ToolResult(
+            json.dumps(workspace.split_reference_file(args["source_path"], args["parts"]), ensure_ascii=False)
+        ),
     )
 
 

@@ -81,7 +81,7 @@ def test_orchestrator_owns_verified_root(ws):
     access = RoleWorkspaceAccess.orchestrator(ws)
     assert access.write_root_rel == "verified_propositions"
     assert access.destructive_protected_file_names == ("index.md",)
-    assert access.preserve_markdown_file_names_on_rename is True
+    assert access.preserve_markdown_file_names_on_rename is False
     # orchestrator 不绑定 worker_rel —— 它在 layout 顶层操作
     assert access.worker_rel is None
 
@@ -96,7 +96,36 @@ def test_curator_scopes_io_to_knowledge(ws):
     access = RoleWorkspaceAccess.curator(ws)
     assert access.read_root_rel == "knowledge"
     assert access.write_root_rel == "knowledge"
+    assert access.deny_text_write_rels == ("knowledge/references",)
+    assert access.protected_reference_rels == ("knowledge/references",)
     assert access.destructive_protected_file_names == ("index.md", "common-errors.md")
+
+
+def test_curator_reference_text_guardrails(ws, tmp_path):
+    references = tmp_path / "knowledge" / "references"
+    references.mkdir(parents=True)
+    (references / "source.md").write_text("A\nB\nC\n", encoding="utf-8")
+    (references / "parts").mkdir()
+    (tmp_path / "knowledge" / "note.md").write_text("# Note\n", encoding="utf-8")
+
+    access = RoleWorkspaceAccess.curator(ws)
+    with pytest.raises(ValueError, match="Write/Edit cannot modify"):
+        access.write_text("knowledge/references/new.md", "agent text")
+    with pytest.raises(ValueError, match="Write/Edit cannot modify"):
+        access.edit("knowledge/references/source.md", "A", "changed")
+
+    result = access.split_reference_file(
+        "knowledge/references/source.md",
+        [{"path": "knowledge/references/parts/part-1.md", "start_line": 1, "end_line": 2}],
+    )
+    assert result["paths"] == ["knowledge/references/parts/part-1.md"]
+    assert (references / "parts" / "part-1.md").read_text(encoding="utf-8") == "A\nB\n"
+    assert (references / "source.md").read_text(encoding="utf-8") == "A\nB\nC\n"
+
+    with pytest.raises(ValueError, match="protected reference boundary"):
+        access.move_file("knowledge/note.md", "knowledge/references/parts")
+    with pytest.raises(ValueError, match="delete is not allowed"):
+        access.delete_path("knowledge/references/source.md")
 
 
 def test_curator_subagent_is_knowledge_read_only(ws):

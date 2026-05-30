@@ -32,6 +32,7 @@ from alphasolve.solver.project import ProjectLayout  # noqa: E402
 from alphasolve.solver.solution import write_solution  # noqa: E402
 from alphasolve.solver.subagent_service import SubagentService  # noqa: E402
 from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
+from alphasolve.solver.tool_runtime import build_solver_tool_registry  # noqa: E402
 from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.solver.wolfram_state import AlphaSolveConfig  # noqa: E402
 PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
@@ -103,7 +104,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "responsible for keeping `verified_propositions/` tidy and easy to navigate" in suite.agents["orchestrator"].system_prompt
     assert "You may organize `verified_propositions/`" not in suite.agents["orchestrator"].system_prompt
     assert "graph-coloring-route" in suite.agents["orchestrator"].system_prompt
-    assert "that would rename the `.md` file" in suite.agents["orchestrator"].system_prompt
+    assert "references to that proposition are updated automatically" in suite.agents["orchestrator"].system_prompt
     assert "Agent" in suite.agents["generator"].tools
     assert suite.agents["generator"].tool_parameters["Agent"]["type"]["enum"] == [
         "compute_subagent",
@@ -131,14 +132,19 @@ def test_default_agent_suite_loads_yaml_roles():
     curator = suite.subagents["curator"]
     assert curator.tool_parameters["ListDir"]["path"]["default"] == "knowledge"
     assert curator.tool_parameters["Write"]["path"]["pattern"].endswith("\\.md$")
+    assert "(?!references" in curator.tool_parameters["Write"]["path"]["pattern"]
+    assert "(?!references" in curator.tool_parameters["Edit"]["path"]["pattern"]
     assert curator.tool_parameters["Write"]["mode"]["enum"] == ["overwrite", "append"]
     assert any("rename" in name.lower() for name in curator.tools)
     assert "Move" in curator.tools
+    assert "SplitReference" in curator.tools
     assert any("delete" in name.lower() for name in curator.tools)
     assert not any(name.lower() in {"get_current_time", "getcurrenttime"} for name in curator.tools)
     assert "not a transcript archive" in curator.system_prompt
     assert "There is no maintenance log file." in curator.system_prompt
     assert "knowledge/references/" in curator.system_prompt
+    assert "Do not use `Write` or `Edit` there" in curator.system_prompt
+    assert "SplitReference" in curator.system_prompt
     assert "immediate child markdown files and immediate child folders" in curator.system_prompt
     assert len(curator.system_prompt.splitlines()) <= 120
     assert "<source_label>" not in curator.system_prompt
@@ -146,6 +152,92 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "path is relative to `verified_propositions`" in suite.agents["generator"].system_prompt
     assert r"\ref{number-theory\order-lifting}" in suite.agents["generator"].system_prompt
     assert "path is relative to `verified_propositions`" in suite.agents["reviser"].system_prompt
+
+
+def test_curator_protects_reference_text_but_can_split_and_organize_references():
+    with local_project_dir("curator_reference_guardrails") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nGuard curator references.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        references_dir = layout.knowledge_dir / "references"
+        references_dir.mkdir(parents=True, exist_ok=True)
+        source = references_dir / "long-paper.md"
+        source.write_text("A\nB\nC\nD\n", encoding="utf-8")
+        topic_dir = references_dir / "paper"
+        topic_dir.mkdir()
+
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
+        config = suite.subagents["curator"]
+        access = RoleWorkspaceAccess.curator(Workspace(layout.workspace_dir))
+        registry = build_solver_tool_registry(access)
+
+        blocked_write = registry.execute(
+            "Write",
+            {
+                "path": "knowledge/references/new.md",
+                "content": "agent text",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert blocked_write.is_error
+        assert "must match pattern" in blocked_write.content
+
+        blocked_edit = registry.execute(
+            "Edit",
+            {
+                "path": "knowledge/references/long-paper.md",
+                "old_str": "A",
+                "new_str": "changed",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert blocked_edit.is_error
+        assert "must match pattern" in blocked_edit.content
+
+        split = registry.execute(
+            "SplitReference",
+            {
+                "source_path": "knowledge/references/long-paper.md",
+                "parts": [
+                    {"path": "knowledge/references/paper/part-1.md", "start_line": 1, "end_line": 2},
+                    {"path": "knowledge/references/paper/part-2.md", "start_line": 3, "end_line": 4},
+                ],
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not split.is_error
+        assert (topic_dir / "part-1.md").read_text(encoding="utf-8") == "A\nB\n"
+        assert (topic_dir / "part-2.md").read_text(encoding="utf-8") == "C\nD\n"
+        assert source.read_text(encoding="utf-8") == "A\nB\nC\nD\n"
+
+        moved = registry.execute(
+            "Move",
+            {
+                "path": "knowledge/references/long-paper.md",
+                "destination_dir": "knowledge/references/paper",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not moved.is_error
+        assert (topic_dir / "long-paper.md").is_file()
+
+        outside = layout.knowledge_dir / "topic-note.md"
+        outside.write_text("# Topic\n", encoding="utf-8")
+        blocked_cross_boundary_move = registry.execute(
+            "Move",
+            {
+                "path": "knowledge/topic-note.md",
+                "destination_dir": "knowledge/references/paper",
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert blocked_cross_boundary_move.is_error
+        assert "protected reference boundary" in blocked_cross_boundary_move.content
 
 
 def test_orchestrator_task_contains_only_dynamic_runtime_context():
@@ -454,6 +546,7 @@ def test_curator_health_check_prompt_is_navigation_focused():
     assert "giant flat summary list" in prompt
     assert "immediate child files and folders" in prompt
     assert "references" in prompt
+    assert "do not Write/Edit reference text" in prompt
     assert "250 lines" in prompt
     assert "common-errors.md` which stays as one compressed file" in prompt
     assert "common-errors.md" in prompt
@@ -1212,7 +1305,8 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         rename_description = next(t.description for t in defs if t.name == "Rename")
         assert "Rename a folder" in rename_description
         assert "Use this only when the item stays in the same directory" in rename_description
-        assert "renaming `.md` files fails" in rename_description
+        assert "If two verified propositions have the same filename" in rename_description
+        assert "Rename automatically updates matching `\\ref{old-path}` references" in rename_description
         assert "always keeps the source file name" in tool_descriptions["Move"]
 
         index_content = (
@@ -1307,6 +1401,11 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         index_after_move = (layout.verified_dir / "index.md").read_text(encoding="utf-8")
         assert "\\ref{bootstrap-A\\bootstrap-lemma}" in index_after_move
         assert "\\ref{bootstrap-lemma}" not in index_after_move
+        source_file = layout.verified_dir / "source.md"
+        source_file.write_text(
+            "# Source\n\nUses \\ref{bootstrap-A\\bootstrap-lemma}.\n",
+            encoding="utf-8",
+        )
 
         renamed_file = registry.execute(
             "Rename",
@@ -1318,8 +1417,15 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
             enabled=config.tools,
             tool_parameters=config.tool_parameters,
         )
-        assert renamed_file.is_error
-        assert "must match pattern" in renamed_file.content
+        assert not renamed_file.is_error
+        assert (layout.verified_dir / "bootstrap-A" / "renamed-lemma.md").is_file()
+        assert not (layout.verified_dir / "bootstrap-A" / "bootstrap-lemma.md").exists()
+        index_after_rename = (layout.verified_dir / "index.md").read_text(encoding="utf-8")
+        assert "\\ref{bootstrap-A\\renamed-lemma}" in index_after_rename
+        assert "\\ref{bootstrap-A\\bootstrap-lemma}" not in index_after_rename
+        source_after_rename = source_file.read_text(encoding="utf-8")
+        assert "\\ref{bootstrap-A\\renamed-lemma}" in source_after_rename
+        assert "\\ref{bootstrap-A\\bootstrap-lemma}" not in source_after_rename
 
         renamed_index = registry.execute(
             "Rename",

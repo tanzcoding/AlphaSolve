@@ -34,8 +34,8 @@ FREE_EXPLORATION_WORKER_HINT = (
     "We are working to solve the problem in `workspace/problem.md`. You may explore freely: "
     "prove anything you want that could advance progress. It is especially recommended to view "
     "the problem from different angles, or to use novel approaches that differ from the mainstream "
-    "methods currently present in the workspace to prove insightful propositions. You may also "
-    "continue pushing forward from the mainstream progress."
+    "methods currently present in the workspace to prove a insightful proposition. You are also "
+    "allowed to continue pushing forward from the mainstream progress."
 )
 
 
@@ -470,11 +470,9 @@ class WorkerManager:
             "verified_proposition_count": current_count,
             "increment": increment,
             "message": (
-                "STRICT WARNING: At least five new verified propositions have accumulated since the last "
-                "research-review warning. Stop spawning routine workers until you launch the research_reviewer "
-                "subagent and ask it to use ResearchProgressReview and InspectMarkdown to audit verified_propositions/ "
-                "and knowledge/. You are likely to waste compute, duplicate failed routes, and miss important "
-                "knowledge-base insights if you ignore this."
+                "At least five new verified propositions have accumulated since the last "
+                "research-review warning. Stop spawning workers until you launch the research_reviewer "
+                "subagent and ask it to audit verified propositions and full knowledge base to identify promising directions for future work. "
             ),
         }
 

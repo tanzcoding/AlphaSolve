@@ -20,6 +20,8 @@ class RoleWorkspaceAccess:
     write_root_rel: str | None = None
     deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
     deny_read_rels: tuple[str, ...] = ()
+    deny_text_write_rels: tuple[str, ...] = ()
+    protected_reference_rels: tuple[str, ...] = ()
     deny_read_file_names: tuple[str, ...] = ()
     exact_write_rel: str | None = None
     single_proposition_file: bool = False
@@ -115,8 +117,8 @@ class RoleWorkspaceAccess:
         return cls(
             workspace=workspace,
             write_root_rel="verified_propositions",
+            allowed_extensions=(".md",),
             destructive_protected_file_names=("index.md",),
-            preserve_markdown_file_names_on_rename=True,
         )
 
     @classmethod
@@ -134,6 +136,8 @@ class RoleWorkspaceAccess:
             workspace=workspace,
             read_root_rel="knowledge",
             write_root_rel="knowledge",
+            deny_text_write_rels=("knowledge/references",),
+            protected_reference_rels=("knowledge/references",),
             destructive_protected_file_names=("index.md", "common-errors.md"),
         )
 
@@ -158,6 +162,7 @@ class RoleWorkspaceAccess:
 
     def write_text(self, path: str, content: str, *, mode: str = "overwrite") -> str:
         target = self._resolve_writable_file(path)
+        self._ensure_not_denied_text_write(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         text = str(content)
         if mode == "overwrite":
@@ -172,6 +177,7 @@ class RoleWorkspaceAccess:
 
     def edit(self, path: str, old_str: str, new_str: str) -> str:
         target = self._resolve_writable_file(path, must_exist=True)
+        self._ensure_not_denied_text_write(target)
         text = target.read_text(encoding="utf-8")
         if old_str not in text:
             raise ValueError(f"old_str not found in {path}")
@@ -205,7 +211,9 @@ class RoleWorkspaceAccess:
         target.parent.mkdir(parents=True, exist_ok=True)
         source.rename(target)
         self._record_touch(target)
-        return {"old_path": old_rel, "path": self._rel(target)}
+        new_rel = self._rel(target)
+        self._update_verified_references_after_path_change(old_rel, new_rel)
+        return {"old_path": old_rel, "path": new_rel}
 
     def rename_item(self, directory: str, old_name: str, new_name: str) -> dict[str, str]:
         if self._has_path_separator(old_name) or self._has_path_separator(new_name):
@@ -219,6 +227,7 @@ class RoleWorkspaceAccess:
         source = self._resolve_writable_file(path, must_exist=True, destructive=True)
         destination = self._resolve_writable_directory(destination_dir, must_exist=True)
         target = destination / source.name
+        self._ensure_allowed_reference_move(source, target)
         if source == target:
             return {"old_path": self._rel(source), "path": self._rel(target)}
         if target.exists():
@@ -237,6 +246,7 @@ class RoleWorkspaceAccess:
 
     def delete_path(self, path: str) -> str:
         target = self._resolve_manageable_path(path, must_exist=True, destructive=True)
+        self._ensure_not_protected_reference_path(target, action="delete")
         rel = self._rel(target)
         if target.is_dir():
             if any(target.iterdir()):
@@ -249,25 +259,94 @@ class RoleWorkspaceAccess:
     def delete_file(self, path: str) -> str:
         return self.delete_path(path)
 
+    def split_reference_file(self, source_path: str, parts: list[dict[str, Any]]) -> dict[str, Any]:
+        source = self._resolve_readable_file(source_path)
+        self._ensure_protected_reference_path(source, action="split")
+        if not source.suffix.lower() == ".md":
+            raise ValueError("SplitReference only supports Markdown files")
+        if not isinstance(parts, list) or not parts:
+            raise ValueError("parts must be a non-empty list")
+
+        with source.open("r", encoding="utf-8", newline="") as handle:
+            lines = handle.read().splitlines(keepends=True)
+        targets: list[tuple[Path, int, int]] = []
+        seen: set[Path] = set()
+        for item in parts:
+            if not isinstance(item, dict):
+                raise ValueError("each split part must be an object")
+            target_path = str(item.get("path", ""))
+            start_line = int(item.get("start_line", 0))
+            end_line = int(item.get("end_line", 0))
+            target = self.workspace.resolve(target_path)
+            self._ensure_protected_reference_path(target, action="split")
+            if target == source:
+                raise ValueError("split target cannot be the source file")
+            if target.name == "index.md":
+                raise ValueError("SplitReference cannot write index.md")
+            if target.suffix.lower() != ".md":
+                raise ValueError("split targets must be Markdown files")
+            if target in seen:
+                raise ValueError(f"duplicate split target: {target_path}")
+            if target.exists():
+                raise ValueError(f"split target already exists: {target_path}")
+            if not target.parent.is_dir():
+                raise ValueError(f"split target directory does not exist: {self._rel(target.parent)}")
+            if start_line < 1 or end_line < start_line or end_line > len(lines):
+                raise ValueError(f"invalid line range for split target: {target_path}")
+            seen.add(target)
+            targets.append((target, start_line, end_line))
+
+        written: list[str] = []
+        for target, start_line, end_line in targets:
+            with target.open("w", encoding="utf-8", newline="") as handle:
+                handle.write("".join(lines[start_line - 1:end_line]))
+            self._record_touch(target)
+            written.append(self._rel(target))
+        return {"source_path": self._rel(source), "paths": written}
+
     def touched_paths(self) -> tuple[Path, ...]:
         return tuple(sorted(self._touched_paths, key=lambda item: item.as_posix()))
 
     def _update_verified_references_after_move(self, old_rel: str, new_rel: str) -> None:
+        self._update_verified_references_after_path_change(old_rel, new_rel)
+
+    def _update_verified_references_after_path_change(self, old_rel: str, new_rel: str) -> None:
         prefix = "verified_propositions/"
         if not (old_rel.startswith(prefix) and new_rel.startswith(prefix)):
             return
-        if not (old_rel.endswith(".md") and new_rel.endswith(".md")):
-            return
-
-        old_label = old_rel[len(prefix):-3]
-        new_label = new_rel[len(prefix):-3]
-        if old_label == new_label:
-            return
-
-        old_labels = {old_label, old_label.replace("/", "\\")}
-        new_ref = "\\ref{" + new_label.replace("/", "\\") + "}"
         verified_root = self.workspace.resolve("verified_propositions")
         if not verified_root.is_dir():
+            return
+
+        replacements: dict[str, str] = {}
+
+        def add_file_replacement(old_file_rel: str, new_file_rel: str) -> None:
+            if not (old_file_rel.endswith(".md") and new_file_rel.endswith(".md")):
+                return
+            old_label = old_file_rel[len(prefix):-3]
+            new_label = new_file_rel[len(prefix):-3]
+            if old_label == new_label:
+                return
+            new_ref = "\\ref{" + new_label.replace("/", "\\") + "}"
+            replacements[old_label] = new_ref
+            replacements[old_label.replace("/", "\\")] = new_ref
+
+        if old_rel.endswith(".md") or new_rel.endswith(".md"):
+            add_file_replacement(old_rel, new_rel)
+        else:
+            new_root = self.workspace.resolve(new_rel)
+            if not new_root.is_dir():
+                return
+            for current, dirs, files in os.walk(new_root):
+                dirs[:] = sorted(name for name in dirs if name not in {".git", "__pycache__", ".venv", "node_modules"})
+                for name in sorted(files):
+                    file_path = Path(current) / name
+                    if file_path.suffix.lower() != ".md":
+                        continue
+                    suffix = file_path.relative_to(new_root).as_posix()
+                    add_file_replacement(f"{old_rel.rstrip('/')}/{suffix}", f"{new_rel.rstrip('/')}/{suffix}")
+
+        if not replacements:
             return
 
         for current, dirs, files in os.walk(verified_root):
@@ -278,7 +357,7 @@ class RoleWorkspaceAccess:
                     continue
                 text = file_path.read_text(encoding="utf-8")
                 new_text = text
-                for label in sorted(old_labels, key=len, reverse=True):
+                for label, new_ref in sorted(replacements.items(), key=lambda item: len(item[0]), reverse=True):
                     new_text = new_text.replace("\\ref{" + label + "}", new_ref)
                 if new_text != text:
                     file_path.write_text(new_text, encoding="utf-8")
@@ -495,6 +574,27 @@ class RoleWorkspaceAccess:
         if not self._extension_allowed(target):
             raise ValueError(f"file extension is not allowed: {path}")
         return target
+
+    def _ensure_not_denied_text_write(self, path: Path) -> None:
+        for deny_rel in self.deny_text_write_rels:
+            if self._is_under_rel(path, deny_rel):
+                raise ValueError(f"Write/Edit cannot modify files under {deny_rel}")
+
+    def _ensure_allowed_reference_move(self, source: Path, target: Path) -> None:
+        for root_rel in self.protected_reference_rels:
+            source_under = self._is_under_rel(source, root_rel)
+            target_under = self._is_under_rel(target, root_rel)
+            if source_under != target_under:
+                raise ValueError(f"Move cannot cross the protected reference boundary: {root_rel}")
+
+    def _ensure_not_protected_reference_path(self, path: Path, *, action: str) -> None:
+        for root_rel in self.protected_reference_rels:
+            if self._is_under_rel(path, root_rel):
+                raise ValueError(f"{action} is not allowed under protected references: {root_rel}")
+
+    def _ensure_protected_reference_path(self, path: Path, *, action: str) -> None:
+        if not any(self._is_under_rel(path, root_rel) for root_rel in self.protected_reference_rels):
+            raise ValueError(f"{action} is only allowed under protected references")
 
     def _record_touch(self, path: Path) -> None:
         self._touched_paths.add(path.resolve())

@@ -12,6 +12,7 @@ agent:
     - MakeDir
     - Rename
     - Move
+    - SplitReference
     - Delete
     - ListDir
     - Glob
@@ -23,14 +24,14 @@ agent:
         pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
     Write:
       path:
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
+        pattern: "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
       mode:
         enum:
           - overwrite
           - append
     Edit:
       path:
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
+        pattern: "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
     MakeDir:
       path:
         pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+/?$"
@@ -46,9 +47,14 @@ agent:
         pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
       destination_dir:
         pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+    SplitReference:
+      source_path:
+        pattern: "^knowledge/references(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+      parts:
+        type: array
     Delete:
       path:
-        pattern: "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
+        pattern: "^knowledge/(?!references(?:/|$))(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
     ListDir:
       path:
         default: knowledge
@@ -102,6 +108,7 @@ agent:
         - Use `mode="overwrite"` to replace the whole file.
         - Use `mode="append"` to append content to the end of the file.
         - If this is an existing file, you MUST use the Read tool first to read the file's contents.
+        - Do not use this under `knowledge/references/`; that directory contains human-provided source material.
       parameters:
         mode:
           description: "Whether to overwrite the whole file or append to the end."
@@ -112,6 +119,7 @@ agent:
         Usage:
         - The edit will FAIL if old_string is not unique in the file.
         - Provide a larger string with more surrounding context to make it unique.
+        - Do not use this under `knowledge/references/`; that directory contains human-provided source material.
       parameters:
         new_str:
           description: "The text to replace it with (must be different from old_string)."
@@ -148,7 +156,18 @@ agent:
         - `path` must be an existing file.
         - `destination_dir` must be an existing directory.
         - Move never renames the file; it always keeps the source file name.
+        - For `knowledge/references/`, Move may reorganize files within the references tree, but must not move non-reference files into references or reference files out of references.
         - When moving files inside verified_propositions/, Move automatically updates matching `\ref{old-path}` references across verified_propositions/ to the new backslash-separated path.
+    SplitReference:
+      override: |-
+        Split a large user-provided Markdown reference into smaller Markdown files without rewriting its text.
+
+        Usage:
+        - Use this only for files under `knowledge/references/`.
+        - Each part copies an exact inclusive line range from the source file into a new Markdown file.
+        - SplitReference never edits the source file and never rewrites, summarizes, or paraphrases reference text.
+        - Create destination folders first with MakeDir when needed.
+        - Use this when a long reference file is hard for LLM agents to read as one piece.
     Delete:
       override: |-
         Deletes a file or empty directory from the writable workspace area.

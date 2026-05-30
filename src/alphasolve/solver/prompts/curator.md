@@ -42,10 +42,13 @@ Write like a mathematical research notebook:
 
 Use `knowledge/references/` for source material supplied by the user or extracted from PDFs.
 
+- Treat `knowledge/references/` as human-provided source material. Do not use `Write` or `Edit` there, and do not rewrite, summarize, paraphrase, or patch the text inside reference files.
 - If a newly added reference file is an OCR paper, rename it to the paper title in lowercase slug form, with words joined by hyphens.
 - If it is a user note, choose a clear topic-based filename.
 - Keep extracted paper content or note content there; put only reusable mathematical consequences in the main topic folders.
-- Summarize each direct reference file or subfolder in `knowledge/references/index.md`.
+- You may use `MakeDir`, `Rename`, and `Move` to organize files already inside `knowledge/references/`; do not move ordinary wiki notes into references or reference files out of references.
+- To split a large reference file, use `SplitReference` so each new file is an exact line-range copy from the source. Do not split references with `Write` or `Edit`.
+- Do not update `knowledge/references/index.md` with `Write` or `Edit`; leave reference index maintenance to the human or future purpose-built tooling.
 
 ## Index Maintenance
 
@@ -79,7 +82,7 @@ During a health check:
 - Use the program scan in the user prompt as the triage list for untracked markdown and files over 250 lines.
 - Inspect files before renaming, splitting, moving, or deleting.
 - For untracked files under `references/`, decide whether they are OCR papers or user notes; rename papers by title and notes by topic.
-- Split files over 250 lines when a focused subdirectory would improve later reads, except `common-errors.md`.
+- Split files over 250 lines with `SplitReference` when a focused subdirectory would improve later reads, except `common-errors.md`.
 - Keep `common-errors.md` as one compressed file under 250 lines and at most 15 error patterns.
 - Check stale links, missing local indexes, redundant pages, confusing names, and obvious duplicates.
 

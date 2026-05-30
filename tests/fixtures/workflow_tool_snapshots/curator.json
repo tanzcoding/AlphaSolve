@@ -35,7 +35,7 @@
     }
   },
   {
-    "description": "Writes a file within this agent's allowed write area.\n\nUsage:\n- Use `mode=\"overwrite\"` to replace the whole file.\n- Use `mode=\"append\"` to append content to the end of the file.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.",
+    "description": "Writes a file within this agent's allowed write area.\n\nUsage:\n- Use `mode=\"overwrite\"` to replace the whole file.\n- Use `mode=\"append\"` to append content to the end of the file.\n- If this is an existing file, you MUST use the Read tool first to read the file's contents.\n- Do not use this under `knowledge/references/`; that directory contains human-provided source material.",
     "name": "Write",
     "parameters": {
       "properties": {
@@ -54,7 +54,7 @@
         },
         "path": {
           "description": "The path to the file to write.",
-          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$",
+          "pattern": "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$",
           "type": "string"
         }
       },
@@ -66,7 +66,7 @@
     }
   },
   {
-    "description": "Performs exact string replacements in files.\n\nUsage:\n- The edit will FAIL if old_string is not unique in the file.\n- Provide a larger string with more surrounding context to make it unique.",
+    "description": "Performs exact string replacements in files.\n\nUsage:\n- The edit will FAIL if old_string is not unique in the file.\n- Provide a larger string with more surrounding context to make it unique.\n- Do not use this under `knowledge/references/`; that directory contains human-provided source material.",
     "name": "Edit",
     "parameters": {
       "properties": {
@@ -80,7 +80,7 @@
         },
         "path": {
           "description": "The path to the file to modify.",
-          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$",
+          "pattern": "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$",
           "type": "string"
         }
       },
@@ -139,7 +139,7 @@
     }
   },
   {
-    "description": "Moves a file into another directory within the writable workspace area while keeping the same file name.\n\nUsage:\n- Use this when reorganizing files into topic folders.\n- `path` must be an existing file.\n- `destination_dir` must be an existing directory.\n- Move never renames the file; it always keeps the source file name.\n- When moving files inside verified_propositions/, Move automatically updates matching `\\ref{old-path}` references across verified_propositions/ to the new backslash-separated path.",
+    "description": "Moves a file into another directory within the writable workspace area while keeping the same file name.\n\nUsage:\n- Use this when reorganizing files into topic folders.\n- `path` must be an existing file.\n- `destination_dir` must be an existing directory.\n- Move never renames the file; it always keeps the source file name.\n- For `knowledge/references/`, Move may reorganize files within the references tree, but must not move non-reference files into references or reference files out of references.\n- When moving files inside verified_propositions/, Move automatically updates matching `\\ref{old-path}` references across verified_propositions/ to the new backslash-separated path.",
     "name": "Move",
     "parameters": {
       "properties": {
@@ -162,13 +162,57 @@
     }
   },
   {
+    "description": "Split a large user-provided Markdown reference into smaller Markdown files without rewriting its text.\n\nUsage:\n- Use this only for files under `knowledge/references/`.\n- Each part copies an exact inclusive line range from the source file into a new Markdown file.\n- SplitReference never edits the source file and never rewrites, summarizes, or paraphrases reference text.\n- Create destination folders first with MakeDir when needed.\n- Use this when a long reference file is hard for LLM agents to read as one piece.",
+    "name": "SplitReference",
+    "parameters": {
+      "properties": {
+        "parts": {
+          "description": "Split parts. Each object must have path, start_line, and end_line. Line ranges are 1-based and inclusive.",
+          "items": {
+            "properties": {
+              "end_line": {
+                "minimum": 1,
+                "type": "integer"
+              },
+              "path": {
+                "description": "New Markdown file path for this part.",
+                "type": "string"
+              },
+              "start_line": {
+                "minimum": 1,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "path",
+              "start_line",
+              "end_line"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "source_path": {
+          "description": "Existing Markdown reference file to split.",
+          "pattern": "^knowledge/references(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/[A-Za-z0-9][A-Za-z0-9._-]*\\.md$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_path",
+        "parts"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "description": "Deletes a file or empty directory from the writable workspace area.\n\nUsage:\n- Only delete files after useful content has been consolidated elsewhere.\n- Directories must already be empty; this tool will not recursively delete directory contents.",
     "name": "Delete",
     "parameters": {
       "properties": {
         "path": {
           "description": "The file or empty directory path to delete.",
-          "pattern": "^knowledge/(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$",
+          "pattern": "^knowledge/(?!references(?:/|$))(?!index\\.md$)(?!common-errors\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$",
           "type": "string"
         }
       },

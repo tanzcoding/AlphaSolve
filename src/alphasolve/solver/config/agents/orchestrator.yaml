@@ -35,9 +35,9 @@ agent:
       directory:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       old_name:
-        pattern: "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+        pattern: "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
       new_name:
-        pattern: "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+        pattern: "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
     Move:
       path:
         pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
@@ -96,12 +96,14 @@ agent:
         - `directory` is the parent directory that currently contains the item.
         - `old_name` and `new_name` must be plain names, not paths, and must not contain `/` or `\`.
         - To move a file into another directory, use Move instead.
-        - Some agents are configured to preserve Markdown file names; in those sessions, renaming `.md` files fails and Move must keep the same file name.
+        - You may rename verified proposition Markdown files inside `verified_propositions/` and any of its subdirectories.
+        - If two verified propositions have the same filename, use Rename to give one proposition a more specific name and prevent conflicts.
+        - When renaming Markdown files inside `verified_propositions/`, Rename automatically updates matching `\ref{old-path}` references across verified propositions to the new backslash-separated path.
         - This tool fails if the target path already exists.
 
         Examples:
         - Rename a folder: directory="verified_propositions", old_name="graph-route", new_name="graph-coloring-route".
-        - Rename a knowledge page: directory="knowledge/number-theory", old_name="orders.md", new_name="multiplicative-orders.md".
+        - Rename a verified proposition file: directory="verified_propositions/graph-route", old_name="cycle-bound.md", new_name="odd-cycle-coloring-obstruction-bound.md".
       parameters:
         directory:
           description: "Parent directory containing the item to rename."

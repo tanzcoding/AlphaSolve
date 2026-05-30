@@ -484,9 +484,12 @@ class Worker:
         content = proposition_file.read_text(encoding="utf-8")[:3000]
         config = self.suite.agents.get("generator") or next(iter(self.suite.agents.values()))
         prompt = (
-            "Read the following verified mathematical proposition and return a short kebab-case filename "
-            "(2-5 words, lowercase, hyphens only, no extension) that captures its mathematical content. "
-            "Examples: parity-obstruction, matrix-rank-bound, convexity-extremal-case, orbit-counting-invariant. "
+            "Read the following verified mathematical proposition and return a descriptive kebab-case filename "
+            "(5-15 words, lowercase, hyphens only, no extension) that exactly captures its mathematical content. "
+            "Examples: parity-obstruction-for-even-sum-of-two-odd-integers, "
+            "matrix-rank-bound-under-product-nullspace-containment, "
+            "convexity-extremal-case-for-affine-function-on-compact-polytope, "
+            "orbit-counting-invariant-for-finite-group-action-on-colored-sets. "
             "Return ONLY the filename, nothing else.\n\n"
             + content
         )
@@ -499,7 +502,7 @@ class Worker:
             raw = (response.message.content or "").strip().lower()
             name = re.sub(r"[^a-z0-9-]", "-", raw).strip("-")
             name = re.sub(r"-{2,}", "-", name)
-            if name and len(name) <= 80:
+            if name and len(name) <= 140:
                 return name + ".md"
         except Exception:
             pass
@@ -629,12 +632,8 @@ class Worker:
             + self.layout.read_problem()
             + "\n\n# Newly Verified Proposition File\n"
             + rel
-            + "\n\nDecide whether the newly verified proposition, together with any verified propositions cited by "
-            "`\\ref{path-without-extension}`, proves the original problem. The path is relative to `verified_propositions` "
-            "and subdirectories use backslashes, such as `\\ref{category\\filename}`. Read cited verified propositions as needed. "
-            "Do not re-review the proposition proof except to understand what has been established. Your final answer must "
-            "include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
-            + f"\n\nIndependent theorem check attempt: {attempt_index} of {AlphaSolveConfig.CHECK_IS_THEOREM_TIMES}"
+            + "\n\nDecide whether the statement of the newly verified proposition fully resolves the original problem. "
+            "Your final answer must include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
         )
 
     def _reviser_task(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> str:
