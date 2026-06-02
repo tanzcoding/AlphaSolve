@@ -675,8 +675,7 @@ class Worker:
             + self.layout.read_problem()
             + "\n\n# Newly Verified Proposition File\n"
             + rel
-            + "\n\nDecide whether the statement of the newly verified proposition fully resolves the original problem. "
-            "Your final answer must include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
+            + "\n\nAssess this proposition against the original problem using the theorem-checker rules."
         )
 
     def _reviser_task(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> str:

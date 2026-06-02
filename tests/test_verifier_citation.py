@@ -138,7 +138,8 @@ def test_worker_tasks_describe_full_verified_proposition_reference_paths(tmp_pat
     assert "path is relative to `verified_propositions`" in generator_task
     assert r"\ref{category\filename}" in generator_task
     assert r"\ref{filename-without-extension}" not in theorem_task
-    assert "statement of the newly verified proposition fully resolves the original problem" in theorem_task
+    assert "using the theorem-checker rules" in theorem_task
+    assert "Solves original problem:" not in theorem_task
 
 
 def test_citation_access_denies_knowledge_reads(tmp_path):
