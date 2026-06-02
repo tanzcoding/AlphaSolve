@@ -190,7 +190,7 @@
     }
   },
   {
-    "description": "Renames a file or directory in place within the writable workspace area.\n\nUsage:\n- Use this only when the item stays in the same directory and only its name changes.\n- `directory` is the parent directory that currently contains the item.\n- `old_name` and `new_name` must be plain names, not paths, and must not contain `/` or `\\`.\n- To move a file into another directory, use Move instead.\n- Some agents are configured to preserve Markdown file names; in those sessions, renaming `.md` files fails and Move must keep the same file name.\n- This tool fails if the target path already exists.\n\nExamples:\n- Rename a folder: directory=\"verified_propositions\", old_name=\"bootstrap-A\", new_name=\"bootstrap-attempt-A\".\n- Rename a knowledge page: directory=\"knowledge/fourier\", old_name=\"cutoff.md\", new_name=\"frequency-cutoff.md\".",
+    "description": "Renames a file or directory in place within the writable workspace area.\n\nUsage:\n- Use this only when the item stays in the same directory and only its name changes.\n- `directory` is the parent directory that currently contains the item.\n- `old_name` and `new_name` must be plain names, not paths, and must not contain `/` or `\\`.\n- To move a file into another directory, use Move instead.\n- You may rename verified proposition Markdown files inside `verified_propositions/` and any of its subdirectories.\n- If two verified propositions have the same filename, use Rename to give one proposition a more specific name and prevent conflicts.\n- When renaming Markdown files inside `verified_propositions/`, Rename automatically updates matching `\\ref{old-path}` references across verified propositions to the new backslash-separated path.\n- This tool fails if the target path already exists.\n\nExamples:\n- Rename a folder: directory=\"verified_propositions\", old_name=\"graph-route\", new_name=\"graph-coloring-route\".\n- Rename a verified proposition file: directory=\"verified_propositions/graph-route\", old_name=\"cycle-bound.md\", new_name=\"odd-cycle-coloring-obstruction-bound.md\".",
     "name": "Rename",
     "parameters": {
       "properties": {
@@ -201,12 +201,12 @@
         },
         "new_name": {
           "description": "New file or directory name only; no path separators.",
-          "pattern": "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "pattern": "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$",
           "type": "string"
         },
         "old_name": {
           "description": "Current file or directory name only; no path separators.",
-          "pattern": "^(?!index\\.md$)(?!.*\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "pattern": "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$",
           "type": "string"
         }
       },
@@ -247,7 +247,7 @@
     "parameters": {
       "properties": {
         "hint": {
-          "description": "Optional targeted hint for this worker only. Suggest a direction, method, branch, local target, or bootstrap assumption. This is different from the user's hint.md.",
+          "description": "Optional targeted hint for this worker only. Suggest a direction, method, branch, local target, or auxiliary assumption. This is different from the user's hint.md.",
           "maxLength": 4000,
           "type": "string"
         }
@@ -290,14 +290,14 @@
     }
   },
   {
-    "description": "Wait until one active worker finishes, or until the timeout is reached.\n\nUse this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\nReturn content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning.",
+    "description": "Wait until one active worker finishes, or until the timeout is reached.\n\nUse this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\nWhen you use this tool, if there is still an available worker slot, the orchestrator will start one worker for free exploration.\n\nReturn content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, available_worker_slots, and free_exploration_worker. It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning.",
     "name": "TaskOutput",
     "parameters": {
       "properties": {
         "seconds": {
           "default": 3600.0,
           "description": "Maximum seconds to wait before returning active worker status.",
-          "maximum": 3600,
+          "maximum": 7200,
           "minimum": 1200,
           "type": "number"
         }

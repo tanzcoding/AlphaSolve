@@ -229,8 +229,8 @@ def _orchestrator_access(workspace: Workspace) -> RoleWorkspaceAccess:
     return RoleWorkspaceAccess(
         workspace=workspace,
         write_root_rel="verified_propositions",
+        allowed_extensions=(".md",),
         destructive_protected_file_names=("index.md",),
-        preserve_markdown_file_names_on_rename=True,
     )
 
 
@@ -239,6 +239,8 @@ def _curator_access(workspace: Workspace) -> RoleWorkspaceAccess:
         workspace=workspace,
         read_root_rel="knowledge",
         write_root_rel="knowledge",
+        deny_text_write_rels=("knowledge/references",),
+        protected_reference_rels=("knowledge/references",),
         destructive_protected_file_names=("index.md", "common-errors.md"),
     )
 

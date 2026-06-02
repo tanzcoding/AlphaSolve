@@ -44,6 +44,7 @@ Rules:
 
 
 _REMOVE_RETRY_DELAYS = (0.1, 0.3, 0.7)
+_EXTERNAL_YEAR_RE = re.compile(r"(?<![A-Za-z0-9])(?:1[7-9]\d{2}|20\d{2}|2100)(?![A-Za-z0-9])")
 
 
 def _make_path_writable(path: Path) -> None:
@@ -64,6 +65,39 @@ def _make_tree_writable(path: Path) -> None:
         return
     for child in children:
         _make_path_writable(child)
+
+
+def _external_reference_parentheticals(text: str) -> list[tuple[int, str]]:
+    results: list[tuple[int, str]] = []
+    seen: set[tuple[int, str]] = set()
+    for match in _EXTERNAL_YEAR_RE.finditer(text):
+        year_start = match.start()
+        year_end = match.end()
+        left = text.rfind("(", max(0, year_start - 50), year_start)
+        if left == -1:
+            continue
+        depth = 0
+        right = -1
+        for index in range(left, len(text)):
+            char = text[index]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    right = index
+                    break
+                if depth < 0:
+                    break
+        if right == -1 or right < year_end or right - year_end > 50:
+            continue
+        parenthetical = " ".join(text[left + 1:right].split())
+        line_number = text.count("\n", 0, left) + 1
+        key = (line_number, parenthetical)
+        if parenthetical and key not in seen:
+            seen.add(key)
+            results.append(key)
+    return results
 
 
 def _rmtree_onerror(func, path, _exc_info) -> None:
@@ -484,9 +518,12 @@ class Worker:
         content = proposition_file.read_text(encoding="utf-8")[:3000]
         config = self.suite.agents.get("generator") or next(iter(self.suite.agents.values()))
         prompt = (
-            "Read the following verified mathematical proposition and return a short kebab-case filename "
-            "(2-5 words, lowercase, hyphens only, no extension) that captures its mathematical content. "
-            "Examples: energy-identity-bootstrap, compactness-criterion, sobolev-embedding-estimate. "
+            "Read the following verified mathematical proposition and return a descriptive kebab-case filename "
+            "(5-15 words, lowercase, hyphens only, no extension) that exactly captures its mathematical content. "
+            "Examples: parity-obstruction-for-even-sum-of-two-odd-integers, "
+            "matrix-rank-bound-under-product-nullspace-containment, "
+            "convexity-extremal-case-for-affine-function-on-compact-polytope, "
+            "orbit-counting-invariant-for-finite-group-action-on-colored-sets. "
             "Return ONLY the filename, nothing else.\n\n"
             + content
         )
@@ -499,7 +536,7 @@ class Worker:
             raw = (response.message.content or "").strip().lower()
             name = re.sub(r"[^a-z0-9-]", "-", raw).strip("-")
             name = re.sub(r"-{2,}", "-", name)
-            if name and len(name) <= 80:
+            if name and len(name) <= 140:
                 return name + ".md"
         except Exception:
             pass
@@ -582,6 +619,14 @@ class Worker:
                 "under `knowledge/references/`. Fail if any such external result is absent from `knowledge/references/`."
             )
         elif config_name == "verifier_citation":
+            possible_external_citations = _external_reference_parentheticals(proposition_file.read_text(encoding="utf-8"))
+            external_citation_hint = ""
+            if possible_external_citations:
+                external_citation_hint = (
+                    "\n\nPotential external paper/book citation parentheticals detected in `proposition.md`; "
+                    "pay special attention to whether these are external-source dependencies rather than verified-proposition citations:\n"
+                    + "\n".join(f"- line {line_number}: ({item})" for line_number, item in possible_external_citations)
+                )
             review_instruction = (
                 "Read the candidate proposition in `proposition.md` and perform the citation/reference audit, "
                 "including whether each cited verified proposition is correctly applied. "
@@ -593,6 +638,7 @@ class Worker:
                 "For each citation, read the cited verified proposition and delegate a `reasoning_subagent` to check "
                 "whether the hypotheses and conditions of the cited proposition are satisfied in the context where "
                 "the citation is used. Fail the proposition if any cited proposition's conditions are not met."
+                + external_citation_hint
             )
         else:
             review_instruction = (
@@ -629,12 +675,7 @@ class Worker:
             + self.layout.read_problem()
             + "\n\n# Newly Verified Proposition File\n"
             + rel
-            + "\n\nDecide whether the newly verified proposition, together with any verified propositions cited by "
-            "`\\ref{path-without-extension}`, proves the original problem. The path is relative to `verified_propositions` "
-            "and subdirectories use backslashes, such as `\\ref{category\\filename}`. Read cited verified propositions as needed. "
-            "Do not re-review the proposition proof except to understand what has been established. Your final answer must "
-            "include exactly one line `Solves original problem: yes` or `Solves original problem: no`."
-            + f"\n\nIndependent theorem check attempt: {attempt_index} of {AlphaSolveConfig.CHECK_IS_THEOREM_TIMES}"
+            + "\n\nAssess this proposition against the original problem using the theorem-checker rules."
         )
 
     def _reviser_task(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> str:

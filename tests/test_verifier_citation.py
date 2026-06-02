@@ -12,7 +12,7 @@ from alphasolve.agent import Workspace, load_agent_suite  # noqa: E402
 from alphasolve.solver.project import ProjectLayout  # noqa: E402
 from alphasolve.agent.tools import build_default_tool_registry  # noqa: E402
 from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
-from alphasolve.solver.worker import Worker  # noqa: E402
+from alphasolve.solver.worker import Worker, _external_reference_parentheticals  # noqa: E402
 PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
 
 
@@ -29,7 +29,7 @@ def test_verifier_format_references_is_first_default_attempt():
     assert "pure mathematical statement" in suite.agents["verifier_format_references"].system_prompt
     assert "knowledge/" in suite.agents["verifier_citation"].system_prompt
     assert "path relative to `verified_propositions`" in suite.agents["verifier_citation"].system_prompt
-    assert r"\ref{coercive\energy-estimate}" in suite.agents["verifier_citation"].system_prompt
+    assert r"\ref{number-theory\order-lifting}" in suite.agents["verifier_citation"].system_prompt
     assert "Agent" in suite.agents["verifier_citation"].tools
 
 
@@ -47,7 +47,14 @@ def test_verifier_task_runs_format_reference_gate_before_citation_audit(tmp_path
     )
     worker.worker_dir.mkdir(parents=True, exist_ok=True)
     proposition_file = worker.worker_dir / "proposition.md"
-    proposition_file.write_text("# Proposition\n", encoding="utf-8")
+    proposition_file.write_text(
+        "# Proposition\n\n"
+        "## Statement\n\n"
+        "Use the Hughes-Kato-Marsden continuation theorem (1977) and \\ref{category\\filename}.\n\n"
+        "## Proof\n\n"
+        "This follows from the cited verified proposition.\n",
+        encoding="utf-8",
+    )
 
     format_task = worker._verifier_task(
         proposition_file,
@@ -81,8 +88,30 @@ def test_verifier_task_runs_format_reference_gate_before_citation_audit(tmp_path
     assert "must not cite, depend on, or present as established any proposition from `knowledge/`" in citation_task
     assert "reasoning_subagent" in citation_task
     assert "conditions" in citation_task
+    assert "Potential external paper/book citation parentheticals" in citation_task
+    assert "- line 5: (1977)" in citation_task
     assert "Earlier verifier attempts audit file format" in math_task
     assert "citation/reference audit" not in math_task
+
+
+def test_external_reference_parentheticals_detects_years_inside_matching_parentheses():
+    text = (
+        "Intro line.\n"
+        "The proof invokes theorem (Hughes-Kato-Marsden 1977, Theorem II). "
+        "A bare 1978 is not parenthetical. "
+        "A far parenthesis ("
+        + ("x" * 55)
+        + "1979) is ignored. "
+        "\n"
+        "The identifier A1980B is ignored. "
+        "Another source (Book title 2100) is noted. "
+        "Unmatched (1981 is ignored."
+    )
+
+    assert _external_reference_parentheticals(text) == [
+        (2, "Hughes-Kato-Marsden 1977, Theorem II"),
+        (3, "Book title 2100"),
+    ]
 
 
 def test_worker_tasks_describe_full_verified_proposition_reference_paths(tmp_path):
@@ -109,8 +138,8 @@ def test_worker_tasks_describe_full_verified_proposition_reference_paths(tmp_pat
     assert "path is relative to `verified_propositions`" in generator_task
     assert r"\ref{category\filename}" in generator_task
     assert r"\ref{filename-without-extension}" not in theorem_task
-    assert "path is relative to `verified_propositions`" in theorem_task
-    assert r"\ref{category\filename}" in theorem_task
+    assert "using the theorem-checker rules" in theorem_task
+    assert "Solves original problem:" not in theorem_task
 
 
 def test_citation_access_denies_knowledge_reads(tmp_path):

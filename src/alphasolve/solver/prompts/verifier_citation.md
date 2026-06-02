@@ -6,7 +6,7 @@ Rules:
 - Read the candidate proposition exactly as written.
 - Use `ListDir` or `Glob` on `verified_propositions/` to identify the verified proposition files currently available.
 - Every formal citation must use `\ref{path-without-extension}` and must point to an existing `.md` file in `verified_propositions/`.
-- A citation target must be the verified proposition path relative to `verified_propositions`, without `.md`. Use Windows backslashes for subdirectories, such as `\ref{coercive\energy-estimate}`. Extensions, `knowledge/...`, and names that only exist under `knowledge/` are invalid.
+- A citation target must be the verified proposition path relative to `verified_propositions`, without `.md`. Use Windows backslashes for subdirectories, such as `\ref{number-theory\order-lifting}`. Extensions, `knowledge/...`, and names that only exist under `knowledge/` are invalid.
 - You may read referenced files in `verified_propositions/` to confirm their identity and inspect their statement, conditions, and hypotheses. Do not read anything in the `knowledge/` directory.
 - You may read the current worker directory, but you must not write files. `verifier_workspace` is reserved for future Lean support and is not part of the current review flow.
 - Do not read `review.md` if it exists; each verifier attempt must be independent of prior reviews.

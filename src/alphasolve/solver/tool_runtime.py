@@ -5,6 +5,7 @@ AlphaSolve 研究工作区、执行网关、编排等第三层工具注册到同
 """
 from __future__ import annotations
 
+import json
 from typing import Any, Callable
 
 from alphasolve.agent import AgentConfig, WorkspaceLike
@@ -166,6 +167,47 @@ def register_research_markdown_tools(registry: ToolRegistry, workspace: Workspac
         },
         handler=lambda args: _run_inspect_markdown(workspace, args),
     )
+    registry.register(
+        name="SplitReference",
+        description=(
+            "Split a large user-provided Markdown reference into smaller Markdown files without rewriting its text.\n\n"
+            "Usage:\n"
+            "- Use this only for files under `knowledge/references/`.\n"
+            "- Each part copies an exact inclusive line range from the source file into a new Markdown file.\n"
+            "- SplitReference never edits the source file and never rewrites, summarizes, or paraphrases reference text.\n"
+            "- Create destination folders first with MakeDir when needed.\n"
+            "- Use this when a long reference file is hard for LLM agents to read as one piece."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "source_path": {
+                    "type": "string",
+                    "description": "Existing Markdown reference file to split.",
+                },
+                "parts": {
+                    "type": "array",
+                    "description": (
+                        "Split parts. Each object must have path, start_line, and end_line. "
+                        "Line ranges are 1-based and inclusive."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "New Markdown file path for this part."},
+                            "start_line": {"type": "integer", "minimum": 1},
+                            "end_line": {"type": "integer", "minimum": 1},
+                        },
+                        "required": ["path", "start_line", "end_line"],
+                    },
+                },
+            },
+            "required": ["source_path", "parts"],
+        },
+        handler=lambda args: ToolResult(
+            json.dumps(workspace.split_reference_file(args["source_path"], args["parts"]), ensure_ascii=False)
+        ),
+    )
 
 
 def _run_research_read(workspace: WorkspaceLike, args: dict[str, Any]) -> ToolResult:
@@ -279,7 +321,7 @@ def register_orchestrator_worker_tools(
                     "type": "string",
                     "description": (
                         "Optional targeted hint for this worker only. Suggest a direction, method, "
-                        "branch, local target, or bootstrap assumption. This is different from the user's hint.md."
+                        "branch, local target, or auxiliary assumption. This is different from the user's hint.md."
                     ),
                 },
             },
@@ -292,7 +334,8 @@ def register_orchestrator_worker_tools(
         description=(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
-            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
+            "When you use this tool, if there is still an available worker slot, the orchestrator will start one worker for free exploration.\n\n"
+            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, available_worker_slots, and free_exploration_worker. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
             "human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning."
         ),
@@ -304,7 +347,7 @@ def register_orchestrator_worker_tools(
                     "description": "Maximum seconds to wait before returning active worker status.",
                     "default": default_wait_timeout_seconds,
                     "minimum": 1200,
-                    "maximum": 3600,
+                    "maximum": 7200,
                 },
             },
             "required": [],
