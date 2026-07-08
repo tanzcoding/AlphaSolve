@@ -22,6 +22,7 @@ from .client_factory import ClientFactory
 from .subagent_service import SubagentService
 from .tool_runtime import build_solver_tool_registry, register_orchestrator_worker_tools
 from .workspace_access import RoleWorkspaceAccess
+from .search import DuelOutcome, SearchSession
 
 if TYPE_CHECKING:
     from alphasolve.solver.execution import ExecutionGateway
@@ -521,6 +522,9 @@ class Orchestrator:
         self.log_session = log_session
         self.stop_event = stop_event
         self.worker_stop_event = worker_stop_event or threading.Event()
+        # 调度层搜索状态（§2/§3/§5，冻结边界之外的只读附加信号）。它跨整个 run 存活，
+        # 只观察 SpawnWorker / TaskOutput 已返回的 payload，不改变 worker 真实执行语义。
+        self.search = SearchSession()
 
     def run(self) -> OrchestratorRunResult:
         if self.renderer is not None:
@@ -632,6 +636,7 @@ class Orchestrator:
                 wait_handler=lambda args: self._wait_tool(manager, args),
                 default_wait_timeout_seconds=WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
             ),
+            self._register_selection_tools,
         )
         if subagents is not None:
             from alphasolve.agent import AgentConfig
@@ -641,15 +646,83 @@ class Orchestrator:
                     name="_orchestrator_subagent",
                     system_prompt="",
                     tools=["Agent"],
-                    tool_parameters={"Agent": {"type": {"enum": ["research_reviewer"]}}},
+                    tool_parameters={"Agent": {"type": {"enum": ["research_reviewer", "critic"]}}},
                 ),
                 dispatcher=subagents,
                 extra_registrars=extra_registrars,
             )
         return build_solver_tool_registry(access, extra_registrars=extra_registrars)
 
+    def _register_selection_tools(self, registry: ToolRegistry) -> None:
+        """注册调度层 selection 工具（新增工具，不触碰 SpawnWorker/TaskOutput 语义）。
+
+        RecordDuel 让 orchestrator 把 `critic` subagent 给出的四值判决回写进局部胜率池
+        （design §5.3），从而影响后续 TaskOutput 返回的 selection_advice。纯建议性、可选。
+        """
+        registry.register(
+            name="RecordDuel",
+            description=(
+                "Record the four-valued verdict from the `critic` subagent for two sibling "
+                "research nodes that share the same parent (design §5.2/§5.3). This updates the "
+                "local win pool that ranks candidates in the selection_advice returned by TaskOutput.\n\n"
+                "Usage:\n"
+                "- Only record a verdict for a pair listed in selection_advice.sibling_duel_candidates.\n"
+                "- `a` and `b` are the `state_id` values from selection_advice.frontier_by_proxy.\n"
+                "- `outcome` must be exactly one of the four values the critic returns.\n"
+                "- comparable-tie gives each +0.5 and flags both as crossover candidates; incomparable "
+                "scores nothing and keeps both alive under diversity protection. A pair is compared at "
+                "most a bounded number of times, after which recording is a no-op (stop-loss)."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "a": {"type": "string", "description": "state_id of candidate A."},
+                    "b": {"type": "string", "description": "state_id of candidate B."},
+                    "outcome": {
+                        "type": "string",
+                        "enum": ["A>B", "B>A", "comparable-tie", "incomparable"],
+                        "description": "The critic's four-valued verdict for A vs B.",
+                    },
+                },
+                "required": ["a", "b", "outcome"],
+            },
+            handler=self._record_duel_tool,
+        )
+
+    def _record_duel_tool(self, args: dict[str, Any]) -> ToolResult:
+        a_id = str(args.get("a") or "")
+        b_id = str(args.get("b") or "")
+        try:
+            outcome = DuelOutcome(str(args.get("outcome") or ""))
+        except ValueError:
+            return ToolResult(
+                json.dumps({"error": "invalid outcome; expected one of A>B / B>A / comparable-tie / incomparable"}),
+                is_error=True,
+            )
+        if a_id not in self.search.graph or b_id not in self.search.graph:
+            return ToolResult(json.dumps({"error": "unknown state_id"}), is_error=True)
+        if self.search.ledger.exhausted(a_id, b_id):
+            return ToolResult(json.dumps({
+                "recorded": False,
+                "reason": "pair already compared the maximum number of times (stop-loss, §5.6)",
+            }, ensure_ascii=False))
+        effect = self.search.record_sibling_duel(a_id, b_id, outcome)
+        return ToolResult(json.dumps({
+            "recorded": True,
+            "outcome": effect.outcome.value,
+            "scored": effect.scored,
+            "crossover_candidate": effect.crossover_candidate,
+            "diversity_protected": effect.diversity_protected,
+        }, ensure_ascii=False))
+
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
-        payload = manager.spawn(args.get("hint"))
+        hint = args.get("hint")
+        payload = manager.spawn(hint)
+        # selection 层是纯建议性的只读附加信号；若未初始化（如绕过 __init__ 的单测），
+        # 直接跳过记账，绝不影响 SpawnWorker 的真实语义。
+        search = getattr(self, "search", None)
+        if search is not None and payload.get("spawned") and payload.get("worker_id"):
+            search.on_spawn(str(payload["worker_id"]), hint)
         return ToolResult(
             json.dumps(payload, ensure_ascii=False),
             stop_agent=manager.solved_result is not None,
@@ -657,10 +730,21 @@ class Orchestrator:
         )
 
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        search = getattr(self, "search", None)
         free_exploration = manager.spawn_free_exploration_if_available()
+        if search is not None and free_exploration.get("spawned") and free_exploration.get("worker_id"):
+            search.on_spawn(str(free_exploration["worker_id"]), FREE_EXPLORATION_WORKER_HINT)
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
         payload["free_exploration_worker"] = free_exploration
+        # 只读附加：调度层 selection 建议（design §3/§5）。不改变 worker 真实执行语义；
+        # search 未初始化时整段跳过。
+        if search is not None:
+            for completed in payload.get("completed", []) or []:
+                search.on_worker_result(completed)
+            payload["selection_advice"] = search.advise(
+                available_worker_slots=int(payload.get("available_worker_slots", 0) or 0)
+            )
         if manager.solved_result is not None:
             manager.close()
         return ToolResult(

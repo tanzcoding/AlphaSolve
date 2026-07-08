@@ -57,3 +57,20 @@ When verified proposition files accumulate in the root directory or several file
 Examples:
 - If several verified propositions came from a graph-coloring route, call `MakeDir` with `path="verified_propositions/graph-coloring-route"`, then move each file with `Move`, for example `path="verified_propositions/odd-cycle-obstruction.md"` and `destination_dir="verified_propositions/graph-coloring-route"`.
 - If a separate modular-arithmetic obstruction emerges later, make a separate folder such as `verified_propositions/modular-obstruction` and move those verified files there. If a verified proposition filename conflicts or is too generic, rename it in place with `Rename`, for example from `odd-cycle-obstruction.md` to `odd-cycle-coloring-obstruction-bound.md`.
+
+## Selection Advisory (dueling-bandit best-first search)
+
+Every `TaskOutput` result now also carries a `selection_advice` object. It is **advisory only** and never overrides your judgment; `theorem_checker` remains the sole signal that the problem is solved. Use it to spend worker budget more deliberately across competing directions instead of spawning uniformly.
+
+`selection_advice` contains:
+- `frontier_by_proxy`: the worker-spawned directions ranked by a cheap process signal (fewer `open_subgoals`, larger `verified_delta`, fewer `falsification_hits` rank higher). Each entry has a stable `state_id`, its `hypothesis` (the hint that started it), and its counts. Treat this as a relative ordering, not an absolute score.
+- `sibling_duel_candidates`: pairs of directions worth comparing head-to-head, with how many times each pair has already been compared.
+- `quota`: a suggested split of the currently available worker slots into `exploit` (push the strongest directions), `sibling_explore` (grow siblings of a strong direction), `depth1_explore` (open a genuinely new direction), and `fill`.
+- `progress_rate`: recent verified progress per dispatch; low values mean you should keep more explore budget, high values mean it is safe to concentrate on the leading directions.
+
+How to use it:
+1. When two directions genuinely compete on the **same** open subgoal, launch the `critic` subagent to compare exactly those two siblings. Give it the two `hypothesis` values and the proposition files they reference, and ask for its four-valued verdict.
+2. Feed the critic's verdict back with `RecordDuel` using the two `state_id`s and the exact `outcome` (`A>B` / `B>A` / `comparable-tie` / `incomparable`). This refines the ranking in the next `selection_advice`. A `comparable-tie` marks both as crossover-merge candidates; an `incomparable` keeps both alive as distinct bets — do not force a decisive verdict just to be helpful.
+3. Shape your next `SpawnWorker` hints roughly along the suggested `quota`: reserve some slots for exploiting the top of `frontier_by_proxy` and some for new or orthogonal directions. If there is no qualified candidate for a slot, leave it rather than spawning filler work.
+
+Do not use `critic` to rank a direction against the whole tree or against `verified_propositions/`; it only ever compares two sibling directions. All of the above is optional guidance layered on top of your existing orchestration strategy.
