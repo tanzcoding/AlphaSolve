@@ -326,13 +326,24 @@ def register_orchestrator_worker_tools(
                         "branch, local target, or auxiliary assumption. This is different from the user's hint.md."
                     ),
                 },
+                "route_id": {
+                    "type": "string",
+                    "description": (
+                        "Stable id returned by RegisterResearchRoute. All targeted workers exploring the same "
+                        "reviewer-proposed path should carry the same route_id so their branches can be compared."
+                    ),
+                },
                 "direction_id": {
                     "type": "string",
                     "description": "Stable id of the research direction in state.md that owns this worker.",
                 },
                 "gap_id": {
                     "type": "string",
-                    "description": "Stable id of the open gap inside that direction which this worker attacks.",
+                    "description": (
+                        "Stable id of the executable gap inside that direction which this worker attacks. "
+                        "When a parent gap has child gaps, dispatch an open leaf; dispatch the parent only with "
+                        "consolidation=true after its child policy marks it ready for synthesis."
+                    ),
                 },
                 "method_id": {
                     "type": "string",
@@ -467,15 +478,71 @@ def register_orchestrator_research_tools(
     record_impact_handler: Callable[[dict[str, Any]], ToolResult],
     record_dispatch_constraint_handler: Callable[[dict[str, Any]], ToolResult],
     sync_state_handler: Callable[[dict[str, Any]], ToolResult],
+    register_route_handler: Callable[[dict[str, Any]], ToolResult] | None = None,
+    assess_route_handler: Callable[[dict[str, Any]], ToolResult] | None = None,
 ) -> None:
-    """注册 direction-level ResearchImpact 与战略状态同步工具。"""
+    """注册 direction-level ResearchImpact、reviewer 路线和战略状态同步工具。"""
+    if register_route_handler is not None:
+        registry.register(
+            name="RegisterResearchRoute",
+            description=(
+                "Persist exactly one route proposed by research_reviewer before assigning targeted workers to it. "
+                "A route is the coarse mathematical path; use SpawnWorker(route_id=...) repeatedly to maximize "
+                "different attempts under it. Copy the machine-readable route contract from the reviewer report."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "route_id": {"type": "string"},
+                    "based_on_state_id": {"type": "string"},
+                    "direction_id": {"type": "string"},
+                    "gap_id": {"type": "string"},
+                    "route_claim": {"type": "string"},
+                    "target": {"type": "string"},
+                    "success_condition": {"type": "string"},
+                    "stop_condition": {"type": "string"},
+                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "route_id", "based_on_state_id", "direction_id", "gap_id", "route_claim",
+                    "target", "success_condition", "stop_condition",
+                ],
+            },
+            handler=register_route_handler,
+        )
+    if assess_route_handler is not None:
+        registry.register(
+            name="AssessResearchRoute",
+            description=(
+                "Compare the accumulated worker branches of one reviewer route against other routes and the terminal gap. "
+                "Record whether the path is advancing, partial, stalled, refuted, redundant, or still inconclusive. "
+                "This is a route-level judgment; continue to use RecordResearchImpact for individual verified workers."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "route_id": {"type": "string"},
+                    "verdict": {
+                        "type": "string",
+                        "enum": ["ADVANCING", "PARTIAL", "STALLED", "REFUTED", "REDUNDANT", "INCONCLUSIVE"],
+                    },
+                    "summary": {"type": "string"},
+                    "evidence_paths": {"type": "array", "items": {"type": "string"}},
+                    "close_route": {"type": "boolean"},
+                },
+                "required": ["route_id", "verdict", "summary"],
+            },
+            handler=assess_route_handler,
+        )
     registry.register(
         name="RecordResearchImpact",
         description=(
-            "Assess one completed verified worker result against the direction-level gap it was assigned. "
+            "Assess one completed verified worker result against the gap it was assigned. "
             "Use this after TaskOutput for every worker listed in pending_research_impacts, before spawning more targeted work. "
             "Correctness is already decided by the verifier; classify whether the correct result solves, directly advances, "
             "only gives a necessary condition, weakens, duplicates, refutes, or misses the target. "
+            "When the work exposes prerequisites, add them as new_gaps with an explicit child_resolution_policy for the "
+            "assigned parent; the runtime then tracks their recursive dependency tree. "
             "gap_effect='closed' is only accepted when relation_to_target is solves_target, sufficient_for_target, "
             "or direct_advance; any other relation reporting gap_effect='closed' is rejected."
         ),
@@ -499,13 +566,37 @@ def register_orchestrator_research_tools(
                 "remaining_gaps": {"type": "array", "items": {"type": "string"}},
                 "new_gaps": {
                     "type": "array",
+                    "description": (
+                        "New obligations discovered by this worker. They become children of the assigned gap by default; "
+                        "use parent_gap_id only to attach a reusable obligation elsewhere in the same direction."
+                    ),
                     "items": {
                         "type": "object",
                         "properties": {
                             "gap_id": {"type": "string"},
                             "statement": {"type": "string"},
+                            "parent_gap_id": {"type": "string"},
+                            "resolution_policy": {
+                                "type": "string",
+                                "enum": ["all_of", "any_of", "manual"],
+                                "description": "How this new gap resolves its own future children; defaults to manual.",
+                            },
+                            "gap_kind": {
+                                "type": "string",
+                                "enum": ["unknown", "terminal", "lemma", "subcase", "construction", "falsification", "synthesis"],
+                            },
                         },
+                        "required": ["gap_id", "statement"],
                     },
+                },
+                "child_resolution_policy": {
+                    "type": "string",
+                    "enum": ["all_of", "any_of", "manual"],
+                    "description": (
+                        "Required when new_gaps truly decompose the assigned parent: how that parent combines its children. "
+                        "all_of means every child is necessary; any_of means one child can settle it; manual requires "
+                        "a later synthesis proof even after children close."
+                    ),
                 },
                 "continuation_value": {
                     "type": "string",
@@ -693,11 +784,24 @@ def register_orchestrator_research_tools(
                                     "properties": {
                                         "step_id": {"type": "string"},
                                         "statement": {"type": "string"},
-                                        "status": {"type": "string", "enum": ["open", "advanced", "closed", "invalidated"]},
+                                        "parent_gap_id": {
+                                            "type": "string",
+                                            "description": "Optional parent gap in this direction. Omit for a root gap.",
+                                        },
+                                        "resolution_policy": {
+                                            "type": "string",
+                                            "enum": ["all_of", "any_of", "manual"],
+                                            "description": "How this gap combines its direct children; defaults to manual.",
+                                        },
+                                        "gap_kind": {
+                                            "type": "string",
+                                            "enum": ["unknown", "terminal", "lemma", "subcase", "construction", "falsification", "synthesis"],
+                                        },
+                                        "status": {"type": "string", "enum": ["open", "advanced", "closed", "invalidated", "superseded"]},
                                         "method": {"type": "string"},
                                     },
                                 },
-                                "description": "Ordered research steps. Each step is both a plan item and a gap to close. Refine via SyncResearchState as workers return results.",
+                                "description": "Recursive gap forest. Each gap may name a parent_gap_id and a child-combination policy; dispatch open leaves, then use consolidation to synthesize ready parents. Refine via SyncResearchState as workers return results.",
                             },
                             "progress_summary": {"type": "string"},
                             "evidence_refs": {
@@ -753,6 +857,8 @@ def build_solver_tool_registry(
                 blocker_registry=PersistentBlockerRegistry(workspace_root),
                 checkpoint_id=None,
             )
+            from .curator import _register_route_learning_tool
+            _register_route_learning_tool(registry, workspace_dir=workspace_root)
     for registrar in extra_registrars:
         registrar(registry)
     if agent_config is not None and agent_config.name in {"generator", "reviser"}:

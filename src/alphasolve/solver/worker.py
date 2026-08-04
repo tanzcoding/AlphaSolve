@@ -180,6 +180,7 @@ class WorkerRunResult:
     verified_file: Path | None = None
     review_file: Path | None = None
     theorem_check_file: Path | None = None
+    route_id: str | None = None
     direction_id: str | None = None
     gap_id: str | None = None
     solved_problem: bool = False
@@ -260,6 +261,7 @@ class Worker:
         suite,
         client_factory: ClientFactory,
         worker_hint: str | None = None,
+        route_id: str | None = None,
         direction_id: str | None = None,
         gap_id: str | None = None,
         method_id: str | None = None,
@@ -285,6 +287,7 @@ class Worker:
         prop_hash = uuid.uuid4().hex[:8]
         self.worker_id = prop_hash
         self.worker_hint = worker_hint
+        self.route_id = (route_id or "").strip() or None
         self.direction_id = (direction_id or "").strip() or None
         self.gap_id = (gap_id or "").strip() or None
         self.method_id = (method_id or "direct_proof").strip() or "direct_proof"
@@ -348,6 +351,7 @@ class Worker:
             json.dumps(
                 {
                     "worker_id": self.worker_id,
+                    "route_id": self.route_id,
                     "direction_id": self.direction_id,
                     "gap_id": self.gap_id,
                     "method_id": self.method_id,
@@ -1471,6 +1475,7 @@ class Worker:
             verified_file=verified_file,
             review_file=review_file,
             theorem_check_file=theorem_check_file,
+            route_id=self.route_id,
             direction_id=self.direction_id,
             gap_id=self.gap_id,
             solved_problem=solved_problem,

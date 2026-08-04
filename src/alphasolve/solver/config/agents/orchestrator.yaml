@@ -19,6 +19,8 @@ agent:
     - SpawnWorker
     - Agent
     - SpawnFreeExploration
+    - RegisterResearchRoute
+    - AssessResearchRoute
     - RecordResearchImpact
     - RecordDispatchConstraint
     - SyncResearchState
@@ -53,6 +55,10 @@ agent:
       hint:
         type: string
         maxLength: 4000
+      route_id:
+        type: string
+        maxLength: 80
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
       direction_id:
         type: string
         maxLength: 80

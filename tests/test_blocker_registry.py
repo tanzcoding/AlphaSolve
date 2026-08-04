@@ -5,6 +5,7 @@ from alphasolve.solver.blocker_registry import (
     PersistentBlockerRegistry,
     register_curated_blocker_registry_tool,
 )
+from alphasolve.solver.curator import _portfolio_checkpoint_prompt
 from alphasolve.solver.project import ProjectLayout
 
 
@@ -93,6 +94,81 @@ def test_curator_blocker_registry_persists_cross_route_occurrences(tmp_path):
         gap_id="cross-term",
         require_curation=True,
     )["allowed"] is True
+
+
+def test_curator_retry_prompt_includes_non_persistence_feedback(tmp_path):
+    brief = tmp_path / "progress_audits" / "checkpoint-0002" / "curator_brief.md"
+    brief.parent.mkdir(parents=True)
+    brief.write_text("# Brief\n", encoding="utf-8")
+
+    prompt = _portfolio_checkpoint_prompt(
+        brief,
+        recovery_reason="curator did not persist blocker curation for checkpoint checkpoint-0002",
+    )
+
+    assert "# Recovery feedback" in prompt
+    assert "did not persist blocker curation" in prompt
+    assert "never use `direction/gap`" in prompt
+    assert "do not submit a second variant" in prompt
+
+
+def test_curator_persists_audit_candidate_with_slug_id_and_route_gate(tmp_path):
+    (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
+    layout = ProjectLayout.create(tmp_path)
+    layout.ensure()
+    _checkpoint(layout)
+    decision_path = layout.progress_audits_dir / "checkpoint-0002" / "decision.json"
+    decision = json.loads(decision_path.read_text(encoding="utf-8"))
+    decision["repeated_avoided_obligation"] = {
+        "direction_id": "route-a",
+        "gap_id": "cross-term",
+        "statement": "Control the cross term without assuming the target.",
+    }
+    decision_path.write_text(json.dumps(decision), encoding="utf-8")
+
+    difficulties = _current_difficulties()
+    difficulties[0]["difficulty_id"] = "audit-route-a-cross-term"
+    difficulties[0]["statement"] = "Prove the same cross-term control obligation."
+    registry = PersistentBlockerRegistry(layout.workspace_dir)
+    result = registry.record_curation(
+        checkpoint_id="checkpoint-0002",
+        blockers=_blocker_payload(),
+        resolved_blocker_ids=[],
+        current_difficulties=difficulties,
+        blocker_relations=[],
+    )
+
+    assert result["recorded"] is True
+    assert registry.pending_checkpoint_ids() == []
+    persisted = registry.load()["curated_checkpoints"]["checkpoint-0002"]
+    assert persisted["current_difficulties"][0]["difficulty_id"] == "audit-route-a-cross-term"
+    assert persisted["current_difficulties"][0]["gate"] == {"direction_id": "route-a", "gap_id": "cross-term"}
+
+
+def test_curator_rejects_route_path_difficulty_id_with_actionable_remediation(tmp_path):
+    (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
+    layout = ProjectLayout.create(tmp_path)
+    layout.ensure()
+    _checkpoint(layout)
+
+    invalid = _current_difficulties()
+    invalid[0]["difficulty_id"] = "route-a/cross-term"
+    try:
+        PersistentBlockerRegistry(layout.workspace_dir).record_curation(
+            checkpoint_id="checkpoint-0002",
+            blockers=_blocker_payload(),
+            resolved_blocker_ids=[],
+            current_difficulties=invalid,
+            blocker_relations=[],
+        )
+    except ValueError as exc:
+        message = str(exc)
+        assert "stable identifier" in message
+        assert "direction/gap" in message
+        assert "gate" in message
+    else:
+        raise AssertionError("a route path must not be accepted as difficulty_id")
+
 
 
 def test_curator_registry_preserves_structured_difficulty_evidence(tmp_path):

@@ -359,6 +359,7 @@ class ProgressAuditQueue:
             "worker_id": str(payload.get("worker_id") or ""),
             "status": str(payload.get("status") or "unknown"),
             "failure_kind": str(payload.get("failure_kind") or ""),
+            "route_id": payload.get("route_id"),
             "direction_id": payload.get("direction_id"),
             "gap_id": payload.get("gap_id"),
             "method_id": payload.get("method_id"),
@@ -455,6 +456,7 @@ def _render_outcomes(
         impact = impacts.get(worker_id) if isinstance(impacts.get(worker_id), dict) else {}
         lines.extend([
             f"### Outcome {item.get('sequence', '?')}: {item.get('status', 'unknown')}",
+            f"- Route: `{item.get('route_id') or '-'}`",
             f"- Direction / gap / method: `{item.get('direction_id') or '-'} / {item.get('gap_id') or '-'} / {item.get('method_id') or '-'}`",
             f"- Orchestrator session / context generation: `{item.get('orchestrator_session_id') or '-'} / {item.get('context_generation') if item.get('context_generation') is not None else '-'}`",
             f"- Failure kind: `{item.get('failure_kind') or '-'}`",

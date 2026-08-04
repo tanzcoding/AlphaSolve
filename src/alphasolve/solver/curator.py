@@ -28,10 +28,55 @@ class CuratorTask:
     task_kind: str = "digest"
     audit_path: Path | None = None
     artifact_path: Path | None = None
+    attempts: int = 0
+    recovery_reason: str = ""
 
 
 CURATOR_HEALTH_CHECK_INTERVAL = 4
 CURATOR_OVERSIZED_ENTRY_LINE_LIMIT = 250
+
+
+def _register_route_learning_tool(registry, *, workspace_dir: Path) -> None:
+    """Allow curator to commit evidence-bounded cross-route learning, not edit state directly."""
+    from alphasolve.agent import ToolResult
+    from .research_state import ResearchStateStore
+
+    store = ResearchStateStore(workspace_dir / "verified_propositions")
+
+    def handler(args: dict[str, Any]) -> ToolResult:
+        try:
+            result = store.commit_route_learning(
+                learning_id=str(args.get("learning_id") or ""),
+                route_ids=args.get("route_ids") or [],
+                finding=str(args.get("finding") or ""),
+                confidence=str(args.get("confidence") or ""),
+                evidence_paths=args.get("evidence_paths"),
+                policy_effect=str(args.get("policy_effect") or ""),
+            )
+        except ValueError as exc:
+            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
+        return ToolResult(json.dumps(result, ensure_ascii=False))
+
+    registry.register(
+        name="CommitRouteLearning",
+        description=(
+            "Persist one reusable lesson obtained by comparing reviewer routes and their worker branches. "
+            "Use only checkpoint evidence; the record becomes strategic memory visible to future reviewers."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "learning_id": {"type": "string"},
+                "route_ids": {"type": "array", "items": {"type": "string"}},
+                "finding": {"type": "string"},
+                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+                "evidence_paths": {"type": "array", "items": {"type": "string"}},
+                "policy_effect": {"type": "string"},
+            },
+            "required": ["learning_id", "route_ids", "finding", "confidence"],
+        },
+        handler=handler,
+    )
 
 
 class CuratorQueue:
@@ -124,10 +169,31 @@ class CuratorQueue:
             self._set_task_active(True)
             try:
                 self._run_curator(task)
-            except Exception:
-                pass
+            except Exception as exc:
+                self._record_failure(task, exc)
+                if task.attempts < 1:
+                    task.attempts += 1
+                    task.recovery_reason = str(exc)[:2000]
+                    self._queue.put(task)
             finally:
                 self._set_task_active(False)
+
+    def _record_failure(self, task: CuratorTask, exc: Exception) -> None:
+        """Persist curator failures because missing learning must never be silent."""
+        try:
+            path = self.workspace_dir / "curation_records" / "curator_failures.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "source_label": task.source_label,
+                "task_kind": task.task_kind,
+                "attempt": task.attempts + 1,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:2000],
+            }
+            with path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     def _run_curator(self, task: CuratorTask) -> None:
         config: AgentConfig | None = self.suite.subagents.get("curator")
@@ -175,7 +241,7 @@ class CuratorQueue:
         if task.task_kind == "health_check":
             task_prompt = _health_check_prompt(self.knowledge_dir)
         elif task.task_kind == "portfolio_checkpoint":
-            task_prompt = _portfolio_checkpoint_prompt(task.artifact_path)
+            task_prompt = _portfolio_checkpoint_prompt(task.artifact_path, recovery_reason=task.recovery_reason)
         elif task.task_kind == "strategy_transition":
             task_prompt = _strategy_transition_prompt(task.artifact_path)
         elif task.task_kind == "progress_audit":
@@ -314,13 +380,20 @@ def _strategy_transition_prompt(artifact_path: Path | None) -> str:
     )
 
 
-def _portfolio_checkpoint_prompt(artifact_path: Path | None) -> str:
+def _portfolio_checkpoint_prompt(artifact_path: Path | None, *, recovery_reason: str = "") -> str:
     path_text = ""
     if artifact_path is not None:
         try:
             path_text = artifact_path.resolve().relative_to(artifact_path.parents[2]).as_posix()
         except (ValueError, IndexError):
             path_text = str(artifact_path)
+    recovery_note = (
+        "# Recovery feedback\n"
+        "A previous curation attempt did not persist. Correct the payload rather than merely repeating it. "
+        f"Previous runtime failure: {recovery_reason}\n\n"
+        if recovery_reason
+        else ""
+    )
     return (
         "# Portfolio Checkpoint Curation\n\n"
         "Read the checkpoint brief first: `" + (path_text or "(missing checkpoint brief)") + "`. "
@@ -329,8 +402,11 @@ def _portfolio_checkpoint_prompt(artifact_path: Path | None) -> str:
         "to verify the comparison, but never edit anything outside `knowledge/`.\n\n"
         "Before writing knowledge, read `curation_records/blocker_registry.json` when it exists. Then call "
         "`CuratePersistentBlockers` exactly once before finishing. You—not the process auditor—own the semantic decision "
-        "whether outcome difficulties are the same mathematical blocker across different routes.\n\n"
-        "Mandatory identity reconciliation:\n"
+        "whether outcome difficulties are the same mathematical blocker across different routes. If that one call returns a "
+        "validation error, do not submit a second variant in this task: record no new semantic decision and let the runtime "
+        "retry in a fresh curation task with its recovery feedback.\n\n"
+        + recovery_note
+        + "Mandatory identity reconciliation:\n"
         "1. List every material present difficulty in `current_difficulties`, including the audit candidate if it has one.\n"
         "2. Compare EACH current difficulty against EACH active historical blocker in `blocker_relations`; no pair may be omitted.\n"
         "3. Use `same` only when the mathematical obligation is identical despite different statements, directions, methods, or local lemmas. "
@@ -338,10 +414,20 @@ def _portfolio_checkpoint_prompt(artifact_path: Path | None) -> str:
         "same with that `canonical_blocker_id`, so runtime merges them.\n"
         "4. Use `distinct` for genuinely independent obligations, `unresolved` only when evidence cannot decide equivalence, and "
         "`superseded` only when a new named blocker replaces the old obligation/gate. Never create a fresh ID merely because wording or route changed.\n"
-        "5. Group every supporting outcome sequence by actual direction/gap/method and select one concrete gate direction/gap. For outcomes with a "
+        "5. `difficulty_id` is a stable semantic slug for a current-difficulty row, not a direction/gap path and not the durable identity. "
+        "Use only letters, digits, `.`, `_`, and `-` (for example `audit-cross-term-control`); never use `direction/gap`. "
+        "Put the exact route identity in `gate={direction_id,gap_id}`. The audit candidate is included by this exact gate; its "
+        "statement may be a faithful concise restatement. `blocker_id` is the durable cross-checkpoint identity.\n"
+        "6. A current difficulty's `gate` identifies that observed route; the matching `blockers` payload chooses one "
+        "canonical actionable dispatch gate for the persistent identity. They may differ when multiple routes hit the same blocker.\n"
+        "7. Group every supporting outcome sequence by actual direction/gap/method. For outcomes with a "
         "Structured Difficulty Handoff, compare the exact blocking obligation, last verified step, and failed inference; wording similarity alone is not evidence. "
         "The tool derives counts from sequences and persists the classification across restarts. If no new repeated blocker exists, still submit continuing "
         "current difficulties and their relations to every active blocker; resolve an existing blocker only when evidence discharges it.\n\n"
+        "Route learning requirement:\n"
+        "- Group outcomes by route_id; workers sharing one route are branches of the same reviewer-proposed path.\n"
+        "- Compare routes by terminal-gap progress, reusable verified evidence, blocker resolution/refutation, repeated avoidance, and cost only when available.\n"
+        "- Call `CommitRouteLearning` for each evidence-supported reusable contrast. If no route comparison is supported, do not invent one.\n\n"
         "Maintain these durable knowledge files rather than creating an isolated narrative only:\n"
         "- `knowledge/portfolio/current-strategy.md`: current terminal gap, verified facts that bear on it, and what a useful next proposition must accomplish.\n"
         "- `knowledge/portfolio/attempt-patterns.md`: reusable attempt patterns. For each pattern state conditions, contrast between attempts, outcome, reusable rule, confidence, and exceptions.\n"

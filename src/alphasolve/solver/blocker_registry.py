@@ -32,6 +32,20 @@ def _clean_id(value: Any, *, field: str) -> str:
     return text
 
 
+def _clean_difficulty_id(value: Any, *, field: str) -> str:
+    """Validate a current-difficulty row label without conflating it with its gate.
+
+    A difficulty id is a short semantic slug.  The actionable route identity belongs
+    in ``gate={direction_id,gap_id}``; accepting ``direction/gap`` here previously
+    caused curator retries to fail permanently on the slash character.
+    """
+    text = str(value or "").strip()
+    if not _ID_PATTERN.fullmatch(text):
+        suffix = " Use a slug such as 'audit-fooling-universal-lis-lds-bound'; put direction/gap in gate."
+        raise ValueError(f"{field} must be a stable identifier containing only letters, digits, '.', '_' or '-'.{suffix}")
+    return text
+
+
 def _clean_text(value: Any, *, field: str, max_length: int) -> str:
     text = " ".join(str(value or "").split())
     if not text:
@@ -306,7 +320,9 @@ class PersistentBlockerRegistry:
         for index, raw in enumerate(value, start=1):
             if not isinstance(raw, dict):
                 raise ValueError("current_difficulties items must be objects")
-            difficulty_id = _clean_id(raw.get("difficulty_id"), field=f"current_difficulties[{index}].difficulty_id")
+            difficulty_id = _clean_difficulty_id(
+                raw.get("difficulty_id"), field=f"current_difficulties[{index}].difficulty_id"
+            )
             blocker_id = _clean_id(raw.get("blocker_id"), field=f"current_difficulties[{index}].blocker_id")
             if difficulty_id in seen_ids:
                 raise ValueError("current_difficulties must not contain duplicate difficulty_id values")
@@ -331,18 +347,21 @@ class PersistentBlockerRegistry:
             })
         candidate = decision.get("repeated_avoided_obligation")
         if isinstance(candidate, dict) and candidate.get("statement"):
-            candidate_statement = " ".join(str(candidate.get("statement") or "").split())
             candidate_gate = (
                 str(candidate.get("direction_id") or "").strip(),
                 str(candidate.get("gap_id") or "").strip(),
             )
+            # The audit gate is stable runtime identity; its prose is evidence that a
+            # curator may accurately condense, normalize notation for, or translate.
+            # Exact string equality made otherwise valid curation fail on harmless
+            # formatting differences such as n₀ versus n0.
             if not any(
-                item["statement"] == candidate_statement
-                and (item["gate"]["direction_id"], item["gate"]["gap_id"]) == candidate_gate
+                (item["gate"]["direction_id"], item["gate"]["gap_id"]) == candidate_gate
                 for item in difficulties
             ):
                 raise ValueError(
-                    "current_difficulties must include the process-audit blocker candidate or explicitly resolve it before curation"
+                    "current_difficulties must include the process-audit blocker candidate gate "
+                    "{direction_id,gap_id}, or explicitly resolve it before curation"
                 )
         return difficulties
 
@@ -695,12 +714,68 @@ def register_curated_blocker_registry_tool(
             return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
         return ToolResult(json.dumps(result, ensure_ascii=False))
 
+    gate_schema = {
+        "type": "object",
+        "properties": {
+            "direction_id": {"type": "string"},
+            "gap_id": {"type": "string"},
+        },
+        "required": ["direction_id", "gap_id"],
+    }
+    current_difficulty_schema = {
+        "type": "object",
+        "properties": {
+            "difficulty_id": {
+                "type": "string",
+                "description": "Semantic slug only; never use direction/gap here.",
+            },
+            "statement": {"type": "string"},
+            "gate": gate_schema,
+            "blocker_id": {"type": "string"},
+        },
+        "required": ["difficulty_id", "statement", "gate", "blocker_id"],
+    }
+    relation_schema = {
+        "type": "object",
+        "properties": {
+            "difficulty_id": {"type": "string"},
+            "active_blocker_id": {"type": "string"},
+            "relation": {"type": "string", "enum": sorted(_RELATIONS)},
+            "canonical_blocker_id": {"type": "string"},
+            "replacement_blocker_id": {"type": "string"},
+        },
+        "required": ["difficulty_id", "active_blocker_id", "relation"],
+    }
+    approach_schema = {
+        "type": "object",
+        "properties": {
+            "direction_id": {"type": "string"},
+            "gap_id": {"type": "string"},
+            "method_id": {"type": "string"},
+            "description": {"type": "string"},
+            "outcome_sequences": {"type": "array", "items": {"type": "integer"}},
+        },
+        "required": ["direction_id", "gap_id", "method_id", "description", "outcome_sequences"],
+    }
+    blocker_schema = {
+        "type": "object",
+        "properties": {
+            "blocker_id": {"type": "string"},
+            "statement": {"type": "string"},
+            "gate": gate_schema,
+            "approaches": {"type": "array", "items": approach_schema},
+        },
+        "required": ["blocker_id", "statement", "gate", "approaches"],
+    }
+
     registry.register(
         name="CuratePersistentBlockers",
         description=(
             "Persist the curator's semantic grouping of repeated mathematical blockers for this audit checkpoint. "
             "Before choosing IDs, compare every current difficulty against every active historical blocker as same, distinct, "
-            "unresolved, or superseded. A same relation must reuse an old canonical blocker_id; if two old blockers are the same, "
+            "unresolved, or superseded. `difficulty_id` is only a stable semantic slug (letters, digits, '.', '_' and '-'); "
+            "never use a direction/gap path such as 'direction/gap' there. Put the exact route identity in "
+            "gate={direction_id,gap_id}. A same relation must reuse an old canonical blocker_id; if two old blockers are the same, "
             "declare both same with one canonical ID so runtime merges them. Counts are derived from outcome sequences, never typed. "
             "Only this tool may write the persistent blocker control registry."
         ),
@@ -709,15 +784,17 @@ def register_curated_blocker_registry_tool(
             "properties": {
                 "current_difficulties": {
                     "type": "array",
-                    "items": {"type": "object"},
+                    "items": current_difficulty_schema,
                     "description": (
                         "Every material current difficulty, including the audit candidate when present. Each item requires "
-                        "difficulty_id, statement, gate={direction_id,gap_id}, and blocker_id (the persistent canonical identity)."
+                        "difficulty_id, statement, gate={direction_id,gap_id}, and blocker_id (the persistent canonical identity). "
+                        "difficulty_id must be a stable semantic slug using only letters, digits, '.', '_' and '-' (for example "
+                        "'audit-fooling-universal-lis-lds-bound'); never put 'direction/gap' in difficulty_id."
                     ),
                 },
                 "blocker_relations": {
                     "type": "array",
-                    "items": {"type": "object"},
+                    "items": relation_schema,
                     "description": (
                         "Complete matrix over current_difficulties × active blockers at checkpoint start. Each item: "
                         "{difficulty_id,active_blocker_id,relation=same|distinct|unresolved|superseded,canonical_blocker_id for same, "
@@ -726,7 +803,7 @@ def register_curated_blocker_registry_tool(
                 },
                 "blockers": {
                     "type": "array",
-                    "items": {"type": "object"},
+                    "items": blocker_schema,
                     "description": (
                         "One active payload for each current difficulty's blocker_id: blocker_id, statement, gate={direction_id,gap_id}, "
                         "approaches=[{direction_id,gap_id,method_id,description,outcome_sequences:[positive audit sequence ids]}]."

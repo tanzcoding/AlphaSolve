@@ -19,6 +19,7 @@ agent:
     - Grep
     - Agent
     - CuratePersistentBlockers
+    - CommitRouteLearning
   tool_parameters:
     Read:
       path:

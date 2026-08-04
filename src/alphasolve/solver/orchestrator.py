@@ -219,6 +219,7 @@ class WorkerManager:
         self,
         hint: str | None = None,
         *,
+        route_id: str | None = None,
         direction_id: str | None = None,
         gap_id: str | None = None,
         method_id: str | None = None,
@@ -250,6 +251,7 @@ class WorkerManager:
             suite=self.suite,
             client_factory=self.client_factory,
             worker_hint=hint,
+            route_id=route_id,
             direction_id=direction_id,
             gap_id=gap_id,
             method_id=method_id,
@@ -290,6 +292,7 @@ class WorkerManager:
             self.active_info[worker_id] = {
                 "worker_id": worker_id,
                 "worker_dir": str(worker.worker_dir),
+                "route_id": route_id,
                 "direction_id": direction_id,
                 "gap_id": gap_id,
                 "method_id": method_id,
@@ -312,6 +315,7 @@ class WorkerManager:
         payload = {
             "spawned": True,
             "worker_id": worker_id,
+            "route_id": route_id,
             "direction_id": direction_id,
             "gap_id": gap_id,
             "method_id": method_id,
@@ -472,8 +476,9 @@ class WorkerManager:
                     "worker_id": worker_id,
                     "status": "failed",
                     "summary": str(exc),
-                    "failure_kind": "execution_failed",
-                    "direction_id": finished_info.get("direction_id"),
+                "failure_kind": "execution_failed",
+                "route_id": finished_info.get("route_id"),
+                "direction_id": finished_info.get("direction_id"),
                     "gap_id": finished_info.get("gap_id"),
                     "method_id": finished_info.get("method_id"),
                 }
@@ -520,6 +525,7 @@ class WorkerManager:
                 "status": "failed",
                 "summary": str(exc),
                 "failure_kind": "execution_failed",
+                "route_id": info.get("route_id"),
                 "direction_id": info.get("direction_id"),
                 "gap_id": info.get("gap_id"),
                 "method_id": info.get("method_id"),
@@ -617,6 +623,7 @@ class WorkerManager:
         return {
             "worker_id": worker_id,
             "worker_dir": info.get("worker_dir"),
+            "route_id": info.get("route_id"),
             "direction_id": info.get("direction_id"),
             "gap_id": info.get("gap_id"),
             "method_id": info.get("method_id"),
@@ -806,6 +813,7 @@ class Orchestrator:
                 ),
                 stop_event=self.stop_event,
                 reviewer_history_path=self.layout.knowledge_dir / "reviewer-history.md",
+                reviewer_state_provider=self.research_state.reviewer_snapshot,
             )
             self._reset_reviewer_service = subagents
             try:
@@ -913,6 +921,8 @@ class Orchestrator:
                 record_impact_handler=self._record_research_impact_tool,
                 record_dispatch_constraint_handler=self._record_dispatch_constraint_tool,
                 sync_state_handler=self._sync_research_state_tool,
+                register_route_handler=self._register_research_route_tool,
+                assess_route_handler=self._assess_research_route_tool,
             ),
             lambda registry: self._register_free_exploration_tool(registry, manager),
         )
@@ -1172,6 +1182,7 @@ class Orchestrator:
                 direction_id=direction_id,
                 gap_id=str(target.get("gap_id") or "").strip() or None,
                 impact=args,
+                route_id=str(target.get("route_id") or "").strip() or None,
             )
             effective_impact = result.get("impact") if isinstance(result.get("impact"), dict) else args
             node = self.search.record_research_impact(worker_id, effective_impact)
@@ -1248,6 +1259,36 @@ class Orchestrator:
             return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
         return ToolResult(json.dumps({"synced": True, **result}, ensure_ascii=False))
 
+    def _register_research_route_tool(self, args: dict[str, Any]) -> ToolResult:
+        try:
+            result = self.research_state.register_route(
+                route_id=str(args.get("route_id") or ""),
+                based_on_state_id=str(args.get("based_on_state_id") or ""),
+                direction_id=str(args.get("direction_id") or ""),
+                gap_id=str(args.get("gap_id") or ""),
+                route_claim=str(args.get("route_claim") or ""),
+                target=str(args.get("target") or ""),
+                success_condition=str(args.get("success_condition") or ""),
+                stop_condition=str(args.get("stop_condition") or ""),
+                evidence_refs=args.get("evidence_refs"),
+            )
+        except ValueError as exc:
+            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
+        return ToolResult(json.dumps(result, ensure_ascii=False))
+
+    def _assess_research_route_tool(self, args: dict[str, Any]) -> ToolResult:
+        try:
+            result = self.research_state.assess_route(
+                route_id=str(args.get("route_id") or ""),
+                verdict=str(args.get("verdict") or ""),
+                summary=str(args.get("summary") or ""),
+                evidence_paths=args.get("evidence_paths"),
+                close_route=bool(args.get("close_route")),
+            )
+        except ValueError as exc:
+            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
+        return ToolResult(json.dumps(result, ensure_ascii=False))
+
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         research_state = getattr(self, "research_state", None)
         if research_state is not None and research_state.has_unmigrated_legacy_state():
@@ -1272,6 +1313,7 @@ class Orchestrator:
                 }, ensure_ascii=False)
             )
         hint = args.get("hint")
+        route_id = str(args.get("route_id") or "").strip() or None
         direction_id = str(args.get("direction_id") or "").strip() or None
         gap_id = str(args.get("gap_id") or "").strip() or None
         method_id = str(args.get("method_id") or "").strip() or None
@@ -1335,6 +1377,45 @@ class Orchestrator:
             parent_ids.append(str(parent_id))
         search = getattr(self, "search", None)
 
+        # A route scopes a subtree. Resolve its root before preflight so a worker may target a
+        # concrete descendant leaf rather than being forced to the route's original parent gap.
+        if route_id and research_state is not None:
+            route_snapshot = (research_state.load().get("routes") or {}).get(route_id)
+            if not isinstance(route_snapshot, dict):
+                return ToolResult(json.dumps({"error": f"unknown route_id: {route_id}"}), is_error=True)
+            if route_snapshot.get("status") != "active":
+                return ToolResult(json.dumps({
+                    "spawned": False,
+                    "reason": "route_not_active",
+                    "route_id": route_id,
+                    "status": route_snapshot.get("status"),
+                    "message": "Close or replace this route before spawning another worker in its gap subtree.",
+                }, ensure_ascii=False))
+            if direction_id is None:
+                direction_id = str(route_snapshot.get("direction_id") or "").strip() or None
+            if gap_id is None:
+                gap_id = str(route_snapshot.get("scope_gap_id") or route_snapshot.get("gap_id") or "").strip() or None
+            scope_gap_id = str(route_snapshot.get("scope_gap_id") or route_snapshot.get("gap_id") or "").strip()
+            if not direction_id or not gap_id or not scope_gap_id or not research_state.gap_is_within_scope(
+                direction_id=direction_id, scope_gap_id=scope_gap_id, gap_id=gap_id
+            ):
+                return ToolResult(
+                    json.dumps({"error": "route_id requires the route gap or one of its descendant gaps"}), is_error=True
+                )
+        elif not global_attack and research_state is not None:
+            active_route_ids = [
+                str(route.get("route_id"))
+                for route in (research_state.load().get("routes") or {}).values()
+                if isinstance(route, dict) and route.get("status") == "active"
+            ]
+            if active_route_ids:
+                return ToolResult(json.dumps({
+                    "spawned": False,
+                    "reason": "active_route_required",
+                    "active_route_ids": active_route_ids,
+                    "message": "Assign this targeted worker to an active reviewer route before creating or dispatching a gap.",
+                }, ensure_ascii=False))
+
         # Backward compatibility for old orchestrator calls that omit direction_id/gap_id. Prefer
         # inheriting lineage, then an unambiguous canonical target, and finally a visible bootstrap bucket.
         if direction_id is None and research_state is not None:
@@ -1366,7 +1447,7 @@ class Orchestrator:
                 preflight = research_state.dispatch_preflight(
                     direction_id=direction_id,
                     gap_id=gap_id,
-                    method_id=method_id,
+                    method_id="consolidation" if consolidation else method_id,
                     blocker_override_reason=blocker_override_reason,
                 )
             except ValueError as exc:
@@ -1498,8 +1579,39 @@ class Orchestrator:
             method_id = "consolidation"
         elif not method_id:
             method_id = "direct_proof"
+        route_state = research_state.load() if research_state is not None else {}
+        active_routes = [
+            route for route in (route_state.get("routes") or {}).values()
+            if isinstance(route, dict) and route.get("status") == "active"
+        ]
+        if active_routes and not route_id and not global_attack:
+            return ToolResult(
+                json.dumps({
+                    "spawned": False,
+                    "reason": "active_route_required",
+                    "active_route_ids": [route.get("route_id") for route in active_routes],
+                    "message": "Assign this targeted worker to an active reviewer route, or assess/close those routes first.",
+                }, ensure_ascii=False)
+            )
+        if route_id and research_state is not None:
+            route = (route_state.get("routes") or {}).get(route_id)
+            if not isinstance(route, dict):
+                return ToolResult(json.dumps({"error": f"unknown route_id: {route_id}"}), is_error=True)
+            route_direction_id = str(route.get("direction_id") or "").strip() or None
+            route_scope_gap_id = str(route.get("scope_gap_id") or route.get("gap_id") or "").strip() or None
+            if direction_id is None:
+                direction_id = route_direction_id
+            if gap_id is None:
+                gap_id = route_scope_gap_id
+            if direction_id != route_direction_id or not route_scope_gap_id or not gap_id or not research_state.gap_is_within_scope(
+                direction_id=direction_id or "", scope_gap_id=route_scope_gap_id, gap_id=gap_id
+            ):
+                return ToolResult(
+                    json.dumps({"error": "route_id requires the route gap or one of its descendant gaps"}), is_error=True
+                )
         payload = manager.spawn(
             hint,
+            route_id=route_id,
             direction_id=direction_id,
             gap_id=gap_id,
             method_id=method_id,
@@ -1518,10 +1630,22 @@ class Orchestrator:
                 hint,
                 parent_id=str(parent_id) if parent_id else None,
                 parent_ids=parent_ids,
+                route_id=route_id,
                 direction_id=direction_id,
                 gap_id=gap_id,
                 method_id=method_id,
             )
+            if route_id and research_state is not None:
+                try:
+                    research_state.attach_worker_to_route(
+                        route_id=route_id,
+                        worker_id=str(payload["worker_id"]),
+                        direction_id=direction_id,
+                        gap_id=gap_id,
+                        method_id=method_id,
+                    )
+                except ValueError as exc:
+                    return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
         # 送审日志：consolidation=true 的 spawn 记一条"送审"到 state；返回结果由
         # RecordResearchImpact 按 worker_id 回填。若该方向此前被撞墙置了 dual_probe_required，
         # 本次记为对偶探针(dual_probe)。纯记账，绝不影响 SpawnWorker 的真实语义。
@@ -1704,6 +1828,7 @@ class Orchestrator:
                             direction_id=direction_id,
                             gap_id=str(completed.get("gap_id") or "").strip() or None,
                             method_id=str(completed.get("method_id") or "").strip() or None,
+                            route_id=str(completed.get("route_id") or "").strip() or None,
                             status=status,
                             failure_kind=str(completed.get("failure_kind") or "").strip() or None,
                             summary=str(completed.get("summary") or ""),
@@ -1944,6 +2069,7 @@ class Orchestrator:
                     worker_id=worker_id,
                     direction_id=direction_id,
                     gap_id=gap_id,
+                    route_id=str(completed.get("route_id") or "").strip() or None,
                     impact={
                         "relation_to_target": "weaker_than_target" if status == "verified" else "unrelated",
                         "gap_effect": "unchanged",
@@ -1995,6 +2121,7 @@ def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:
         "status": result.status,
         "summary": result.summary,
         "worker_dir": str(result.worker_dir),
+        "route_id": result.route_id,
         "direction_id": result.direction_id,
         "gap_id": result.gap_id,
         "method_id": result.method_id,

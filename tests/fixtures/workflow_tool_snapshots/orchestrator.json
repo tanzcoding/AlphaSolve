@@ -385,6 +385,12 @@
           "description": "Optional. The exact target statement to attack when consolidation=true. If omitted, the worker uses the goal expressed in `hint`. Ignored when consolidation is false.",
           "type": "string"
         },
+        "route_id": {
+          "description": "Stable id returned by RegisterResearchRoute. All targeted workers exploring the same reviewer-proposed path should carry the same route_id so their branches can be compared.",
+          "maxLength": 80,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
+          "type": "string"
+        },
         "rubric": {
           "description": "Optional. A concise acceptance checklist (3-6 bullet points, each starting with '- ') specifying what the proven Statement must satisfy to count as progress on the assigned gap. The rubric is NOT shown to the worker — it is stored and returned to you in TaskOutput for your own structured self-assessment via RecordResearchImpact. Example: '- Explicit construction of a permutation and tiling\n- Rectangle count k <= 2111\n- All non-hole cells covered exactly once'. Write criteria that are checkable against the proven Statement alone.",
           "type": "string"
@@ -437,6 +443,95 @@
     "parameters": {
       "properties": {},
       "required": [],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Persist exactly one route proposed by research_reviewer before assigning targeted workers to it. A route is the coarse mathematical path; use SpawnWorker(route_id=...) repeatedly to maximize different attempts under it. Copy the machine-readable route contract from the reviewer report.",
+    "name": "RegisterResearchRoute",
+    "parameters": {
+      "properties": {
+        "based_on_state_id": {
+          "type": "string"
+        },
+        "direction_id": {
+          "type": "string"
+        },
+        "evidence_refs": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "gap_id": {
+          "type": "string"
+        },
+        "route_claim": {
+          "type": "string"
+        },
+        "route_id": {
+          "type": "string"
+        },
+        "stop_condition": {
+          "type": "string"
+        },
+        "success_condition": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "based_on_state_id",
+        "direction_id",
+        "gap_id",
+        "route_claim",
+        "target",
+        "success_condition",
+        "stop_condition"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Compare the accumulated worker branches of one reviewer route against other routes and the terminal gap. Record whether the path is advancing, partial, stalled, refuted, redundant, or still inconclusive. This is a route-level judgment; continue to use RecordResearchImpact for individual verified workers.",
+    "name": "AssessResearchRoute",
+    "parameters": {
+      "properties": {
+        "close_route": {
+          "type": "boolean"
+        },
+        "evidence_paths": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "route_id": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "ADVANCING",
+            "PARTIAL",
+            "STALLED",
+            "REFUTED",
+            "REDUNDANT",
+            "INCONCLUSIVE"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "route_id",
+        "verdict",
+        "summary"
+      ],
       "type": "object"
     }
   },

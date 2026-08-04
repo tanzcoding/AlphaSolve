@@ -69,6 +69,8 @@ class SearchNode:
     depth: int = 0
     status: NodeStatus = NodeStatus.PENDING
     delta: Delta = field(default_factory=Delta)
+    # reviewer 提出的粗粒度路线；多个 worker 节点可共享同一 route_id 并形成其分支。
+    route_id: Optional[str] = None
     # worker 所属的稳定研究方向与该 worker 攻击的 direction-level gap。
     direction_id: Optional[str] = None
     gap_id: Optional[str] = None

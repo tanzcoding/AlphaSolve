@@ -298,6 +298,8 @@ def _register_orchestrator_extra_tools(registry: ToolRegistry) -> None:
         record_impact_handler=lambda _args: ToolResult(""),
         record_dispatch_constraint_handler=lambda _args: ToolResult(""),
         sync_state_handler=lambda _args: ToolResult(""),
+        register_route_handler=lambda _args: ToolResult(""),
+        assess_route_handler=lambda _args: ToolResult(""),
     )
 
 

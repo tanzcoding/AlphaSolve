@@ -190,7 +190,10 @@ def test_attempt_graph_restores_after_restart(tmp_path):
         scheduler_state_path=tmp_path / "scheduler_state.json",
         attempt_graph_path=tmp_path / "attempt_graph.jsonl",
     )
-    first = s.on_spawn("w1", "first attempt", direction_id="D1", gap_id="G1", method_id="construction")
+    first = s.on_spawn(
+        "w1", "first attempt", route_id="route-1",
+        direction_id="D1", gap_id="G1", method_id="construction",
+    )
     second = s.on_spawn(
         "w2", "second attempt", direction_id="D1", gap_id="G2",
         method_id="contradiction", parent_id=first.state_id,
@@ -205,6 +208,7 @@ def test_attempt_graph_restores_after_restart(tmp_path):
     assert second.state_id in restored.graph
     assert restored.graph.get(second.state_id).parents == [first.state_id]
     assert restored.graph.get(first.state_id).direction_id == "D1"
+    assert restored.graph.get(first.state_id).route_id == "route-1"
 
 
 def test_solved_flag_propagates():

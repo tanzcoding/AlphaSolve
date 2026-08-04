@@ -64,6 +64,8 @@ def test_research_feedback_tools_exposed_to_orchestrator():
     suite = load_agent_suite(config_dir)
     tools = list(suite.agents["orchestrator"].tools)
     assert "SpawnFreeExploration" in tools
+    assert "RegisterResearchRoute" in tools
+    assert "AssessResearchRoute" in tools
     assert "RecordResearchImpact" in tools
     assert "RecordDispatchConstraint" in tools
     assert "SyncResearchState" in tools
@@ -111,6 +113,53 @@ def test_record_research_impact_updates_search_and_direction_state(tmp_path):
     assert direction["progress"]["attempts"] == 1
     assert direction["steps"]["G1"]["status"] == "open"
     assert "Correct but weak" in orch.research_state.markdown_path.read_text(encoding="utf-8")
+
+
+def test_registered_route_owns_spawned_worker_and_search_node(tmp_path):
+    orch = _make_orch()
+    orch.research_state = ResearchStateStore(tmp_path / "verified_propositions")
+    orch.research_state.sync({
+        "objective_summary": "Open",
+        "directions": [{
+            "direction_id": "D1", "title": "Reviewer route", "goal": "Close the main target",
+            "status": "active", "health": "unassessed",
+            "gaps": [{"gap_id": "G1", "statement": "Prove the missing implication", "status": "open"}],
+        }],
+    })
+    state_id = orch.research_state.reviewer_snapshot()["state_id"]
+    registered = orch._register_research_route_tool({
+        "route_id": "route-main",
+        "based_on_state_id": state_id,
+        "direction_id": "D1",
+        "gap_id": "G1",
+        "route_claim": "This implication is the best next route.",
+        "target": "Prove the missing implication.",
+        "success_condition": "The main gap closes.",
+        "stop_condition": "A verified counterexample refutes it.",
+    })
+    assert not registered.is_error
+    manager = _FakeManager()
+    unassigned = orch._spawn_tool(manager, {
+        "hint": "Try an untracked branch.",
+        "direction_id": "D1",
+        "gap_id": "G1",
+    })
+    assert '"reason": "active_route_required"' in unassigned.content
+    assert manager._n == 0
+
+    result = orch._spawn_tool(manager, {
+        "route_id": "route-main",
+        "hint": "Try one branch under the reviewer route.",
+        "method_id": "construction",
+    })
+
+    assert not result.is_error
+    node = orch.search.graph.get(orch.search.root.children[0])
+    assert node.route_id == "route-main"
+    assert node.direction_id == "D1"
+    assert node.gap_id == "G1"
+    route = orch.research_state.load()["routes"]["route-main"]
+    assert route["worker_ids"] == ["w1"]
 
 
 def test_spawn_on_blank_state_uses_bootstrap_direction_and_remains_assessable(tmp_path):

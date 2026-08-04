@@ -11,7 +11,11 @@ from typing import Any
 
 _DIRECTION_STATUSES = {"active", "paused", "stalled", "refuted", "completed"}
 _DIRECTION_HEALTH = {"unassessed", "healthy", "strong", "stalled", "under_challenge", "refuted", "completed"}
-_GAP_STATUSES = {"open", "advanced", "closed", "invalidated"}
+# Gap 是可递归分解的义务节点；``superseded`` 表示其祖先或 any_of sibling 已经
+# 解决，``advanced`` 表示已具备继续组装/综合的证据但尚未给出父命题的证明。
+_GAP_STATUSES = {"open", "advanced", "closed", "invalidated", "superseded"}
+_GAP_RESOLUTION_POLICIES = {"all_of", "any_of", "manual"}
+_GAP_KINDS = {"unknown", "terminal", "lemma", "subcase", "construction", "falsification", "synthesis"}
 _RELATIONS = {
     "solves_target",
     "sufficient_for_target",
@@ -53,6 +57,9 @@ _METHOD_FAILURE_TYPES = {"method_blocked", "conclusion_refuted"}
 _DISPATCH_CONSTRAINT_STATUSES = {"refuted", "needs_falsification"}
 _DISPATCH_EVIDENCE_LEVELS = {"verified", "explicit_witness", "exhaustive_finite", "sampled"}
 _POSITIVE_RELATIONS = {"solves_target", "sufficient_for_target", "direct_advance"}
+_ROUTE_STATUSES = {"active", "paused", "completed", "refuted", "superseded"}
+_ROUTE_ASSESSMENTS = {"ADVANCING", "PARTIAL", "STALLED", "REFUTED", "REDUNDANT", "INCONCLUSIVE"}
+_ROUTE_LEARNING_CONFIDENCE = {"low", "medium", "high"}
 # A weak/negative relation can never legitimately close the gap it was assessed against;
 # only solves_target/sufficient_for_target/direct_advance may report gap_effect="closed".
 _DISALLOWED_GAP_EFFECTS_FOR_RELATION: dict[str, set[str]] = {
@@ -160,7 +167,7 @@ def _normalize_rubric_assessment(value: Any) -> dict[str, Any] | None:
 class ResearchStateStore:
     """Direction-centric canonical research state with a generated Markdown view."""
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     # 兑现（consolidation）时机：per-direction 硬规则已移除（不再 hard-gate 单个方向）。
     # 保留参数仅为向后兼容；consolidation_readiness 不再返回任何方向。
@@ -199,15 +206,80 @@ class ResearchStateStore:
             return self._empty_state()
         if not isinstance(raw, dict):
             return self._empty_state()
-        raw.setdefault("schema_version", self.SCHEMA_VERSION)
         raw.setdefault("objective", {"summary": "Resolve problem.md", "status": "unknown"})
+        raw.setdefault("state_revision", 0)
+        raw.setdefault("state_id", "state-0")
         raw.setdefault("directions", {})
+        raw.setdefault("routes", {})
+        raw.setdefault("route_learnings", [])
         raw.setdefault("dispatch_plan", [])
         raw.setdefault("impacts", {})
         raw.setdefault("outcomes", {})
         raw.setdefault("dispatch_constraints", {})
         raw.setdefault("audit_blockers", {})
+        self._migrate_loaded_gap_state(raw)
+        raw["schema_version"] = self.SCHEMA_VERSION
         return raw
+
+    def _migrate_loaded_gap_state(self, state: dict[str, Any]) -> None:
+        """Upgrade canonical v1 `gaps` / `plan` payloads into the v2 gap forest in memory.
+
+        The conversion is deliberately idempotent.  It supports both list and map variants
+        observed in historical state files and is persisted atomically on the next state save.
+        """
+        directions = state.get("directions")
+        if not isinstance(directions, dict):
+            state["directions"] = {}
+            return
+        for direction in directions.values():
+            if not isinstance(direction, dict):
+                continue
+            steps = direction.get("steps")
+            if not isinstance(steps, dict):
+                migrated: dict[str, Any] = {}
+                legacy_gaps = direction.get("gaps") or []
+                if isinstance(legacy_gaps, dict):
+                    legacy_items = [
+                        {**item, "step_id": item.get("step_id") or item.get("gap_id") or gap_id}
+                        for gap_id, item in legacy_gaps.items() if isinstance(item, dict)
+                    ]
+                elif isinstance(legacy_gaps, list):
+                    legacy_items = [item for item in legacy_gaps if isinstance(item, dict)]
+                else:
+                    legacy_items = []
+                for item in legacy_items:
+                    raw_id = item.get("step_id") or item.get("gap_id")
+                    if not raw_id:
+                        continue
+                    try:
+                        gap_id = _clean_id(raw_id, field="legacy gap_id")
+                    except ValueError:
+                        continue
+                    migrated[gap_id] = {
+                        "step_id": gap_id,
+                        "statement": str(item.get("statement") or item.get("goal") or gap_id).strip(),
+                        "status": str(item.get("status") or "open").strip(),
+                        "method": str(item.get("method") or "").strip(),
+                        "results": list(item.get("results") or []),
+                    }
+                for index, plan_item in enumerate(direction.get("plan") or []):
+                    if not isinstance(plan_item, str) or not plan_item.strip():
+                        continue
+                    gap_id = f"plan-{index}"
+                    migrated.setdefault(gap_id, {
+                        "step_id": gap_id,
+                        "statement": plan_item.strip(),
+                        "status": "open",
+                        "method": "",
+                        "results": [],
+                    })
+                direction["steps"] = migrated
+            try:
+                self._normalize_gap_tree(direction)
+            except ValueError:
+                # Preserve malformed legacy evidence for explicit repair rather than making
+                # read-only status inspection fail; ordinary SyncResearchState will reject it.
+                continue
 
     def _has_valid_canonical(self) -> bool:
         if not self.json_path.is_file():
@@ -265,14 +337,176 @@ class ResearchStateStore:
         for direction in state.get("directions", {}).values():
             if direction.get("status") not in {"active", "stalled"}:
                 continue
-            open_steps = [
+            if not isinstance(direction, dict):
+                continue
+            self._normalize_gap_tree(direction)
+            steps = direction.get("steps", {})
+            children = self._gap_children(steps)
+            executable = [
                 step_id
-                for step_id, step in direction.get("steps", {}).items()
-                if step.get("status") not in {"closed", "invalidated"}
+                for step_id, step in steps.items()
+                if step.get("status") not in {"closed", "invalidated", "superseded"}
+                and (not children.get(step_id) or bool(step.get("ready_for_synthesis")))
             ]
-            if len(open_steps) == 1:
-                candidates.append((str(direction["direction_id"]), str(open_steps[0])))
+            if len(executable) == 1:
+                candidates.append((str(direction["direction_id"]), str(executable[0])))
         return candidates[0] if len(candidates) == 1 else None
+
+    def reviewer_snapshot(self) -> dict[str, Any]:
+        """Return the canonical strategic context supplied to a research reviewer.
+
+        The reviewer receives this snapshot explicitly instead of reconstructing strategy from
+        generated Markdown.  Routes and curator lessons stay attached to the state that
+        motivated the next route.
+        """
+        state = self.load()
+        return {
+            "state_id": state.get("state_id", "state-0"),
+            "state_revision": int(state.get("state_revision") or 0),
+            "objective": deepcopy(state.get("objective") or {}),
+            "directions": deepcopy(state.get("directions") or {}),
+            "routes": deepcopy(state.get("routes") or {}),
+            "route_learnings": deepcopy(state.get("route_learnings") or []),
+            "dispatch_constraints": deepcopy(state.get("dispatch_constraints") or {}),
+            "audit_blockers": deepcopy(state.get("audit_blockers") or {}),
+        }
+
+    def register_route(self, *, route_id: str, based_on_state_id: str, direction_id: str, gap_id: str,
+                       route_claim: str, target: str, success_condition: str, stop_condition: str,
+                       evidence_refs: list[str] | None = None) -> dict[str, Any]:
+        """Persist one reviewer-proposed route before the orchestrator expands it.
+
+        A route is intentionally coarser than a worker: the reviewer chooses the mathematical
+        path, while the orchestrator chooses and compares its concrete worker branches.
+        """
+        rid = _clean_id(route_id, field="route_id")
+        did = _clean_id(direction_id, field="direction_id")
+        gid = _clean_id(gap_id, field="gap_id")
+        snapshot_id = _clean_text(based_on_state_id, field="based_on_state_id", max_length=120)
+        state = self.load()
+        current_id = str(state.get("state_id") or "state-0")
+        if snapshot_id != current_id:
+            raise ValueError(
+                f"route is based on stale state {snapshot_id!r}; current canonical state is {current_id!r}"
+            )
+        routes = state.setdefault("routes", {})
+        if rid in routes:
+            raise ValueError(f"route_id already exists: {rid}")
+        self._ensure_target_in_state(state, direction_id=did, gap_id=gid, hint=target)
+        routes[rid] = {
+            "route_id": rid,
+            "based_on_state_id": snapshot_id,
+            "direction_id": did,
+            # Route 绑定一个 gap subtree；它的 workers 可以被分派到这个 root 或任何后代叶子。
+            "gap_id": gid,
+            "scope_gap_id": gid,
+            "route_claim": _clean_text(route_claim, field="route_claim", max_length=3000),
+            "target": _clean_text(target, field="target", max_length=3000),
+            "success_condition": _clean_text(success_condition, field="success_condition", max_length=2000),
+            "stop_condition": _clean_text(stop_condition, field="stop_condition", max_length=2000),
+            "evidence_refs": _string_list(evidence_refs, field="evidence_refs", max_items=20),
+            "status": "active",
+            "worker_ids": [],
+            "outcomes": [],
+            "assessments": [],
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+        state["updated_at"] = _now_iso()
+        self._save(state)
+        return {"registered": True, "route": deepcopy(routes[rid]), **self.summary(state)}
+
+    def attach_worker_to_route(self, *, route_id: str, worker_id: str, direction_id: str | None,
+                               gap_id: str | None, method_id: str | None) -> dict[str, Any]:
+        """Record that a concrete orchestrator branch belongs to a reviewer route."""
+        rid = _clean_id(route_id, field="route_id")
+        wid = _clean_id(worker_id, field="worker_id")
+        state = self.load()
+        route = (state.get("routes") or {}).get(rid)
+        if not isinstance(route, dict):
+            raise ValueError(f"unknown route_id: {rid}")
+        if route.get("status") != "active":
+            raise ValueError(f"route {rid} is not active")
+        route_direction_id = str(route.get("direction_id") or "")
+        scope_gap_id = str(route.get("scope_gap_id") or route.get("gap_id") or "")
+        if direction_id and str(direction_id) != route_direction_id:
+            raise ValueError("worker direction_id must match its route")
+        if gap_id:
+            direction = (state.get("directions") or {}).get(route_direction_id)
+            if not isinstance(direction, dict) or not self._descendant_or_self(
+                direction, ancestor_id=scope_gap_id, gap_id=str(gap_id)
+            ):
+                raise ValueError("worker gap_id must be the route gap or one of its descendants")
+        worker_ids = route.setdefault("worker_ids", [])
+        if wid not in worker_ids:
+            worker_ids.append(wid)
+            route["updated_at"] = _now_iso()
+            state["updated_at"] = _now_iso()
+            self._save(state)
+        return {"attached": True, "route_id": rid, "worker_id": wid}
+
+    def assess_route(self, *, route_id: str, verdict: str, summary: str,
+                     evidence_paths: list[str] | None = None, close_route: bool = False) -> dict[str, Any]:
+        """Store the orchestrator's comparison of a route against the current portfolio."""
+        rid = _clean_id(route_id, field="route_id")
+        normalized_verdict = str(verdict or "").strip().upper()
+        if normalized_verdict not in _ROUTE_ASSESSMENTS:
+            raise ValueError(f"invalid route verdict: {normalized_verdict}")
+        state = self.load()
+        route = (state.get("routes") or {}).get(rid)
+        if not isinstance(route, dict):
+            raise ValueError(f"unknown route_id: {rid}")
+        assessment = {
+            "verdict": normalized_verdict,
+            "summary": _clean_text(summary, field="summary", max_length=4000),
+            "evidence_paths": _string_list(evidence_paths, field="evidence_paths", max_items=20),
+            "recorded_at": _now_iso(),
+        }
+        route.setdefault("assessments", []).append(assessment)
+        if close_route:
+            route["status"] = "refuted" if normalized_verdict == "REFUTED" else "completed"
+        route["updated_at"] = _now_iso()
+        state["updated_at"] = _now_iso()
+        self._save(state)
+        return {"assessed": True, "route": deepcopy(route), **self.summary(state)}
+
+    def commit_route_learning(self, *, learning_id: str, route_ids: list[str], finding: str,
+                              confidence: str, evidence_paths: list[str] | None = None,
+                              policy_effect: str = "") -> dict[str, Any]:
+        """Persist curator's cross-route lesson as structured long-term memory."""
+        lid = _clean_id(learning_id, field="learning_id")
+        normalized_confidence = str(confidence or "").strip().lower()
+        if normalized_confidence not in _ROUTE_LEARNING_CONFIDENCE:
+            raise ValueError(f"invalid learning confidence: {normalized_confidence}")
+        normalized_routes = [_clean_id(item, field="route_ids item") for item in _string_list(
+            route_ids, field="route_ids", max_items=12
+        )]
+        if not normalized_routes:
+            raise ValueError("route_ids must contain at least one route")
+        state = self.load()
+        routes = state.get("routes") or {}
+        missing = [rid for rid in normalized_routes if rid not in routes]
+        if missing:
+            raise ValueError(f"unknown route_ids: {missing}")
+        learnings = state.setdefault("route_learnings", [])
+        record = {
+            "learning_id": lid,
+            "route_ids": normalized_routes,
+            "finding": _clean_text(finding, field="finding", max_length=4000),
+            "confidence": normalized_confidence,
+            "evidence_paths": _string_list(evidence_paths, field="evidence_paths", max_items=20),
+            "policy_effect": str(policy_effect or "").strip()[:2000],
+            "recorded_at": _now_iso(),
+        }
+        existing = next((item for item in learnings if item.get("learning_id") == lid), None)
+        if existing is None:
+            learnings.append(record)
+        else:
+            existing.update(record)
+        del learnings[:-100]
+        state["updated_at"] = _now_iso()
+        self._save(state)
+        return {"committed": True, "learning": record, **self.summary(state)}
 
     def sync(self, args: dict[str, Any]) -> dict[str, Any]:
         objective_summary = _clean_text(args.get("objective_summary"), field="objective_summary")
@@ -298,11 +532,15 @@ class ResearchStateStore:
             "schema_version": self.SCHEMA_VERSION,
             "objective": {"summary": objective_summary, "status": objective_status},
             "directions": directions,
+            # 路线与 curator 的学习结论是运行期积累的证据；一次同步计划不能悄悄抹去它们。
+            "routes": current.get("routes", {}),
+            "route_learnings": current.get("route_learnings", []),
             "dispatch_plan": _string_list(args.get("dispatch_plan"), field="dispatch_plan", max_items=20),
             "impacts": current.get("impacts", {}),
             "outcomes": current.get("outcomes", {}),
             "dispatch_constraints": current.get("dispatch_constraints", {}),
             "audit_blockers": current.get("audit_blockers", {}),
+            "global_consolidation": current.get("global_consolidation", {}),
             "updated_at": _now_iso(),
         }
         self._save(state)
@@ -363,9 +601,195 @@ class ResearchStateStore:
                     "status": "open",
                     "method": "",
                     "results": [],
+                    "parent_gap_id": None,
+                    "child_gap_ids": [],
+                    "resolution_policy": "manual",
+                    "gap_kind": "unknown",
+                    "ready_for_synthesis": False,
                 }
                 changed = True
+        if did in directions:
+            changed = self._normalize_gap_tree(directions[did]) or changed
         return changed
+
+    @staticmethod
+    def _gap_children(steps: dict[str, Any]) -> dict[str, list[str]]:
+        children = {str(step_id): [] for step_id in steps}
+        for step_id, step in steps.items():
+            if not isinstance(step, dict):
+                continue
+            parent_id = step.get("parent_gap_id")
+            if parent_id:
+                children.setdefault(str(parent_id), []).append(str(step_id))
+        return children
+
+    def _normalize_gap_tree(self, direction: dict[str, Any]) -> bool:
+        """Validate and materialize one direction's gap forest in place.
+
+        ``steps`` deliberately remains a flat id-index for compatible atomic updates.  The
+        explicit parent links and derived child indexes give it tree semantics without
+        forcing fragile nested JSON rewrites.
+        """
+        steps = direction.setdefault("steps", {})
+        if not isinstance(steps, dict):
+            raise ValueError("direction.steps must be an object after normalization")
+        changed = False
+        for step_id, step in steps.items():
+            if not isinstance(step, dict):
+                raise ValueError(f"step {step_id!r} must be an object")
+            sid = _clean_id(step.get("step_id") or step_id, field="step_id")
+            if sid != step_id:
+                raise ValueError(f"step key {step_id!r} must match step_id {sid!r}")
+            parent_raw = step.get("parent_gap_id")
+            parent_id = _clean_id(parent_raw, field=f"step {sid}.parent_gap_id") if parent_raw else None
+            if parent_id == sid:
+                raise ValueError(f"step {sid!r} cannot be its own parent")
+            if parent_id and parent_id not in steps:
+                raise ValueError(f"step {sid!r} references unknown parent_gap_id {parent_id!r}")
+            policy = str(step.get("resolution_policy") or "manual").strip()
+            if policy not in _GAP_RESOLUTION_POLICIES:
+                raise ValueError(
+                    f"invalid resolution_policy for step {sid!r}: {policy!r}; "
+                    f"must be one of {sorted(_GAP_RESOLUTION_POLICIES)}"
+                )
+            kind = str(step.get("gap_kind") or "unknown").strip()
+            if kind not in _GAP_KINDS:
+                raise ValueError(f"invalid gap_kind for step {sid!r}: {kind!r}")
+            desired = {
+                "step_id": sid,
+                "parent_gap_id": parent_id,
+                "resolution_policy": policy,
+                "gap_kind": kind,
+                "child_gap_ids": [],
+                "ready_for_synthesis": bool(step.get("ready_for_synthesis")),
+            }
+            for key, value in desired.items():
+                if step.get(key) != value:
+                    step[key] = value
+                    changed = True
+
+        # A parent chain must terminate at a root.  This detects every directed cycle.
+        for sid in steps:
+            seen: set[str] = set()
+            cursor: str | None = sid
+            while cursor:
+                if cursor in seen:
+                    raise ValueError(f"cycle detected in gap hierarchy at {cursor!r}")
+                seen.add(cursor)
+                parent = steps[cursor].get("parent_gap_id")
+                cursor = str(parent) if parent else None
+
+        children = self._gap_children(steps)
+        for sid, step in steps.items():
+            child_ids = sorted(children.get(sid, []))
+            if step.get("child_gap_ids") != child_ids:
+                step["child_gap_ids"] = child_ids
+                changed = True
+        return changed
+
+    def _descendant_or_self(self, direction: dict[str, Any], *, ancestor_id: str, gap_id: str) -> bool:
+        self._normalize_gap_tree(direction)
+        steps = direction.get("steps") or {}
+        cursor: str | None = gap_id
+        seen: set[str] = set()
+        while cursor:
+            if cursor == ancestor_id:
+                return True
+            if cursor in seen or cursor not in steps:
+                return False
+            seen.add(cursor)
+            parent = steps[cursor].get("parent_gap_id")
+            cursor = str(parent) if parent else None
+        return False
+
+    def gap_is_within_scope(self, *, direction_id: str, scope_gap_id: str, gap_id: str) -> bool:
+        state = self.load()
+        did = _clean_id(direction_id, field="direction_id")
+        scope = _clean_id(scope_gap_id, field="scope_gap_id")
+        gid = _clean_id(gap_id, field="gap_id")
+        direction = (state.get("directions") or {}).get(did)
+        if not isinstance(direction, dict) or scope not in (direction.get("steps") or {}) or gid not in (direction.get("steps") or {}):
+            return False
+        return self._descendant_or_self(direction, ancestor_id=scope, gap_id=gid)
+
+    def _supersede_descendants(self, steps: dict[str, Any], root_gap_id: str) -> bool:
+        changed = False
+        children = self._gap_children(steps)
+        stack = list(children.get(root_gap_id, []))
+        while stack:
+            sid = stack.pop()
+            step = steps[sid]
+            if step.get("status") not in {"closed", "invalidated", "superseded"}:
+                step["status"] = "superseded"
+                step["ready_for_synthesis"] = False
+                changed = True
+            stack.extend(children.get(sid, []))
+        return changed
+
+    def _propagate_gap_tree(self, direction: dict[str, Any]) -> bool:
+        """Derive parent states after an impact without fabricating a proof assembly.
+
+        ``any_of`` may close a parent because a child is explicitly an alternative proof.
+        ``all_of`` and ``manual`` only mark the parent ready for synthesis when their
+        children are closed; a worker must still prove the parent-level combination.
+        """
+        changed = self._normalize_gap_tree(direction)
+        steps = direction.get("steps") or {}
+        children = self._gap_children(steps)
+        terminal_statuses = {"closed", "invalidated", "superseded"}
+        ordered = sorted(steps, key=lambda sid: self._gap_depth(steps, sid), reverse=True)
+        for sid in ordered:
+            step = steps[sid]
+            child_ids = children.get(sid, [])
+            if not child_ids:
+                continue
+            if step.get("status") == "closed":
+                changed = self._supersede_descendants(steps, sid) or changed
+                continue
+            if step.get("status") in {"invalidated", "superseded"}:
+                continue
+            policy = step.get("resolution_policy", "manual")
+            child_statuses = [str(steps[child].get("status") or "open") for child in child_ids]
+            if policy == "any_of":
+                if "closed" in child_statuses:
+                    step["status"] = "closed"
+                    step["ready_for_synthesis"] = False
+                    changed = True
+                    changed = self._supersede_descendants(steps, sid) or changed
+                elif all(status in {"invalidated", "superseded"} for status in child_statuses):
+                    step["status"] = "invalidated"
+                    step["ready_for_synthesis"] = False
+                    changed = True
+            elif policy == "all_of":
+                if any(status in {"invalidated", "superseded"} for status in child_statuses):
+                    step["status"] = "invalidated"
+                    step["ready_for_synthesis"] = False
+                    changed = True
+                elif all(status == "closed" for status in child_statuses):
+                    if step.get("status") != "advanced" or not step.get("ready_for_synthesis"):
+                        step["status"] = "advanced"
+                        step["ready_for_synthesis"] = True
+                        changed = True
+            elif all(status == "closed" for status in child_statuses):
+                if step.get("status") != "advanced" or not step.get("ready_for_synthesis"):
+                    step["status"] = "advanced"
+                    step["ready_for_synthesis"] = True
+                    changed = True
+        return changed
+
+    @staticmethod
+    def _gap_depth(steps: dict[str, Any], gap_id: str) -> int:
+        depth = 0
+        cursor = gap_id
+        seen: set[str] = set()
+        while cursor in steps and cursor not in seen:
+            seen.add(cursor)
+            parent = steps[cursor].get("parent_gap_id")
+            if not parent:
+                break
+            depth += 1
+            cursor = str(parent)
+        return depth
 
     def record_dispatch_constraint(
         self,
@@ -421,6 +845,8 @@ class ResearchStateStore:
         state.setdefault("dispatch_constraints", {})[key] = constraint
         if normalized_status == "refuted":
             state["directions"][did]["steps"][gid]["status"] = "invalidated"
+            state["directions"][did]["steps"][gid]["ready_for_synthesis"] = False
+            self._propagate_gap_tree(state["directions"][did])
         state["updated_at"] = _now_iso()
         self._save(state)
         return {"recorded": True, "constraint": constraint, **self.summary(state)}
@@ -490,7 +916,10 @@ class ResearchStateStore:
         gid = _clean_id(gap_id, field="gap_id")
         state = self.load()
         direction = (state.get("directions") or {}).get(did) or {}
-        step = (direction.get("steps") or {}).get(gid) or {}
+        if isinstance(direction, dict):
+            self._normalize_gap_tree(direction)
+        steps = direction.get("steps") or {}
+        step = steps.get(gid) or {}
         blocker = (state.get("audit_blockers") or {}).get(did)
         override = str(blocker_override_reason or "").strip()
         if isinstance(blocker, dict) and blocker.get("status") == "active" and blocker.get("gap_id") != gid and not override:
@@ -526,12 +955,49 @@ class ResearchStateStore:
                         "falsification worker (method_id='falsification') before a proof attempt."
                     ),
                 }
-        if step.get("status") == "invalidated":
+        step_status = str(step.get("status") or "open")
+        if step_status in {"closed", "superseded"}:
+            return {
+                "allowed": False,
+                "reason": "gap_not_schedulable",
+                "message": f"This gap is {step_status}; dispatch an open descendant or create a revised gap instead.",
+            }
+        if step_status == "invalidated":
             return {
                 "allowed": False,
                 "reason": "gap_invalidated",
                 "message": "This gap is invalidated in research_state; create a new target before dispatching.",
             }
+        child_ids = self._gap_children(steps).get(gid, [])
+        if child_ids:
+            if bool(step.get("ready_for_synthesis")):
+                if method_id != "consolidation":
+                    return {
+                        "allowed": False,
+                        "reason": "gap_synthesis_required",
+                        "gap_id": gid,
+                        "child_gap_ids": child_ids,
+                        "message": (
+                            "All required child gaps are resolved. Run a consolidation worker on this parent to prove "
+                            "the explicit assembly; do not reopen its children."
+                        ),
+                    }
+            else:
+                open_children = [
+                    child_id for child_id in child_ids
+                    if str(steps[child_id].get("status") or "open") not in {"closed", "invalidated", "superseded"}
+                ]
+                return {
+                    "allowed": False,
+                    "reason": "gap_has_open_children",
+                    "gap_id": gid,
+                    "child_gap_ids": child_ids,
+                    "open_child_gap_ids": open_children,
+                    "message": (
+                        "This is a decomposed parent gap. Dispatch an executable child gap first; only dispatch the "
+                        "parent with consolidation=true after it is ready for synthesis."
+                    ),
+                }
         for failure in direction.get("failed_methods") or []:
             if (
                 failure.get("failure_type") == "conclusion_refuted"
@@ -548,6 +1014,36 @@ class ResearchStateStore:
                 }
         return {"allowed": True}
 
+    def _append_route_outcome(
+        self,
+        state: dict[str, Any],
+        *,
+        route_id: str | None,
+        worker_id: str,
+        status: str,
+        summary: str,
+        relation: str | None = None,
+        gap_effect: str | None = None,
+    ) -> None:
+        if not route_id:
+            return
+        rid = _clean_id(route_id, field="route_id")
+        route = (state.get("routes") or {}).get(rid)
+        if not isinstance(route, dict):
+            raise ValueError(f"unknown route_id: {rid}")
+        outcomes = route.setdefault("outcomes", [])
+        if any(item.get("worker_id") == worker_id for item in outcomes if isinstance(item, dict)):
+            return
+        outcomes.append({
+            "worker_id": worker_id,
+            "status": status,
+            "relation_to_target": relation,
+            "gap_effect": gap_effect,
+            "summary": summary[:2000],
+            "recorded_at": _now_iso(),
+        })
+        route["updated_at"] = _now_iso()
+
     def record_worker_outcome(
         self,
         *,
@@ -558,6 +1054,7 @@ class ResearchStateStore:
         failure_kind: str | None,
         summary: str,
         method_id: str | None = None,
+        route_id: str | None = None,
     ) -> dict[str, Any]:
         """持久记录未进入 ResearchImpact 的失败/拒绝结果，并更新方向止损计数。"""
         wid = _clean_id(worker_id, field="worker_id")
@@ -598,6 +1095,13 @@ class ResearchStateStore:
             "recorded_at": _now_iso(),
         }
         outcomes[wid] = record
+        self._append_route_outcome(
+            state,
+            route_id=route_id,
+            worker_id=wid,
+            status=record["status"],
+            summary=record["summary"],
+        )
         state["updated_at"] = _now_iso()
         self._save(state)
         return {"recorded": True, "outcome": record, **self.summary(state)}
@@ -665,6 +1169,7 @@ class ResearchStateStore:
         direction_id: str,
         gap_id: str | None,
         impact: dict[str, Any],
+        route_id: str | None = None,
     ) -> dict[str, Any]:
         wid = _clean_id(worker_id, field="worker_id")
         did = _clean_id(direction_id, field="direction_id")
@@ -702,6 +1207,12 @@ class ResearchStateStore:
         new_gaps = impact.get("new_gaps") or []
         if not isinstance(new_gaps, list):
             raise ValueError("new_gaps must be an array")
+        child_resolution_policy = str(impact.get("child_resolution_policy") or "").strip() or None
+        if child_resolution_policy is not None and child_resolution_policy not in _GAP_RESOLUTION_POLICIES:
+            raise ValueError(
+                f"invalid child_resolution_policy: {child_resolution_policy!r}; "
+                f"must be one of {sorted(_GAP_RESOLUTION_POLICIES)}"
+            )
 
         # Single load/modify/save transaction: everything below operates on this one `state`
         # object and its nested dicts by reference, then a single `_save(state)` persists all
@@ -713,12 +1224,37 @@ class ResearchStateStore:
         if wid in impacts:
             return {"recorded": False, "reason": "worker impact already recorded", **self.summary(state)}
 
+        # global-problem-attack 是无状态的"诚实探针"：它的价值就是给编排层一个不带方法框架
+        # 偏见的 outer-loop 反馈（当前累积的验证成果是否已经能拿下整题），不是一个需要追踪
+        # dual_probe_required / deprioritized / stalled 的持久研究方向。任何撞墙结果都只是
+        # "还没到"的信息，不应触发下面的对偶探针强制门控——否则会把这个诚实反馈机制自己变成
+        # 一个必须反复重打、且被 GLOBAL_ATTACK_HINT 方法中性覆盖锁死无法真正执行对偶探针的死循环。
+        if did == "global-problem-attack":
+            impacts[wid] = {
+                "worker_id": wid,
+                "direction_id": did,
+                "relation_to_target": relation,
+                "consolidation_outcome": consolidation_outcome,
+                "summary": summary[:2000],
+                "recorded_at": _now_iso(),
+            }
+            state["global_consolidation"] = {
+                "last_verified_count": self._count_verified_props(),
+                "last_worker_id": wid,
+                "last_attempted_at": _now_iso(),
+                "last_relation_to_target": relation,
+            }
+            state["updated_at"] = _now_iso()
+            self._save(state)
+            return {"recorded": True, "direction_id": did, "global_attack": True, **self.summary(state)}
+
         self._ensure_target_in_state(state, direction_id=did, gap_id=gap_id, hint=summary)
         direction = state["directions"][did]
+        self._normalize_gap_tree(direction)
         steps = direction.setdefault("steps", {})
         gid = _clean_id(gap_id, field="gap_id") if gap_id else None
         if gid and gid not in steps:
-            steps[gid] = {"step_id": gid, "statement": summary, "status": "open", "method": "", "results": []}
+            raise ValueError(f"worker target gap does not exist: {gid}")
 
         result_entry = {
             "worker_id": wid,
@@ -726,20 +1262,56 @@ class ResearchStateStore:
             "summary": summary[:2000],
         }
         for closed_id in closed_gap_ids:
-            if closed_id in steps:
-                steps[closed_id]["status"] = "closed"
-                steps[closed_id]["results"].append(result_entry)
+            if closed_id not in steps:
+                raise ValueError(f"closed_gap_ids references unknown gap {closed_id!r}")
+            steps[closed_id]["status"] = "closed"
+            steps[closed_id]["ready_for_synthesis"] = False
+            steps[closed_id]["results"].append(result_entry)
         if gid:
             steps[gid]["status"] = gap_effect if gap_effect in _GAP_STATUSES else "open"
+            steps[gid]["ready_for_synthesis"] = False
             steps[gid]["results"].append(result_entry)
+
+        # Newly discovered obligations are children of the worker's target by default.
+        # A worker may explicitly attach a reusable obligation elsewhere in the same
+        # direction, but cycles and unknown parents are rejected by _normalize_gap_tree.
         for index, raw_gap in enumerate(new_gaps, start=1):
             if isinstance(raw_gap, dict):
                 new_id = _clean_id(raw_gap.get("gap_id") or raw_gap.get("step_id"), field="new_gaps.step_id")
                 statement = _clean_text(raw_gap.get("statement"), field="new_gaps.statement")
+                parent_raw = raw_gap.get("parent_gap_id")
+                parent_id = _clean_id(parent_raw, field="new_gaps.parent_gap_id") if parent_raw else gid
+                policy = str(raw_gap.get("resolution_policy") or "manual").strip()
+                kind = str(raw_gap.get("gap_kind") or "unknown").strip()
             else:
                 new_id = f"{did}-new-{len(steps) + index}"
                 statement = _clean_text(raw_gap, field="new_gaps item")
-            steps[new_id] = {"step_id": new_id, "statement": statement, "status": "open", "method": "", "results": []}
+                parent_id = gid
+                policy = "manual"
+                kind = "unknown"
+            if new_id in steps:
+                raise ValueError(f"new_gaps reuses existing gap id {new_id!r}")
+            if parent_id and parent_id not in steps:
+                raise ValueError(f"new_gaps references unknown parent_gap_id {parent_id!r}")
+            if policy not in _GAP_RESOLUTION_POLICIES:
+                raise ValueError(f"invalid new_gaps resolution_policy: {policy!r}")
+            if kind not in _GAP_KINDS:
+                raise ValueError(f"invalid new_gaps gap_kind: {kind!r}")
+            steps[new_id] = {
+                "step_id": new_id,
+                "statement": statement,
+                "status": "open",
+                "method": "",
+                "results": [],
+                "parent_gap_id": parent_id,
+                "child_gap_ids": [],
+                "resolution_policy": policy,
+                "gap_kind": kind,
+                "ready_for_synthesis": False,
+            }
+        if gid and new_gaps and child_resolution_policy is not None:
+            steps[gid]["resolution_policy"] = child_resolution_policy
+        self._propagate_gap_tree(direction)
 
         # ---- 诚实 advance 校验（仅 impossibility 方向）----
         # 一个"仍挂着 standing_hypothesis、既没卸载它、也没闭合 terminal_gap"的结果，
@@ -769,12 +1341,20 @@ class ResearchStateStore:
         progress["last_impact"] = summary
         progress["remaining_gaps"] = remaining_gaps
 
-        if relation == "refutes_target":
-            direction["status"] = "refuted"
-            direction["health"] = "refuted"
-        elif relation == "solves_target":
-            direction["status"] = "completed"
-            direction["health"] = "completed"
+        # A worker relation is relative to its assigned gap, not necessarily the whole
+        # direction.  Reduce only the terminal/root node after recursive propagation; a
+        # solved or refuted child must leave sibling subproblems schedulable.
+        terminal_gap_id = str(direction.get("terminal_gap_id") or "").strip()
+        roots = sorted(step_id for step_id, step in steps.items() if not step.get("parent_gap_id"))
+        terminal_gap_id = terminal_gap_id or (roots[0] if len(roots) == 1 else "")
+        if terminal_gap_id in steps:
+            terminal_status = str(steps[terminal_gap_id].get("status") or "open")
+            if terminal_status == "closed":
+                direction["status"] = "completed"
+                direction["health"] = "completed"
+            elif terminal_status == "invalidated":
+                direction["status"] = "refuted"
+                direction["health"] = "refuted"
 
         # ---- 兑现（consolidation）/对偶尝试的三态反馈 ----
         # solved     由 relation=solves_target 走上面的 completed 分支即可；
@@ -827,6 +1407,7 @@ class ResearchStateStore:
             "closed_gap_ids": closed_gap_ids,
             "remaining_gaps": remaining_gaps,
             "new_gaps": deepcopy(new_gaps),
+            "child_resolution_policy": child_resolution_policy,
             "continuation_value": continuation,
             "requires_direction_review": bool(impact.get("requires_direction_review")),
             "rubric_assessment": rubric_assessment,
@@ -837,6 +1418,15 @@ class ResearchStateStore:
             "recorded_at": _now_iso(),
         }
         impacts[wid] = record
+        self._append_route_outcome(
+            state,
+            route_id=route_id,
+            worker_id=wid,
+            status="assessed",
+            relation=relation,
+            gap_effect=gap_effect,
+            summary=summary,
+        )
         blocker = (state.get("audit_blockers") or {}).get(did)
         if isinstance(blocker, dict) and blocker.get("gap_id") == gid and (
             gap_effect == "closed" or relation == "refutes_target"
@@ -942,10 +1532,14 @@ class ResearchStateStore:
     def summary(self, state: dict[str, Any] | None = None) -> dict[str, Any]:
         value = state or self.load()
         directions = value.get("directions", {})
+        routes = value.get("routes") if isinstance(value.get("routes"), dict) else {}
         return {
+            "state_id": value.get("state_id", "state-0"),
+            "state_revision": int(value.get("state_revision") or 0),
             "state_file": str(self.markdown_path),
             "canonical_file": str(self.json_path),
             "direction_count": len(directions),
+            "active_route_count": sum(1 for route in routes.values() if route.get("status") == "active"),
             "directions": [
                 {
                     "direction_id": item["direction_id"],
@@ -1093,12 +1687,24 @@ class ResearchStateStore:
             step_status = str(raw_step.get("status") or "open").strip()
             if step_status not in _GAP_STATUSES:
                 raise ValueError(f"invalid step status: {step_status}")
+            parent_raw = raw_step.get("parent_gap_id")
+            policy = str(raw_step.get("resolution_policy") or "manual").strip()
+            if policy not in _GAP_RESOLUTION_POLICIES:
+                raise ValueError(f"invalid resolution_policy for step {sid!r}: {policy}")
+            kind = str(raw_step.get("gap_kind") or "unknown").strip()
+            if kind not in _GAP_KINDS:
+                raise ValueError(f"invalid gap_kind for step {sid!r}: {kind}")
             steps[sid] = {
                 "step_id": sid,
                 "statement": _clean_text(raw_step.get("statement"), field="step.statement"),
                 "status": step_status,
                 "method": str(raw_step.get("method") or "").strip(),
                 "results": list(raw_step.get("results") or []),
+                "parent_gap_id": _clean_id(parent_raw, field=f"step {sid}.parent_gap_id") if parent_raw else None,
+                "child_gap_ids": [],
+                "resolution_policy": policy,
+                "gap_kind": kind,
+                "ready_for_synthesis": bool(raw_step.get("ready_for_synthesis")),
             }
         if previous:
             # 保留 previous 中已闭合/进阶的 step（orchestrator 可能省略它们）
@@ -1107,15 +1713,28 @@ class ResearchStateStore:
             if not prev_steps:
                 prev_gaps = previous.get("gaps", {})
                 prev_plan = previous.get("plan", [])
-                for gid, g in prev_gaps.items():
-                    prev_steps[gid] = {**g, "step_id": gid, "method": "", "results": []}
+                if isinstance(prev_gaps, dict):
+                    previous_gap_items = prev_gaps.items()
+                elif isinstance(prev_gaps, list):
+                    previous_gap_items = (
+                        (str(item.get("step_id") or item.get("gap_id") or ""), item)
+                        for item in prev_gaps if isinstance(item, dict)
+                    )
+                else:
+                    previous_gap_items = []
+                for gid, g in previous_gap_items:
+                    if gid and isinstance(g, dict):
+                        prev_steps[gid] = {**g, "step_id": gid, "method": "", "results": []}
                 for idx, p in enumerate(prev_plan):
                     sid = f"plan-{idx}"
                     if sid not in prev_steps:
                         prev_steps[sid] = {"step_id": sid, "statement": p, "status": "open", "method": "", "results": []}
             for sid, step in prev_steps.items():
-                if sid not in steps or step.get("status") in {"advanced", "closed", "invalidated"}:
+                if sid not in steps or step.get("status") in {"advanced", "closed", "invalidated", "superseded"}:
                     steps[sid] = deepcopy(step)
+        normalized_direction = {"steps": steps}
+        self._normalize_gap_tree(normalized_direction)
+        steps = normalized_direction["steps"]
         return {
             "direction_id": did,
             "title": _clean_text(raw.get("title"), field="direction.title", max_length=500),
@@ -1144,7 +1763,7 @@ class ResearchStateStore:
             # 运行期维护的兑现送审/返回日志，SyncResearchState 不覆盖它，只从上一份状态承接。
             "consolidation_log": list((previous or {}).get("consolidation_log", [])),
             "steps": steps,
-            "progress": deepcopy(previous.get("progress")) if previous else self._empty_progress(),
+            "progress": deepcopy((previous or {}).get("progress") or self._empty_progress()),
             "progress_summary": str(raw.get("progress_summary") or "").strip(),
             "stop_condition": str(raw.get("stop_condition") or "").strip(),
             # 禁忌搜索：记录在此方向上已失败的方法及其失败分类。
@@ -1186,17 +1805,52 @@ class ResearchStateStore:
     def _empty_state(self) -> dict[str, Any]:
         return {
             "schema_version": self.SCHEMA_VERSION,
+            "state_revision": 0,
+            "state_id": "state-0",
             "objective": {"summary": "Resolve problem.md", "status": "unknown"},
             "directions": {},
+            "routes": {},
+            "route_learnings": [],
             "dispatch_plan": [],
             "impacts": {},
             "outcomes": {},
             "dispatch_constraints": {},
+            "global_consolidation": {},
             "updated_at": "",
         }
 
     def _save(self, state: dict[str, Any]) -> None:
         self.verified_dir.mkdir(parents=True, exist_ok=True)
+        # Curator writes route learning from a background thread. Merge append-only learning
+        # memory and newly created routes from the latest disk image before replacing it, so a
+        # stale orchestrator transaction cannot erase a concurrent curator commit.
+        disk_state: dict[str, Any] = {}
+        if self.json_path.is_file():
+            try:
+                loaded = json.loads(self.json_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    disk_state = loaded
+            except (OSError, json.JSONDecodeError):
+                disk_state = {}
+        routes = state.setdefault("routes", {})
+        for route_id, route in (disk_state.get("routes") or {}).items():
+            routes.setdefault(route_id, deepcopy(route))
+        learning_by_id = {
+            str(item.get("learning_id")): deepcopy(item)
+            for item in disk_state.get("route_learnings") or []
+            if isinstance(item, dict) and item.get("learning_id")
+        }
+        for item in state.get("route_learnings") or []:
+            if isinstance(item, dict) and item.get("learning_id"):
+                learning_by_id[str(item["learning_id"])] = deepcopy(item)
+        state["route_learnings"] = list(learning_by_id.values())[-100:]
+        revision = max(
+            0,
+            int(state.get("state_revision") or 0),
+            int(disk_state.get("state_revision") or 0),
+        ) + 1
+        state["state_revision"] = revision
+        state["state_id"] = f"state-{revision}"
         json_text = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
         markdown_text = self._render_markdown(state)
         self._atomic_write(self.json_path, json_text)
@@ -1366,6 +2020,34 @@ class ResearchStateStore:
                 claim = (constraint.get("claim") or "").replace("\n", " ")
                 lines.append(f"- `{did}/{gid}` [{status}; {level}]: {claim}")
             lines.append("")
+        routes = state.get("routes") if isinstance(state.get("routes"), dict) else {}
+        if routes:
+            lines.extend(["## Research Routes", "- Each route is proposed from a versioned reviewer state; workers are branches explored by the orchestrator."])
+            for route in routes.values():
+                if not isinstance(route, dict):
+                    continue
+                assessments = route.get("assessments") if isinstance(route.get("assessments"), list) else []
+                latest = assessments[-1] if assessments else {}
+                lines.append(
+                    f"- `{route.get('route_id', '?')}` [{route.get('status', 'unknown')}] → "
+                    f"`{route.get('direction_id', '?')}/{route.get('gap_id', '?')}`; "
+                    f"state `{route.get('based_on_state_id', '?')}`, workers={len(route.get('worker_ids') or [])}."
+                )
+                lines.append(f"  - Claim: {route.get('route_claim') or 'not stated'}")
+                if latest:
+                    lines.append(f"  - Latest assessment: `{latest.get('verdict', '?')}` — {latest.get('summary') or ''}")
+            lines.append("")
+        learnings = state.get("route_learnings") if isinstance(state.get("route_learnings"), list) else []
+        if learnings:
+            lines.extend(["## Curated Route Learnings", "- Curator-derived lessons are strategy evidence, not mathematical proofs."])
+            for learning in learnings[-12:]:
+                if not isinstance(learning, dict):
+                    continue
+                lines.append(
+                    f"- `{learning.get('learning_id', '?')}` [{learning.get('confidence', 'unknown')}] "
+                    f"on {', '.join(str(item) for item in learning.get('route_ids') or [])}: {learning.get('finding') or ''}"
+                )
+            lines.append("")
         impacts = state.get("impacts") if isinstance(state.get("impacts"), dict) else {}
         lines.append("## Active Directions")
         active = [item for item in directions if item.get("status") not in {"paused", "refuted", "completed"}]
@@ -1477,17 +2159,35 @@ class ResearchStateStore:
         summary = progress.get("last_impact") or direction.get("progress_summary")
         if summary:
             lines.append(f"- Latest progress: {summary}")
-        lines.append("- Steps:")
+        lines.append("- Gap tree:")
         steps = direction.get("steps", {})
         if steps:
-            for step in steps.values():
-                lines.append(f"  - `{step['step_id']}` [{step.get('status', 'open')}]: {step['statement']}")
+            self._normalize_gap_tree(direction)
+            steps = direction.get("steps", {})
+            children = self._gap_children(steps)
+
+            def render_gap(gap_id: str, depth: int) -> None:
+                step = steps[gap_id]
+                prefix = "  " * (depth + 1)
+                policy = step.get("resolution_policy", "manual")
+                kind = step.get("gap_kind", "unknown")
+                ready = "; ready for synthesis" if step.get("ready_for_synthesis") else ""
+                lines.append(
+                    f"{prefix}- `{gap_id}` [{step.get('status', 'open')}; {policy}; {kind}{ready}]: "
+                    f"{step['statement']}"
+                )
                 if step.get("method"):
-                    lines.append(f"    method: {step['method']}")
+                    lines.append(f"{prefix}  method: {step['method']}")
                 for r in step.get("results", []):
-                    lines.append(f"    result ({r.get('relation', '?')}): {r.get('summary', '')[:200]}")
+                    lines.append(f"{prefix}  result ({r.get('relation', '?')}): {r.get('summary', '')[:200]}")
+                for child_id in children.get(gap_id, []):
+                    render_gap(child_id, depth + 1)
+
+            roots = sorted(gap_id for gap_id, step in steps.items() if not step.get("parent_gap_id"))
+            for root_id in roots:
+                render_gap(root_id, 0)
         else:
-            lines.append("  - No step recorded.")
+            lines.append("  - No gap recorded.")
         if attempts:
             lines.append("- Recent worker attempts (settled outcome ledger):")
             for attempt in attempts:

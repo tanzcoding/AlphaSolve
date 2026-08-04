@@ -64,6 +64,7 @@ class SubagentService:
         stop_event: threading.Event | None = None,
         context_policy_factory: Callable[[str], AgentContextPolicy | None] | None = None,
         reviewer_history_path: "Path | None" = None,
+        reviewer_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         allow_research_reviewer: bool = False,
     ) -> None:
         self.suite = suite
@@ -86,6 +87,8 @@ class SubagentService:
         # research_reviewer 跨调用记忆：每次 reviewer 返回后，把 final_answer 追加到此文件。
         # 下次 reviewer 启动时读这个文件，知道前几次 reviewer 推荐了什么、发现了什么。
         self.reviewer_history_path = reviewer_history_path
+        # 当前 canonical state 由 orchestrator 显式注入 reviewer；不依赖它自行猜测或扫描生成视图。
+        self.reviewer_state_provider = reviewer_state_provider
         # Reviewer 是 orchestrator 专属的全局战略角色。默认拒绝，以防某个角色配置
         # 遗漏 Agent.type.enum 时通过工具默认值意外暴露它。
         self.allow_research_reviewer = bool(allow_research_reviewer)
@@ -121,6 +124,19 @@ class SubagentService:
     def call(self, agent_type: str, description: str, prompt: str, *, depth: int = 0) -> str:
         if agent_type == "research_reviewer" and not self.allow_research_reviewer:
             raise PermissionError("research_reviewer is reserved for orchestrator global strategic review")
+        if agent_type == "research_reviewer" and self.reviewer_state_provider is not None:
+            try:
+                snapshot = self.reviewer_state_provider()
+            except Exception as exc:
+                snapshot = {"state_snapshot_error": f"{type(exc).__name__}: {exc}"}
+            if snapshot:
+                prompt = (
+                    "# Canonical Research State Snapshot\n\n"
+                    "This JSON is the required strategic input for this review. Propose exactly one route based on its "
+                    "`state_id`; historical prose remains fallible.\n\n"
+                    f"```json\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}\n```\n\n"
+                    + prompt
+                )
         session_id, result = self._run(agent_type, description, prompt, depth=depth)
         self._submit_curator_trace(
             agent_type=agent_type,

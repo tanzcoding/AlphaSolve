@@ -78,6 +78,7 @@ class SearchSession:
                     state_id=attempt_id,
                 )
                 node.status = NodeStatus.COOLED
+                node.route_id = str(event.get("route_id") or "").strip() or None
                 node.direction_id = str(event.get("direction_id") or "").strip() or None
                 node.gap_id = str(event.get("gap_id") or "").strip() or None
                 node.method_id = str(event.get("method_id") or "").strip() or None
@@ -101,6 +102,7 @@ class SearchSession:
         *,
         parent_id: Optional[str] = None,
         parent_ids: Optional[Iterable[str]] = None,
+        route_id: Optional[str] = None,
         direction_id: Optional[str] = None,
         gap_id: Optional[str] = None,
         method_id: Optional[str] = None,
@@ -116,6 +118,7 @@ class SearchSession:
         node = self.graph.add_node(hypothesis, parents=parents)
         node.status = NodeStatus.RUNNING
         node.worker_id = worker_id
+        node.route_id = (route_id or "").strip() or None
         node.direction_id = (direction_id or "").strip() or None
         node.gap_id = (gap_id or "").strip() or None
         node.method_id = (method_id or "direct_proof").strip() or "direct_proof"
@@ -125,6 +128,7 @@ class SearchSession:
             "event": "spawn",
             "attempt_id": node.state_id,
             "worker_id": worker_id,
+            "route_id": node.route_id,
             "direction_id": node.direction_id,
             "gap_id": node.gap_id,
             "method_id": node.method_id,
@@ -205,6 +209,7 @@ class SearchSession:
         return {
             "worker_id": worker_id,
             "state_id": sid,
+            "route_id": node.route_id,
             "direction_id": node.direction_id,
             "gap_id": node.gap_id,
             "method_id": node.method_id,
@@ -284,6 +289,7 @@ class SearchSession:
             ranking.append({
                 "state_id": sid,
                 "hypothesis": node.hypothesis,
+                "route_id": node.route_id,
                 "direction_id": node.direction_id,
                 "gap_id": node.gap_id,
                 "impact_status": node.impact_status,
