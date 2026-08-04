@@ -1,4 +1,4 @@
-"""上下文压缩：分层无损/有损 + 公共祖先增量组装（§7，参考 codex）。
+"""上下文压缩：分层无损/有损压缩（§7，参考 codex）。
 
 对应 `docs/orchestrator-mcts-design.md` §7。关键澄清（读 `codex/codex-rs/core/src/
 compact.rs` + `prompts/templates/compact/` 得出）：**codex 的压缩并非"全量有损"**——
@@ -13,9 +13,6 @@ result/insight 分离同构，也化解了"数学压缩会丢常数/命题/依�
   LLM 蒸馏为 `insight`（半结构化，保 open_subgoals/implications）。
 - **预算 + 丢最旧**（= codex 的 remove_first_item）：ancestor insights ≤ N 层、vp 索引
   ≤ M 条，超限时丢**最远**祖先，保近祖先与 summary。
-- **复用 prop 结构减少 LLM 调用**（§7.3）：平时 state = pool 视图 + delta，程序化聚合，
-  零 LLM 成本；仅当抽 2 个节点做 critic 时，才组装 [公共祖先视图]+[A 增量]+[B 增量]
-  交给长程 harness 按 handoff 方式压缩，天然避免重复压缩公共部分。
 
 有损摘要需 LLM，以 `TrajectorySummarizer` 协议表达，本模块不绑定具体实现。
 """
@@ -36,35 +33,6 @@ DEFAULT_MAX_VP_INDEX = 20
 class CompactionBudget:
     max_ancestor_insight_layers: int = DEFAULT_MAX_ANCESTOR_INSIGHT_LAYERS
     max_vp_index: int = DEFAULT_MAX_VP_INDEX
-
-
-@dataclass
-class CriticView:
-    """喂给 pairwise critic 的分层视图（§7.3）。common 部分只组装一次，避免重复压缩。"""
-
-    common_ancestor_id: Optional[str]
-    common_view_refs: list[str] = field(default_factory=list)
-    a_delta_refs: list[str] = field(default_factory=list)
-    b_delta_refs: list[str] = field(default_factory=list)
-
-
-def assemble_critic_view(graph: SearchGraph, a_id: str, b_id: str) -> CriticView:
-    """组装 [公共祖先视图] + [A 增量] + [B 增量]（§7.3，零 LLM）。
-
-    A/B 的"增量"= 各自 materialize_view 相对公共祖先视图的**新增**引用。这样公共部分
-    只出现一次，天然避免重复压缩，也让 critic 聚焦在真正分岔的地方。
-    """
-    ca = graph.common_ancestor(a_id, b_id)
-    common_refs = graph.materialize_view(ca.state_id) if ca is not None else []
-    common_set = set(common_refs)
-    a_delta = [r for r in graph.materialize_view(a_id) if r not in common_set]
-    b_delta = [r for r in graph.materialize_view(b_id) if r not in common_set]
-    return CriticView(
-        common_ancestor_id=ca.state_id if ca is not None else None,
-        common_view_refs=common_refs,
-        a_delta_refs=a_delta,
-        b_delta_refs=b_delta,
-    )
 
 
 def trim_ancestor_insights(

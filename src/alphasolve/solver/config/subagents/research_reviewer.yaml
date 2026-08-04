@@ -3,16 +3,29 @@ agent:
   name: research_reviewer
   system_prompt_path: ../../prompts/research_reviewer.md
   tier: balanced
-  max_turns: 100
-  when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, identify the current global blocker, and recommend research directions.
+  max_turns: 150
+  max_tokens: 24576
+  when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, identify the current global blocker, adversarially review your own draft plan (via the Agent tool), and use numerical_experiment_subagent for any decision-relevant bounded numerical or combinatorial uncertainty before finalizing one research plan.
   tools:
+    - Agent
     - ResearchProgressReview
     - InspectMarkdown
     - Read
     - ListDir
     - Glob
     - Grep
+  tool_parameters:
+    Agent:
+      type:
+        enum:
+          - reasoning_subagent
+          - numerical_experiment_subagent
   tool_descriptions:
+    Agent:
+      suffix: |-
+        - Use `reasoning_subagent` to adversarially review your OWN draft "Research Plan" before finalizing it (see your system prompt's "Adversarially review your own plan" section) — this is mandatory, not optional.
+        - Use `numerical_experiment_subagent` to sanity-check a numerical conjecture or enumerate small cases before committing to a plan built on it.
+        - Do NOT call `research_reviewer` (yourself) — it is not in your allowed types.
     Read:
       suffix: |-
         - Results respect this agent's workspace access restrictions.

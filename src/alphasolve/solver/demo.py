@@ -81,7 +81,6 @@ class DemoChatClient:
                         args={
                             "path": f"{worker_dir}/proposition.md",
                             "content": (
-                                "# Demo Proposition\n\n"
                                 "## Statement\n\n"
                                 "For every real number x, x = x.\n\n"
                                 "## Proof\n\n"

@@ -26,6 +26,8 @@ class CuratorTask:
     source_label: str  # 调度用来源标签，不应原样写入知识库。
     caller_context: dict[str, Any] | None = None
     task_kind: str = "digest"
+    audit_path: Path | None = None
+    artifact_path: Path | None = None
 
 
 CURATOR_HEALTH_CHECK_INTERVAL = 4
@@ -133,6 +135,7 @@ class CuratorQueue:
             return
 
         from alphasolve.agent import Agent
+        from .blocker_registry import PersistentBlockerRegistry, register_curated_blocker_registry_tool
         from .subagent_service import SubagentService
         from .tool_runtime import build_solver_tool_registry
         from .workspace_access import RoleWorkspaceAccess
@@ -150,10 +153,33 @@ class CuratorQueue:
                 _make_workspace(self.workspace_dir)
             ),
         )
-        registry = build_solver_tool_registry(access, agent_config=config, dispatcher=subagent_svc)
+        extra_registrars = ()
+        if task.task_kind == "portfolio_checkpoint" and task.artifact_path is not None:
+            checkpoint_id = task.artifact_path.parent.name
+            blocker_registry = PersistentBlockerRegistry(self.workspace_dir)
+            extra_registrars = (
+                lambda tool_registry: register_curated_blocker_registry_tool(
+                    tool_registry,
+                    blocker_registry=blocker_registry,
+                    checkpoint_id=checkpoint_id,
+                    replace=True,
+                ),
+            )
+        registry = build_solver_tool_registry(
+            access,
+            agent_config=config,
+            dispatcher=subagent_svc,
+            extra_registrars=extra_registrars,
+        )
 
         if task.task_kind == "health_check":
             task_prompt = _health_check_prompt(self.knowledge_dir)
+        elif task.task_kind == "portfolio_checkpoint":
+            task_prompt = _portfolio_checkpoint_prompt(task.artifact_path)
+        elif task.task_kind == "strategy_transition":
+            task_prompt = _strategy_transition_prompt(task.artifact_path)
+        elif task.task_kind == "progress_audit":
+            task_prompt = _progress_audit_prompt(task.audit_path)
         else:
             trace_kind = _trace_kind(task.source_label)
             is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
@@ -213,10 +239,20 @@ class CuratorQueue:
                 event_sink=compose_event_sinks(
                     make_curator_event_sink(self.renderer),
                     curator_sink,
+                    self.log_session.token_usage_sink("curator")
+                    if self.log_session is not None else None,
+                    self.log_session.run_log_sink("curator")
+                    if self.log_session is not None else None,
                 ),
                 stop_event=self.stop_event,
             )
             agent.run(task_prompt)
+            if task.task_kind == "portfolio_checkpoint" and task.artifact_path is not None:
+                checkpoint_id = task.artifact_path.parent.name
+                if not PersistentBlockerRegistry(self.workspace_dir).is_checkpoint_curated(checkpoint_id):
+                    raise RuntimeError(
+                        f"curator did not persist blocker curation for checkpoint {checkpoint_id}"
+                    )
             curator_success = True
         finally:
             if curator_sink is not None:
@@ -256,6 +292,95 @@ def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
     return any(
         isinstance(item, dict) and item.get("role") == "verifier_attempt"
         for item in trace_segment
+    )
+
+
+def _strategy_transition_prompt(artifact_path: Path | None) -> str:
+    path_text = ""
+    if artifact_path is not None:
+        try:
+            path_text = artifact_path.resolve().relative_to(artifact_path.parents[2]).as_posix()
+        except (ValueError, IndexError):
+            path_text = str(artifact_path)
+    return (
+        "# Orchestrator Strategy Transition Curation\n\n"
+        "Read the transition fact at `" + (path_text or "(missing transition fact)") + "` and its cited process audit. "
+        "Record this as a process observation in `knowledge/portfolio/strategy-transitions.md` and update "
+        "`knowledge/portfolio/process-audit-history.md` if appropriate.\n\n"
+        "State only what the evidence supports: the prior process verdict, the terminal gap, why the old context was reset, "
+        "and what the next context is required to reconsider. Do not claim that a new direction was successful before a later "
+        "outcome supports it. When subsequent checkpoint briefs arrive, compare their actual targets, rubrics, and outcomes "
+        "against this transition. Do not copy internal worker/session identifiers or timestamps into knowledge files."
+    )
+
+
+def _portfolio_checkpoint_prompt(artifact_path: Path | None) -> str:
+    path_text = ""
+    if artifact_path is not None:
+        try:
+            path_text = artifact_path.resolve().relative_to(artifact_path.parents[2]).as_posix()
+        except (ValueError, IndexError):
+            path_text = str(artifact_path)
+    return (
+        "# Portfolio Checkpoint Curation\n\n"
+        "Read the checkpoint brief first: `" + (path_text or "(missing checkpoint brief)") + "`. "
+        "It combines the current process audit, settled worker outcomes, rubric/impact evidence, prior checkpoint comparison, "
+        "and orchestrator session/context-reset events. You may read cited files under `progress_audits/` and `curation_records/` "
+        "to verify the comparison, but never edit anything outside `knowledge/`.\n\n"
+        "Before writing knowledge, read `curation_records/blocker_registry.json` when it exists. Then call "
+        "`CuratePersistentBlockers` exactly once before finishing. You—not the process auditor—own the semantic decision "
+        "whether outcome difficulties are the same mathematical blocker across different routes.\n\n"
+        "Mandatory identity reconciliation:\n"
+        "1. List every material present difficulty in `current_difficulties`, including the audit candidate if it has one.\n"
+        "2. Compare EACH current difficulty against EACH active historical blocker in `blocker_relations`; no pair may be omitted.\n"
+        "3. Use `same` only when the mathematical obligation is identical despite different statements, directions, methods, or local lemmas. "
+        "It MUST reuse an old `blocker_id`; if several historical IDs are same, select one canonical old ID and declare all others "
+        "same with that `canonical_blocker_id`, so runtime merges them.\n"
+        "4. Use `distinct` for genuinely independent obligations, `unresolved` only when evidence cannot decide equivalence, and "
+        "`superseded` only when a new named blocker replaces the old obligation/gate. Never create a fresh ID merely because wording or route changed.\n"
+        "5. Group every supporting outcome sequence by actual direction/gap/method and select one concrete gate direction/gap. For outcomes with a "
+        "Structured Difficulty Handoff, compare the exact blocking obligation, last verified step, and failed inference; wording similarity alone is not evidence. "
+        "The tool derives counts from sequences and persists the classification across restarts. If no new repeated blocker exists, still submit continuing "
+        "current difficulties and their relations to every active blocker; resolve an existing blocker only when evidence discharges it.\n\n"
+        "Maintain these durable knowledge files rather than creating an isolated narrative only:\n"
+        "- `knowledge/portfolio/current-strategy.md`: current terminal gap, verified facts that bear on it, and what a useful next proposition must accomplish.\n"
+        "- `knowledge/portfolio/attempt-patterns.md`: reusable attempt patterns. For each pattern state conditions, contrast between attempts, outcome, reusable rule, confidence, and exceptions.\n"
+        "- `knowledge/portfolio/strategy-transitions.md`: compare strategy/context generations only when the evidence shows a genuine change; record what was abandoned, what changed, and whether the new attempt improved.\n"
+        "- `knowledge/portfolio/process-audit-history.md`: compact evolution of verdicts, terminal gaps, repeated avoided obligations, and whether subsequent outcomes validated the audit.\n"
+        "- `knowledge/portfolio/index.md`, and link this folder from `knowledge/index.md`.\n\n"
+        "Evidence rules:\n"
+        "- Separate **verified mathematical facts** from **process observations** and **strategy recommendations**.\n"
+        "- A correct local proposition is not progress unless the brief shows it connected to the terminal gap and its rubric/impact evidence supports that claim.\n"
+        "- Compare attempts by target/gap, method family, rubric result, summary, avoided obligation, verification status, and later audit verdict; do not merely list them chronologically.\n"
+        "- Preserve useful contrasts: explain why one line advanced while a superficially similar line was incidental, rejected, or repeatedly avoided the same obligation.\n"
+        "- Do not copy worker IDs, session IDs, timestamps, raw prompts, or source labels into knowledge files. Refer to mathematical targets and strategy generations descriptively instead.\n"
+        "- Do not overwrite a prior lesson merely because a new audit disagrees; record the condition or evidence that explains the difference.\n"
+        "- Do not modify the checkpoint brief, raw audit, evidence, or curation records.\n"
+    )
+
+
+def _progress_audit_prompt(audit_path: Path | None) -> str:
+    audit_text = ""
+    checkpoint_id = "unknown-checkpoint"
+    if audit_path is not None:
+        checkpoint_id = audit_path.parent.name or checkpoint_id
+        try:
+            audit_text = audit_path.read_text(encoding="utf-8")[:24000]
+        except (OSError, UnicodeDecodeError):
+            audit_text = ""
+    return (
+        "# Strategic Progress Audit Curation\n\n"
+        "A runtime-generated strategic audit is provided below. It is evidence about whether completed workers are advancing "
+        "the original problem, not a mathematical proof by itself. Read it carefully, then update the knowledge base.\n\n"
+        "Required actions:\n"
+        f"- Create or update `knowledge/progress-audits/{checkpoint_id}-summary.md`.\n"
+        "- State the audit verdict, the current terminal gap, recurring avoided obligations, and the one recommended next target.\n"
+        "- Extract reusable failure patterns or blocker descriptions, but do not treat rejected work or knowledge notes as proved facts.\n"
+        "- Update `knowledge/progress-audits/index.md` and ensure `knowledge/index.md` routes to this directory.\n"
+        "- Never copy worker IDs, session IDs, source labels, timestamps, or raw runtime metadata into knowledge files.\n"
+        "- Do not alter the original audit; this task writes only derived knowledge summaries.\n\n"
+        "## Raw Audit Report\n\n"
+        + (audit_text or "Audit report was unavailable; record that the checkpoint needs re-audit.")
     )
 
 

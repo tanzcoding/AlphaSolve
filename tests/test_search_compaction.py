@@ -1,29 +1,14 @@
-"""search.compaction 单元测试（§7 分层压缩 + 公共祖先增量组装）。"""
+"""search.compaction 单元测试（§7 分层压缩）。"""
 from __future__ import annotations
 
 from alphasolve.solver.search import (
     CompactionBudget,
     Delta,
     SearchGraph,
-    assemble_critic_view,
     build_worker_context,
     trim_ancestor_insights,
     trim_vp_index,
 )
-
-
-def test_assemble_critic_view_factors_out_common_ancestor():
-    g = SearchGraph()
-    root = g.add_node("root", delta=Delta(proof_ref="p0"))
-    parent = g.add_node("parent", parents=[root.state_id], delta=Delta(proof_ref="p1"))
-    a = g.add_node("a", parents=[parent.state_id], delta=Delta(proof_ref="pa"))
-    b = g.add_node("b", parents=[parent.state_id], delta=Delta(proof_ref="pb"))
-
-    view = assemble_critic_view(g, a.state_id, b.state_id)
-    assert view.common_ancestor_id == parent.state_id
-    assert view.common_view_refs == ["p0", "p1"]  # 公共部分只出现一次
-    assert view.a_delta_refs == ["pa"]
-    assert view.b_delta_refs == ["pb"]
 
 
 def test_trim_ancestor_insights_keeps_nearest_drops_farthest():

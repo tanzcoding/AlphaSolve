@@ -1,20 +1,33 @@
 """SearchSession（调度层编排门面）单元测试。
 
-覆盖 worker 生命周期映射（on_spawn / on_worker_result）、proxy 排序、兄弟 duel
-候选与止损、四值 duel 记账、配额建议、falsification 转发、以及 advise() 打包与
-cycle 推进。纯算法，无 LLM、无文件系统依赖。
+覆盖 worker 生命周期映射（on_spawn / on_worker_result）、proxy 排序、
+falsification 转发、attempt DAG 崩溃恢复、以及 advise() 打包只读事实与
+cycle 推进。纯算法，无 LLM、无文件系统依赖（除显式传入 tmp_path 的用例）。
+
+调度决策（exploit 哪个方向 / 要不要自由探索）不在 SearchSession 之内——
+完全交给 orchestrator 的 LLM 自主判断，故这里不再测试任何自动选择/打分逻辑。
 """
 from __future__ import annotations
 
 from alphasolve.solver.search import (
-    DuelOutcome,
     NodeStatus,
     SearchSession,
 )
 
 
-def _spawn_and_finish(session, worker_id, hint, *, status, summary, verified_file=None, proposition_file=None, solved=False):
-    node = session.on_spawn(worker_id, hint)
+def _spawn_and_finish(
+    session,
+    worker_id,
+    hint,
+    *,
+    status,
+    summary,
+    verified_file=None,
+    proposition_file=None,
+    solved=False,
+    assess_verified=True,
+):
+    node = session.on_spawn(worker_id, hint, direction_id=f"D-{worker_id}", gap_id=f"G-{worker_id}")
     payload = {
         "worker_id": worker_id,
         "status": status,
@@ -26,19 +39,24 @@ def _spawn_and_finish(session, worker_id, hint, *, status, summary, verified_fil
     if proposition_file:
         payload["proposition_file"] = proposition_file
     session.on_worker_result(payload)
+    if status == "verified" and not solved and assess_verified:
+        session.record_research_impact(
+            worker_id,
+            {
+                "relation_to_target": "direct_advance",
+                "remaining_gaps": [],
+                "summary": summary,
+            },
+        )
     return node
 
 
-def test_on_spawn_creates_depth1_sibling_and_records_dispatch():
+def test_on_spawn_creates_depth1_child_under_root():
     s = SearchSession()
     n = s.on_spawn("w1", "try route A")
     assert n.depth == 1
     assert s.root.state_id in n.parents
     assert n.status == NodeStatus.RUNNING
-    # dispatch 回传：自身 + root visit_count 各 +1（§5.4）
-    assert n.visit_count == 1
-    assert s.root.visit_count == 1
-    assert s.graph.total_visits == 1
 
 
 def test_on_spawn_is_idempotent_per_worker():
@@ -46,22 +64,61 @@ def test_on_spawn_is_idempotent_per_worker():
     a = s.on_spawn("w1", "h")
     b = s.on_spawn("w1", "h-again")
     assert a.state_id == b.state_id
-    assert s.graph.total_visits == 1  # 不重复 dispatch
+    assert len(s.graph) == 2  # root + 一个节点，不重复建节点
 
 
-def test_on_worker_result_verified_builds_delta_and_insight():
+def test_verified_result_waits_for_research_impact_before_reward():
     s = SearchSession()
     node = _spawn_and_finish(
-        s, "w1", "prove lemma", status="verified",
-        summary="lemma X holds", verified_file="verified_propositions/x.md",
+        s,
+        "w1",
+        "prove lemma",
+        status="verified",
+        summary="lemma X holds",
+        verified_file="verified_propositions/x.md",
+        assess_verified=False,
     )
     assert node.status == NodeStatus.DONE
     assert node.delta.proof_ref == "verified_propositions/x.md"
-    assert node.insight is not None
-    assert node.insight.verified_implications == ["lemma X holds"]
-    score = s.proxy_of(node.state_id)
-    assert score.verified_implications == 1
-    assert score.open_subgoals == 0
+    assert node.impact_status == "pending"
+    assert node.insight.verified_implications == []
+    assert s.pending_impact_worker_ids() == ["w1"]
+    assert s.active_worker_nodes() == []
+
+    s.record_research_impact(
+        "w1",
+        {
+            "relation_to_target": "direct_advance",
+            "remaining_gaps": [],
+            "summary": "lemma X closes the assigned gap",
+        },
+    )
+    assert node.impact_status == "assessed"
+    assert node.insight.verified_implications == ["lemma X closes the assigned gap"]
+    assert s.proxy_of(node.state_id).verified_implications == 1
+
+
+def test_correct_but_weak_result_gets_no_positive_progress():
+    s = SearchSession()
+    node = _spawn_and_finish(
+        s,
+        "w1",
+        "derive contradiction",
+        status="verified",
+        summary="a necessary condition holds",
+        assess_verified=False,
+    )
+    s.record_research_impact(
+        "w1",
+        {
+            "relation_to_target": "necessary_condition_only",
+            "remaining_gaps": ["derive the requested contradiction"],
+            "summary": "Correct but does not close the assigned gap",
+        },
+    )
+    assert node.insight.verified_implications == []
+    assert node.insight.open_subgoals == ["derive the requested contradiction"]
+    assert s.proxy_of(node.state_id).verified_delta == 0
 
 
 def test_failure_records_open_subgoal_but_does_not_prune():
@@ -91,64 +148,6 @@ def test_frontier_ranking_orders_verified_before_open():
     assert ranking[1]["open_subgoals"] == 1
 
 
-def test_sibling_duel_candidates_and_record_updates_win_pool():
-    s = SearchSession()
-    a = _spawn_and_finish(s, "w1", "route A", status="verified", summary="A1")
-    b = _spawn_and_finish(s, "w2", "route B", status="verified", summary="B1")
-    pairs = s.sibling_duel_candidates()
-    assert len(pairs) == 1
-    pa, pb = pairs[0]
-    assert {pa, pb} == {a.state_id, b.state_id}
-
-    effect = s.record_sibling_duel(pa, pb, DuelOutcome.A_WINS)
-    assert effect.scored is True
-    winner = s.graph.get(pa)
-    assert winner.wins == 1.0
-    assert winner.duels == 1
-
-
-def test_comparable_tie_flags_crossover_and_scores_half():
-    s = SearchSession()
-    a = _spawn_and_finish(s, "w1", "A", status="verified", summary="A1")
-    b = _spawn_and_finish(s, "w2", "B", status="verified", summary="B1")
-    effect = s.record_sibling_duel(a.state_id, b.state_id, DuelOutcome.COMPARABLE_TIE)
-    assert effect.crossover_candidate is True
-    assert s.graph.get(a.state_id).wins == 0.5
-    assert s.graph.get(b.state_id).wins == 0.5
-    assert s.graph.get(a.state_id).crossover_candidate is True
-
-
-def test_incomparable_does_not_score():
-    s = SearchSession()
-    a = _spawn_and_finish(s, "w1", "A", status="verified", summary="A1")
-    b = _spawn_and_finish(s, "w2", "B", status="verified", summary="B1")
-    effect = s.record_sibling_duel(a.state_id, b.state_id, DuelOutcome.INCOMPARABLE)
-    assert effect.scored is False
-    assert effect.diversity_protected is True
-    assert s.graph.get(a.state_id).wins == 0.0
-    assert s.graph.get(a.state_id).duels == 0
-
-
-def test_duel_stop_loss_exhausts_pair():
-    s = SearchSession(max_duels_per_pair=2)
-    a = _spawn_and_finish(s, "w1", "A", status="verified", summary="A1")
-    b = _spawn_and_finish(s, "w2", "B", status="verified", summary="B1")
-    s.record_sibling_duel(a.state_id, b.state_id, DuelOutcome.COMPARABLE_TIE)
-    s.record_sibling_duel(a.state_id, b.state_id, DuelOutcome.COMPARABLE_TIE)
-    assert s.ledger.exhausted(a.state_id, b.state_id) is True
-    # 止损后不再是候选对
-    assert s.sibling_duel_candidates() == []
-
-
-def test_quota_respects_budget_and_progress():
-    s = SearchSession()
-    _spawn_and_finish(s, "w1", "A", status="verified", summary="A1")
-    _spawn_and_finish(s, "w2", "B", status="verified", summary="B1")
-    q = s.quota(4)
-    assert q.total <= 4
-    assert q.exploit >= 1
-
-
 def test_falsify_prunes_dependent_nodes_without_deleting():
     s = SearchSession()
     node = _spawn_and_finish(s, "w1", "assume ansatz Q works", status="failed", summary="need Q")
@@ -159,19 +158,53 @@ def test_falsify_prunes_dependent_nodes_without_deleting():
     assert node.state_id in s.graph  # 不删除
 
 
-def test_advise_packs_signals_and_advances_cycle():
+def test_advise_packs_read_only_facts_and_advances_cycle():
     s = SearchSession()
     _spawn_and_finish(s, "w1", "A", status="verified", summary="A1")
     _spawn_and_finish(s, "w2", "B", status="failed", summary="gap")
     assert s.cycle == 0
-    advice = s.advise(available_worker_slots=3)
+    advice = s.advise()
     assert advice["cycle"] == 0
-    assert "frontier_by_proxy" in advice
-    assert len(advice["frontier_by_proxy"]) == 2
-    assert advice["quota"]["budget"] == 3
+    assert "frontier" in advice
+    assert len(advice["frontier"]) == 2
+    assert advice["pending_research_impacts"] == []
     assert advice["solved"] is False
     # advise 推进一个 selection cycle
     assert s.cycle == 1
+
+
+def test_attempt_graph_supports_multiple_parents():
+    s = SearchSession()
+    a = s.on_spawn("wa", "A", direction_id="DA", gap_id="GA")
+    b = s.on_spawn("wb", "B", direction_id="DB", gap_id="GB")
+    child = s.on_spawn(
+        "wc", "crossover", direction_id="DC", gap_id="GC",
+        parent_ids=[a.state_id, b.state_id], method_id="construction",
+    )
+    assert set(child.parents) == {a.state_id, b.state_id}
+    assert child.depth == 2
+
+
+def test_attempt_graph_restores_after_restart(tmp_path):
+    s = SearchSession(
+        scheduler_state_path=tmp_path / "scheduler_state.json",
+        attempt_graph_path=tmp_path / "attempt_graph.jsonl",
+    )
+    first = s.on_spawn("w1", "first attempt", direction_id="D1", gap_id="G1", method_id="construction")
+    second = s.on_spawn(
+        "w2", "second attempt", direction_id="D1", gap_id="G2",
+        method_id="contradiction", parent_id=first.state_id,
+    )
+    assert second.parents == [first.state_id]
+
+    restored = SearchSession(
+        scheduler_state_path=tmp_path / "scheduler_state.json",
+        attempt_graph_path=tmp_path / "attempt_graph.jsonl",
+    )
+    assert first.state_id in restored.graph
+    assert second.state_id in restored.graph
+    assert restored.graph.get(second.state_id).parents == [first.state_id]
+    assert restored.graph.get(first.state_id).direction_id == "D1"
 
 
 def test_solved_flag_propagates():
@@ -180,5 +213,5 @@ def test_solved_flag_propagates():
         s, "w1", "finish it", status="verified",
         summary="resolves problem", verified_file="verified_propositions/final.md", solved=True,
     )
-    advice = s.advise(available_worker_slots=0)
+    advice = s.advise()
     assert advice["solved"] is True

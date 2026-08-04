@@ -80,7 +80,7 @@ def test_reviser_locks_writes_to_proposition_file(ws):
 def test_orchestrator_owns_verified_root(ws):
     access = RoleWorkspaceAccess.orchestrator(ws)
     assert access.write_root_rel == "verified_propositions"
-    assert access.destructive_protected_file_names == ("index.md",)
+    assert access.destructive_protected_file_names == ("index.md", "state.md")
     assert access.preserve_markdown_file_names_on_rename is False
     # orchestrator 不绑定 worker_rel —— 它在 layout 顶层操作
     assert access.worker_rel is None
@@ -92,9 +92,9 @@ def test_orchestrator_subagent_is_read_only_excluding_unverified(ws):
     assert access.deny_read_rel == "unverified_propositions"
 
 
-def test_curator_scopes_io_to_knowledge(ws):
+def test_curator_reads_portfolio_evidence_but_writes_only_knowledge(ws):
     access = RoleWorkspaceAccess.curator(ws)
-    assert access.read_root_rel == "knowledge"
+    assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records")
     assert access.write_root_rel == "knowledge"
     assert access.deny_text_write_rels == ("knowledge/references",)
     assert access.protected_reference_rels == ("knowledge/references",)
@@ -128,9 +128,9 @@ def test_curator_reference_text_guardrails(ws, tmp_path):
         access.delete_path("knowledge/references/source.md")
 
 
-def test_curator_subagent_is_knowledge_read_only(ws):
+def test_curator_subagent_is_portfolio_read_only(ws):
     access = RoleWorkspaceAccess.curator_subagent(ws)
-    assert access.read_root_rel == "knowledge"
+    assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records")
     assert access.write_root_rel is None
 
 

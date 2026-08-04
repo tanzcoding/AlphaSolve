@@ -3,13 +3,16 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agent import (
     AgentRunResult,
     AgentConfig,
     Agent,
+    AgentContextPolicy,
     ToolRegistry,
     ToolResult,
 )
@@ -17,6 +20,8 @@ from alphasolve.agent.tools import register_agent_tool
 from alphasolve.solver.execution.runners import run_python, run_wolfram
 
 from .client_factory import ClientFactory
+from .context_policies import context_policy_for_subagent
+from .logging.event_log import compose_event_sinks
 from .tool_runtime import build_solver_tool_registry, clone_agent_config_with_tools, register_execution_tools
 from .workspace_access import RoleWorkspaceAccess
 
@@ -57,6 +62,9 @@ class SubagentService:
         curator_context_provider: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         log_session: "Any | None" = None,
         stop_event: threading.Event | None = None,
+        context_policy_factory: Callable[[str], AgentContextPolicy | None] | None = None,
+        reviewer_history_path: "Path | None" = None,
+        allow_research_reviewer: bool = False,
     ) -> None:
         self.suite = suite
         self.client_factory = client_factory
@@ -69,9 +77,24 @@ class SubagentService:
         self.curator_context_provider = curator_context_provider
         self.log_session = log_session
         self.stop_event = stop_event
+        # 按 agent_type 返回 context_policy；默认用 context_policy_for_subagent。
+        # 调用方可传 None 完全禁用压缩，或传自定义 factory 覆盖默认行为。
+        self.context_policy_factory = (
+            context_policy_factory if context_policy_factory is not None
+            else context_policy_for_subagent
+        )
+        # research_reviewer 跨调用记忆：每次 reviewer 返回后，把 final_answer 追加到此文件。
+        # 下次 reviewer 启动时读这个文件，知道前几次 reviewer 推荐了什么、发现了什么。
+        self.reviewer_history_path = reviewer_history_path
+        # Reviewer 是 orchestrator 专属的全局战略角色。默认拒绝，以防某个角色配置
+        # 遗漏 Agent.type.enum 时通过工具默认值意外暴露它。
+        self.allow_research_reviewer = bool(allow_research_reviewer)
 
     def available_types(self) -> list[str]:
-        return sorted(self.suite.subagents)
+        types = sorted(self.suite.subagents)
+        if not self.allow_research_reviewer:
+            types = [agent_type for agent_type in types if agent_type != "research_reviewer"]
+        return types
 
     def describe_type(self, agent_type: str) -> str:
         """供第二层 register_agent_tool 用：返回 subagent 的 when_to_use 描述。
@@ -96,6 +119,8 @@ class SubagentService:
             return ToolResult(f"ERROR: {exc}", is_error=True)
 
     def call(self, agent_type: str, description: str, prompt: str, *, depth: int = 0) -> str:
+        if agent_type == "research_reviewer" and not self.allow_research_reviewer:
+            raise PermissionError("research_reviewer is reserved for orchestrator global strategic review")
         session_id, result = self._run(agent_type, description, prompt, depth=depth)
         self._submit_curator_trace(
             agent_type=agent_type,
@@ -104,11 +129,45 @@ class SubagentService:
             prompt=prompt,
             result=result,
         )
+        # research_reviewer 跨调用记忆：把最终报告追加到 history 文件。对抗复核不再是
+        # 代码层拼接的固定流水线——reviewer 自己拥有一层受限的 Agent 委派预算（见
+        # `_effective_max_depth`），可以在生成报告前自行调用 reasoning_subagent 做
+        # 对抗复核、调用 numerical_experiment_subagent 做数值核验，按需迭代多次。
+        if agent_type == "research_reviewer" and self.reviewer_history_path is not None:
+            self._append_reviewer_history(
+                session_id=session_id,
+                description=description,
+                result=result,
+            )
         return _format_subagent_result(
             agent_type=agent_type,
             session_id=session_id,
             text=_last_plain_assistant_content(result),
         )
+
+    def _append_reviewer_history(
+        self,
+        *,
+        session_id: str,
+        description: str,
+        result: AgentRunResult,
+    ) -> None:
+        """把 reviewer 的最终报告追加到 history 文件，供下次 reviewer 读取。"""
+        try:
+            text = _last_plain_assistant_content(result)
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            entry = (
+                f"\n---\n\n## Reviewer call: {timestamp}\n"
+                f"session: {session_id}\n"
+                f"description: {description}\n\n"
+                f"{text}\n"
+            )
+            self.reviewer_history_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.reviewer_history_path.open("a", encoding="utf-8") as fh:
+                fh.write(entry)
+        except Exception:
+            # 历史记录是 best-effort，不能因为写文件失败影响 reviewer 主流程
+            pass
 
     def _submit_curator_trace(
         self,
@@ -142,13 +201,34 @@ class SubagentService:
                 caller_context=caller_context,
             ))
 
+    def _effective_max_depth(self, agent_type: str, depth: int) -> int:
+        """一般由 ``self.max_depth`` 决定这次调用还能否再用 `Agent` 工具往下委派。
+
+        ``research_reviewer`` 是唯一例外：不管 ``self.max_depth``（orchestrator 直调
+        其它 subagent 时通常是 0，禁止再委派）取值如何，reviewer 自己总能拿到恰好一层
+        委派预算——用来在生成正式 plan 前自行调用 `Agent(type="reasoning_subagent")`
+        做对抗复核、调用 `Agent(type="numerical_experiment_subagent")` 做数值核验，
+        次数由它自己按需决定，而不是由 Python 代码固定拼接一次。
+        这一层不会继续放宽：reviewer 委派出去的下一层调用（agent_type 不是
+        research_reviewer）仍然只服从 ``self.max_depth``，因此不可能出现委派预算
+        逐层膨胀的无限递归。且 research_reviewer 自身不在它能调用的类型枚举里
+        （见 ``research_reviewer.yaml`` 的 `tool_parameters.Agent.type.enum`），
+        所以它也不能靠反复自调把这层预算再叠加一次。
+        """
+        if agent_type == "research_reviewer":
+            return max(self.max_depth, depth + 1)
+        return self.max_depth
+
     def _run(self, agent_type: str, description: str, prompt: str, *, depth: int = 0) -> tuple[str, AgentRunResult]:
         config = self.suite.subagents.get(agent_type)
         if config is None:
             allowed = ", ".join(self.available_types())
             raise ValueError(f"unknown subagent type: {agent_type}. Allowed types: {allowed}")
         session_id = self._make_session_id(agent_type=agent_type, depth=depth)
-        registry = self._build_subagent_registry(depth=depth, session_id=session_id, config=config)
+        effective_max_depth = self._effective_max_depth(agent_type, depth)
+        registry = self._build_subagent_registry(
+            depth=depth, session_id=session_id, config=config, max_depth=effective_max_depth,
+        )
         enabled_tools = list(config.tools)
         # TODO(B-phase): 这段在 Python 里硬过滤 subagent 能用的文件/Agent 工具，
         # 是 A 阶段 Task 8 之后第三层仅剩的运行时工具白名单逻辑。B 阶段会让
@@ -170,18 +250,34 @@ class SubagentService:
                 for name in enabled_tools
                 if name not in {"Read", "Write", "Edit", "ListDir", "Glob", "Grep"}
             ]
-        if depth >= self.max_depth and "Agent" in enabled_tools:
+        if depth >= effective_max_depth and "Agent" in enabled_tools:
             enabled_tools = [name for name in enabled_tools if name != "Agent"]
         if enabled_tools != list(config.tools):
             config = clone_agent_config_with_tools(config, enabled_tools)
         subagent_sink = self.log_session.create_subagent_sink(agent_type) if self.log_session is not None else None
+        # R2：把该 subagent 的 token 用量计入共享聚合器，按“父角色-subagent/类型”归组。
+        event_sink = subagent_sink
+        if self.log_session is not None:
+            parent = "orchestrator" if self.session_prefix.startswith("orchestrator") else "worker"
+            token_sink = self.log_session.token_usage_sink(f"{parent}-subagent/{agent_type}")
+            # 统一运行日志：逐次调用明细（token + CoT + 输出），同样按父角色-subagent/类型归组。
+            run_sink = self.log_session.run_log_sink(f"{parent}-subagent/{agent_type}")
+            event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink)
         try:
+            # 按 agent_type 决定是否注入上下文压缩策略
+            context_policy = None
+            if self.context_policy_factory is not None:
+                try:
+                    context_policy = self.context_policy_factory(agent_type)
+                except Exception:
+                    context_policy = None
             agent = Agent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
-                event_sink=subagent_sink,
+                event_sink=event_sink,
                 stop_event=self.stop_event,
+                context_policy=context_policy,
             )
             result = agent.run(prompt, description=description)
         finally:
@@ -191,12 +287,17 @@ class SubagentService:
                 self.execution_gateway.close_session(session_id)
         return session_id, result
 
-    def _build_subagent_registry(self, *, depth: int, session_id: str, config: AgentConfig) -> ToolRegistry:
+    def _build_subagent_registry(
+        self, *, depth: int, session_id: str, config: AgentConfig, max_depth: int,
+    ) -> ToolRegistry:
         """子 agent 的工具集：第三层基础工具 + RunPython/RunWolfram。
 
         当 ``file_access_factory`` 提供时直接走 ``build_solver_tool_registry``；
         否则用空 registry（基础文件工具由 ``enabled_tools`` 过滤逻辑剔除）。差异化
         措辞统一由 agent YAML 的 ``tool_descriptions`` 表达，本方法不再重复注册基础工具。
+
+        ``max_depth`` 由调用方（``_run``）用 ``_effective_max_depth`` 算好传入，一般等于
+        ``self.max_depth``，但对 research_reviewer 会额外放宽一层，见该方法的说明。
         """
         if self.file_access_factory is not None:
             access = self.file_access_factory()
@@ -221,7 +322,7 @@ class SubagentService:
                 session_id=session_id,
             ),
         )
-        if depth < self.max_depth:
+        if depth < max_depth:
             register_agent_tool(
                 registry,
                 agent_config=config,

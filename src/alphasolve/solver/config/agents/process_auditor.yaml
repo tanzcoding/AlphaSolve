@@ -1,0 +1,21 @@
+version: 1
+agent:
+  name: process_auditor
+  system_prompt_path: ../../prompts/process_auditor.md
+  tier: balanced
+  max_turns: 40
+  tools:
+    - Read
+    - ListDir
+    - Glob
+    - Grep
+    - InspectMarkdown
+  tool_descriptions:
+    Read:
+      suffix: "- Results respect this independent auditor's read-only workspace access restrictions."
+    Glob:
+      override: "Fast file pattern matching for locating cited audit evidence and verified propositions."
+    ListDir:
+      suffix: "- Results respect this independent auditor's read-only workspace access restrictions."
+    Grep:
+      suffix: "- Use targeted searches only to verify claims cited by the immutable audit evidence."

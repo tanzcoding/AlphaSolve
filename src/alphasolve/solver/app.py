@@ -4,6 +4,7 @@ import json
 import socket
 import threading
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -15,7 +16,8 @@ from alphasolve.solver.execution import ExecutionGateway
 from alphasolve.solver.wolfram_probe import check_wolfram_kernel
 from alphasolve.solver.logging.log_session import LogSession
 from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
-from .curator import CuratorQueue, init_knowledge_base
+from .blocker_registry import PersistentBlockerRegistry
+from .curator import CuratorQueue, CuratorTask, init_knowledge_base
 from .orchestrator import Orchestrator, OrchestratorRunResult, verified_count
 from .project import ProjectLayout
 from .client_factory import ClientFactory
@@ -66,12 +68,16 @@ class AlphaSolve:
         execution_gateway: ExecutionGateway | None = None
         owns_gateway = self.execution_gateway_override is None
         curator_queue: CuratorQueue | None = None
+        log_session: LogSession | None = None
         if renderer is not None:
             renderer.start()
             renderer.update_orchestrator_phase("startup", status="running")
         try:
             self.layout.ensure()
-            log_session = LogSession(base_dir=str(self.layout.logs_dir)) if self.debug else None
+            # 统一运行日志（alphasolve_run.log）始终启用；仅详细 trace 日志受
+            # --debug 控制（detail=self.debug）。这样默认就能看到每次 LLM 调用的
+            # token 消耗（区分输入/输出）与 CoT，而不必开 --debug。
+            log_session = LogSession(base_dir=str(self.layout.logs_dir), detail=self.debug)
             startup: dict[str, Any] = {
                 "project_root": str(self.layout.project_root),
                 "workspace": str(self.layout.workspace_dir),
@@ -138,6 +144,18 @@ class AlphaSolve:
                     renderer=renderer,
                 )
                 curator_queue.start()
+                blocker_registry = PersistentBlockerRegistry(self.layout.workspace_dir)
+                for checkpoint_id in blocker_registry.pending_checkpoint_ids():
+                    checkpoint_dir = self.layout.progress_audits_dir / checkpoint_id
+                    curator_queue.submit(
+                        CuratorTask(
+                            trace_segment=[],
+                            source_label=f"portfolio-checkpoint-recovery/{checkpoint_id}",
+                            task_kind="portfolio_checkpoint",
+                            artifact_path=checkpoint_dir / "curator_brief.md",
+                            audit_path=checkpoint_dir / "audit.md",
+                        )
+                    )
 
             result = None
             all_worker_results = []
@@ -162,9 +180,10 @@ class AlphaSolve:
                     renderer=renderer,
                     execution_gateway=execution_gateway,
                     curator_queue=curator_queue,
-                    log_session=log_session,
-                    stop_event=self._stop_event,
-                )
+                log_session=log_session,
+                stop_event=self._stop_event,
+                session_id=f"ralph-{restart_index + 1}-{uuid.uuid4().hex[:8]}",
+            )
                 result = orchestrator.run()
                 all_worker_results.extend(result.worker_results)
                 self._append_orchestrator_run_log(restart_index=restart_index, result=result)
@@ -192,6 +211,10 @@ class AlphaSolve:
                 execution_gateway.close()
             if renderer is not None:
                 renderer.stop()
+            # 统一运行日志跨 orchestrator restart 存活，故在 run 级 finally 收尾关闭
+            # （停止后台汇总线程并写最终汇总）；此时 workers/subagents/curator 均已结束。
+            if log_session is not None:
+                log_session.close_run_log()
         (self.layout.logs_dir / "orchestrator_trace.json").write_text(
             json.dumps(result.trace, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -286,5 +309,7 @@ def _worker_result_to_json(result) -> dict[str, Any]:
         "verified_file": str(result.verified_file) if result.verified_file else None,
         "review_file": str(result.review_file) if result.review_file else None,
         "theorem_check_file": str(result.theorem_check_file) if result.theorem_check_file else None,
+        "direction_id": result.direction_id,
+        "gap_id": result.gap_id,
         "solved_problem": result.solved_problem,
     }

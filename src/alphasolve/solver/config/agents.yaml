@@ -9,6 +9,8 @@ settings:
     - verifier_premise_chain
   subagent_max_depth: 1
   max_orchestrator_restarts: 50
+  progress_audit_every_n_outcomes: 5
+  progress_audit_no_progress_outcomes_before_reset: 10
 
 agents_dir: ./agents
 subagents_dir: ./subagents

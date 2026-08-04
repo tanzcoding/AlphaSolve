@@ -168,6 +168,7 @@ import alphasolve
 from alphasolve.solver.tool_runtime import (
     build_solver_tool_registry,
     register_execution_tools,
+    register_orchestrator_research_tools,
     register_orchestrator_worker_tools,
 )
 PACKAGE_ROOT = Path(alphasolve.__file__).resolve().parent
@@ -230,7 +231,7 @@ def _orchestrator_access(workspace: Workspace) -> RoleWorkspaceAccess:
         workspace=workspace,
         write_root_rel="verified_propositions",
         allowed_extensions=(".md",),
-        destructive_protected_file_names=("index.md",),
+        destructive_protected_file_names=("index.md", "state.md"),
     )
 
 
@@ -291,6 +292,37 @@ def _register_orchestrator_extra_tools(registry: ToolRegistry) -> None:
         wait_handler=lambda _args: ToolResult(""),
         default_wait_timeout_seconds=WorkerManager.DEFAULT_WAIT_TIMEOUT_SECONDS,
     )
+    _register_orchestrator_free_exploration_tool(registry)
+    register_orchestrator_research_tools(
+        registry,
+        record_impact_handler=lambda _args: ToolResult(""),
+        record_dispatch_constraint_handler=lambda _args: ToolResult(""),
+        sync_state_handler=lambda _args: ToolResult(""),
+    )
+
+
+def _register_orchestrator_free_exploration_tool(registry: ToolRegistry) -> None:
+    """复刻 orchestrator.Orchestrator._register_free_exploration_tool 里 SpawnFreeExploration 的注册。
+
+    与 scripts/snapshot_workflow_tools.py 内的同名副本、以及 orchestrator.py 的真实注册
+    必须一字一句保持一致。
+    """
+    registry.register(
+        name="SpawnFreeExploration",
+        description=(
+            "Start one worker for open-ended, non-targeted exploration and return immediately "
+            "(does not wait). Use it only for a materially orthogonal idea, not to bypass a blocked "
+            "targeted route. The runtime refuses this tool while a completed process audit still needs "
+            "curator blocker classification or while a stalled audit names a repeated avoided obligation; "
+            "in the latter case, launch the prescribed targeted consolidation instead.\n\n"
+            "The worker receives persisted failed-method taboos, active repeated blockers, and an optional "
+            "under-explored verified seed. It must choose a distinct bounded claim or record why no such "
+            "claim is available. Returns the same shape as SpawnWorker; if no slot is available it returns "
+            "spawned=false."
+        ),
+        parameters={"type": "object", "properties": {}, "required": []},
+        handler=lambda _args: ToolResult(""),
+    )
 
 
 def _build_registry_for_agent(
@@ -318,6 +350,7 @@ def _build_registry_for_agent(
         suite=suite,
         client_factory=lambda _cfg: None,  # type: ignore[arg-type, return-value]
         max_depth=2,
+        allow_research_reviewer=name == "orchestrator",
     )
     registry = build_solver_tool_registry(
         access,

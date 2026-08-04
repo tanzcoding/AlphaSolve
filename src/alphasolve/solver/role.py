@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from alphasolve.agent import (
     Agent,
     AgentConfig,
+    AgentContextPolicy,
     AgentEventSink,
     AgentRunResult,
     AgentSuite,
@@ -32,6 +33,7 @@ from alphasolve.agent import (
 )
 
 from .client_factory import ClientFactory
+from .context_policies import make_generator_context_policy
 from .subagent_service import SubagentService
 from .tool_runtime import build_solver_tool_registry
 from .workspace_access import RoleWorkspaceAccess
@@ -130,6 +132,7 @@ class Role:
             config=config, access=access, subagents=subagents,
             ctx=ctx, event_sink_label="generator",
             event_sink_decorator=event_sink_decorator,
+            context_policy=make_generator_context_policy(),
         )
         return cls(name="generator", agent=agent, trace_sink=ctx.trace)
 
@@ -260,6 +263,7 @@ def _assemble_agent(
     ctx: RoleContext,
     event_sink_label: str,
     event_sink_decorator: Callable[[AgentEventSink | None], AgentEventSink | None] | None = None,
+    context_policy: AgentContextPolicy | None = None,
 ) -> Agent:
     """Wire up the 5 standard pieces: registry → Agent tool → Agent."""
     registry = build_solver_tool_registry(access, agent_config=config, dispatcher=subagents)
@@ -272,4 +276,5 @@ def _assemble_agent(
         tool_registry=registry,
         event_sink=event_sink,
         stop_event=ctx.stop_event,
+        context_policy=context_policy,
     )

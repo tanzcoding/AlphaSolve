@@ -114,6 +114,7 @@ class OrchestratorAgentApp:
             max_depth=0,
             execution_gateway=None,
             session_prefix="orchestrator",
+            allow_research_reviewer=True,
             file_access_factory=lambda: RoleWorkspaceAccess.orchestrator_subagent(
                 Workspace(self.layout.workspace_dir)
             ),

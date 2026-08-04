@@ -17,6 +17,7 @@ class RoleWorkspaceAccess:
     worker_rel: str | None = None
     deny_other_unverified: bool = False
     read_root_rel: str | None = None
+    read_root_rels: tuple[str, ...] = ()
     write_root_rel: str | None = None
     deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
     deny_read_rels: tuple[str, ...] = ()
@@ -113,12 +114,19 @@ class RoleWorkspaceAccess:
 
     @classmethod
     def orchestrator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """主 orchestrator：可整理 ``verified_propositions/``，禁止重命名 index.md 等关键文件。"""
+        """主 orchestrator：可整理 ``verified_propositions/``，禁止重命名 index.md / state.md 等关键文件。
+
+        不可读 ``unverified_propositions/``：那是 worker 未验证的半成品草稿（review.md/worker_hint.md/
+        proposition.md），ResearchProgressReview 曾把其中的失败尝试（例如目标只设到旧上界为止的构造尝试）
+        当作背景证据展示给 orchestrator，容易被误当成已有结论去锚定战略判断。与 orchestrator_subagent
+        （research_reviewer）保持一致的隔离。
+        """
         return cls(
             workspace=workspace,
             write_root_rel="verified_propositions",
             allowed_extensions=(".md",),
-            destructive_protected_file_names=("index.md",),
+            destructive_protected_file_names=("index.md", "state.md"),
+            deny_read_rel="unverified_propositions",
         )
 
     @classmethod
@@ -130,11 +138,19 @@ class RoleWorkspaceAccess:
         )
 
     @classmethod
-    def curator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """主 curator：读写均限于 ``knowledge/``，禁止重命名 index.md / common-errors.md。"""
+    def process_auditor(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """独立进度审计器：只读审计快照、已验证事实和知识，不读取未验证草稿。"""
         return cls(
             workspace=workspace,
-            read_root_rel="knowledge",
+            deny_read_rel="unverified_propositions",
+        )
+
+    @classmethod
+    def curator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """主 curator：可读知识、审计和运行事实，但只允许写 ``knowledge/``。"""
+        return cls(
+            workspace=workspace,
+            read_root_rels=("knowledge", "progress_audits", "curation_records"),
             write_root_rel="knowledge",
             deny_text_write_rels=("knowledge/references",),
             protected_reference_rels=("knowledge/references",),
@@ -143,10 +159,10 @@ class RoleWorkspaceAccess:
 
     @classmethod
     def curator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """curator 的 subagent：只读 ``knowledge/``。"""
+        """curator 的 subagent：只读知识、审计与运行事实。"""
         return cls(
             workspace=workspace,
-            read_root_rel="knowledge",
+            read_root_rels=("knowledge", "progress_audits", "curation_records"),
         )
 
     def read_text_page(
@@ -630,8 +646,13 @@ class RoleWorkspaceAccess:
             raise ValueError(f"{kind} path must stay under {root_rel}")
 
     def _ensure_under_read_root(self, path: Path) -> None:
-        if self.read_root_rel is not None:
-            self._ensure_under_root(path, self.read_root_rel, kind="read")
+        allowed_roots = tuple(root for root in (self.read_root_rel, *self.read_root_rels) if root)
+        if allowed_roots and not any(
+            path == self.workspace.resolve(root) or self.workspace.resolve(root) in path.parents
+            for root in allowed_roots
+        ):
+            roots_text = ", ".join(allowed_roots)
+            raise ValueError(f"read path must stay under one of: {roots_text}")
         for deny_rel in self._denied_read_roots():
             if self._is_under_rel(path, deny_rel):
                 raise ValueError(f"read access to {deny_rel} is denied for this agent")

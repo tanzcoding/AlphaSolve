@@ -62,6 +62,21 @@ def local_project_dir(name):
             shutil.rmtree(path)
 
 
+def test_reviewer_read_state_epsilon_greedy():
+    from alphasolve.solver.orchestrator import _resolve_reviewer_read_state
+
+    # 非 research_reviewer：原样返回调用方请求值，不参与 epsilon-greedy。
+    assert _resolve_reviewer_read_state("reasoning_subagent", None, epsilon=1.0) is None
+    assert _resolve_reviewer_read_state("critic", True, epsilon=0.0) is True
+
+    # research_reviewer：由系统按 epsilon-greedy 决定，忽略调用方传入值。
+    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=1.0, rng=lambda: 0.99) is True
+    assert _resolve_reviewer_read_state("research_reviewer", True, epsilon=0.0, rng=lambda: 0.0) is False
+    # 判定式为 rng() < epsilon。
+    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=0.2, rng=lambda: 0.1) is True
+    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=0.2, rng=lambda: 0.5) is False
+
+
 def test_default_agent_suite_loads_yaml_roles():
     suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
     suite_from_dir = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
@@ -88,9 +103,9 @@ def test_default_agent_suite_loads_yaml_roles():
     index_pattern = r"^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\.md$"
     assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["pattern"] == index_pattern
     assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["pattern"] == index_pattern
-    assert "index writes as bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Write"]["override"]
-    assert "index edits as bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Edit"]["override"]
-    assert "preserve that ranking" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "index writes as objective bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Write"]["override"]
+    assert "index edits as objective bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Edit"]["override"]
+    assert "not a ranked list — treat that plan as a prior" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
     assert "rank that candidate against broader theorem work" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
     assert "constraint on the choice-classification target" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
     assert "answer-facing inequality" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
@@ -109,41 +124,25 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "inspect that target before broadening" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
     assert "not as a deterministic verdict" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
     assert "not ordinary bookkeeping" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
-    assert "Do not demote it to ordinary bookkeeping" in suite.subagents["research_reviewer"].system_prompt
-    assert "use that quantified obstruction as a constraint for the choice-classification proposition" in suite.subagents["research_reviewer"].system_prompt
-    assert "do not list it as a low-effort cleanup" in suite.subagents["research_reviewer"].system_prompt
-    assert "treat the verified Statement as authoritative for planning" in suite.subagents["research_reviewer"].system_prompt
-    assert "exact derivative levels, loss budget, absorption constants" in suite.subagents["research_reviewer"].system_prompt
-    assert "still matches the current global proof interface" in suite.subagents["research_reviewer"].system_prompt
-    assert "repair as a required premise or subclaim" in suite.subagents["research_reviewer"].system_prompt
-    assert "not describe exact system/interface assembly as mere bookkeeping" in suite.subagents["research_reviewer"].system_prompt
-    assert "Name the downstream propositions as results that this prerequisite would unlock" in suite.subagents["research_reviewer"].system_prompt
-    assert "scans or classifies the admissible choices satisfying those hypotheses" in suite.subagents["research_reviewer"].system_prompt
-    assert "framework-formalization, conditional assembly, or gap-naming proposition" in suite.subagents["research_reviewer"].system_prompt
-    assert "sharpening constants, alternative test functions" in suite.subagents["research_reviewer"].system_prompt
-    assert "cover the whole active theorem interface" in suite.subagents["research_reviewer"].system_prompt
+    reviewer_prompt = suite.subagents["research_reviewer"].system_prompt
+    orchestrator_prompt = suite.agents["orchestrator"].system_prompt
+    assert "Only verified propositions are established" in reviewer_prompt
+    assert "Adversarial Review" in reviewer_prompt
+    assert "DISPATCH: NEEDS_FALSIFICATION" in reviewer_prompt
+    assert "read_state=true" in reviewer_prompt
+    assert "RecordResearchImpact" in orchestrator_prompt
+    assert "RecordDispatchConstraint" in orchestrator_prompt
+    assert "direction_id" in orchestrator_prompt
+    assert "gap_id" in orchestrator_prompt
+    assert "research_state.json" in orchestrator_prompt
+    assert "process_audit_context_reset" in orchestrator_prompt
+    assert "fooling" not in orchestrator_prompt.lower()
+    assert "permutation" not in reviewer_prompt.lower()
     assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
-    assert "Examples:" in suite.agents["orchestrator"].system_prompt
-    assert "task is complete if and only if" in suite.agents["orchestrator"].system_prompt
-    assert "current active worker count" not in suite.agents["orchestrator"].system_prompt
-    assert "every 3-5 worker lifecycles" in suite.agents["orchestrator"].system_prompt
-    assert "Verified Propositions Index" in suite.agents["orchestrator"].system_prompt
-    assert "Current Progress And Insights" in suite.agents["orchestrator"].system_prompt
-    assert "Current Progress And Insights section" in suite.agents["orchestrator"].system_prompt
-    assert "summarize only its own directory level" in suite.agents["orchestrator"].system_prompt
-    assert "immediate child folders" in suite.agents["orchestrator"].system_prompt
-    assert "`child-folder/`" in suite.agents["orchestrator"].system_prompt
-    assert "Do not recursively list every descendant proposition" in suite.agents["orchestrator"].system_prompt
-    assert "less than 50 lines" in suite.agents["orchestrator"].system_prompt
-    assert "responsible for keeping `verified_propositions/` tidy and easy to navigate" in suite.agents["orchestrator"].system_prompt
-    assert "You may organize `verified_propositions/`" not in suite.agents["orchestrator"].system_prompt
-    assert "graph-coloring-route" in suite.agents["orchestrator"].system_prompt
-    assert "references to that proposition are updated automatically" in suite.agents["orchestrator"].system_prompt
     assert "Agent" in suite.agents["generator"].tools
     assert suite.agents["generator"].tool_parameters["Agent"]["type"]["enum"] == [
         "compute_subagent",
         "numerical_experiment_subagent",
-        "research_reviewer",
         "reasoning_subagent",
     ]
     assert suite.subagents["reasoning_subagent"].tool_parameters["Agent"]["type"]["enum"] == [
@@ -174,18 +173,89 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "SplitReference" in curator.tools
     assert any("delete" in name.lower() for name in curator.tools)
     assert not any(name.lower() in {"get_current_time", "getcurrenttime"} for name in curator.tools)
-    assert "not a transcript archive" in curator.system_prompt
-    assert "There is no maintenance log file." in curator.system_prompt
+    assert "not pipeline chronology" in curator.system_prompt
     assert "knowledge/references/" in curator.system_prompt
-    assert "Do not use `Write` or `Edit` there" in curator.system_prompt
+    assert "do not rewrite it" in curator.system_prompt
     assert "SplitReference" in curator.system_prompt
-    assert "immediate child markdown files and immediate child folders" in curator.system_prompt
+    assert "active historical blocker" in curator.system_prompt
     assert len(curator.system_prompt.splitlines()) <= 120
     assert "<source_label>" not in curator.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
-    assert "path is relative to `verified_propositions`" in suite.agents["generator"].system_prompt
+    assert "relative to `verified_propositions`" in suite.agents["generator"].system_prompt
     assert r"\ref{number-theory\order-lifting}" in suite.agents["generator"].system_prompt
-    assert "path is relative to `verified_propositions`" in suite.agents["reviser"].system_prompt
+    assert "relative to `verified_propositions`" in suite.agents["reviser"].system_prompt
+
+
+def test_research_reviewer_can_delegate_decision_relevant_numerical_checks():
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
+
+    reviewer = suite.subagents["research_reviewer"]
+    assert reviewer.tool_parameters["Agent"]["type"]["enum"] == [
+        "reasoning_subagent",
+        "numerical_experiment_subagent",
+    ]
+    assert "call `numerical_experiment_subagent`" in reviewer.system_prompt
+    assert "EXHAUSTIVE" in reviewer.system_prompt
+    assert "STRATIFIED_SAMPLE" in reviewer.system_prompt
+
+
+def test_record_difficulty_preserves_generator_declaration_and_reviser_updates():
+    with local_project_dir("difficulty_declaration") as project_dir:
+        (project_dir / "problem.md").write_text("# Problem\n\nProve a hard claim.\n", encoding="utf-8")
+        layout = ProjectLayout.create(project_dir)
+        layout.ensure()
+        worker_rel = "unverified_propositions/prop-difficulty"
+        worker_dir = layout.workspace_dir / worker_rel
+        worker_dir.mkdir(parents=True)
+        proposition_rel = f"{worker_rel}/proposition.md"
+        proposition = layout.workspace_dir / proposition_rel
+        proposition.write_text("## Statement\n\nx=x.\n\n## Proof\n\nReflexivity.\n", encoding="utf-8")
+        suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
+        generator_config = suite.agents["generator"]
+        generator_access = RoleWorkspaceAccess.generator(Workspace(layout.workspace_dir), worker_rel)
+        generator_registry = build_solver_tool_registry(generator_access, agent_config=generator_config)
+
+        initial = generator_registry.execute(
+            "RecordDifficulty",
+            {
+                "target_status": "PARTIAL",
+                "difficulty": "Proving the required global inequality remains open.",
+                "why_hard": "The local estimate has no mechanism to control the missing cross term.",
+                "suggested_attack": "Construct an explicit cross-term bound.",
+                "dead_ends": "Repeating the local estimate leaves the same gap.",
+            },
+            enabled=list(generator_config.tools),
+            tool_parameters=generator_config.tool_parameters,
+        )
+        assert not initial.is_error
+        declaration = worker_dir / "difficulty_declaration.md"
+        initial_text = declaration.read_text(encoding="utf-8")
+        assert "## Generator Declaration" in initial_text
+        assert "global inequality remains open" in initial_text
+
+        reviser_config = suite.agents["reviser"]
+        reviser_access = RoleWorkspaceAccess.reviser(
+            Workspace(layout.workspace_dir), worker_rel, proposition_rel=proposition_rel
+        )
+        reviser_registry = build_solver_tool_registry(reviser_access, agent_config=reviser_config)
+        update = reviser_registry.execute(
+            "RecordDifficulty",
+            {
+                "target_status": "NO",
+                "revision_outcome": "weakened",
+                "difficulty": "The verifier's global step cannot be repaired from the current hypotheses.",
+                "why_hard": "The missing bound is independent of every proved local estimate.",
+                "suggested_attack": "Attack the global step as a separate proposition.",
+                "dead_ends": "Adding more local lemmas does not establish the global step.",
+            },
+            enabled=list(reviser_config.tools),
+            tool_parameters=reviser_config.tool_parameters,
+        )
+        assert not update.is_error
+        updated_text = declaration.read_text(encoding="utf-8")
+        assert "## Generator Declaration" in updated_text
+        assert "### Reviser Update 1" in updated_text
+        assert "global step cannot be repaired" in updated_text
 
 
 def test_curator_protects_reference_text_but_can_split_and_organize_references():
@@ -618,7 +688,7 @@ def test_curator_health_check_prompt_injects_program_scan(tmp_path):
     assert "knowledge/common-errors.md` is 251 lines" in prompt
     assert "within 15 common error patterns" in prompt
     assert "knowledge/common-errors.md (251 lines)" not in prompt
-    assert "rename paper files by title" in prompt
+    assert "rename and move reference files for organization" in prompt
 
 
 def test_agent_team_demo_creates_workspace_and_verified_proposition():
@@ -693,7 +763,6 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                             args={
                                 "path": f"{worker_dir}/proposition.md",
                                 "content": (
-                                    "# Near Miss\n\n"
                                     "## Statement\n\n"
                                     "For every real number x, x = x.\n\n"
                                     "## Proof\n\n"
@@ -730,11 +799,12 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
         assert result.final_answer == "No solution yet."
         assert result.worker_results[0].status == "verified"
         assert not result.worker_results[0].solved_problem
-        assert result.worker_results[0].theorem_check_file is None
+        assert result.worker_results[0].theorem_check_file is not None
+        assert "Solves original problem: no" in result.worker_results[0].theorem_check_file.read_text(encoding="utf-8")
         assert calls["theorem_checker"] == 1
         assert result.solution_path is None
         assert not (project_dir / "solution.md").exists()
-        assert not any(path.name == "theorem_check.md" for path in result.worker_results[0].worker_dir.glob("*.md"))
+        assert (result.worker_results[0].worker_dir / "theorem_check.md").is_file()
 
 
 def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
@@ -812,8 +882,8 @@ def test_verifier_scaling_rejects_if_any_independent_attempt_fails():
         assert verifier_calls[:2] == ["verifier_format_references", "verifier_citation"]
         verifier_traces = [item for item in result.trace if item["role"] == "verifier_attempt"]
         assert [item["config"] for item in verifier_traces] == ["verifier_format_references", "verifier_citation"]
-        assert result.trace[-1]["role"] == "verifier_workflow"
-        assert result.trace[-1]["attempts_run"] == 2
+        wf_traces = [item for item in result.trace if item["role"] == "verifier_workflow"]
+        assert wf_traces[-1]["attempts_run"] == 2
 
 
 def test_review_verdict_judge_handles_markdown_wrapped_verdicts():
@@ -1077,6 +1147,7 @@ def test_verifier_workflow_reset_keeps_only_proposition_hint_and_empty_workspace
         proposition_file = worker.worker_dir / "candidate-name.md"
         proposition_file.write_text("# Candidate\n\n## Statement\n\nx=x.\n", encoding="utf-8")
         (worker.worker_dir / "worker_hint.md").write_text("hint", encoding="utf-8")
+        (worker.worker_dir / "difficulty_declaration.md").write_text("# Difficulty Declaration\n", encoding="utf-8")
         (worker.worker_dir / "trace.json").write_text("{}", encoding="utf-8")
         (worker.worker_dir / "review.md").write_text("old review", encoding="utf-8")
         old_attempt = worker.worker_dir / "verifier_workspace" / "round-01" / "attempt-01"
@@ -1087,6 +1158,7 @@ def test_verifier_workflow_reset_keeps_only_proposition_hint_and_empty_workspace
 
         assert proposition_file.is_file()
         assert (worker.worker_dir / "worker_hint.md").is_file()
+        assert (worker.worker_dir / "difficulty_declaration.md").is_file()
         assert not (worker.worker_dir / "trace.json").exists()
         assert not (worker.worker_dir / "review.md").exists()
         verifier_workspace = worker.worker_dir / "verifier_workspace"
@@ -1244,6 +1316,7 @@ def test_orchestrator_review_tool_returns_only_reviewer_final_report():
             max_depth=0,
             file_access_factory=lambda: RoleWorkspaceAccess(workspace=Workspace(layout.workspace_dir)),
             session_prefix="orchestrator",
+            allow_research_reviewer=True,
         )
         orchestrator = Orchestrator(
             layout=layout,
@@ -1318,6 +1391,10 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Move" in tool_names
         assert "Write" in tool_names
         assert "Edit" in tool_names
+        assert "RecordResearchImpact" in tool_names
+        assert "RecordDispatchConstraint" in tool_names
+        assert "SyncResearchState" in tool_names
+        assert "SpawnFreeExploration" in tool_names
         assert "Delete" not in tool_names
         # Task 8: build_workspace_tool_registry now always registers the full
         # 12-tool base set (the registry is shared across agents). Per-agent
@@ -1329,11 +1406,11 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "return immediately" in tool_descriptions["SpawnWorker"]
         assert "active_count" in tool_descriptions["SpawnWorker"]
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
-        assert "available worker slot" in tool_descriptions["TaskOutput"]
-        assert "free exploration" in tool_descriptions["TaskOutput"]
-        assert "free_exploration_worker" in tool_descriptions["TaskOutput"]
+        assert "available_worker_slots" in tool_descriptions["TaskOutput"]
+        assert "pending_research_impacts" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
         assert "verified_propositions_organization" in tool_descriptions["TaskOutput"]
+        assert "open-ended, non-targeted exploration" in tool_descriptions["SpawnFreeExploration"]
         assert "Launch a new specialized agent" in tool_descriptions["Agent"]
         assert "separate session" in tool_descriptions["Agent"]
         rename_description = next(t.description for t in defs if t.name == "Rename")
@@ -1346,9 +1423,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         index_content = (
             "# Verified Propositions Index\n\n"
             "## Directory\n"
-            "- [[bootstrap-lemma]] - proves the bootstrap lemma; see \\ref{bootstrap-lemma}.\n\n"
-            "## Current Progress And Insights\n"
-            "- Try closing the next bootstrap step.\n"
+            "- [[bootstrap-lemma]] - proves the bootstrap lemma; see \\ref{bootstrap-lemma}.\n"
         )
         wrote_index = registry.execute(
             "Write",
@@ -1366,14 +1441,45 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
             "Edit",
             {
                 "path": "verified_propositions/index.md",
-                "old_str": "Try closing the next bootstrap step.",
-                "new_str": "Compare bootstrap assumptions A and B next.",
+                "old_str": "proves the bootstrap lemma",
+                "new_str": "proves the bootstrap implication under its stated premises",
             },
             enabled=config.tools,
             tool_parameters=config.tool_parameters,
         )
         assert not edited_index.is_error
-        assert "Compare bootstrap assumptions" in (layout.verified_dir / "index.md").read_text(encoding="utf-8")
+        assert "stated premises" in (layout.verified_dir / "index.md").read_text(encoding="utf-8")
+
+        synced_state = registry.execute(
+            "SyncResearchState",
+            {
+                "objective_summary": "Resolve the bootstrap problem; exact status unknown.",
+                "directions": [
+                    {
+                        "direction_id": "bootstrap-route",
+                        "title": "Close the bootstrap step",
+                        "goal": "Prove the missing bootstrap implication.",
+                        "status": "active",
+                        "health": "unassessed",
+                        "gaps": [
+                            {
+                                "gap_id": "bootstrap-gap",
+                                "statement": "Close the next bootstrap step.",
+                                "status": "open",
+                            }
+                        ],
+                        "plan": ["Compare assumptions A and B."],
+                    }
+                ],
+            },
+            enabled=config.tools,
+            tool_parameters=config.tool_parameters,
+        )
+        assert not synced_state.is_error
+        state_text = (layout.verified_dir / "state.md").read_text(encoding="utf-8")
+        assert "bootstrap-route" in state_text
+        assert "bootstrap-gap" in state_text
+        assert (layout.verified_dir / "research_state.json").is_file()
 
         wrote_prop = registry.execute(
             "Write",
@@ -1872,7 +1978,12 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         assert "reasoning_subagent" in rejected.content
 
         reasoning_config = suite.subagents["reasoning_subagent"]
-        registry = service._build_subagent_registry(depth=0, session_id="pytest/session", config=reasoning_config)
+        registry = service._build_subagent_registry(
+            depth=0,
+            session_id="pytest/session",
+            config=reasoning_config,
+            max_depth=service.max_depth,
+        )
         python_result = registry.execute("RunPython", {"code": "value = 6 * 7\nvalue"})
         denied = registry.execute("RunPython", {"code": "open('leak.txt', 'w')"})
         tools = registry.tool_defs(["Agent"], suite.agents["generator"].tool_parameters)
@@ -1891,16 +2002,28 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
         assert type_schema["enum"] == [
             "compute_subagent",
             "numerical_experiment_subagent",
-            "research_reviewer",
             "reasoning_subagent",
         ]
+        assert "research_reviewer" not in service.available_types()
+        reviewer = service.call_tool({
+            "type": "research_reviewer",
+            "description": "blocked review",
+            "prompt": "Attempt a global review.",
+        })
+        assert reviewer.is_error
+        assert "reserved for orchestrator global strategic review" in reviewer.content
         assert blocked.is_error
         assert "must be one of" in blocked.content
         # reasoning_subagent config includes GetCurrentTime which the subagent
         # registry does not yet register; skip the success assertion for now.
         reasoning = service.call_tool({"type": "reasoning_subagent", "description": "Identity check", "prompt": "Check x=x."})
 
-        max_depth_registry = service._build_subagent_registry(depth=1, session_id="pytest/deep", config=reasoning_config)
+        max_depth_registry = service._build_subagent_registry(
+            depth=1,
+            session_id="pytest/deep",
+            config=reasoning_config,
+            max_depth=service.max_depth,
+        )
         assert "Agent" not in [tool.name for tool in max_depth_registry.registered_tools()]
     finally:
         gateway.close()

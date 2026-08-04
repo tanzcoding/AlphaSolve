@@ -18,6 +18,10 @@ agent:
     - Move
     - SpawnWorker
     - Agent
+    - SpawnFreeExploration
+    - RecordResearchImpact
+    - RecordDispatchConstraint
+    - SyncResearchState
     - TaskOutput
     - GetCurrentTime
   tool_parameters:
@@ -37,18 +41,47 @@ agent:
       directory:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       old_name:
-        pattern: "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+        pattern: "^(?!index\\.md$)(?!state\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
       new_name:
-        pattern: "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+        pattern: "^(?!index\\.md$)(?!state\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
     Move:
       path:
-        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^verified_propositions/(?!index\\.md$)(?!state\\.md$)(?!.*\\/index\\.md$)(?!.*\\/state\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
       destination_dir:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
     SpawnWorker:
       hint:
         type: string
         maxLength: 4000
+      direction_id:
+        type: string
+        maxLength: 80
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+      gap_id:
+        type: string
+        maxLength: 80
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+      method_id:
+        type: string
+        enum: [direct_proof, contradiction, construction, computation, falsification, consolidation]
+      parent_id:
+        type: string
+        maxLength: 64
+      parent_ids:
+        type: array
+        maxItems: 8
+        items:
+          type: string
+          maxLength: 64
+      frontier_refs:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+          maxLength: 200
+      frontier_note:
+        type: string
+        maxLength: 2000
     TaskOutput:
       seconds:
         type: number
@@ -77,7 +110,7 @@ agent:
         - Use `mode="overwrite"` to replace the whole file.
         - Use `mode="append"` to append content to the end of the file.
         - If this is an existing file, you MUST use the Read tool first to read the file's contents.
-        - Treat index writes as bookkeeping after the research target is clear. Updating an index or note does not create, revise, or verify a proposition; if the durable fix is a proposition Statement, choose that as a research target rather than treating an index edit as the mathematical step.
+        - Treat index writes as objective bookkeeping after the research target is clear. Use SyncResearchState rather than Write for strategic state.md.
       parameters:
         mode:
           description: "Whether to overwrite the whole file or append to the end."
@@ -88,7 +121,7 @@ agent:
         Usage:
         - The edit will FAIL if old_string is not unique in the file.
         - Provide a larger string with more surrounding context to make it unique.
-        - Treat index edits as bookkeeping after the research target is clear. Updating an index or note does not create, revise, or verify a proposition; if the durable fix is a proposition Statement, choose that as a research target rather than treating an index edit as the mathematical step.
+        - Treat index edits as objective bookkeeping after the research target is clear. Use SyncResearchState rather than Edit for strategic state.md.
       parameters:
         new_str:
           description: "The text to replace it with (must be different from old_string)."
@@ -153,6 +186,7 @@ agent:
           description: "Number of context lines around each match."
     Agent:
       suffix: |-
+        - `research_reviewer` returns a single research plan, not a list to pick from. It has its own scoped `Agent` tool (restricted to `reasoning_subagent`/`numerical_experiment_subagent`) and must return both an "Adversarial Review" and a `Route Validation` section. `VERDICT: CLEAR` only means the plan survived critique; before dispatch, obey `Route Validation`'s `DISPATCH:` status. For `BLOCKED` or `NEEDS_FALSIFICATION`, record the supplied evidence with `RecordDispatchConstraint`; only `READY_FOR_PROOF` permits a normal proof worker. This remains a prompt-level report, so check that its cited numerical coverage and counterexample search are substantive before trusting it.
         - When using `research_reviewer`, delegate an independent progress audit rather than a proof attempt for the route you currently favor.
         - Include any already-seen proposition-index gaps or underclaimed proof-tail evidence in the prompt, especially any `ResearchProgressReview` suggested next proposition and selected target, and ask the reviewer to rank that candidate against broader theorem work.
         - If underclaimed proof-tail evidence only quantifies why one conditional route is obstructed, and the problem still asks for an existential choice among models, parameters, data, weights, or ansatzes, ask the reviewer to use that obstruction as a constraint on the choice-classification target rather than replacing the constructive scan.
@@ -166,9 +200,10 @@ agent:
         - Do not replace that scan with re-proving verified infrastructure, sharper constants, alternative test functions, or stronger PDE/ODE machinery unless the choice-classification scan is already complete or rules out viable choices.
         - When a verified proposition Statement conflicts with an index or knowledge summary, treat the verified Statement as authoritative and ask whether the summary is stale rather than planning from the weaker summary.
         - If a reviewed `unverified_propositions/` file already has a passed review and records a system interface, constants, derivative levels, assumptions, or obstruction, ask whether promoting or repairing that proposition is the best verified-progress step before opening a new local route.
-        - When a reviewer returns ranked recommendations, preserve that ranking in your own research plan unless you can name the verified proposition, knowledge synthesis, or tool evidence that justifies re-ranking it.
-        - If the reviewer ranks an exact system or interface assembly first, do not demote it as bookkeeping merely because it may expose a harder local gap; that assembly may be the research proposition needed to determine which local gap is actually blocking the proof.
+        - `research_reviewer` now returns one primary plan (plus ≤2 one-line rejected alternatives), not a ranked list — treat that plan as a prior, not a command. Each `selection_advice` from `TaskOutput` carries a read-only `frontier` list ranking active worker nodes by cheap proxy signals (open subgoals, verified implications, falsification hits) — nothing is pre-selected for you. If the reviewer's plan targets a direction whose recent workers only produced necessary_condition_only/orthogonal outputs, while `frontier` shows another direction with stronger verified implications and no falsification hits, prefer the latter. The reviewer's plan reflects a static workspace snapshot; `frontier` reflects what workers actually achieved. Update your belief accordingly.
+        - If the reviewer's plan is an exact system or interface assembly, do not demote it as bookkeeping merely because it may expose a harder local gap; that assembly may be the research proposition needed to determine which local gap is actually blocking the proof.
         - Do not present an unverified route as the core blocker unless a verified proposition, knowledge synthesis, or prior reviewer report explicitly identifies it as such.
+        - Whether `research_reviewer` reads `verified_propositions/**/state.md` (your prior strategic notes) is decided automatically by the system via an epsilon-greedy policy and recorded in the run log. You do not need to set `read_state` for `research_reviewer` — the system assigns it and overrides any value you pass.
     ResearchProgressReview:
       override: |-
         Audit a Markdown research/proof workspace before deciding current progress or next propositions.

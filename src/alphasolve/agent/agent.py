@@ -65,6 +65,7 @@ class AgentContextPolicyInput:
 
 
 AgentContextPolicy = Callable[[AgentContextPolicyInput], list[Message]]
+AgentContextResetProvider = Callable[[], str | None]
 
 
 class Agent:
@@ -78,6 +79,7 @@ class Agent:
         stop_event: threading.Event | None = None,
         caller_context: dict[str, Any] | None = None,
         context_policy: AgentContextPolicy | None = None,
+        context_reset_provider: AgentContextResetProvider | None = None,
     ) -> None:
         self.config = config
         self.client = client
@@ -90,6 +92,7 @@ class Agent:
         # verify_subagent 拦截策略据此识别调用树。原样拷贝一份避免外部修改。
         self.caller_context = dict(caller_context) if caller_context else None
         self.context_policy = context_policy
+        self.context_reset_provider = context_reset_provider
 
     def run(
         self,
@@ -133,6 +136,22 @@ class Agent:
                     trace=trace,
                     turns=turn - 1,
                 )
+            reset_instruction = self._consume_context_reset()
+            if reset_instruction:
+                messages = [
+                    messages[0],
+                    Message(role="user", content=reset_instruction),
+                ]
+                trace.append(
+                    {
+                        "type": "context_reset",
+                        "turn": turn,
+                        "agent": self.config.name,
+                        "instruction": reset_instruction,
+                    }
+                )
+                self.last_trace = trace
+                self._emit(trace[-1])
             turn_start = time.time()
             trace.append({"type": "model_request", "agent": self.config.name, "turn": turn})
             self._emit(trace[-1])
@@ -167,6 +186,21 @@ class Agent:
                 self._emit(trace[-1])
                 raise AgentRunError(f"agent {self.config.name} failed: {exc}", trace=trace) from exc
             turn_elapsed = time.time() - turn_start
+
+            # R2：把本轮模型调用的 token 用量 emit 出去，供跨角色 token 聚合器累加。
+            # 这是纯观测事件（不进 trace 主流程语义），EventLogWriter 无 handler 会忽略它。
+            usage = response.usage
+            self._emit(
+                {
+                    "type": "usage",
+                    "agent": self.config.name,
+                    "turn": turn,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cached_tokens": usage.cached_tokens,
+                    "elapsed": turn_elapsed,
+                }
+            )
 
             assistant_message = response.message
             # Streaming reasoning/content may have been captured into stream_state but not into the
@@ -230,11 +264,14 @@ class Agent:
 
             for tool_call in tool_calls:
                 if self.stop_event is not None and self.stop_event.is_set():
-                    trace.append(
-                        {"type": "run_stopped", "turn": turn, "reason": "stop_event set before tool execution"}
+                    # Backfill placeholder tool messages for any tool_calls that
+                    # already have results so the message sequence is valid, plus
+                    # all remaining tool_calls that will not be executed.
+                    self._backfill_pending_tool_messages(
+                        messages, trace, turn, tool_calls, tool_call,
+                        reason="stop_event set before tool execution",
+                        include_current=True,
                     )
-                    self.last_trace = trace
-                    self._emit(trace[-1])
                     return AgentRunResult(
                         final_answer="",
                         messages=messages,
@@ -330,6 +367,15 @@ class Agent:
                     )
                 )
                 if stop_agent:
+                    # Remaining tool_calls in this assistant message have no tool
+                    # response, which would make the next LLM request fail with a
+                    # 400 "insufficient tool messages following tool_calls" error.
+                    # Append placeholder tool messages for every unprocessed call
+                    # so the message sequence stays valid for the API.
+                    self._backfill_pending_tool_messages(
+                        messages, trace, turn, tool_calls, tool_call,
+                        reason="agent stopped by prior tool",
+                    )
                     final_answer = result.stop_answer or result_content
                     trace.append(
                         {
@@ -353,6 +399,70 @@ class Agent:
         self.last_trace = trace
         self._emit(trace[-1])
         raise AgentRunError(f"agent exceeded max_turns={self.config.max_turns}", trace=trace)
+
+    def _backfill_pending_tool_messages(
+        self,
+        messages: list[Message],
+        trace: list[dict[str, Any]],
+        turn: int,
+        tool_calls: tuple[ToolCall, ...],
+        current_tool_call: ToolCall,
+        *,
+        reason: str,
+        include_current: bool = False,
+    ) -> None:
+        """Append placeholder tool messages for unexecuted tool_calls.
+
+        When the agent loop exits early (stop_event or stop_agent), any
+        remaining tool_calls in the current assistant message have no
+        corresponding tool response. Without backfill, the next LLM request
+        would fail with a 400 "insufficient tool messages following
+        tool_calls" error.
+
+        *include_current=False* (default, for stop_agent): *current_tool_call*
+        has already been executed and its tool message appended; backfill
+        starts from the next call.
+
+        *include_current=True* (for stop_event at loop top): *current_tool_call*
+        has NOT been executed; backfill includes it.
+        """
+        self.last_trace = trace
+        start_index = tool_calls.index(current_tool_call)
+        if not include_current:
+            start_index += 1
+        for skipped in tool_calls[start_index:]:
+            skipped_content = f"[skipped: {reason}]"
+            trace.append(
+                {
+                    "type": "tool_result",
+                    "turn": turn,
+                    "tool_call_id": skipped.id,
+                    "name": skipped.name,
+                    "content": skipped_content,
+                    "is_error": False,
+                    "stop_agent": False,
+                    "skipped": True,
+                }
+            )
+            self._emit(trace[-1])
+            messages.append(
+                Message(
+                    role="tool",
+                    content=skipped_content,
+                    tool_call_id=skipped.id,
+                    name=skipped.name,
+                )
+            )
+
+    def _consume_context_reset(self) -> str | None:
+        if self.context_reset_provider is None:
+            return None
+        try:
+            instruction = self.context_reset_provider()
+        except Exception:
+            return None
+        clean = str(instruction or "").strip()
+        return clean or None
 
     def _messages_for_model(
         self,

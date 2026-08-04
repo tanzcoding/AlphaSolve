@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from alphasolve.solver import AlphaSolve
 from alphasolve.solver.orchestrator import Orchestrator, WorkerManager, FREE_EXPLORATION_WORKER_HINT
 from alphasolve.solver.project import ProjectLayout
 from alphasolve.solver.orchestrator import OrchestratorRunResult
-from alphasolve.solver.worker import WorkerRunResult
+from alphasolve.solver.worker import Worker, WorkerRunResult
 
 
 class _DummyWorker:
@@ -84,44 +85,21 @@ def test_spawn_reports_active_workers_and_enforces_limit(tmp_path, monkeypatch):
         manager.close(timeout=0)
 
 
-def test_spawn_warns_research_reviewer_after_each_five_new_verified_props(tmp_path, monkeypatch):
+def test_spawn_does_not_emit_legacy_periodic_research_reviewer_warning(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch, max_workers=1)
     try:
         topic_dir = manager.layout.verified_dir / "topic"
         topic_dir.mkdir()
-        for index in range(4):
+        for index in range(10):
             (topic_dir / f"lemma-{index:02d}.md").write_text(
                 f"# Lemma {index}\n",
                 encoding="utf-8",
             )
 
-        first = manager.spawn("first branch")
-        assert "research_reviewer_required_warning" not in first
+        payload = manager.spawn("first branch")
 
-        _drain_manager(manager, "w1")
-        (topic_dir / "lemma-04.md").write_text("# Lemma 4\n", encoding="utf-8")
-        second = manager.spawn("second branch")
-
-        warning = second["research_reviewer_required_warning"]
-        assert warning["verified_proposition_count"] == 5
-        assert warning["increment"] == 5
-        assert "STRICT WARNING" in warning["message"]
-        assert "research_reviewer" in warning["message"]
-        assert "ResearchProgressReview" in warning["message"]
-        assert "InspectMarkdown" in warning["message"]
-
-        _drain_manager(manager, "w2")
-        third = manager.spawn("third branch")
-        assert "research_reviewer_required_warning" not in third
-
-        _drain_manager(manager, "w3")
-        for index in range(5, 10):
-            (topic_dir / f"lemma-{index:02d}.md").write_text(
-                f"# Lemma {index}\n",
-                encoding="utf-8",
-            )
-        fourth = manager.spawn("fourth branch")
-        assert fourth["research_reviewer_required_warning"]["verified_proposition_count"] == 10
+        assert payload["spawned"] is True
+        assert "research_reviewer_required_warning" not in payload
     finally:
         manager.close(timeout=0)
 
@@ -302,7 +280,10 @@ def test_task_output_returns_completed_result_and_remaining_active_snapshot(tmp_
         manager.close(timeout=0)
 
 
-def test_task_output_tool_spawns_free_exploration_worker_when_slot_is_available():
+def test_task_output_tool_never_auto_spawns_free_exploration():
+    """TaskOutput（_wait_tool）不再有任何自动/隐式 spawn free exploration 的逻辑
+    （无论冷启动还是后续轮次）；是否发起自由探索完全交给 orchestrator 自己显式调用
+    `SpawnFreeExploration` 工具决定。"""
     class StubManager:
         def __init__(self):
             self.solved_result = None
@@ -336,11 +317,235 @@ def test_task_output_tool_spawns_free_exploration_worker_when_slot_is_available(
 
     result = Orchestrator._wait_tool(Orchestrator.__new__(Orchestrator), manager, {"seconds": 1200})
 
-    assert manager.spawned_hints == [FREE_EXPLORATION_WORKER_HINT]
-    assert "freely" in manager.spawned_hints[0]
-    assert "different angles" in manager.spawned_hints[0]
-    assert '"active_count": 1' in result.content
-    assert '"free_exploration_worker": {"spawned": true' in result.content
+    # TaskOutput 本身绝不会触发 spawn；该字段也不再出现在返回内容里。
+    assert manager.spawned_hints == []
+    assert "free_exploration_worker" not in result.content
+    assert '"active_count": 0' in result.content
+
+
+def test_spawn_free_exploration_tool_delegates_to_manager_and_records_node():
+    """`SpawnFreeExploration` 工具（显式调用）应转发给
+    `manager.spawn_free_exploration_if_available()`，并在成功时把新 worker 记入 search graph。"""
+    class StubManager:
+        def __init__(self):
+            self.calls = 0
+
+        def spawn_free_exploration_if_available(self, *, exploration_constraints=None):
+            self.calls += 1
+            self.constraints = exploration_constraints
+            return {
+                "spawned": True,
+                "worker_id": "w-free-1",
+                "direction_id": "free-exploration",
+                "gap_id": "open-exploration",
+            }
+
+    class Registry:
+        def pending_checkpoint_ids(self):
+            return []
+
+        def load(self):
+            return {"blockers": {}}
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.search = orchestrator_module.SearchSession()
+    orch.curator_queue = object()
+    orch.blocker_registry = Registry()
+    orch.research_state = SimpleNamespace(load=lambda: {"directions": {}})
+    manager = StubManager()
+
+    result = orch._spawn_free_exploration_tool(manager, {})
+
+    assert manager.calls == 1
+    assert "Free Exploration Constraints" in manager.constraints
+    assert not result.is_error
+    assert '"spawned": true' in result.content
+    node = orch.search.graph.get(orch.search.root.children[0])
+    assert node.worker_id == "w-free-1"
+    assert node.direction_id == "free-exploration"
+
+
+def test_spawn_free_exploration_is_blocked_until_curation_finishes():
+    class Registry:
+        def pending_checkpoint_ids(self):
+            return ["checkpoint-0042"]
+
+    class StubManager:
+        def __init__(self):
+            self.calls = 0
+
+        def spawn_free_exploration_if_available(self, *, exploration_constraints=None):
+            self.calls += 1
+            return {"spawned": True}
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.search = orchestrator_module.SearchSession()
+    orch.curator_queue = object()
+    orch.blocker_registry = Registry()
+    manager = StubManager()
+
+    result = orch._spawn_free_exploration_tool(manager, {})
+
+    assert not result.is_error
+    assert '"reason": "blocker_curation_pending"' in result.content
+    assert "checkpoint-0042" in result.content
+    assert manager.calls == 0
+
+
+def test_spawn_free_exploration_is_blocked_for_stalled_repeated_obligation(tmp_path):
+    class Registry:
+        def pending_checkpoint_ids(self):
+            return []
+
+    class StubManager:
+        def __init__(self):
+            self.calls = 0
+
+        def spawn_free_exploration_if_available(self, *, exploration_constraints=None):
+            self.calls += 1
+            return {"spawned": True}
+
+    audit_state_path = tmp_path / "progress_audit_state.json"
+    audit_state_path.write_text(
+        json.dumps({
+            "latest": {
+                "status": "completed",
+                "verdict": "STALLED",
+                "repeated_avoided_obligation": {
+                    "direction_id": "structural-lower-bound",
+                    "gap_id": "n-plus-two",
+                    "statement": "Rule out Case 2 of an N+1-rectangle tiling.",
+                },
+                "recommended_next_action": "Attack Case 2 directly.",
+            }
+        }),
+        encoding="utf-8",
+    )
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.search = orchestrator_module.SearchSession()
+    orch.curator_queue = object()
+    orch.blocker_registry = Registry()
+    orch.layout = SimpleNamespace(progress_audit_state_path=audit_state_path)
+    manager = StubManager()
+
+    result = orch._spawn_free_exploration_tool(manager, {})
+
+    assert not result.is_error
+    assert '"reason": "stalled_obligation_requires_targeted_attack"' in result.content
+    assert "structural-lower-bound" in result.content
+    assert "n-plus-two" in result.content
+    assert '"consolidation": true' in result.content
+    assert manager.calls == 0
+
+
+def test_stalled_free_exploration_gate_prescribes_falsification_when_required(tmp_path):
+    audit_state_path = tmp_path / "progress_audit_state.json"
+    audit_state_path.write_text(
+        json.dumps({
+            "latest": {
+                "status": "completed",
+                "verdict": "STALLED",
+                "repeated_avoided_obligation": {
+                    "direction_id": "structural-lower-bound",
+                    "gap_id": "n-plus-two",
+                    "statement": "Rule out Case 2 of an N+1-rectangle tiling.",
+                },
+            }
+        }),
+        encoding="utf-8",
+    )
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.layout = SimpleNamespace(progress_audit_state_path=audit_state_path)
+    orch.research_state = SimpleNamespace(
+        dispatch_preflight=lambda **_kwargs: {"allowed": False, "reason": "falsification_required"}
+    )
+
+    preflight = orch._free_exploration_preflight()
+
+    assert preflight["allowed"] is False
+    assert preflight["targeted_attack"]["consolidation"] is True
+    assert preflight["targeted_attack"]["method_id"] == "falsification"
+    assert preflight["targeted_attack"]["pinned_target"].startswith("Construct a checkable counterexample")
+
+
+def test_free_constraints_include_method_taboos_and_active_blockers():
+    class Registry:
+        def load(self):
+            return {
+                "blockers": {
+                    "repeated-obligation": {
+                        "status": "active",
+                        "blocker_id": "repeated-obligation",
+                        "statement": "Establish the missing global compatibility condition.",
+                    }
+                }
+            }
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.blocker_registry = Registry()
+    orch.research_state = SimpleNamespace(load=lambda: {
+        "directions": {
+            "route-a": {
+                "status": "active",
+                "failed_methods": [{
+                    "method_family": "counting",
+                    "summary": "Counting alone does not control cross-family conflicts.",
+                }],
+            }
+        }
+    })
+
+    constraints = orch._free_exploration_constraints()
+
+    assert "`counting` on `route-a`" in constraints
+    assert "repeated-obligation" in constraints
+    assert "not a restatement" in constraints
+
+
+def test_spawn_free_exploration_tool_surfaces_no_slot_without_recording_node():
+    class StubManager:
+        def spawn_free_exploration_if_available(self, *, exploration_constraints=None):
+            return {"spawned": False, "reason": "no_available_worker_slot"}
+
+    class Registry:
+        def pending_checkpoint_ids(self):
+            return []
+
+        def load(self):
+            return {"blockers": {}}
+
+    orch = Orchestrator.__new__(Orchestrator)
+    orch.search = orchestrator_module.SearchSession()
+    orch.curator_queue = object()
+    orch.blocker_registry = Registry()
+    orch.research_state = SimpleNamespace(load=lambda: {"directions": {}})
+    manager = StubManager()
+
+    result = orch._spawn_free_exploration_tool(manager, {})
+
+    assert not result.is_error
+    assert '"spawned": false' in result.content
+    assert len(orch.search.root.children) == 0
+
+
+def test_worker_only_accepts_exact_proposition_file(tmp_path):
+    worker = object.__new__(Worker)
+    worker.worker_dir = tmp_path
+    (tmp_path / "curated_frontier.md").write_text("# Curated Frontier\n", encoding="utf-8")
+    (tmp_path / "free_exploration.md").write_text("# Guidance\n", encoding="utf-8")
+
+    assert worker._find_proposition_file() is None
+
+    proposition = tmp_path / "proposition.md"
+    proposition.write_text("## Statement\n\nA.\n\n## Proof\n\nB.\n", encoding="utf-8")
+    assert worker._find_proposition_file() == proposition
+    assert worker._validate_proposition_file(proposition) is None
+
+
+def test_worker_rejects_invalid_proposition_protocol(tmp_path):
+    proposition = tmp_path / "proposition.md"
+    proposition.write_text("# Guidance only\n", encoding="utf-8")
+    assert "exactly ## Statement" in (Worker._validate_proposition_file(proposition) or "")
 
 
 def test_task_output_syncs_changed_root_hint_and_reports_update(tmp_path, monkeypatch):

@@ -144,8 +144,8 @@ def main() -> None:
                         help="Path to the problem markdown file (default: problem.md)")
     parser.add_argument("--hint", type=str, default=None,
                         help="Path to an optional hint markdown file")
-    parser.add_argument("--workers", type=int, default=None,
-                        help="Maximum number of concurrent workers")
+    parser.add_argument("--workers", type=int, default=2,
+                        help="Maximum number of concurrent workers (default: 2)")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to an agent suite YAML file or directory containing agents.yaml")
     parser.add_argument("--max_verify_rounds", type=int, default=None,
