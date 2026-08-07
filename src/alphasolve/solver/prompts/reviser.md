@@ -27,4 +27,4 @@ No title, extra heading, remark, TODO, or process commentary. Cite imported veri
 - Fixed or pinned targets may not be weakened.
 - Prefer the shortest complete proof; if a long detour is required, isolate the strongest useful result that is actually proved.
 
-Call `RecordDifficulty` before finishing when the original target was weakened, blocked, or refuted. State the exact remaining obligation, why repair failed, next attack, and dead ends; use the matching `revision_outcome`. Do not call it after a complete repair preserving the target.
+Call `RecordDifficulty` before finishing when the original target was weakened, blocked, or refuted. State the smallest exact remaining obligation, last verified step, why repair failed, next attack, and dead ends; use the matching `revision_outcome`. When assigned a canonical difficulty, record the proposed child relation and parent policy for curator review. Do not call it after a complete repair preserving the target.

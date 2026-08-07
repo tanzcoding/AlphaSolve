@@ -19,11 +19,8 @@ agent:
     - SpawnWorker
     - Agent
     - SpawnFreeExploration
-    - RegisterResearchRoute
-    - AssessResearchRoute
-    - RecordResearchImpact
-    - RecordDispatchConstraint
-    - SyncResearchState
+    - DifficultyFrontier
+    - RecordDifficultyOutcome
     - TaskOutput
     - GetCurrentTime
   tool_parameters:
@@ -55,18 +52,12 @@ agent:
       hint:
         type: string
         maxLength: 4000
-      route_id:
+      difficulty_id:
         type: string
         maxLength: 80
         pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
-      direction_id:
-        type: string
-        maxLength: 80
-        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
-      gap_id:
-        type: string
-        maxLength: 80
-        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+      parent_direct_attack:
+        type: boolean
       method_id:
         type: string
         enum: [direct_proof, contradiction, construction, computation, falsification, consolidation]
@@ -87,6 +78,11 @@ agent:
           maxLength: 200
       frontier_note:
         type: string
+        maxLength: 2000
+    SpawnFreeExploration:
+      reason:
+        type: string
+        minLength: 1
         maxLength: 2000
     TaskOutput:
       seconds:

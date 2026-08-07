@@ -43,8 +43,7 @@ def _node_to_dict(graph: SearchGraph, node: SearchNode) -> dict[str, Any]:
         "state_id": node.state_id,
         "short_id": _short(node.state_id),
         "hint": node.hypothesis,  # hypothesis 即 spawn 时的 hint
-        "direction_id": node.direction_id,
-        "gap_id": node.gap_id,
+        "difficulty_id": node.difficulty_id,
         "method_id": getattr(node, "method_id", None),
         "worker_id": getattr(node, "worker_id", None),
         "impact_status": node.impact_status,
@@ -192,9 +191,10 @@ def render_search_tree(session: "SearchSession") -> str:
         nd = by_id[sid]
         glyph = _STATUS_GLYPH.get(nd["status"], "?")
         connector = "" if is_root else ("└─ " if is_last else "├─ ")
+        difficulty_note = f" difficulty={nd['difficulty_id']}" if nd.get("difficulty_id") else ""
         header = (
             f"{prefix}{connector}{glyph} {nd['short_id']} "
-            f"[{nd['status']}] d{nd['depth']}  {_clip(nd['hint'], 90)}"
+            f"[{nd['status']}] d{nd['depth']}{difficulty_note}  {_clip(nd['hint'], 90)}"
         )
         lines.append(header)
 

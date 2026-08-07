@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -10,22 +11,22 @@ from alphasolve.agent.tools import ToolRegistry, ToolResult
 _MAX_FIELD_LENGTH = 4000
 _TARGET_STATUSES = {"YES", "NO", "PARTIAL"}
 _REVISION_OUTCOMES = {"repaired", "weakened", "blocked", "refuted"}
-_HANDOFF_SCHEMA_VERSION = 1
+_RELATIONS_TO_PARENT = {"prerequisite", "alternative", "weakened_target", "method_blocked", "refutes"}
+_RESOLUTION_POLICIES = {"all_of", "any_of", "manual"}
+_HANDOFF_SCHEMA_VERSION = 2
 _NON_MATHEMATICAL_FAILURES = {"generator_protocol_failure", "execution_failed"}
+_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 
 
 def difficulty_json_path(declaration_path: Path) -> Path:
-    """Return the structured companion path for a human-readable declaration."""
     return declaration_path.with_name("difficulty_declaration.json")
 
 
 def difficulty_handoff_path(declaration_path: Path) -> Path:
-    """Return the worker-final, runtime-consumable difficulty handoff path."""
     return declaration_path.with_name("difficulty_handoff.json")
 
 
 def load_difficulty_declaration(declaration_path: Path) -> dict[str, Any] | None:
-    """Read a declaration sidecar without making worker completion depend on it."""
     try:
         value = json.loads(difficulty_json_path(declaration_path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -47,8 +48,7 @@ def materialize_difficulty_handoff(
     *,
     declaration_path: Path,
     worker_id: str,
-    direction_id: str | None,
-    gap_id: str | None,
+    difficulty_id: str | None = None,
     method_id: str | None,
     execution_status: str,
     failure_kind: str | None,
@@ -57,25 +57,20 @@ def materialize_difficulty_handoff(
     proposition_file: Path | None,
     verified_file: Path | None,
 ) -> tuple[Path | None, dict[str, Any] | None]:
-    """Create a structured handoff from the latest worker declaration.
+    """Package one worker-local difficulty proposal for checkpoint curation.
 
-    A declaration is an agent's local observation and may be stale after revision. This
-    handoff deliberately does not promote it to a canonical blocker: it marks the item
-    as a candidate for orchestrator/reviewer/curator comparison and preserves evidence
-    paths needed to check the claim against the final trail.
+    This never assigns a canonical identity.  The worker only reports a proposed
+    child relationship to its assigned canonical difficulty; the curator reconciles
+    that proposal into the persistent difficulty DAG.
     """
     declaration = load_difficulty_declaration(declaration_path)
-    if declaration is None:
+    if declaration is None or str(failure_kind or "") in _NON_MATHEMATICAL_FAILURES:
         return None, None
-    if str(failure_kind or "") in _NON_MATHEMATICAL_FAILURES:
-        return None, None
-
     revisions = declaration.get("revisions")
     latest = revisions[-1] if isinstance(revisions, list) and revisions and isinstance(revisions[-1], dict) else None
     source = latest or declaration.get("generator")
     if not isinstance(source, dict):
         return None, None
-
     target_status = str(source.get("target_status") or declaration.get("target_status") or "").strip()
     revision_outcome = str(source.get("revision_outcome") or "").strip() or None
     if target_status == "YES" and revision_outcome in {None, "repaired"}:
@@ -90,9 +85,13 @@ def materialize_difficulty_handoff(
     def clean(value: Any, *, limit: int = _MAX_FIELD_LENGTH) -> str:
         return " ".join(str(value or "").split())[:limit]
 
-    runtime_context = declaration.get("runtime_context")
-    if not isinstance(runtime_context, dict):
-        runtime_context = {}
+    context = declaration.get("runtime_context")
+    if not isinstance(context, dict):
+        context = {}
+    source_difficulty_id = clean(
+        source.get("source_difficulty_id") or context.get("source_difficulty_id") or f"worker-{worker_id}-difficulty",
+        limit=80,
+    )
     evidence_refs = [
         str(path)
         for path in (declaration_path, result_summary_file, review_file, proposition_file, verified_file)
@@ -100,11 +99,14 @@ def materialize_difficulty_handoff(
     ]
     handoff: dict[str, Any] = {
         "schema_version": _HANDOFF_SCHEMA_VERSION,
+        "source_difficulty_id": source_difficulty_id,
         "worker_id": worker_id,
-        "direction_id": direction_id or runtime_context.get("direction_id"),
-        "gap_id": gap_id or runtime_context.get("gap_id"),
-        "method_id": method_id or runtime_context.get("method_id"),
-        "assigned_target": clean(runtime_context.get("assigned_target")),
+        "difficulty_id": difficulty_id or context.get("difficulty_id"),
+        "parent_difficulty_id": source.get("parent_difficulty_id") or context.get("difficulty_id"),
+        "relation_to_parent": source.get("relation_to_parent") or "prerequisite",
+        "parent_resolution_policy": source.get("parent_resolution_policy") or "manual",
+        "method_id": method_id or context.get("method_id"),
+        "assigned_target": clean(context.get("assigned_target")),
         "execution_status": str(execution_status or "unknown"),
         "failure_kind": failure_kind,
         "target_status": target_status or "UNKNOWN",
@@ -116,8 +118,8 @@ def materialize_difficulty_handoff(
         "suggested_attack": clean(source.get("suggested_attack")),
         "dead_ends": clean(source.get("dead_ends")),
         "evidence_refs": evidence_refs,
-        "source_confidence": "worker_reconciled_pending_portfolio_review",
-        "requires_portfolio_comparison": disposition == "active_candidate",
+        "source_confidence": "worker_reconciled_pending_curator_curation",
+        "requires_checkpoint_curation": disposition == "active_candidate",
     }
     path = difficulty_handoff_path(declaration_path)
     _atomic_write_json(path, handoff)
@@ -130,7 +132,6 @@ def register_difficulty_declaration_tool(
     declaration_path: Path,
     role: str,
 ) -> None:
-    """Register the fixed-path blocker record tool for a generator or reviser."""
     if role not in {"generator", "reviser"}:
         raise ValueError(f"unsupported difficulty declaration role: {role}")
 
@@ -142,16 +143,21 @@ def register_difficulty_declaration_tool(
             suggested_attack = _required_text(args, "suggested_attack")
             last_verified_step = _optional_text(args, "last_verified_step")
             dead_ends = _optional_text(args, "dead_ends")
+            relation_to_parent = _optional_choice(args, "relation_to_parent", _RELATIONS_TO_PARENT) or "prerequisite"
+            parent_resolution_policy = _optional_choice(args, "parent_resolution_policy", _RESOLUTION_POLICIES) or "manual"
             revision_outcome = _optional_text(args, "revision_outcome") or "blocked"
             if role == "reviser" and revision_outcome not in _REVISION_OUTCOMES:
-                raise ValueError(
-                    "revision_outcome must be one of "
-                    + ", ".join(sorted(_REVISION_OUTCOMES))
-                )
-
+                raise ValueError("revision_outcome must be one of " + ", ".join(sorted(_REVISION_OUTCOMES)))
             declaration_path.parent.mkdir(parents=True, exist_ok=True)
             context = _load_runtime_context(declaration_path)
+            source_difficulty_id = _safe_source_id(
+                args.get("source_difficulty_id") or context.get("source_difficulty_id") or f"worker-{context.get('worker_id') or 'unknown'}-difficulty"
+            )
             record = {
+                "source_difficulty_id": source_difficulty_id,
+                "parent_difficulty_id": context.get("difficulty_id"),
+                "relation_to_parent": relation_to_parent,
+                "parent_resolution_policy": parent_resolution_policy,
                 "target_status": target_status,
                 "difficulty": difficulty,
                 "last_verified_step": last_verified_step,
@@ -165,98 +171,64 @@ def register_difficulty_declaration_tool(
                 "generator": None,
                 "revisions": [],
             }
+            state["schema_version"] = _HANDOFF_SCHEMA_VERSION
             state["runtime_context"] = context or state.get("runtime_context") or {}
+            existing_source = (state.get("generator") or {}).get("source_difficulty_id")
+            if existing_source and existing_source != source_difficulty_id:
+                raise ValueError("source_difficulty_id must remain stable across generator and reviser records")
             if role == "generator":
                 if declaration_path.exists():
-                    raise ValueError(
-                        "generator difficulty declaration already exists; preserve the original declaration for later comparison"
-                    )
-                declaration_path.write_text(
-                    _generator_declaration(**record),
-                    encoding="utf-8",
-                )
+                    raise ValueError("generator difficulty declaration already exists; preserve the original declaration for later comparison")
+                declaration_path.write_text(_generator_declaration(**record), encoding="utf-8")
                 state["generator"] = record
                 record_kind = "generator_initial"
             else:
-                if declaration_path.exists():
-                    existing = declaration_path.read_text(encoding="utf-8")
-                else:
-                    existing = "# Difficulty Declaration\n\n_No generator declaration was recorded before revision._\n"
+                existing = declaration_path.read_text(encoding="utf-8") if declaration_path.exists() else "# Difficulty Declaration\n\n_No generator declaration was recorded before revision._\n"
                 update_number = existing.count("### Reviser Update ") + 1
                 declaration_path.write_text(
-                    existing.rstrip()
-                    + "\n\n"
-                    + _reviser_update(
+                    existing.rstrip() + "\n\n" + _reviser_update(
                         update_number=update_number,
                         revision_outcome=revision_outcome,
                         **record,
                     ),
                     encoding="utf-8",
                 )
-                state.setdefault("revisions", []).append({
-                    **record,
-                    "revision_outcome": revision_outcome,
-                    "update_number": update_number,
-                })
+                state.setdefault("revisions", []).append({**record, "revision_outcome": revision_outcome, "update_number": update_number})
                 record_kind = "reviser_update"
             _atomic_write_json(difficulty_json_path(declaration_path), state)
-            return ToolResult(
-                json.dumps(
-                    {
-                        "recorded": True,
-                        "record_kind": record_kind,
-                        "path": str(declaration_path),
-                        "json_path": str(difficulty_json_path(declaration_path)),
-                    },
-                    ensure_ascii=False,
-                )
-            )
+            return ToolResult(json.dumps({
+                "recorded": True,
+                "record_kind": record_kind,
+                "source_difficulty_id": source_difficulty_id,
+                "parent_difficulty_id": context.get("difficulty_id"),
+                "path": str(declaration_path),
+                "json_path": str(difficulty_json_path(declaration_path)),
+            }, ensure_ascii=False))
         except ValueError as exc:
             return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
 
     registry.register(
         name="RecordDifficulty",
         description=(
-            "Record a precise mathematical blocker in the fixed worker-local `difficulty_declaration.md` "
-            "and its structured JSON sidecar. Use this when the assigned target is only partially solved, weakened, "
-            "blocked by a substantive gap, or refuted. Generator records the original declaration once; reviser appends "
-            "an update without overwriting that original evidence. State the exact unresolved obligation, the last "
-            "verified step, why the route fails, and a concrete next attack. This declaration is later reconciled against "
-            "the final review before the orchestrator, research reviewer, and curator compare it with other attempts."
+            "Record a precise worker-local difficulty whenever the assigned target is weakened, blocked, or refuted. "
+            "This is a proposal for the curator-owned recursive difficulty DAG, not a canonical edit. State the smallest "
+            "unresolved obligation, the last verified step, why the attempted argument fails, and a concrete attack. If this "
+            "worker was assigned an existing difficulty, classify the proposed child as prerequisite, alternative, weakened_target, "
+            "method_blocked, or refutes, and state how the parent would combine its children."
         ),
         parameters={
             "type": "object",
             "properties": {
-                "target_status": {
-                    "type": "string",
-                    "enum": sorted(_TARGET_STATUSES),
-                    "description": "Whether the originally assigned target was solved exactly: YES, NO, or PARTIAL.",
-                },
-                "revision_outcome": {
-                    "type": "string",
-                    "enum": sorted(_REVISION_OUTCOMES),
-                    "description": "Reviser only: repaired, weakened, blocked, or refuted. Ignored for generator.",
-                },
-                "difficulty": {
-                    "type": "string",
-                    "description": "Exact mathematical claim, estimate, construction, or case distinction that remains unresolved or was avoided.",
-                },
-                "last_verified_step": {
-                    "type": "string",
-                    "description": "Optional strongest rigorous step already established before this difficulty; do not state an unverified inference.",
-                },
-                "why_hard": {
-                    "type": "string",
-                    "description": "Why current arguments do not resolve this exact difficulty, including failed attempts if known.",
-                },
-                "suggested_attack": {
-                    "type": "string",
-                    "description": "A concrete next attack entry point, or 'Requires new mathematical tools' if none is known.",
-                },
-                "dead_ends": {
-                    "type": "string",
-                    "description": "Optional definitive dead ends and their reasons; leave empty if none are known.",
-                },
+                "source_difficulty_id": {"type": "string", "description": "Optional stable local slug; defaults to this worker's generated source id."},
+                "target_status": {"type": "string", "enum": sorted(_TARGET_STATUSES)},
+                "revision_outcome": {"type": "string", "enum": sorted(_REVISION_OUTCOMES)},
+                "difficulty": {"type": "string", "description": "Exact smallest unresolved mathematical obligation."},
+                "relation_to_parent": {"type": "string", "enum": sorted(_RELATIONS_TO_PARENT)},
+                "parent_resolution_policy": {"type": "string", "enum": sorted(_RESOLUTION_POLICIES)},
+                "last_verified_step": {"type": "string"},
+                "why_hard": {"type": "string"},
+                "suggested_attack": {"type": "string"},
+                "dead_ends": {"type": "string"},
             },
             "required": ["target_status", "difficulty", "why_hard", "suggested_attack"],
         },
@@ -265,21 +237,28 @@ def register_difficulty_declaration_tool(
 
 
 def _load_runtime_context(declaration_path: Path) -> dict[str, Any]:
-    target_path = declaration_path.parent / "research_target.json"
     try:
-        value = json.loads(target_path.read_text(encoding="utf-8"))
+        value = json.loads((declaration_path.parent / "research_target.json").read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
     if not isinstance(value, dict):
         return {}
-    assigned_target = str(value.get("pinned_target") or value.get("hint") or "").strip()
+    assigned_target = str(value.get("pinned_target") or value.get("difficulty_statement") or value.get("hint") or "").strip()
+    worker_id = str(value.get("worker_id") or "").strip()
     return {
-        "worker_id": str(value.get("worker_id") or "").strip(),
-        "direction_id": str(value.get("direction_id") or "").strip() or None,
-        "gap_id": str(value.get("gap_id") or "").strip() or None,
+        "worker_id": worker_id,
+        "difficulty_id": str(value.get("difficulty_id") or "").strip() or None,
+        "source_difficulty_id": _safe_source_id(f"worker-{worker_id}-difficulty") if worker_id else None,
         "method_id": str(value.get("method_id") or "").strip() or None,
         "assigned_target": assigned_target[:_MAX_FIELD_LENGTH],
     }
+
+
+def _safe_source_id(value: Any) -> str:
+    text = str(value or "").strip()
+    if not _ID.fullmatch(text):
+        raise ValueError("source_difficulty_id must be a stable slug")
+    return text
 
 
 def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
@@ -291,6 +270,13 @@ def _atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 def _required_choice(args: dict[str, Any], field: str, choices: set[str]) -> str:
     value = str(args.get(field) or "").strip()
     if value not in choices:
+        raise ValueError(f"{field} must be one of {sorted(choices)}")
+    return value
+
+
+def _optional_choice(args: dict[str, Any], field: str, choices: set[str]) -> str:
+    value = str(args.get(field) or "").strip()
+    if value and value not in choices:
         raise ValueError(f"{field} must be one of {sorted(choices)}")
     return value
 
@@ -309,64 +295,54 @@ def _optional_text(args: dict[str, Any], field: str) -> str:
     return value
 
 
-def _generator_declaration(
-    *,
-    target_status: str,
-    difficulty: str,
-    last_verified_step: str,
-    why_hard: str,
-    suggested_attack: str,
-    dead_ends: str,
-) -> str:
-    return "\n".join(
-        [
-            "# Difficulty Declaration",
-            "",
-            "## Generator Declaration",
-            "",
-            f"### Target Solved?\n{target_status}",
-            "",
-            f"### Difficulty Avoided\n{difficulty}",
-            "",
-            f"### Last Verified Step\n{last_verified_step or '_Not recorded._'}",
-            "",
-            f"### Why Is the Difficulty Hard?\n{why_hard}",
-            "",
-            f"### Suggested Attack Entry Point\n{suggested_attack}",
-            "",
-            f"### Dead Ends\n{dead_ends or '_None recorded._'}",
-            "",
-        ]
-    )
+def _generator_declaration(**record: Any) -> str:
+    return "\n".join([
+        "# Difficulty Declaration",
+        "",
+        "## Generator Declaration",
+        "",
+        f"- Source difficulty id: {record['source_difficulty_id']}",
+        f"- Parent difficulty id: {record.get('parent_difficulty_id') or '(root candidate)'}",
+        f"- Relation to parent: {record['relation_to_parent']}",
+        f"- Parent resolution policy: {record['parent_resolution_policy']}",
+        f"- Target status: {record['target_status']}",
+        "",
+        "## Exact Difficulty",
+        record["difficulty"],
+        "",
+        "## Last Verified Step",
+        record["last_verified_step"] or "Not supplied.",
+        "",
+        "## Why Current Argument Fails",
+        record["why_hard"],
+        "",
+        "## Suggested Attack",
+        record["suggested_attack"],
+        "",
+        "## Dead Ends",
+        record["dead_ends"] or "None recorded.",
+        "",
+    ])
 
 
-def _reviser_update(
-    *,
-    update_number: int,
-    target_status: str,
-    revision_outcome: str,
-    difficulty: str,
-    last_verified_step: str,
-    why_hard: str,
-    suggested_attack: str,
-    dead_ends: str,
-) -> str:
-    return "\n".join(
-        [
-            f"### Reviser Update {update_number}",
-            "",
-            f"- Outcome: {revision_outcome}",
-            f"- Target Solved?: {target_status}",
-            "",
-            f"#### Difficulty Avoided or Remaining\n{difficulty}",
-            "",
-            f"#### Last Verified Step\n{last_verified_step or '_Not recorded._'}",
-            "",
-            f"#### Why It Remains Hard\n{why_hard}",
-            "",
-            f"#### Suggested Attack Entry Point\n{suggested_attack}",
-            "",
-            f"#### Dead Ends\n{dead_ends or '_None recorded._'}",
-            "",
-        ]
-    )
+def _reviser_update(*, update_number: int, revision_outcome: str, **record: Any) -> str:
+    return "\n".join([
+        f"### Reviser Update {update_number}",
+        "",
+        f"- Revision outcome: {revision_outcome}",
+        f"- Source difficulty id: {record['source_difficulty_id']}",
+        f"- Parent difficulty id: {record.get('parent_difficulty_id') or '(root candidate)'}",
+        f"- Relation to parent: {record['relation_to_parent']}",
+        f"- Parent resolution policy: {record['parent_resolution_policy']}",
+        f"- Target status: {record['target_status']}",
+        "",
+        "**Exact Difficulty:** " + record["difficulty"],
+        "",
+        "**Last Verified Step:** " + (record["last_verified_step"] or "Not supplied."),
+        "",
+        "**Why Current Argument Fails:** " + record["why_hard"],
+        "",
+        "**Suggested Attack:** " + record["suggested_attack"],
+        "",
+        "**Dead Ends:** " + (record["dead_ends"] or "None recorded."),
+    ])

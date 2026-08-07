@@ -13,9 +13,9 @@ from typing import TYPE_CHECKING, Any, Callable
 from alphasolve.agent import Agent, Workspace
 
 from .curation_records import read_recent_events, relative_path
-from .research_state import ResearchStateStore
 from .tool_runtime import build_solver_tool_registry
 from .workspace_access import RoleWorkspaceAccess
+from .research_frontier_state import write_research_frontier_state
 
 if TYPE_CHECKING:
     from .client_factory import ClientFactory
@@ -46,7 +46,6 @@ class ProgressAuditQueue:
     """
 
     DEFAULT_OUTCOMES_PER_AUDIT = 5
-    DEFAULT_NO_PROGRESS_OUTCOMES_BEFORE_RESET = 10
 
     def __init__(
         self,
@@ -59,7 +58,6 @@ class ProgressAuditQueue:
         log_session: "LogSession | None" = None,
         stop_event: threading.Event | None = None,
         outcomes_per_audit: int | None = None,
-        no_progress_outcomes_before_reset: int | None = None,
         audit_runner: ProgressAuditRunner | None = None,
     ) -> None:
         self.layout = layout
@@ -70,13 +68,6 @@ class ProgressAuditQueue:
         self.log_session = log_session
         self.stop_event = stop_event
         self.outcomes_per_audit = max(1, int(outcomes_per_audit or self.DEFAULT_OUTCOMES_PER_AUDIT))
-        self.no_progress_outcomes_before_reset = max(
-            1,
-            int(
-                no_progress_outcomes_before_reset
-                or self.DEFAULT_NO_PROGRESS_OUTCOMES_BEFORE_RESET
-            ),
-        )
         self.audit_runner = audit_runner
         self._queue: queue.Queue[ProgressAuditTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="progress-audit")
@@ -136,11 +127,6 @@ class ProgressAuditQueue:
                 self._state["pending_checkpoints"] = pending
                 self._queue.put(task)
             self._save_state_locked()
-        try:
-            ResearchStateStore(self.layout.verified_dir).refresh_markdown_view()
-        except Exception:
-            # The generated Markdown view is observational; outcome durability must not depend on it.
-            pass
         return True
 
     def status_payload(self) -> dict[str, Any]:
@@ -152,7 +138,6 @@ class ProgressAuditQueue:
         return {
             "outcomes_recorded": completed,
             "outcomes_per_audit": self.outcomes_per_audit,
-            "no_progress_outcomes_before_reset": self.no_progress_outcomes_before_reset,
             "outcomes_until_next_audit": max(0, self.outcomes_per_audit - (completed - scheduled)),
             "pending_checkpoints": pending,
             "latest": latest or None,
@@ -225,6 +210,10 @@ class ProgressAuditQueue:
         audit_path = task.checkpoint_dir / "audit.md"
         audit_path.write_text(audit_text.strip() + "\n", encoding="utf-8")
         decision = self._finish_task(task, decision)
+        try:
+            write_research_frontier_state(self.layout.workspace_dir)
+        except OSError:
+            pass
         curator_brief_path = _write_curator_brief(
             layout=self.layout,
             task=task,
@@ -247,47 +236,15 @@ class ProgressAuditQueue:
 
     def _finish_task(self, task: ProgressAuditTask, decision: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            pending = [
+            self._state["pending_checkpoints"] = [
                 item for item in self._state.get("pending_checkpoints") or []
                 if item != task.checkpoint_id
             ]
-            self._state["pending_checkpoints"] = pending
-            verdict = str(decision.get("verdict") or "")
-            if decision.get("status") == "completed" and verdict == "ADVANCING":
-                no_progress_outcomes = 0
-            elif decision.get("status") == "completed" and verdict in {"STALLED", "MISALIGNED"}:
-                no_progress_outcomes = int(self._state.get("no_progress_outcomes") or 0) + (
-                    task.watermark - task.previous_watermark
-                )
-            else:
-                no_progress_outcomes = int(self._state.get("no_progress_outcomes") or 0)
-            context_reset_required = no_progress_outcomes >= self.no_progress_outcomes_before_reset
-            decision = {
-                **decision,
-                "no_progress_outcomes": no_progress_outcomes,
-                "no_progress_threshold": self.no_progress_outcomes_before_reset,
-                "context_reset_required": context_reset_required,
-                "context_reset_handled": False,
-            }
-            self._state["no_progress_outcomes"] = no_progress_outcomes
             self._state["latest"] = decision
             self._state["updated_at"] = _now_iso()
             _write_json(task.checkpoint_dir / "decision.json", decision)
             self._save_state_locked()
             return decision
-
-    def mark_context_reset_handled(self, checkpoint_id: str) -> None:
-        """Persist that a fresh orchestrator session was scheduled for this checkpoint."""
-        with self._lock:
-            latest = dict(self._state.get("latest") or {})
-            if latest.get("checkpoint_id") != checkpoint_id:
-                return
-            latest["context_reset_handled"] = True
-            latest["context_reset_handled_at"] = _now_iso()
-            self._state["latest"] = latest
-            self._state["updated_at"] = _now_iso()
-            self._save_state_locked()
-            _write_json(self.layout.progress_audits_dir / checkpoint_id / "decision.json", latest)
 
     def _run_auditor(self, prompt: str) -> str:
         """Run the process auditor as an independent system role.
@@ -329,7 +286,6 @@ class ProgressAuditQueue:
             "watermark": watermark,
             "previous_watermark": previous_watermark,
             "outcomes_per_audit": self.outcomes_per_audit,
-            "no_progress_outcomes_before_reset": self.no_progress_outcomes_before_reset,
             "created_at": _now_iso(),
             "evidence_path": _relative_to_workspace(evidence_path, self.layout.workspace_dir),
         }
@@ -359,14 +315,11 @@ class ProgressAuditQueue:
             "worker_id": str(payload.get("worker_id") or ""),
             "status": str(payload.get("status") or "unknown"),
             "failure_kind": str(payload.get("failure_kind") or ""),
-            "route_id": payload.get("route_id"),
-            "direction_id": payload.get("direction_id"),
-            "gap_id": payload.get("gap_id"),
+            "difficulty_id": payload.get("difficulty_id"),
             "method_id": payload.get("method_id"),
             "pinned_target": str(payload.get("pinned_target") or "")[:2000],
             "worker_hint": str(payload.get("worker_hint") or "")[:2000],
             "orchestrator_session_id": payload.get("orchestrator_session_id"),
-            "context_generation": payload.get("context_generation"),
             "rubric": str(payload.get("rubric") or "")[:4000],
             "summary": str(payload.get("summary") or "")[:4000],
             "result_summary": result_summary,
@@ -393,7 +346,6 @@ class ProgressAuditQueue:
             "last_scheduled_outcome": int(data.get("last_scheduled_outcome") or 0),
             "recorded_worker_ids": list(data.get("recorded_worker_ids") or []),
             "pending_checkpoints": list(data.get("pending_checkpoints") or []),
-            "no_progress_outcomes": int(data.get("no_progress_outcomes") or 0),
             "latest": data.get("latest") if isinstance(data.get("latest"), dict) else {},
             "updated_at": str(data.get("updated_at") or ""),
         }
@@ -412,8 +364,7 @@ def _render_evidence(
 ) -> str:
     visible = [item for item in outcomes if int(item.get("sequence") or 0) <= watermark]
     delta = [item for item in visible if int(item.get("sequence") or 0) > previous_watermark]
-    state = ResearchStateStore(layout.verified_dir).load()
-    impacts = state.get("impacts") if isinstance(state.get("impacts"), dict) else {}
+    impacts: dict[str, Any] = {}
     counts: dict[str, int] = {}
     for item in visible:
         status = str(item.get("status") or "unknown")
@@ -432,8 +383,8 @@ def _render_evidence(
         "## Original Objective",
         _read_text(layout.workspace_dir / "problem.md", limit=12000) or "(problem.md unavailable)",
         "",
-        "## Current Strategic State",
-        _read_text(layout.verified_dir / "state.md", limit=12000) or "(state.md unavailable)",
+        "## Current Curated Difficulty Frontier",
+        _read_text(layout.workspace_dir / "curation_records" / "difficulty_dag.json", limit=12000) or "(difficulty DAG unavailable)",
         "",
         "## Newly Settled Outcomes",
     ]
@@ -456,9 +407,8 @@ def _render_outcomes(
         impact = impacts.get(worker_id) if isinstance(impacts.get(worker_id), dict) else {}
         lines.extend([
             f"### Outcome {item.get('sequence', '?')}: {item.get('status', 'unknown')}",
-            f"- Route: `{item.get('route_id') or '-'}`",
-            f"- Direction / gap / method: `{item.get('direction_id') or '-'} / {item.get('gap_id') or '-'} / {item.get('method_id') or '-'}`",
-            f"- Orchestrator session / context generation: `{item.get('orchestrator_session_id') or '-'} / {item.get('context_generation') if item.get('context_generation') is not None else '-'}`",
+            f"- Difficulty / method: `{item.get('difficulty_id') or '(root candidate)'} / {item.get('method_id') or '-'}`",
+            f"- Orchestrator session: `{item.get('orchestrator_session_id') or '-'}`",
             f"- Failure kind: `{item.get('failure_kind') or '-'}`",
             f"- Solves original problem: `{bool(item.get('solved_problem'))}`",
         ])
@@ -467,8 +417,7 @@ def _render_outcomes(
             lines.extend(["#### Pre-dispatch Rubric", rubric])
         if impact:
             lines.extend([
-                "#### Orchestrator Impact Assessment",
-                f"- Relation / gap effect / continuation: `{impact.get('relation_to_target') or '-'} / {impact.get('gap_effect') or '-'} / {impact.get('continuation_value') or '-'}`",
+                "#### Legacy Impact Evidence",
                 f"- Assessment summary: {str(impact.get('summary') or '')[:1800]}",
             ])
             rubric_assessment = impact.get("rubric_assessment")
@@ -522,7 +471,6 @@ def _render_manifest(manifest: dict[str, Any]) -> str:
         f"- Outcome watermark: {manifest['watermark']}",
         f"- Previous watermark: {manifest['previous_watermark']}",
         f"- Trigger interval: {manifest['outcomes_per_audit']} settled outcomes",
-        f"- Context-reset threshold: {manifest['no_progress_outcomes_before_reset']} no-progress outcomes",
         f"- Created at: {manifest['created_at']}",
         f"- Evidence: `{manifest['evidence_path']}`",
         "",
@@ -555,8 +503,6 @@ def _write_curator_brief(
         f"- Verdict: `{decision.get('verdict') or 'unknown'}`",
         f"- Terminal gap: {decision.get('terminal_gap') or 'not stated'}",
         f"- Recommended next action: {decision.get('recommended_next_action') or 'not stated'}",
-        f"- No-progress outcomes: `{decision.get('no_progress_outcomes', 0)}/{decision.get('no_progress_threshold', '?')}`",
-        f"- Context reset requested: `{bool(decision.get('context_reset_required'))}`",
         "",
         "## Repeated Avoided Obligation",
         _render_blocker_brief(decision.get("repeated_avoided_obligation")),
@@ -581,8 +527,7 @@ def _write_curator_brief(
         "## Required Comparison Questions",
         "- Which attempts share the same target/gap but differ in method, rubric score, summary, or verification outcome?",
         "- Which correct propositions were incidental because their rubric or impact evidence did not connect them to the terminal gap?",
-        "- Which avoided obligation repeats across multiple outcomes or context generations?",
-        "- After any context reset, did the first new generation materially change target/rubric/method or merely rename the stalled route?",
+        "- Which avoided obligation repeats across multiple outcomes?",
         "- Which observed pattern is reusable enough to record as a strategy rule, and what evidence or exception bounds that rule?",
         "",
         "Do not copy internal worker/session identifiers into knowledge files. Use the raw artifacts only to derive de-identified, evidence-bounded lessons.",
@@ -614,16 +559,11 @@ def _previous_checkpoint_decision(progress_audits_dir: Path, *, before_watermark
 
 def _render_curation_events(events: list[dict[str, Any]]) -> list[str]:
     if not events:
-        return ["- No orchestrator session or reset facts recorded yet."]
+        return ["- No orchestrator session facts recorded yet."]
     lines: list[str] = []
     for event in events:
         kind = str(event.get("kind") or "unknown")
-        if kind == "orchestrator_context_reset":
-            lines.append(
-                "- Context reset: process audit requested a new context generation; "
-                f"verdict={event.get('verdict') or 'unknown'}, terminal gap={event.get('terminal_gap') or 'not stated'}."
-            )
-        elif kind == "orchestrator_session_started":
+        if kind == "orchestrator_session_started":
             lines.append("- A new orchestrator session began.")
         elif kind == "orchestrator_session_finished":
             lines.append(
@@ -661,12 +601,11 @@ def _audit_prompt(task: ProgressAuditTask, workspace_dir: Path) -> str:
         "A mathematically correct result is incidental unless you can cite how it closes a named terminal gap. "
         "State one precise next target, but do not prescribe a method family.\n\n"
         "If the repeated avoided obligation is concrete enough to give the curator a lead, append these exact candidate lines "
-        "after the cited evidence (otherwise write NONE for all three):\n"
-        "BLOCKER_DIRECTION_ID: existing-direction-id | NONE\n"
-        "BLOCKER_GAP_ID: stable-candidate-gap-id | NONE\n"
+        "after the cited evidence (otherwise write NONE for both):\n"
+        "BLOCKER_SOURCE_DIFFICULTY_ID: worker-local-source-id | NONE\n"
         "BLOCKER_STATEMENT: exact unresolved mathematical obligation | NONE\n"
-        "The auditor does not count occurrences, merge approaches, or dispatch work. The curator independently groups the "
-        "outcome evidence into persistent blockers and chooses whether any gate should be active."
+        "The auditor does not assign canonical identity, parent edges, or dispatch work. The curator reconciles evidence "
+        "into the persistent difficulty DAG at the checkpoint."
     )
 
 
@@ -684,30 +623,24 @@ def _parse_audit(text: str) -> tuple[str | None, str, dict[str, Any], str]:
 
 
 def _extract_repeated_blocker(text: str) -> dict[str, str]:
-    direction_match = re.search(r"(?mi)^\s*BLOCKER_DIRECTION_ID:\s*([A-Za-z0-9][A-Za-z0-9._-]*|NONE)\s*$", text)
-    gap_match = re.search(r"(?mi)^\s*BLOCKER_GAP_ID:\s*([A-Za-z0-9][A-Za-z0-9._-]*|NONE)\s*$", text)
+    source_match = re.search(r"(?mi)^\s*BLOCKER_SOURCE_DIFFICULTY_ID:\s*([A-Za-z0-9][A-Za-z0-9._-]*|NONE)\s*$", text)
     statement_match = re.search(r"(?mi)^\s*BLOCKER_STATEMENT:\s*(.+?)\s*$", text)
-    if not all((direction_match, gap_match, statement_match)):
+    if not all((source_match, statement_match)):
         return {}
-    direction_id = direction_match.group(1)
-    gap_id = gap_match.group(1)
+    source_difficulty_id = source_match.group(1)
     statement = statement_match.group(1).strip()
-    if direction_id == "NONE" or gap_id == "NONE" or statement == "NONE":
+    if source_difficulty_id == "NONE" or statement == "NONE":
         return {}
-    return {
-        "direction_id": direction_id,
-        "gap_id": gap_id,
-        "statement": statement[:2000],
-    }
+    return {"source_difficulty_id": source_difficulty_id, "statement": statement[:2000]}
 
 
 def _render_blocker_brief(value: Any) -> str:
     if not isinstance(value, dict) or not value.get("statement"):
         return "no audit candidate recorded"
     return (
-        f"Audit candidate `{value.get('direction_id')}/{value.get('gap_id')}` — "
+        f"Audit difficulty source `{value.get('source_difficulty_id')}` — "
         f"{value.get('statement')}\n\n"
-        "The curator must independently decide persistence, semantic identity, occurrence count, and cross-route provenance."
+        "The curator must independently decide canonical identity, parent relation, status, and evidence provenance."
     )
 
 

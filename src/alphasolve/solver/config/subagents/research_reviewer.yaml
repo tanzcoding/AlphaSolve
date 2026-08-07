@@ -3,9 +3,9 @@ agent:
   name: research_reviewer
   system_prompt_path: ../../prompts/research_reviewer.md
   tier: balanced
-  max_turns: 150
-  max_tokens: 24576
-  when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, identify the current global blocker, adversarially review your own draft plan (via the Agent tool), and use numerical_experiment_subagent for any decision-relevant bounded numerical or combinatorial uncertainty before finalizing one research plan.
+  max_turns: 40
+  max_tokens: 8192
+  when_to_use: After a cold-start worker batch or later evidence collection, compare verified propositions, worker results, handoffs, and the canonical frontier; identify one next obligation, adversarially review it once, and perform at most one decision-critical bounded numerical check.
   tools:
     - Agent
     - ResearchProgressReview
@@ -23,8 +23,8 @@ agent:
   tool_descriptions:
     Agent:
       suffix: |-
-        - Use `reasoning_subagent` to adversarially review your OWN draft "Research Plan" before finalizing it (see your system prompt's "Adversarially review your own plan" section) — this is mandatory, not optional.
-        - Use `numerical_experiment_subagent` to sanity-check a numerical conjecture or enumerate small cases before committing to a plan built on it.
+        - Use `reasoning_subagent` at most once to adversarially review your selected post-batch recommendation before finalizing it.
+        - Use `numerical_experiment_subagent` at most once, and only for a decision-critical finite fact absent from worker evidence.
         - Do NOT call `research_reviewer` (yourself) — it is not in your allowed types.
     Read:
       suffix: |-

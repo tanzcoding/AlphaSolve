@@ -10,6 +10,7 @@ import threading
 import time
 import traceback
 import types
+import warnings
 
 BANNED_IMPORT_ROOTS = {"matplotlib", "pylab"}
 FILESYSTEM_IMPORT_ROOTS = {"os", "pathlib", "shutil", "subprocess", "glob", "tempfile", "socket", "importlib"}
@@ -33,7 +34,7 @@ def _purge_banned() -> None:
 
 def _check_code(code: str, *, allow_filesystem: bool) -> tuple[ast.Module | None, str | None]:
     try:
-        parsed = ast.parse(code, mode="exec")
+        parsed = ast.parse(code, filename="<string>", mode="exec")
     except SyntaxError:
         return None, None
     for node in ast.walk(parsed):
@@ -59,6 +60,25 @@ def _check_code(code: str, *, allow_filesystem: bool) -> tuple[ast.Module | None
     return parsed, None
 
 
+def _syntax_warning_error(records: list[warnings.WarningMessage]) -> str | None:
+    """Turn compile-time syntax warnings into actionable tool errors."""
+    syntax_warnings = [record for record in records if issubclass(record.category, SyntaxWarning)]
+    if not syntax_warnings:
+        return None
+    lines = [
+        "Python code was rejected because it contains a SyntaxWarning.",
+        "Fix the code and run it again; do not rely on the warning being ignored.",
+    ]
+    for record in syntax_warnings:
+        location = f"{record.filename}:{record.lineno}" if record.lineno else str(record.filename)
+        lines.append(f"{location}: {record.category.__name__}: {record.message}")
+    lines.append(
+        'For regexes or strings with backslashes, prefer raw strings such as r"\\{" '
+        'or double escaping such as "\\\\{".'
+    )
+    return "\n".join(lines)
+
+
 def run_python(
     code: str,
     env: dict | None = None,
@@ -72,7 +92,12 @@ def run_python(
     if env is None:
         env = {}
 
-    parsed_ast, static_error = _check_code(code, allow_filesystem=allow_filesystem)
+    with warnings.catch_warnings(record=True) as captured_warnings:
+        warnings.simplefilter("always", SyntaxWarning)
+        parsed_ast, static_error = _check_code(code, allow_filesystem=allow_filesystem)
+    syntax_warning_error = _syntax_warning_error(captured_warnings)
+    if syntax_warning_error:
+        return "", syntax_warning_error
     if static_error:
         return "", static_error
 

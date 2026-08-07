@@ -172,24 +172,39 @@
     }
   },
   {
-    "description": "Record a precise mathematical blocker in the fixed worker-local `difficulty_declaration.md` and its structured JSON sidecar. Use this when the assigned target is only partially solved, weakened, blocked by a substantive gap, or refuted. Generator records the original declaration once; reviser appends an update without overwriting that original evidence. State the exact unresolved obligation, the last verified step, why the route fails, and a concrete next attack. This declaration is later reconciled against the final review before the orchestrator, research reviewer, and curator compare it with other attempts.",
+    "description": "Record a precise worker-local difficulty whenever the assigned target is weakened, blocked, or refuted. This is a proposal for the curator-owned recursive difficulty DAG, not a canonical edit. State the smallest unresolved obligation, the last verified step, why the attempted argument fails, and a concrete attack. If this worker was assigned an existing difficulty, classify the proposed child as prerequisite, alternative, weakened_target, method_blocked, or refutes, and state how the parent would combine its children.",
     "name": "RecordDifficulty",
     "parameters": {
       "properties": {
         "dead_ends": {
-          "description": "Optional definitive dead ends and their reasons; leave empty if none are known.",
           "type": "string"
         },
         "difficulty": {
-          "description": "Exact mathematical claim, estimate, construction, or case distinction that remains unresolved or was avoided.",
+          "description": "Exact smallest unresolved mathematical obligation.",
           "type": "string"
         },
         "last_verified_step": {
-          "description": "Optional strongest rigorous step already established before this difficulty; do not state an unverified inference.",
+          "type": "string"
+        },
+        "parent_resolution_policy": {
+          "enum": [
+            "all_of",
+            "any_of",
+            "manual"
+          ],
+          "type": "string"
+        },
+        "relation_to_parent": {
+          "enum": [
+            "alternative",
+            "method_blocked",
+            "prerequisite",
+            "refutes",
+            "weakened_target"
+          ],
           "type": "string"
         },
         "revision_outcome": {
-          "description": "Reviser only: repaired, weakened, blocked, or refuted. Ignored for generator.",
           "enum": [
             "blocked",
             "refuted",
@@ -198,12 +213,14 @@
           ],
           "type": "string"
         },
+        "source_difficulty_id": {
+          "description": "Optional stable local slug; defaults to this worker's generated source id.",
+          "type": "string"
+        },
         "suggested_attack": {
-          "description": "A concrete next attack entry point, or 'Requires new mathematical tools' if none is known.",
           "type": "string"
         },
         "target_status": {
-          "description": "Whether the originally assigned target was solved exactly: YES, NO, or PARTIAL.",
           "enum": [
             "NO",
             "PARTIAL",
@@ -212,7 +229,6 @@
           "type": "string"
         },
         "why_hard": {
-          "description": "Why current arguments do not resolve this exact difficulty, including failed attempts if known.",
           "type": "string"
         }
       },

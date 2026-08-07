@@ -46,6 +46,17 @@ def test_knowledge_scaffold_uses_canonical_paths_and_explicit_status(tmp_path):
     assert "Invalidated Route 0" in frontier
 
 
+def test_cold_direct_worker_has_no_orchestrator_task_guidance(tmp_path):
+    worker = _worker(tmp_path, hint=None)
+    worker.frontier_note = None
+
+    task = worker._generator_task()
+
+    assert "# Problem" in task
+    assert "# Assigned Method\ndirect_proof" in task
+    assert "# Task Guidance" not in task
+
+
 def test_generator_task_uses_provided_frontier_snapshot(tmp_path):
     worker = _worker(tmp_path)
 

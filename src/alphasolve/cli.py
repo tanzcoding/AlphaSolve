@@ -15,6 +15,7 @@ if sys.platform == "win32":
 
 from alphasolve.solver import AlphaSolve
 from alphasolve.solver.demo import make_demo_client_factory
+from alphasolve.solver.policy import SolverPolicy
 
 _app: AlphaSolve | None = None
 _interrupt_count = 0
@@ -137,15 +138,13 @@ def main() -> None:
     else:
         signal.signal(signal.SIGINT, _on_interrupt)
 
-    default_max_workers = 4
-
     parser = argparse.ArgumentParser(description="Run AlphaSolve.")
     parser.add_argument("--problem", type=str, default="problem.md",
                         help="Path to the problem markdown file (default: problem.md)")
     parser.add_argument("--hint", type=str, default=None,
                         help="Path to an optional hint markdown file")
-    parser.add_argument("--workers", type=int, default=2,
-                        help="Maximum number of concurrent workers (default: 2)")
+    parser.add_argument("--workers", type=int, default=None,
+                        help="Maximum number of concurrent workers (default: from agents.yaml)")
     parser.add_argument("--config", type=str, default=None,
                         help="Path to an agent suite YAML file or directory containing agents.yaml")
     parser.add_argument("--max_verify_rounds", type=int, default=None,
@@ -168,8 +167,8 @@ def main() -> None:
                         help="Skip the startup Wolfram kernel probe")
     parser.add_argument("--no_dashboard", action="store_true",
                         help="Disable the live terminal dashboard")
-    parser.add_argument("--tool_executor_size", type=int, default=default_max_workers,
-                        help="Number of Python execution worker processes")
+    parser.add_argument("--tool_executor_size", type=int, default=None,
+                        help="Number of Python execution worker processes (default: from agents.yaml)")
     parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
                         help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
     parser.add_argument("--list-tiers", action="store_true",
@@ -240,19 +239,17 @@ def main() -> None:
         presets = load_presets(repo_path=presets_path, user_path=user_presets)
         client_factory = make_client_factory(tier_mapping, presets)
 
-    suite_settings = suite.settings
-    max_verify_rounds = args.max_verify_rounds if args.max_verify_rounds is not None else int(suite_settings.get("max_verify_rounds", 2))
-    verifier_scaling_factor = (
-        args.verifier_scaling_factor
-        if args.verifier_scaling_factor is not None
-        else int(suite_settings.get("verifier_scaling_factor", 1))
-    )
-    subagent_max_depth = args.subagent_max_depth if args.subagent_max_depth is not None else int(suite_settings.get("subagent_max_depth", 2))
-    max_orchestrator_restarts = (
-        args.max_orchestrator_restarts
-        if args.max_orchestrator_restarts is not None
-        else int(suite_settings.get("max_orchestrator_restarts", 5))
-    )
+    try:
+        policy = SolverPolicy.from_settings(suite.settings).with_overrides(
+            max_workers=args.workers,
+            max_verify_rounds=args.max_verify_rounds,
+            verifier_scaling_factor=args.verifier_scaling_factor,
+            subagent_max_depth=args.subagent_max_depth,
+            tool_executor_size=args.tool_executor_size,
+            max_orchestrator_restarts=args.max_orchestrator_restarts,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
 
     if args.agent:
         from alphasolve.agent.ui.cli_app import AgentApp, make_print_debug_event_sink
@@ -269,10 +266,7 @@ def main() -> None:
                 project_dir=Path.cwd(),
                 suite=suite,
                 client_factory=client_factory,
-                max_workers=args.workers or default_max_workers,
-                max_verify_rounds=max_verify_rounds,
-                verifier_scaling_factor=verifier_scaling_factor,
-                subagent_max_depth=subagent_max_depth,
+                policy=policy,
             )
         try:
             if args.agent_prompt is not None:
@@ -300,16 +294,11 @@ def main() -> None:
             project_dir=Path.cwd(),
             problem=args.problem,
             hint=args.hint,
-            config_path=args.config,
-            max_workers=args.workers or default_max_workers,
-            max_verify_rounds=max_verify_rounds,
-            verifier_scaling_factor=verifier_scaling_factor,
-            subagent_max_depth=subagent_max_depth,
+            config_path=config_path,
+            policy=policy,
             client_factory=client_factory,
             prime_wolfram=not args.no_wolfram_prime,
             print_to_console=not args.no_dashboard,
-            tool_executor_size=args.tool_executor_size,
-            max_orchestrator_restarts=max_orchestrator_restarts,
             debug=args.debug,
         )
         result = _app.run()

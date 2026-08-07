@@ -30,6 +30,6 @@ Produce one rigorous candidate in your assigned `proposition.md`. Establish what
 - If the task is fixed or pinned, do not weaken it. Otherwise a smaller result is acceptable only when it is nontrivial, complete, and honestly scoped.
 
 ## Difficulty handoff
-Call `RecordDifficulty` when the assigned target is not solved exactly, is weakened/replaced, or a substantive blocker remains. Record the exact obstacle, why the present argument fails, a concrete next attack, and definitive dead ends. Do not create filler declarations after a complete solution.
+Call `RecordDifficulty` when the assigned target is not solved exactly, is weakened/replaced, or a substantive blocker remains. Record the smallest exact obstacle, last verified step, why the present argument fails, a concrete next attack, and definitive dead ends. If this worker attacks a canonical difficulty, classify the proposed child relation and parent policy; this is evidence for curator curation, not permission to invent a new global plan. Do not create filler declarations after a complete solution.
 
 Finish by writing `proposition.md` and any required difficulty declaration.

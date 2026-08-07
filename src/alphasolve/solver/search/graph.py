@@ -69,15 +69,11 @@ class SearchNode:
     depth: int = 0
     status: NodeStatus = NodeStatus.PENDING
     delta: Delta = field(default_factory=Delta)
-    # reviewer 提出的粗粒度路线；多个 worker 节点可共享同一 route_id 并形成其分支。
-    route_id: Optional[str] = None
-    # worker 所属的稳定研究方向与该 worker 攻击的 direction-level gap。
-    direction_id: Optional[str] = None
-    gap_id: Optional[str] = None
-    # result = 事实（raw 错误、卡在哪一步）；insight = 经 ResearchImpact 评估后的因果教训。
+    # curator-owned canonical difficulty attacked by this worker, if any.
+    difficulty_id: Optional[str] = None
+    # result = raw worker evidence; the curator owns mathematical difficulty state.
     result: Optional[str] = None
     insight: "Optional[InsightRecord]" = None
-    # verified 结果必须先经过 orchestrator 的 ResearchImpact 评估，才能成为正向调度信号。
     impact_status: str = "not_required"  # not_required / pending / assessed
     impact_relation: Optional[str] = None
     prune_reason: Optional[str] = None  # pruned 时必填（§6.3）

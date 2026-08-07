@@ -130,12 +130,11 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Adversarial Review" in reviewer_prompt
     assert "DISPATCH: NEEDS_FALSIFICATION" in reviewer_prompt
     assert "read_state=true" in reviewer_prompt
-    assert "RecordResearchImpact" in orchestrator_prompt
-    assert "RecordDispatchConstraint" in orchestrator_prompt
-    assert "direction_id" in orchestrator_prompt
-    assert "gap_id" in orchestrator_prompt
-    assert "research_state.json" in orchestrator_prompt
-    assert "process_audit_context_reset" in orchestrator_prompt
+    assert "RecordDifficultyOutcome" in orchestrator_prompt
+    assert "RecordResearchImpact" not in orchestrator_prompt
+    assert "DifficultyFrontier" in orchestrator_prompt
+    assert "difficulty_dag.json" in orchestrator_prompt
+    assert "curator" in orchestrator_prompt.lower()
     assert "fooling" not in orchestrator_prompt.lower()
     assert "permutation" not in reviewer_prompt.lower()
     assert suite.agents["orchestrator"].tool_parameters["MakeDir"]["path"]["pattern"].startswith("^verified_propositions")
@@ -177,7 +176,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "knowledge/references/" in curator.system_prompt
     assert "do not rewrite it" in curator.system_prompt
     assert "SplitReference" in curator.system_prompt
-    assert "active historical blocker" in curator.system_prompt
+    assert "canonical recursive difficulty DAG" in curator.system_prompt
     assert len(curator.system_prompt.splitlines()) <= 120
     assert "<source_label>" not in curator.system_prompt
     assert suite_from_dir.agents["generator"].tools == suite.agents["generator"].tools
@@ -194,7 +193,7 @@ def test_research_reviewer_can_delegate_decision_relevant_numerical_checks():
         "reasoning_subagent",
         "numerical_experiment_subagent",
     ]
-    assert "call `numerical_experiment_subagent`" in reviewer.system_prompt
+    assert "numerical_experiment_subagent` at most once" in reviewer.system_prompt
     assert "EXHAUSTIVE" in reviewer.system_prompt
     assert "STRATIFIED_SAMPLE" in reviewer.system_prompt
 
@@ -786,6 +785,10 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
 
     with local_project_dir("checker_authority") as project_dir:
         (project_dir / "problem.md").write_text("# Problem\n\nProve that 1 + 1 = 3.\n", encoding="utf-8")
+        verified_dir = project_dir / "workspace" / "verified_propositions"
+        verified_dir.mkdir(parents=True)
+        for index in range(3):
+            (verified_dir / f"existing-{index}.md").write_text("## Statement\n\nExisting fact.\n", encoding="utf-8")
 
         result = AlphaSolve(
             project_dir=project_dir,
@@ -1391,9 +1394,9 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Move" in tool_names
         assert "Write" in tool_names
         assert "Edit" in tool_names
-        assert "RecordResearchImpact" in tool_names
-        assert "RecordDispatchConstraint" in tool_names
-        assert "SyncResearchState" in tool_names
+        assert "DifficultyFrontier" in tool_names
+        assert "RecordDifficultyOutcome" in tool_names
+        assert "RecordResearchImpact" not in tool_names
         assert "SpawnFreeExploration" in tool_names
         assert "Delete" not in tool_names
         # Task 8: build_workspace_tool_registry now always registers the full
@@ -1407,9 +1410,11 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "active_count" in tool_descriptions["SpawnWorker"]
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
         assert "available_worker_slots" in tool_descriptions["TaskOutput"]
-        assert "pending_research_impacts" in tool_descriptions["TaskOutput"]
+        assert "difficulty_handoff" in tool_descriptions["TaskOutput"]
+        assert "DifficultyFrontier" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
-        assert "verified_propositions_organization" in tool_descriptions["TaskOutput"]
+        assert "process_audit_context_reset" not in tool_descriptions["TaskOutput"]
+        assert "fresh reviewer report" not in tool_descriptions["TaskOutput"]
         assert "open-ended, non-targeted exploration" in tool_descriptions["SpawnFreeExploration"]
         assert "Launch a new specialized agent" in tool_descriptions["Agent"]
         assert "separate session" in tool_descriptions["Agent"]
@@ -1449,37 +1454,6 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         )
         assert not edited_index.is_error
         assert "stated premises" in (layout.verified_dir / "index.md").read_text(encoding="utf-8")
-
-        synced_state = registry.execute(
-            "SyncResearchState",
-            {
-                "objective_summary": "Resolve the bootstrap problem; exact status unknown.",
-                "directions": [
-                    {
-                        "direction_id": "bootstrap-route",
-                        "title": "Close the bootstrap step",
-                        "goal": "Prove the missing bootstrap implication.",
-                        "status": "active",
-                        "health": "unassessed",
-                        "gaps": [
-                            {
-                                "gap_id": "bootstrap-gap",
-                                "statement": "Close the next bootstrap step.",
-                                "status": "open",
-                            }
-                        ],
-                        "plan": ["Compare assumptions A and B."],
-                    }
-                ],
-            },
-            enabled=config.tools,
-            tool_parameters=config.tool_parameters,
-        )
-        assert not synced_state.is_error
-        state_text = (layout.verified_dir / "state.md").read_text(encoding="utf-8")
-        assert "bootstrap-route" in state_text
-        assert "bootstrap-gap" in state_text
-        assert (layout.verified_dir / "research_state.json").is_file()
 
         wrote_prop = registry.execute(
             "Write",

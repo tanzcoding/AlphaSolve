@@ -320,8 +320,8 @@
           "description": "Optional (default false). Set true to spawn a CONSOLIDATION / DUAL attempt on a FIXED target: the worker may NOT weaken the statement, narrow it, add fresh hypotheses, or isolate a smaller sub-claim to pass verification. Only two results count as success: proving the pinned target exactly as stated, or refuting it with an explicit checkable witness (construction/counterexample). Use this to (a) cash out a direction whose verified props have accumulated, by attacking its terminal goal head-on, or (b) run the dual/falsification of a persistently-failing target. Pass the target text via pinned_target and give the direction's mainline props via frontier_refs.",
           "type": "boolean"
         },
-        "direction_id": {
-          "description": "Stable id of the research direction in state.md that owns this worker.",
+        "difficulty_id": {
+          "description": "Canonical curator-owned difficulty ID. Prefer an executable leaf returned by DifficultyFrontier, but an internal parent may be selected when its exact obligation is more informative. The runtime returns a leaf-first warning with active child IDs rather than rejecting that deliberate choice.",
           "maxLength": 80,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
           "type": "string"
@@ -340,14 +340,8 @@
           "maxItems": 20,
           "type": "array"
         },
-        "gap_id": {
-          "description": "Stable id of the open gap inside that direction which this worker attacks.",
-          "maxLength": 80,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
-          "type": "string"
-        },
         "global_attack": {
-          "description": "Optional (default false). Set true to launch a GLOBAL consolidation that attacks `problem.md` directly — not any specific direction's terminal goal. This implies consolidation=true (no weakening allowed). If pinned_target is omitted, the runtime reads problem.md into pinned_target automatically. Use this when global_consolidation_directive.ready is true and you want to test whether accumulated verified propositions can already close the original problem. Do NOT pass direction_id or gap_id with global_attack.",
+          "description": "Optional (default false). Set true to launch a GLOBAL consolidation that attacks `problem.md` directly — not any canonical difficulty leaf. This implies consolidation=true (no weakening allowed). Read DifficultyFrontier.global_consolidation_directive first: the runtime permits the first attack and each later attack only after the configured number of verified propositions has accumulated; a completed attack resets that count. Every completed global attack is reported to the curator for knowledge and later DAG curation. If pinned_target is omitted, the runtime reads problem.md into pinned_target automatically. Do NOT pass difficulty_id with global_attack.",
           "type": "boolean"
         },
         "hint": {
@@ -356,7 +350,7 @@
           "type": "string"
         },
         "method_id": {
-          "description": "Optional proof/search method arm. If omitted, the hierarchical scheduler recommendation is used.",
+          "description": "Optional proof/search method for the selected difficulty leaf.",
           "enum": [
             "direct_proof",
             "contradiction",
@@ -367,13 +361,17 @@
           ],
           "type": "string"
         },
+        "parent_direct_attack": {
+          "description": "Optional (default false). Mark a fixed-target attack on an internal parent returned by DifficultyFrontier.parent_direct_difficulties. The runtime pins the exact parent statement, records the attempt against its recommended interval, and returns a warning if that interval is not replenished.",
+          "type": "boolean"
+        },
         "parent_id": {
-          "description": "Backward-compatible single parent attempt state_id. Direction arm ids are not attempt ids.",
+          "description": "Backward-compatible single parent attempt state_id. These describe attempt lineage only; they do not modify the difficulty DAG.",
           "maxLength": 64,
           "type": "string"
         },
         "parent_ids": {
-          "description": "Optional parent attempt state_ids for the attempt DAG. Pass multiple ids for crossover. These describe lineage only; direction_id independently identifies the research direction.",
+          "description": "Optional parent attempt state_ids for the attempt DAG. Pass multiple ids for crossover. These describe lineage only; the canonical difficulty_id identifies the mathematical obligation.",
           "items": {
             "maxLength": 64,
             "type": "string"
@@ -385,14 +383,8 @@
           "description": "Optional. The exact target statement to attack when consolidation=true. If omitted, the worker uses the goal expressed in `hint`. Ignored when consolidation is false.",
           "type": "string"
         },
-        "route_id": {
-          "description": "Stable id returned by RegisterResearchRoute. All targeted workers exploring the same reviewer-proposed path should carry the same route_id so their branches can be compared.",
-          "maxLength": 80,
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
-          "type": "string"
-        },
         "rubric": {
-          "description": "Optional. A concise acceptance checklist (3-6 bullet points, each starting with '- ') specifying what the proven Statement must satisfy to count as progress on the assigned gap. The rubric is NOT shown to the worker — it is stored and returned to you in TaskOutput for your own structured self-assessment via RecordResearchImpact. Example: '- Explicit construction of a permutation and tiling\n- Rectangle count k <= 2111\n- All non-hole cells covered exactly once'. Write criteria that are checkable against the proven Statement alone.",
+          "description": "Optional. A concise acceptance checklist (3-6 bullet points, each starting with '- ') specifying what the proven Statement must satisfy to count as progress on the assigned difficulty. The rubric is NOT shown to the worker — it is stored and returned to you in TaskOutput for evidence-based assessment via RecordDifficultyOutcome. Example: '- Explicit construction of a permutation and tiling\n- Rectangle count k <= 2111\n- All non-hole cells covered exactly once'. Write criteria that are checkable against the proven Statement alone.",
           "type": "string"
         }
       },
@@ -401,7 +393,7 @@
     }
   },
   {
-    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- curator: Incrementally update the knowledge wiki from local traces and synthesize portfolio checkpoints by comparing worker outcomes, process audits, and orchestrator strategy transitions.\n- numerical_experiment_subagent: Bounded exploration, branch checks, local numerical experiments, small-n exhaustive search, counterexample mining, invariant discovery, and constraint-gap quantification. Use when analytic progress is blocked and a numerical probe could reveal which unproven lemma is most likely to close the gap. Can run exhaustive enumeration, LP formulations, and structural invariant extraction on small-n analogues.\n\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n- research_reviewer: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, identify the current global blocker, adversarially review your own draft plan (via the Agent tool), and use numerical_experiment_subagent for any decision-relevant bounded numerical or combinatorial uncertainty before finalizing one research plan.\n\n## Writing the prompt\n\n- For broad workspace review, split by directory or file group: ask each subagent to inspect one scoped area and return a concise evidence report with file paths, line references when available, current status, open issues, and recommended next local step.\n- Use the main agent to compare subagent reports and decide the global next step; do not ask a subagent with a narrow scope to make the final workspace-wide decision.\n- State the exact claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and limited to the agent's scope.\n- `research_reviewer` returns a single research plan, not a list to pick from. It has its own scoped `Agent` tool (restricted to `reasoning_subagent`/`numerical_experiment_subagent`) and must return both an \"Adversarial Review\" and a `Route Validation` section. `VERDICT: CLEAR` only means the plan survived critique; before dispatch, obey `Route Validation`'s `DISPATCH:` status. For `BLOCKED` or `NEEDS_FALSIFICATION`, record the supplied evidence with `RecordDispatchConstraint`; only `READY_FOR_PROOF` permits a normal proof worker. This remains a prompt-level report, so check that its cited numerical coverage and counterexample search are substantive before trusting it.\n- When using `research_reviewer`, delegate an independent progress audit rather than a proof attempt for the route you currently favor.\n- Include any already-seen proposition-index gaps or underclaimed proof-tail evidence in the prompt, especially any `ResearchProgressReview` suggested next proposition and selected target, and ask the reviewer to rank that candidate against broader theorem work.\n- If underclaimed proof-tail evidence only quantifies why one conditional route is obstructed, and the problem still asks for an existential choice among models, parameters, data, weights, or ansatzes, ask the reviewer to use that obstruction as a constraint on the choice-classification target rather than replacing the constructive scan.\n- If underclaimed proof-tail evidence changes a numerical bound, objective value, threshold, stopping condition, or answer-facing inequality, do not demote explicit Statement consolidation below speculative research directions unless another verified Statement already records it.\n- When the workspace has many verified local estimates for one shared energy, bootstrap, reduction, or interface system, ask whether the next proposition should assemble the exact system levels, constants, remainders, and restrictions before attacking another local lemma.\n- If a local repair appears to be one component of a larger system interface, ask the reviewer whether the durable next proposition should be the exact interface with that repair listed as a premise, rather than the repair in isolation.\n- If downstream propositions look ready to promote but rely on a support, domain, time-scale, interface, or parameter-choice prerequisite that is still conditional, slackened, or not Statement-visible, ask the reviewer to rank that prerequisite before the downstream promotion unless the prerequisite is already established in verified_propositions.\n- If the problem asks for existence of a model, parameter regime, input family, weight, or ansatz, and the workspace already has a conditional theorem chain, ask the reviewer whether the next proposition should classify choices that make the existing chain's hypotheses hold before inventing stronger general estimates.\n- A choice-classification target should cover the whole theorem interface, including support/domain conditions, lower-bound or positivity hypotheses, nonlinear remainder control, regularity/smallness assumptions, and the timescale on which the resulting inequality must hold.\n- Do not let a framework-formalization, conditional assembly, or gap-naming task outrank a choice-classification task when it would only restate that some model, parameter, data, weight, or ansatz choice must satisfy the existing chain's hypotheses.\n- Do not replace that scan with re-proving verified infrastructure, sharper constants, alternative test functions, or stronger PDE/ODE machinery unless the choice-classification scan is already complete or rules out viable choices.\n- When a verified proposition Statement conflicts with an index or knowledge summary, treat the verified Statement as authoritative and ask whether the summary is stale rather than planning from the weaker summary.\n- If a reviewed `unverified_propositions/` file already has a passed review and records a system interface, constants, derivative levels, assumptions, or obstruction, ask whether promoting or repairing that proposition is the best verified-progress step before opening a new local route.\n- `research_reviewer` now returns one primary plan (plus ≤2 one-line rejected alternatives), not a ranked list — treat that plan as a prior, not a command. Each `selection_advice` from `TaskOutput` carries a read-only `frontier` list ranking active worker nodes by cheap proxy signals (open subgoals, verified implications, falsification hits) — nothing is pre-selected for you. If the reviewer's plan targets a direction whose recent workers only produced necessary_condition_only/orthogonal outputs, while `frontier` shows another direction with stronger verified implications and no falsification hits, prefer the latter. The reviewer's plan reflects a static workspace snapshot; `frontier` reflects what workers actually achieved. Update your belief accordingly.\n- If the reviewer's plan is an exact system or interface assembly, do not demote it as bookkeeping merely because it may expose a harder local gap; that assembly may be the research proposition needed to determine which local gap is actually blocking the proof.\n- Do not present an unverified route as the core blocker unless a verified proposition, knowledge synthesis, or prior reviewer report explicitly identifies it as such.\n- Whether `research_reviewer` reads `verified_propositions/**/state.md` (your prior strategic notes) is decided automatically by the system via an epsilon-greedy policy and recorded in the run log. You do not need to set `read_state` for `research_reviewer` — the system assigns it and overrides any value you pass.",
+    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- curator: Incrementally update the knowledge wiki from local traces and synthesize portfolio checkpoints by comparing worker outcomes and process audits.\n- numerical_experiment_subagent: Bounded exploration, branch checks, local numerical experiments, small-n exhaustive search, counterexample mining, invariant discovery, and constraint-gap quantification. Use when analytic progress is blocked and a numerical probe could reveal which unproven lemma is most likely to close the gap. Can run exhaustive enumeration, LP formulations, and structural invariant extraction on small-n analogues.\n\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n- research_reviewer: After a cold-start worker batch or later evidence collection, compare verified propositions, worker results, handoffs, and the canonical frontier; identify one next obligation, adversarially review it once, and perform at most one decision-critical bounded numerical check.\n\n## Writing the prompt\n\n- For broad workspace review, split by directory or file group: ask each subagent to inspect one scoped area and return a concise evidence report with file paths, line references when available, current status, open issues, and recommended next local step.\n- Use the main agent to compare subagent reports and decide the global next step; do not ask a subagent with a narrow scope to make the final workspace-wide decision.\n- State the exact claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and limited to the agent's scope.\n- `research_reviewer` returns a single research plan, not a list to pick from. It has its own scoped `Agent` tool (restricted to `reasoning_subagent`/`numerical_experiment_subagent`) and must return both an \"Adversarial Review\" and a `Route Validation` section. `VERDICT: CLEAR` only means the plan survived critique; before dispatch, obey `Route Validation`'s `DISPATCH:` status. For `BLOCKED` or `NEEDS_FALSIFICATION`, record the supplied evidence with `RecordDispatchConstraint`; only `READY_FOR_PROOF` permits a normal proof worker. This remains a prompt-level report, so check that its cited numerical coverage and counterexample search are substantive before trusting it.\n- When using `research_reviewer`, delegate an independent progress audit rather than a proof attempt for the route you currently favor.\n- Include any already-seen proposition-index gaps or underclaimed proof-tail evidence in the prompt, especially any `ResearchProgressReview` suggested next proposition and selected target, and ask the reviewer to rank that candidate against broader theorem work.\n- If underclaimed proof-tail evidence only quantifies why one conditional route is obstructed, and the problem still asks for an existential choice among models, parameters, data, weights, or ansatzes, ask the reviewer to use that obstruction as a constraint on the choice-classification target rather than replacing the constructive scan.\n- If underclaimed proof-tail evidence changes a numerical bound, objective value, threshold, stopping condition, or answer-facing inequality, do not demote explicit Statement consolidation below speculative research directions unless another verified Statement already records it.\n- When the workspace has many verified local estimates for one shared energy, bootstrap, reduction, or interface system, ask whether the next proposition should assemble the exact system levels, constants, remainders, and restrictions before attacking another local lemma.\n- If a local repair appears to be one component of a larger system interface, ask the reviewer whether the durable next proposition should be the exact interface with that repair listed as a premise, rather than the repair in isolation.\n- If downstream propositions look ready to promote but rely on a support, domain, time-scale, interface, or parameter-choice prerequisite that is still conditional, slackened, or not Statement-visible, ask the reviewer to rank that prerequisite before the downstream promotion unless the prerequisite is already established in verified_propositions.\n- If the problem asks for existence of a model, parameter regime, input family, weight, or ansatz, and the workspace already has a conditional theorem chain, ask the reviewer whether the next proposition should classify choices that make the existing chain's hypotheses hold before inventing stronger general estimates.\n- A choice-classification target should cover the whole theorem interface, including support/domain conditions, lower-bound or positivity hypotheses, nonlinear remainder control, regularity/smallness assumptions, and the timescale on which the resulting inequality must hold.\n- Do not let a framework-formalization, conditional assembly, or gap-naming task outrank a choice-classification task when it would only restate that some model, parameter, data, weight, or ansatz choice must satisfy the existing chain's hypotheses.\n- Do not replace that scan with re-proving verified infrastructure, sharper constants, alternative test functions, or stronger PDE/ODE machinery unless the choice-classification scan is already complete or rules out viable choices.\n- When a verified proposition Statement conflicts with an index or knowledge summary, treat the verified Statement as authoritative and ask whether the summary is stale rather than planning from the weaker summary.\n- If a reviewed `unverified_propositions/` file already has a passed review and records a system interface, constants, derivative levels, assumptions, or obstruction, ask whether promoting or repairing that proposition is the best verified-progress step before opening a new local route.\n- `research_reviewer` now returns one primary plan (plus ≤2 one-line rejected alternatives), not a ranked list — treat that plan as a prior, not a command. Each `selection_advice` from `TaskOutput` carries a read-only `frontier` list ranking active worker nodes by cheap proxy signals (open subgoals, verified implications, falsification hits) — nothing is pre-selected for you. If the reviewer's plan targets a direction whose recent workers only produced necessary_condition_only/orthogonal outputs, while `frontier` shows another direction with stronger verified implications and no falsification hits, prefer the latter. The reviewer's plan reflects a static workspace snapshot; `frontier` reflects what workers actually achieved. Update your belief accordingly.\n- If the reviewer's plan is an exact system or interface assembly, do not demote it as bookkeeping merely because it may expose a harder local gap; that assembly may be the research proposition needed to determine which local gap is actually blocking the proof.\n- Do not present an unverified route as the core blocker unless a verified proposition, knowledge synthesis, or prior reviewer report explicitly identifies it as such.\n- Whether `research_reviewer` reads `verified_propositions/**/state.md` (your prior strategic notes) is decided automatically by the system via an epsilon-greedy policy and recorded in the run log. You do not need to set `read_state` for `research_reviewer` — the system assigns it and overrides any value you pass.",
     "name": "Agent",
     "parameters": {
       "properties": {
@@ -438,8 +430,26 @@
     }
   },
   {
-    "description": "Start one worker for open-ended, non-targeted exploration and return immediately (does not wait). Use it only for a materially orthogonal idea, not to bypass a blocked targeted route. The runtime refuses this tool while a completed process audit still needs curator blocker classification or while a stalled audit names a repeated avoided obligation; in the latter case, launch the prescribed targeted consolidation instead.\n\nThe worker receives persisted failed-method taboos, active repeated blockers, and an optional under-explored verified seed. It must choose a distinct bounded claim or record why no such claim is available. Returns the same shape as SpawnWorker; if no slot is available it returns spawned=false.",
+    "description": "Start one worker for open-ended, non-targeted exploration and return immediately (does not wait). You may use this while canonical leaves exist, but must supply a concrete reason why an orthogonal route is worth a worker slot. The runtime records that frontier deviation, the available canonical leaves, and the worker's eventual outcome. It still refuses this tool while a completed process audit needs curator blocker classification.\n\nThe worker receives persisted failed-method taboos, active repeated blockers, and an optional under-explored verified seed. It must choose a distinct bounded claim or record why no such claim is available. Returns the same shape as SpawnWorker; if no slot is available it returns spawned=false.",
     "name": "SpawnFreeExploration",
+    "parameters": {
+      "properties": {
+        "reason": {
+          "description": "Concrete reason for departing from the canonical frontier; name the orthogonal hypothesis, evidence, or expected information gain.",
+          "maxLength": 2000,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Return curator-owned executable leaf difficulties, pending checkpoint status, and the global_consolidation_directive. Dispatch targeted workers only against a returned leaf; launch a full-problem global attack only when that directive reports ready=true.",
+    "name": "DifficultyFrontier",
     "parameters": {
       "properties": {},
       "required": [],
@@ -447,413 +457,42 @@
     }
   },
   {
-    "description": "Persist exactly one route proposed by research_reviewer before assigning targeted workers to it. A route is the coarse mathematical path; use SpawnWorker(route_id=...) repeatedly to maximize different attempts under it. Copy the machine-readable route contract from the reviewer report.",
-    "name": "RegisterResearchRoute",
+    "description": "Record the evidence-backed outcome of one worker assigned to a canonical difficulty. This does not edit parent/child structure: only the curator does that at checkpoints. Use resolved only when the exact assigned difficulty is established, refuted only with a checkable counterexample, advanced for a genuine narrowed boundary, and unchanged otherwise.",
+    "name": "RecordDifficultyOutcome",
     "parameters": {
       "properties": {
-        "based_on_state_id": {
-          "type": "string"
-        },
-        "direction_id": {
-          "type": "string"
-        },
         "evidence_refs": {
           "items": {
             "type": "string"
           },
           "type": "array"
         },
-        "gap_id": {
-          "type": "string"
-        },
-        "route_claim": {
-          "type": "string"
-        },
-        "route_id": {
-          "type": "string"
-        },
-        "stop_condition": {
-          "type": "string"
-        },
-        "success_condition": {
-          "type": "string"
-        },
-        "target": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "route_id",
-        "based_on_state_id",
-        "direction_id",
-        "gap_id",
-        "route_claim",
-        "target",
-        "success_condition",
-        "stop_condition"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Compare the accumulated worker branches of one reviewer route against other routes and the terminal gap. Record whether the path is advancing, partial, stalled, refuted, redundant, or still inconclusive. This is a route-level judgment; continue to use RecordResearchImpact for individual verified workers.",
-    "name": "AssessResearchRoute",
-    "parameters": {
-      "properties": {
-        "close_route": {
-          "type": "boolean"
-        },
-        "evidence_paths": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "route_id": {
-          "type": "string"
-        },
-        "summary": {
-          "type": "string"
-        },
-        "verdict": {
+        "outcome": {
           "enum": [
-            "ADVANCING",
-            "PARTIAL",
-            "STALLED",
-            "REFUTED",
-            "REDUNDANT",
-            "INCONCLUSIVE"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "route_id",
-        "verdict",
-        "summary"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Assess one completed verified worker result against the direction-level gap it was assigned. Use this after TaskOutput for every worker listed in pending_research_impacts, before spawning more targeted work. Correctness is already decided by the verifier; classify whether the correct result solves, directly advances, only gives a necessary condition, weakens, duplicates, refutes, or misses the target. gap_effect='closed' is only accepted when relation_to_target is solves_target, sufficient_for_target, or direct_advance; any other relation reporting gap_effect='closed' is rejected.",
-    "name": "RecordResearchImpact",
-    "parameters": {
-      "properties": {
-        "closed_gap_ids": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "consolidation_outcome": {
-          "description": "Optional. Set only when assessing a consolidation/dual attempt (a worker spawned with consolidation=true). 'solved' = the pinned target was proved as stated; 'blocked_gap' = not proved but a concrete attackable gap was localized (record it in new_gaps); 'wall' = the attempt repeatedly hit the same insurmountable point / could not connect the props to the target — this flags the direction for a mandatory dual/falsification probe and lowers its budget.",
-          "enum": [
-            "solved",
-            "blocked_gap",
-            "wall"
-          ],
-          "type": "string"
-        },
-        "continuation_value": {
-          "enum": [
-            "high",
-            "medium",
-            "low",
-            "none"
-          ],
-          "type": "string"
-        },
-        "discharges_standing_hypothesis": {
-          "description": "Optional (default false). For an impossibility-kind direction, set true only if this result unconditionally discharges the direction's standing_hypothesis (e.g. eliminates a case without assuming k<=T) rather than deriving one more property under it. If false, a 'direct_advance'/'sufficient_for_target' claim is auto-downgraded to necessary_condition_only, because deriving another conditional property is not progress toward the contradiction.",
-          "type": "boolean"
-        },
-        "failed_method_family": {
-          "description": "Required when method_failure_type is set. The method family that failed (e.g., 'anchor-graph', 'induction', 'rsk', 'topological', 'lp-dual', 'information-theoretic', 'algebraic'). Recorded in the direction's failed_methods tabu list.",
-          "type": "string"
-        },
-        "gap_effect": {
-          "enum": [
-            "closed",
+            "resolved",
             "advanced",
             "unchanged",
-            "invalidated"
+            "refuted"
           ],
           "type": "string"
-        },
-        "method_failure_type": {
-          "description": "Optional. Tabu search: classify a failure (when relation_to_target is necessary_condition_only/weaker_than_target/orthogonal/duplicate/unrelated/unknown and continuation_value is low/none). 'method_blocked' = the method was insufficient but the goal may still be correct → the runtime records the method_family in the direction's failed_methods (tabu list) so future spawns must use a different method. 'conclusion_refuted' = the goal itself may be false → also records to tabu list and flags the direction for review. Requires failed_method_family to be set.",
-          "enum": [
-            "method_blocked",
-            "conclusion_refuted"
-          ],
-          "type": "string"
-        },
-        "new_gaps": {
-          "items": {
-            "properties": {
-              "gap_id": {
-                "type": "string"
-              },
-              "statement": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "relation_to_target": {
-          "enum": [
-            "solves_target",
-            "sufficient_for_target",
-            "direct_advance",
-            "necessary_condition_only",
-            "weaker_than_target",
-            "refutes_target",
-            "orthogonal",
-            "duplicate",
-            "unrelated",
-            "unknown"
-          ],
-          "type": "string"
-        },
-        "remaining_gaps": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "requires_direction_review": {
-          "type": "boolean"
-        },
-        "rubric_assessment": {
-          "description": "Optional. Structured self-assessment against the rubric that was attached to this worker's SpawnWorker call. For each criterion in the rubric, state whether the proven Statement passes it and cite evidence. The runtime tracks consecutive zero-pass workers per direction: 2+ in a row automatically flags the direction for re-review.",
-          "properties": {
-            "checks": {
-              "items": {
-                "properties": {
-                  "criterion": {
-                    "type": "string"
-                  },
-                  "evidence": {
-                    "type": "string"
-                  },
-                  "passed": {
-                    "type": "boolean"
-                  }
-                },
-                "type": "object"
-              },
-              "type": "array"
-            },
-            "passed_count": {
-              "type": "integer"
-            },
-            "total_checks": {
-              "type": "integer"
-            }
-          },
-          "type": "object"
         },
         "summary": {
           "type": "string"
         },
         "worker_id": {
-          "description": "Completed worker id from TaskOutput.",
           "type": "string"
         }
       },
       "required": [
         "worker_id",
-        "relation_to_target",
-        "gap_effect",
-        "continuation_value",
+        "outcome",
         "summary"
       ],
       "type": "object"
     }
   },
   {
-    "description": "Persist a reviewer or numerical-probe finding that controls future targeted dispatch for one exact direction/gap. Use status='refuted' only with a verified proof, explicit witness, or exhaustive finite counterexample; it invalidates that exact gap and blocks repeat dispatch. Use status='needs_falsification' for sampled/incomplete numerical evidence; ordinary proof workers are then blocked until a method_id='falsification' worker checks the claim. This is not a mathematical proof tool: it records the evidence scope so the scheduler cannot mistake a sample for a universal theorem.",
-    "name": "RecordDispatchConstraint",
-    "parameters": {
-      "properties": {
-        "claim": {
-          "description": "The exact claim whose dispatch policy is being constrained.",
-          "type": "string"
-        },
-        "direction_id": {
-          "type": "string"
-        },
-        "evidence": {
-          "description": "Compact counterexample or experiment scope, coverage, and conclusion.",
-          "type": "string"
-        },
-        "evidence_level": {
-          "description": "'refuted' requires verified, explicit_witness, or exhaustive_finite evidence; sampled evidence may only require a falsification probe.",
-          "enum": [
-            "verified",
-            "explicit_witness",
-            "exhaustive_finite",
-            "sampled"
-          ],
-          "type": "string"
-        },
-        "gap_id": {
-          "type": "string"
-        },
-        "source_paths": {
-          "description": "Workspace-relative files/logs that contain the evidence.",
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "status": {
-          "enum": [
-            "refuted",
-            "needs_falsification"
-          ],
-          "type": "string"
-        }
-      },
-      "required": [
-        "direction_id",
-        "gap_id",
-        "claim",
-        "status",
-        "evidence_level",
-        "evidence"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Replace the qualitative research plan with a structured portfolio of multiple directions. Each direction owns its gaps, progress summary, evidence, next actions, review trigger, and stop condition. The runtime preserves measured impact counters and atomically regenerates verified_propositions/state.md. Use index.md separately for verified proposition facts; never put strategic plans in index.md.",
-    "name": "SyncResearchState",
-    "parameters": {
-      "properties": {
-        "directions": {
-          "items": {
-            "properties": {
-              "direction_id": {
-                "type": "string"
-              },
-              "direction_kind": {
-                "description": "Optional. Set 'impossibility' for a direction that tries to prove a value optimal or a configuration impossible (e.g. 'k<=T is impossible'); then also give standing_hypothesis and terminal_gap_id so advance is judged honestly and the consolidation/dual machinery can engage.",
-                "enum": [
-                  "unknown",
-                  "impossibility",
-                  "lower_bound",
-                  "upper_bound",
-                  "construction",
-                  "existence",
-                  "classification"
-                ],
-                "type": "string"
-              },
-              "evidence_refs": {
-                "description": "Verified proposition paths relevant to this direction (relative, no extension).",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "failed_methods": {
-                "description": "Tabu list: method families that have failed on this direction's goal. Each entry: {method_family, failure_type, summary, gap_id, recorded_at}. The runtime preserves this across SyncResearchState calls; you usually do NOT need to set it manually — use RecordResearchImpact with method_failure_type instead. Only set explicitly when creating a new direction that inherits the tabu list of a retired one.",
-                "items": {
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "goal": {
-                "type": "string"
-              },
-              "health": {
-                "type": "string"
-              },
-              "knowledge_refs": {
-                "description": "Knowledge note paths relevant to this direction (relative, no extension).",
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "progress_summary": {
-                "type": "string"
-              },
-              "standing_hypothesis": {
-                "description": "Optional. The assumption every result in an impossibility direction carries (e.g. 'k <= 3035'). A result that only derives another property under it, without discharging it or closing the terminal gap, will not count as advance.",
-                "type": "string"
-              },
-              "status": {
-                "type": "string"
-              },
-              "steps": {
-                "description": "Ordered research steps. Each step is both a plan item and a gap to close. Refine via SyncResearchState as workers return results.",
-                "items": {
-                  "properties": {
-                    "method": {
-                      "type": "string"
-                    },
-                    "statement": {
-                      "type": "string"
-                    },
-                    "status": {
-                      "enum": [
-                        "open",
-                        "advanced",
-                        "closed",
-                        "invalidated"
-                      ],
-                      "type": "string"
-                    },
-                    "step_id": {
-                      "type": "string"
-                    }
-                  },
-                  "type": "object"
-                },
-                "type": "array"
-              },
-              "stop_condition": {
-                "type": "string"
-              },
-              "terminal_gap_id": {
-                "description": "Optional. The gap_id of the direction's terminal obligation (the contradiction / final goal). Progress on peripheral gaps while this stays open is not advance.",
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            },
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "dispatch_plan": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "objective_status": {
-          "type": "string"
-        },
-        "objective_summary": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "objective_summary",
-        "directions"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Wait until one active worker finishes, or until the timeout is reached.\n\nUse this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\nReturn content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. Verified but unsolved completions also appear in selection_advice.pending_research_impacts and must be assessed with RecordResearchImpact before more targeted spawning. Consolidation workers that failed (rejected, or verified but did not achieve their pinned target) are auto-assessed by the runtime with consolidation_outcome=wall and appear with auto_assessed=true; they do NOT require RecordResearchImpact. Consolidation workers that are verified but have target_achieved=null DO require your RecordResearchImpact assessment (you must judge whether the proven statement matches the pinned target). It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; human_expert_updates when hint.md or knowledge/references changed during the run; verified_propositions_organization when verified proposition directories should be organized before more spawning; and progress_audit with the independent process auditor's latest verdict, terminal gap, and persisted audit files. Completed workers with an unresolved mathematical handoff appear in difficulty_portfolio. When at least two candidate handoffs are available, the runtime requests an independent research_reviewer comparison and returns its report; use it to decide whether to attack a shared obligation, keep routes distinct, or pivot. A handoff is not a canonical blocker until curator curation confirms it. When process_audit_context_reset is present, the runtime will clear this orchestrator conversation before the next model request, automatically run one fresh independent research_reviewer assessment, and inject its report into the new context. Read the cited audit and reviewer report, verify their evidence, and SyncResearchState before targeted spawning.",
+    "description": "Wait until one active worker finishes, or until the timeout is reached.\n\nUse this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\nReturn content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. Completed workers may include a worker-local difficulty_handoff. It is evidence for the next checkpoint curator, not a permission to invent a new target immediately. Use DifficultyFrontier to read canonical executable leaves. RecordDifficultyOutcome only assesses the exact canonical difficulty assigned to a worker; parent/child structure is curator-owned. It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files.",
     "name": "TaskOutput",
     "parameters": {
       "properties": {

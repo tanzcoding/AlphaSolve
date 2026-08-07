@@ -79,10 +79,9 @@ def build_reviewer_prompt(handoffs: list[dict[str, Any]]) -> str:
         "handoffs reconciled only enough to preserve final evidence paths; they are not canonical blockers and may "
         "still be stale or distinct. Read cited evidence when needed. Compare exact obligations, last verified steps, "
         "and failed inference rather than wording. Do not edit state or dispatch work.\n\n"
-        "Return the standard reviewer report, including the required `### Difficulty Comparison` section. If two or "
-        "more attempts truly share one critical obligation, state `SAME`, formulate the smallest direct blocker attack, "
-        "and identify affected direction/gap pairs. If they are not the same, state `DISTINCT` or `UNRESOLVED` and give "
-        "the smallest next proposition-level target.\n\n"
+        "Return the standard reviewer report, including the required `### Difficulty Comparison` section. Compare proposed "
+        "parent_difficulty_id, relation_to_parent, and exact failed inference. Recommend one smallest executable obligation, "
+        "but do not invent canonical IDs or edit the DAG: the curator performs that checkpoint-time merge.\n\n"
         "## Difficulty Portfolio\n\n```json\n"
         + payload
         + "\n```"
@@ -95,8 +94,11 @@ def _compact_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
 
     return {
         "worker_id": text("worker_id"),
-        "direction_id": text("direction_id"),
-        "gap_id": text("gap_id"),
+        "source_difficulty_id": text("source_difficulty_id"),
+        "parent_difficulty_id": text("parent_difficulty_id"),
+        "relation_to_parent": text("relation_to_parent"),
+        "parent_resolution_policy": text("parent_resolution_policy"),
+        "difficulty_id": text("difficulty_id"),
         "method_id": text("method_id"),
         "assigned_target": text("assigned_target"),
         "execution_status": text("execution_status"),

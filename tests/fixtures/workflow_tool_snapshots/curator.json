@@ -19,7 +19,7 @@
         },
         "path": {
           "description": "The path to the file to read (must be absolute or workspace-relative).",
-          "pattern": "^(?:(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md|curation_records/blocker_registry\\.json)$",
+          "pattern": "^(?:(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md|curation_records/difficulty_dag\\.json)$",
           "type": "string"
         },
         "read_all": {
@@ -350,33 +350,75 @@
     }
   },
   {
-    "description": "Persist the curator's semantic grouping of repeated mathematical blockers for this audit checkpoint. Before choosing IDs, compare every current difficulty against every active historical blocker as same, distinct, unresolved, or superseded. A same relation must reuse an old canonical blocker_id; if two old blockers are the same, declare both same with one canonical ID so runtime merges them. Counts are derived from outcome sequences, never typed. Only this tool may write the persistent blocker control registry.",
-    "name": "CuratePersistentBlockers",
+    "description": "At this checkpoint, make worker-local difficulty records into the canonical recursive difficulty DAG. Choose stable canonical IDs, merge only evidence-supported aliases through source_difficulty_ids, and attach each new obligation to its actual parent difficulty. Existing source aliases are authoritative: reuse their canonical difficulty instead of reinterpreting them. Legacy direction/gap source labels are accepted and normalized to slugs. Use all_of, any_of, or manual only when the evidence establishes that relation. The runtime validates acyclicity and computes executable leaves; do not invent edges from wording alone.",
+    "name": "CurateDifficultyDag",
     "parameters": {
       "properties": {
-        "blocker_relations": {
-          "description": "Complete matrix over current_difficulties × active blockers at checkpoint start. Each item: {difficulty_id,active_blocker_id,relation=same|distinct|unresolved|superseded,canonical_blocker_id for same, replacement_blocker_id for superseded}.",
+        "difficulties": {
           "items": {
+            "properties": {
+              "difficulty_id": {
+                "type": "string"
+              },
+              "evidence_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "parent_difficulty_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "relation_to_parent": {
+                "enum": [
+                  "alternative",
+                  "method_blocked",
+                  "prerequisite",
+                  "refutes",
+                  "weakened_target"
+                ],
+                "type": "string"
+              },
+              "resolution_policy": {
+                "enum": [
+                  "all_of",
+                  "any_of",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              "source_difficulty_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "statement": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "open",
+                  "advanced",
+                  "resolved",
+                  "refuted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "difficulty_id",
+              "statement",
+              "source_difficulty_ids"
+            ],
             "type": "object"
           },
           "type": "array"
         },
-        "blockers": {
-          "description": "One active payload for each current difficulty's blocker_id: blocker_id, statement, gate={direction_id,gap_id}, approaches=[{direction_id,gap_id,method_id,description,outcome_sequences:[positive audit sequence ids]}].",
-          "items": {
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "current_difficulties": {
-          "description": "Every material current difficulty, including the audit candidate when present. Each item requires difficulty_id, statement, gate={direction_id,gap_id}, and blocker_id (the persistent canonical identity).",
-          "items": {
-            "type": "object"
-          },
-          "type": "array"
-        },
-        "resolved_blocker_ids": {
-          "description": "Existing blocker identities now resolved; omit when none.",
+        "resolved_difficulty_ids": {
           "items": {
             "type": "string"
           },
@@ -384,53 +426,7 @@
         }
       },
       "required": [
-        "current_difficulties",
-        "blocker_relations",
-        "blockers"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "description": "Persist one reusable lesson obtained by comparing reviewer routes and their worker branches. Use only checkpoint evidence; the record becomes strategic memory visible to future reviewers.",
-    "name": "CommitRouteLearning",
-    "parameters": {
-      "properties": {
-        "confidence": {
-          "enum": [
-            "low",
-            "medium",
-            "high"
-          ],
-          "type": "string"
-        },
-        "evidence_paths": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        },
-        "finding": {
-          "type": "string"
-        },
-        "learning_id": {
-          "type": "string"
-        },
-        "policy_effect": {
-          "type": "string"
-        },
-        "route_ids": {
-          "items": {
-            "type": "string"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "learning_id",
-        "route_ids",
-        "finding",
-        "confidence"
+        "difficulties"
       ],
       "type": "object"
     }

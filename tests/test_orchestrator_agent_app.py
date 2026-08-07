@@ -27,10 +27,11 @@ class _RecordingClient:
 def test_orchestrator_agent_profile_uses_real_orchestrator_prompt_and_tools(tmp_path: Path):
     (tmp_path / "problem.md").write_text("# Problem\n\nFind the next proposition.\n", encoding="utf-8")
     (tmp_path / "verified_propositions").mkdir()
-    (tmp_path / "verified_propositions" / "p1.md").write_text(
-        "# Proposition\n\n## Statement\nKnown fact.\n",
-        encoding="utf-8",
-    )
+    for index in range(3):
+        (tmp_path / "verified_propositions" / f"p{index + 1}.md").write_text(
+            "# Proposition\n\n## Statement\nKnown fact.\n",
+            encoding="utf-8",
+        )
     (tmp_path / "knowledge").mkdir()
     (tmp_path / "knowledge" / "notes.md").write_text("Useful context.\n", encoding="utf-8")
     assert not (tmp_path / "unverified_propositions").exists()

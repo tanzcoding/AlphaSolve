@@ -48,6 +48,11 @@ def _format_subagent_result(*, agent_type: str, session_id: str, text: str) -> s
 
 
 class SubagentService:
+    REVIEWER_DELEGATE_LIMITS = {
+        "reasoning_subagent": 1,
+        "numerical_experiment_subagent": 1,
+    }
+
     def __init__(
         self,
         *,
@@ -65,6 +70,7 @@ class SubagentService:
         context_policy_factory: Callable[[str], AgentContextPolicy | None] | None = None,
         reviewer_history_path: "Path | None" = None,
         reviewer_state_provider: Callable[[], dict[str, Any] | None] | None = None,
+        call_guard: Callable[[str, int], None] | None = None,
         allow_research_reviewer: bool = False,
     ) -> None:
         self.suite = suite
@@ -89,9 +95,12 @@ class SubagentService:
         self.reviewer_history_path = reviewer_history_path
         # 当前 canonical state 由 orchestrator 显式注入 reviewer；不依赖它自行猜测或扫描生成视图。
         self.reviewer_state_provider = reviewer_state_provider
+        # 调用方可用此门禁限制某个 subagent 的可调用阶段；门禁抛出的异常会作为工具错误返回。
+        self.call_guard = call_guard
         # Reviewer 是 orchestrator 专属的全局战略角色。默认拒绝，以防某个角色配置
         # 遗漏 Agent.type.enum 时通过工具默认值意外暴露它。
         self.allow_research_reviewer = bool(allow_research_reviewer)
+        self._reviewer_delegate_budget = threading.local()
 
     def available_types(self) -> list[str]:
         types = sorted(self.suite.subagents)
@@ -121,9 +130,25 @@ class SubagentService:
         except Exception as exc:
             return ToolResult(f"ERROR: {exc}", is_error=True)
 
+    def _reserve_reviewer_delegate(self, agent_type: str) -> None:
+        budget = getattr(self._reviewer_delegate_budget, "value", None)
+        if budget is None:
+            return
+        remaining = budget.get(agent_type)
+        if remaining is None:
+            raise PermissionError(
+                "research_reviewer may delegate only to reasoning_subagent or numerical_experiment_subagent"
+            )
+        if remaining <= 0:
+            raise RuntimeError(f"research_reviewer delegation budget exhausted for {agent_type}")
+        budget[agent_type] = remaining - 1
+
     def call(self, agent_type: str, description: str, prompt: str, *, depth: int = 0) -> str:
         if agent_type == "research_reviewer" and not self.allow_research_reviewer:
             raise PermissionError("research_reviewer is reserved for orchestrator global strategic review")
+        self._reserve_reviewer_delegate(agent_type)
+        if self.call_guard is not None:
+            self.call_guard(agent_type, depth)
         if agent_type == "research_reviewer" and self.reviewer_state_provider is not None:
             try:
                 snapshot = self.reviewer_state_provider()
@@ -145,10 +170,9 @@ class SubagentService:
             prompt=prompt,
             result=result,
         )
-        # research_reviewer 跨调用记忆：把最终报告追加到 history 文件。对抗复核不再是
-        # 代码层拼接的固定流水线——reviewer 自己拥有一层受限的 Agent 委派预算（见
-        # `_effective_max_depth`），可以在生成报告前自行调用 reasoning_subagent 做
-        # 对抗复核、调用 numerical_experiment_subagent 做数值核验，按需迭代多次。
+        # research_reviewer 跨调用记忆：把最终报告追加到 history 文件。它拥有一层
+        # 受限 Agent 委派预算：一次 reasoning 对抗复核和至多一次数值核验，不能膨胀为
+        # 多轮自由探索。
         if agent_type == "research_reviewer" and self.reviewer_history_path is not None:
             self._append_reviewer_history(
                 session_id=session_id,
@@ -279,6 +303,9 @@ class SubagentService:
             # 统一运行日志：逐次调用明细（token + CoT + 输出），同样按父角色-subagent/类型归组。
             run_sink = self.log_session.run_log_sink(f"{parent}-subagent/{agent_type}")
             event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink)
+        previous_reviewer_budget = getattr(self._reviewer_delegate_budget, "value", None)
+        if agent_type == "research_reviewer":
+            self._reviewer_delegate_budget.value = dict(self.REVIEWER_DELEGATE_LIMITS)
         try:
             # 按 agent_type 决定是否注入上下文压缩策略
             context_policy = None
@@ -297,6 +324,11 @@ class SubagentService:
             )
             result = agent.run(prompt, description=description)
         finally:
+            if agent_type == "research_reviewer":
+                if previous_reviewer_budget is None:
+                    delattr(self._reviewer_delegate_budget, "value")
+                else:
+                    self._reviewer_delegate_budget.value = previous_reviewer_budget
             if subagent_sink is not None:
                 subagent_sink.close()
             if self.execution_gateway is not None:

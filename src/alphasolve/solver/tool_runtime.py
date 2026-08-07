@@ -11,7 +11,7 @@ from typing import Any, Callable
 from alphasolve.agent import AgentConfig, WorkspaceLike
 from alphasolve.agent.tools import ToolRegistry, ToolResult, build_default_tool_registry, register_agent_tool
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES
-from .blocker_registry import PersistentBlockerRegistry, register_curated_blocker_registry_tool
+from .difficulty_dag import DifficultyDagStore, register_curated_difficulty_dag_tool
 from .difficulty_declaration import register_difficulty_declaration_tool
 from .research_markdown import (
     _markdown_index_progress_audit_hint,
@@ -272,7 +272,9 @@ def register_execution_tools(
             "Usage:\n"
             "- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n"
             "- The Python environment persists across calls within the same session.\n"
-            "- No filesystem access is permitted; use file tools separately if needed."
+            "- No filesystem access is permitted; use file tools separately if needed.\n"
+            '- For regexes or strings containing backslashes, use raw strings (for example `r"\\{"`) '
+            'or double escaping (for example `"\\\\{"`); never write `"\\{"`.'
         ),
         parameters={
             "type": "object",
@@ -326,40 +328,37 @@ def register_orchestrator_worker_tools(
                         "branch, local target, or auxiliary assumption. This is different from the user's hint.md."
                     ),
                 },
-                "route_id": {
+                "difficulty_id": {
                     "type": "string",
                     "description": (
-                        "Stable id returned by RegisterResearchRoute. All targeted workers exploring the same "
-                        "reviewer-proposed path should carry the same route_id so their branches can be compared."
+                        "Canonical curator-owned difficulty ID. Prefer an executable leaf returned by DifficultyFrontier, "
+                        "but an internal parent may be selected when its exact obligation is more informative. The runtime "
+                        "returns a leaf-first warning with active child IDs rather than rejecting that deliberate choice."
                     ),
                 },
-                "direction_id": {
-                    "type": "string",
-                    "description": "Stable id of the research direction in state.md that owns this worker.",
-                },
-                "gap_id": {
-                    "type": "string",
+                "parent_direct_attack": {
+                    "type": "boolean",
                     "description": (
-                        "Stable id of the executable gap inside that direction which this worker attacks. "
-                        "When a parent gap has child gaps, dispatch an open leaf; dispatch the parent only with "
-                        "consolidation=true after its child policy marks it ready for synthesis."
+                        "Optional (default false). Mark a fixed-target attack on an internal parent returned by "
+                        "DifficultyFrontier.parent_direct_difficulties. The runtime pins the exact parent statement, records "
+                        "the attempt against its recommended interval, and returns a warning if that interval is not replenished."
                     ),
                 },
                 "method_id": {
                     "type": "string",
                     "enum": ["direct_proof", "contradiction", "construction", "computation", "falsification", "consolidation"],
-                    "description": "Optional proof/search method arm. If omitted, the hierarchical scheduler recommendation is used.",
+                    "description": "Optional proof/search method for the selected difficulty leaf.",
                 },
                 "parent_id": {
                     "type": "string",
-                    "description": "Backward-compatible single parent attempt state_id. Direction arm ids are not attempt ids.",
+                    "description": "Backward-compatible single parent attempt state_id. These describe attempt lineage only; they do not modify the difficulty DAG.",
                 },
                 "parent_ids": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
                         "Optional parent attempt state_ids for the attempt DAG. Pass multiple ids for crossover. "
-                        "These describe lineage only; direction_id independently identifies the research direction."
+                        "These describe lineage only; the canonical difficulty_id identifies the mathematical obligation."
                     ),
                 },
                 "frontier_refs": {
@@ -396,9 +395,9 @@ def register_orchestrator_worker_tools(
                     "type": "string",
                     "description": (
                         "Optional. A concise acceptance checklist (3-6 bullet points, each starting with '- ') "
-                        "specifying what the proven Statement must satisfy to count as progress on the assigned gap. "
+                        "specifying what the proven Statement must satisfy to count as progress on the assigned difficulty. "
                         "The rubric is NOT shown to the worker — it is stored and returned to you in TaskOutput "
-                        "for your own structured self-assessment via RecordResearchImpact. "
+                        "for evidence-based assessment via RecordDifficultyOutcome. "
                         "Example: '- Explicit construction of a permutation and tiling\n"
                         "- Rectangle count k <= 2111\n"
                         "- All non-hole cells covered exactly once'. "
@@ -429,11 +428,12 @@ def register_orchestrator_worker_tools(
                     "type": "boolean",
                     "description": (
                         "Optional (default false). Set true to launch a GLOBAL consolidation that attacks "
-                        "`problem.md` directly — not any specific direction's terminal goal. This implies "
-                        "consolidation=true (no weakening allowed). If pinned_target is omitted, the runtime "
-                        "reads problem.md into pinned_target automatically. Use this when global_consolidation_directive.ready "
-                        "is true and you want to test whether accumulated verified propositions can already close "
-                        "the original problem. Do NOT pass direction_id or gap_id with global_attack."
+                        "`problem.md` directly — not any canonical difficulty leaf. This implies "
+                        "consolidation=true (no weakening allowed). Read DifficultyFrontier.global_consolidation_directive "
+                        "first: the runtime permits the first attack and each later attack only after the configured number "
+                        "of verified propositions has accumulated; a completed attack resets that count. Every completed global "
+                        "attack is reported to the curator for knowledge and later DAG curation. If pinned_target is omitted, the runtime "
+                        "reads problem.md into pinned_target automatically. Do NOT pass difficulty_id with global_attack."
                     ),
                 },
             },
@@ -447,13 +447,10 @@ def register_orchestrator_worker_tools(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
             "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-            "Verified but unsolved completions also appear in selection_advice.pending_research_impacts and must be assessed with RecordResearchImpact before more targeted spawning. "
-            "Consolidation workers that failed (rejected, or verified but did not achieve their pinned target) are auto-assessed by the runtime with consolidation_outcome=wall and appear with auto_assessed=true; they do NOT require RecordResearchImpact. "
-            "Consolidation workers that are verified but have target_achieved=null DO require your RecordResearchImpact assessment (you must judge whether the proven statement matches the pinned target). "
+            "Completed workers may include a worker-local difficulty_handoff. It is evidence for the next checkpoint curator, not a permission to invent a new target immediately. "
+            "Use DifficultyFrontier to read canonical executable leaves. RecordDifficultyOutcome only assesses the exact canonical difficulty assigned to a worker; parent/child structure is curator-owned. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
-            "human_expert_updates when hint.md or knowledge/references changed during the run; verified_propositions_organization when verified proposition directories should be organized before more spawning; and progress_audit with the independent process auditor's latest verdict, terminal gap, and persisted audit files. "
-            "Completed workers with an unresolved mathematical handoff appear in difficulty_portfolio. When at least two candidate handoffs are available, the runtime requests an independent research_reviewer comparison and returns its report; use it to decide whether to attack a shared obligation, keep routes distinct, or pivot. A handoff is not a canonical blocker until curator curation confirms it. "
-            "When process_audit_context_reset is present, the runtime will clear this orchestrator conversation before the next model request, automatically run one fresh independent research_reviewer assessment, and inject its report into the new context. Read the cited audit and reviewer report, verify their evidence, and SyncResearchState before targeted spawning."
+            "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files."
         ),
         parameters={
             "type": "object",
@@ -472,372 +469,6 @@ def register_orchestrator_worker_tools(
     )
 
 
-def register_orchestrator_research_tools(
-    registry: ToolRegistry,
-    *,
-    record_impact_handler: Callable[[dict[str, Any]], ToolResult],
-    record_dispatch_constraint_handler: Callable[[dict[str, Any]], ToolResult],
-    sync_state_handler: Callable[[dict[str, Any]], ToolResult],
-    register_route_handler: Callable[[dict[str, Any]], ToolResult] | None = None,
-    assess_route_handler: Callable[[dict[str, Any]], ToolResult] | None = None,
-) -> None:
-    """注册 direction-level ResearchImpact、reviewer 路线和战略状态同步工具。"""
-    if register_route_handler is not None:
-        registry.register(
-            name="RegisterResearchRoute",
-            description=(
-                "Persist exactly one route proposed by research_reviewer before assigning targeted workers to it. "
-                "A route is the coarse mathematical path; use SpawnWorker(route_id=...) repeatedly to maximize "
-                "different attempts under it. Copy the machine-readable route contract from the reviewer report."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "route_id": {"type": "string"},
-                    "based_on_state_id": {"type": "string"},
-                    "direction_id": {"type": "string"},
-                    "gap_id": {"type": "string"},
-                    "route_claim": {"type": "string"},
-                    "target": {"type": "string"},
-                    "success_condition": {"type": "string"},
-                    "stop_condition": {"type": "string"},
-                    "evidence_refs": {"type": "array", "items": {"type": "string"}},
-                },
-                "required": [
-                    "route_id", "based_on_state_id", "direction_id", "gap_id", "route_claim",
-                    "target", "success_condition", "stop_condition",
-                ],
-            },
-            handler=register_route_handler,
-        )
-    if assess_route_handler is not None:
-        registry.register(
-            name="AssessResearchRoute",
-            description=(
-                "Compare the accumulated worker branches of one reviewer route against other routes and the terminal gap. "
-                "Record whether the path is advancing, partial, stalled, refuted, redundant, or still inconclusive. "
-                "This is a route-level judgment; continue to use RecordResearchImpact for individual verified workers."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "route_id": {"type": "string"},
-                    "verdict": {
-                        "type": "string",
-                        "enum": ["ADVANCING", "PARTIAL", "STALLED", "REFUTED", "REDUNDANT", "INCONCLUSIVE"],
-                    },
-                    "summary": {"type": "string"},
-                    "evidence_paths": {"type": "array", "items": {"type": "string"}},
-                    "close_route": {"type": "boolean"},
-                },
-                "required": ["route_id", "verdict", "summary"],
-            },
-            handler=assess_route_handler,
-        )
-    registry.register(
-        name="RecordResearchImpact",
-        description=(
-            "Assess one completed verified worker result against the gap it was assigned. "
-            "Use this after TaskOutput for every worker listed in pending_research_impacts, before spawning more targeted work. "
-            "Correctness is already decided by the verifier; classify whether the correct result solves, directly advances, "
-            "only gives a necessary condition, weakens, duplicates, refutes, or misses the target. "
-            "When the work exposes prerequisites, add them as new_gaps with an explicit child_resolution_policy for the "
-            "assigned parent; the runtime then tracks their recursive dependency tree. "
-            "gap_effect='closed' is only accepted when relation_to_target is solves_target, sufficient_for_target, "
-            "or direct_advance; any other relation reporting gap_effect='closed' is rejected."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "worker_id": {"type": "string", "description": "Completed worker id from TaskOutput."},
-                "relation_to_target": {
-                    "type": "string",
-                    "enum": [
-                        "solves_target", "sufficient_for_target", "direct_advance",
-                        "necessary_condition_only", "weaker_than_target", "refutes_target",
-                        "orthogonal", "duplicate", "unrelated", "unknown",
-                    ],
-                },
-                "gap_effect": {
-                    "type": "string",
-                    "enum": ["closed", "advanced", "unchanged", "invalidated"],
-                },
-                "closed_gap_ids": {"type": "array", "items": {"type": "string"}},
-                "remaining_gaps": {"type": "array", "items": {"type": "string"}},
-                "new_gaps": {
-                    "type": "array",
-                    "description": (
-                        "New obligations discovered by this worker. They become children of the assigned gap by default; "
-                        "use parent_gap_id only to attach a reusable obligation elsewhere in the same direction."
-                    ),
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "gap_id": {"type": "string"},
-                            "statement": {"type": "string"},
-                            "parent_gap_id": {"type": "string"},
-                            "resolution_policy": {
-                                "type": "string",
-                                "enum": ["all_of", "any_of", "manual"],
-                                "description": "How this new gap resolves its own future children; defaults to manual.",
-                            },
-                            "gap_kind": {
-                                "type": "string",
-                                "enum": ["unknown", "terminal", "lemma", "subcase", "construction", "falsification", "synthesis"],
-                            },
-                        },
-                        "required": ["gap_id", "statement"],
-                    },
-                },
-                "child_resolution_policy": {
-                    "type": "string",
-                    "enum": ["all_of", "any_of", "manual"],
-                    "description": (
-                        "Required when new_gaps truly decompose the assigned parent: how that parent combines its children. "
-                        "all_of means every child is necessary; any_of means one child can settle it; manual requires "
-                        "a later synthesis proof even after children close."
-                    ),
-                },
-                "continuation_value": {
-                    "type": "string",
-                    "enum": ["high", "medium", "low", "none"],
-                },
-                "requires_direction_review": {"type": "boolean"},
-                "consolidation_outcome": {
-                    "type": "string",
-                    "enum": ["solved", "blocked_gap", "wall"],
-                    "description": (
-                        "Optional. Set only when assessing a consolidation/dual attempt (a worker spawned with "
-                        "consolidation=true). 'solved' = the pinned target was proved as stated; 'blocked_gap' = "
-                        "not proved but a concrete attackable gap was localized (record it in new_gaps); 'wall' = "
-                        "the attempt repeatedly hit the same insurmountable point / could not connect the props to "
-                        "the target — this flags the direction for a mandatory dual/falsification probe and lowers "
-                        "its budget."
-                    ),
-                },
-                "discharges_standing_hypothesis": {
-                    "type": "boolean",
-                    "description": (
-                        "Optional (default false). For an impossibility-kind direction, set true only if this result "
-                        "unconditionally discharges the direction's standing_hypothesis (e.g. eliminates a case "
-                        "without assuming k<=T) rather than deriving one more property under it. If false, a "
-                        "'direct_advance'/'sufficient_for_target' claim is auto-downgraded to necessary_condition_only, "
-                        "because deriving another conditional property is not progress toward the contradiction."
-                    ),
-                },
-                "rubric_assessment": {
-                    "type": "object",
-                    "description": (
-                        "Optional. Structured self-assessment against the rubric that was attached to this worker's "
-                        "SpawnWorker call. For each criterion in the rubric, state whether the proven Statement passes "
-                        "it and cite evidence. The runtime tracks consecutive zero-pass workers per direction: 2+ in a "
-                        "row automatically flags the direction for re-review."
-                    ),
-                    "properties": {
-                        "checks": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "criterion": {"type": "string"},
-                                    "passed": {"type": "boolean"},
-                                    "evidence": {"type": "string"},
-                                },
-                            },
-                        },
-                        "passed_count": {"type": "integer"},
-                        "total_checks": {"type": "integer"},
-                    },
-                },
-                "summary": {"type": "string"},
-                "method_failure_type": {
-                    "type": "string",
-                    "enum": ["method_blocked", "conclusion_refuted"],
-                    "description": (
-                        "Optional. Tabu search: classify a failure (when relation_to_target is "
-                        "necessary_condition_only/weaker_than_target/orthogonal/duplicate/unrelated/unknown "
-                        "and continuation_value is low/none). "
-                        "'method_blocked' = the method was insufficient but the goal may still be correct → "
-                        "the runtime records the method_family in the direction's failed_methods (tabu list) "
-                        "so future spawns must use a different method. "
-                        "'conclusion_refuted' = the goal itself may be false → also records to tabu list and "
-                        "flags the direction for review. "
-                        "Requires failed_method_family to be set."
-                    ),
-                },
-                "failed_method_family": {
-                    "type": "string",
-                    "description": (
-                        "Required when method_failure_type is set. The method family that failed "
-                        "(e.g., 'anchor-graph', 'induction', 'rsk', 'topological', 'lp-dual', "
-                        "'information-theoretic', 'algebraic'). Recorded in the direction's "
-                        "failed_methods tabu list."
-                    ),
-                },
-            },
-            "required": [
-                "worker_id", "relation_to_target", "gap_effect", "continuation_value", "summary",
-            ],
-        },
-        handler=record_impact_handler,
-    )
-    registry.register(
-        name="RecordDispatchConstraint",
-        description=(
-            "Persist a reviewer or numerical-probe finding that controls future targeted dispatch for one exact "
-            "direction/gap. Use status='refuted' only with a verified proof, explicit witness, or exhaustive finite "
-            "counterexample; it invalidates that exact gap and blocks repeat dispatch. Use "
-            "status='needs_falsification' for sampled/incomplete numerical evidence; ordinary proof workers are then "
-            "blocked until a method_id='falsification' worker checks the claim. This is not a mathematical proof tool: "
-            "it records the evidence scope so the scheduler cannot mistake a sample for a universal theorem."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "direction_id": {"type": "string"},
-                "gap_id": {"type": "string"},
-                "claim": {
-                    "type": "string",
-                    "description": "The exact claim whose dispatch policy is being constrained.",
-                },
-                "status": {
-                    "type": "string",
-                    "enum": ["refuted", "needs_falsification"],
-                },
-                "evidence_level": {
-                    "type": "string",
-                    "enum": ["verified", "explicit_witness", "exhaustive_finite", "sampled"],
-                    "description": (
-                        "'refuted' requires verified, explicit_witness, or exhaustive_finite evidence; sampled "
-                        "evidence may only require a falsification probe."
-                    ),
-                },
-                "evidence": {
-                    "type": "string",
-                    "description": "Compact counterexample or experiment scope, coverage, and conclusion.",
-                },
-                "source_paths": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Workspace-relative files/logs that contain the evidence.",
-                },
-            },
-            "required": ["direction_id", "gap_id", "claim", "status", "evidence_level", "evidence"],
-        },
-        handler=record_dispatch_constraint_handler,
-    )
-    registry.register(
-        name="SyncResearchState",
-        description=(
-            "Replace the qualitative research plan with a structured portfolio of multiple directions. "
-            "Each direction owns its gaps, progress summary, evidence, next actions, review trigger, and stop condition. "
-            "The runtime preserves measured impact counters and atomically regenerates verified_propositions/state.md. "
-            "Use index.md separately for verified proposition facts; never put strategic plans in index.md."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "objective_summary": {"type": "string"},
-                "objective_status": {"type": "string"},
-                "directions": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "direction_id": {"type": "string"},
-                            "title": {"type": "string"},
-                            "goal": {"type": "string"},
-                            "status": {"type": "string"},
-                            "health": {"type": "string"},
-                            "direction_kind": {
-                                "type": "string",
-                                "enum": [
-                                    "unknown", "impossibility", "lower_bound", "upper_bound",
-                                    "construction", "existence", "classification",
-                                ],
-                                "description": (
-                                    "Optional. Set 'impossibility' for a direction that tries to prove a value optimal "
-                                    "or a configuration impossible (e.g. 'k<=T is impossible'); then also give "
-                                    "standing_hypothesis and terminal_gap_id so advance is judged honestly and the "
-                                    "consolidation/dual machinery can engage."
-                                ),
-                            },
-                            "standing_hypothesis": {
-                                "type": "string",
-                                "description": (
-                                    "Optional. The assumption every result in an impossibility direction carries "
-                                    "(e.g. 'k <= 3035'). A result that only derives another property under it, without "
-                                    "discharging it or closing the terminal gap, will not count as advance."
-                                ),
-                            },
-                            "terminal_gap_id": {
-                                "type": "string",
-                                "description": (
-                                    "Optional. The gap_id of the direction's terminal obligation (the contradiction / "
-                                    "final goal). Progress on peripheral gaps while this stays open is not advance."
-                                ),
-                            },
-                            "steps": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "step_id": {"type": "string"},
-                                        "statement": {"type": "string"},
-                                        "parent_gap_id": {
-                                            "type": "string",
-                                            "description": "Optional parent gap in this direction. Omit for a root gap.",
-                                        },
-                                        "resolution_policy": {
-                                            "type": "string",
-                                            "enum": ["all_of", "any_of", "manual"],
-                                            "description": "How this gap combines its direct children; defaults to manual.",
-                                        },
-                                        "gap_kind": {
-                                            "type": "string",
-                                            "enum": ["unknown", "terminal", "lemma", "subcase", "construction", "falsification", "synthesis"],
-                                        },
-                                        "status": {"type": "string", "enum": ["open", "advanced", "closed", "invalidated", "superseded"]},
-                                        "method": {"type": "string"},
-                                    },
-                                },
-                                "description": "Recursive gap forest. Each gap may name a parent_gap_id and a child-combination policy; dispatch open leaves, then use consolidation to synthesize ready parents. Refine via SyncResearchState as workers return results.",
-                            },
-                            "progress_summary": {"type": "string"},
-                            "evidence_refs": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Verified proposition paths relevant to this direction (relative, no extension).",
-                            },
-                            "knowledge_refs": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Knowledge note paths relevant to this direction (relative, no extension).",
-                            },
-                            "stop_condition": {"type": "string"},
-                            "failed_methods": {
-                                "type": "array",
-                                "description": (
-                                    "Tabu list: method families that have failed on this direction's goal. "
-                                    "Each entry: {method_family, failure_type, summary, gap_id, recorded_at}. "
-                                    "The runtime preserves this across SyncResearchState calls; you usually "
-                                    "do NOT need to set it manually — use RecordResearchImpact with "
-                                    "method_failure_type instead. Only set explicitly when creating a new "
-                                    "direction that inherits the tabu list of a retired one."
-                                ),
-                                "items": {"type": "object"},
-                            },
-                        },
-                    },
-                },
-                "dispatch_plan": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["objective_summary", "directions"],
-        },
-        handler=sync_state_handler,
-    )
-
-
 def build_solver_tool_registry(
     workspace: WorkspaceLike,
     *,
@@ -852,13 +483,12 @@ def build_solver_tool_registry(
     if agent_config is not None and agent_config.name == "curator":
         workspace_root = getattr(getattr(workspace, "workspace", None), "root", None)
         if workspace_root:
-            register_curated_blocker_registry_tool(
+            difficulty_dag = DifficultyDagStore(workspace_root)
+            register_curated_difficulty_dag_tool(
                 registry,
-                blocker_registry=PersistentBlockerRegistry(workspace_root),
+                difficulty_dag=difficulty_dag,
                 checkpoint_id=None,
             )
-            from .curator import _register_route_learning_tool
-            _register_route_learning_tool(registry, workspace_dir=workspace_root)
     for registrar in extra_registrars:
         registrar(registry)
     if agent_config is not None and agent_config.name in {"generator", "reviser"}:

@@ -4,7 +4,7 @@ agent:
   prompt_path: ../../prompts/curator.md
   tier: cheap
   max_turns: 80
-  when_to_use: Incrementally update the knowledge wiki from local traces and synthesize portfolio checkpoints by comparing worker outcomes, process audits, and orchestrator strategy transitions.
+  when_to_use: Incrementally update the knowledge wiki from local traces and synthesize portfolio checkpoints by comparing worker outcomes and process audits.
   tools:
     - Read
     - Write
@@ -18,12 +18,11 @@ agent:
     - Glob
     - Grep
     - Agent
-    - CuratePersistentBlockers
-    - CommitRouteLearning
+    - CurateDifficultyDag
   tool_parameters:
     Read:
       path:
-        pattern: "^(?:(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md|curation_records/blocker_registry\\.json)$"
+        pattern: "^(?:(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md|curation_records/difficulty_dag\\.json)$"
     Write:
       path:
         pattern: "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"

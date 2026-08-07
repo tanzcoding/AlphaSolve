@@ -180,9 +180,7 @@ class WorkerRunResult:
     verified_file: Path | None = None
     review_file: Path | None = None
     theorem_check_file: Path | None = None
-    route_id: str | None = None
-    direction_id: str | None = None
-    gap_id: str | None = None
+    difficulty_id: str | None = None
     solved_problem: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
     # --- consolidation worker 的结构化反馈 ---
@@ -261,9 +259,8 @@ class Worker:
         suite,
         client_factory: ClientFactory,
         worker_hint: str | None = None,
-        route_id: str | None = None,
-        direction_id: str | None = None,
-        gap_id: str | None = None,
+        difficulty_id: str | None = None,
+        difficulty_statement: str | None = None,
         method_id: str | None = None,
         frontier_refs: list[str] | None = None,
         frontier_note: str | None = None,
@@ -273,6 +270,8 @@ class Worker:
         rubric: str | None = None,
         max_verify_rounds: int = 2,
         verifier_scaling_factor: int = 1,
+        verifier_agents: tuple[str, ...] | None = None,
+        theorem_check_attempts: int = AlphaSolveConfig.CHECK_IS_THEOREM_TIMES,
         subagent_max_depth: int = 2,
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
@@ -287,9 +286,8 @@ class Worker:
         prop_hash = uuid.uuid4().hex[:8]
         self.worker_id = prop_hash
         self.worker_hint = worker_hint
-        self.route_id = (route_id or "").strip() or None
-        self.direction_id = (direction_id or "").strip() or None
-        self.gap_id = (gap_id or "").strip() or None
+        self.difficulty_id = (difficulty_id or "").strip() or None
+        self.difficulty_statement = (difficulty_statement or "").strip() or None
         self.method_id = (method_id or "direct_proof").strip() or "direct_proof"
         self.frontier_refs = list(frontier_refs) if frontier_refs else []
         self.frontier_note = frontier_note
@@ -309,10 +307,12 @@ class Worker:
         self.is_global_attack = bool(
             self.is_consolidation
             and self.pinned_target
-            and "global-problem-attack" in (direction_id or "")
+            and self.difficulty_id == "global-problem-attack"
         )
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
+        self.verifier_agents = tuple(verifier_agents) if verifier_agents is not None else None
+        self.theorem_check_attempts = max(1, int(theorem_check_attempts))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.workspace = Workspace(layout.workspace_dir)
         self.worker_dir = layout.unverified_dir / f"prop-{prop_hash}"
@@ -351,9 +351,8 @@ class Worker:
             json.dumps(
                 {
                     "worker_id": self.worker_id,
-                    "route_id": self.route_id,
-                    "direction_id": self.direction_id,
-                    "gap_id": self.gap_id,
+                    "difficulty_id": self.difficulty_id,
+                    "difficulty_statement": self.difficulty_statement,
                     "method_id": self.method_id,
                     "hint": self.worker_hint,
                     "is_free_exploration": self.is_free,
@@ -603,7 +602,7 @@ class Worker:
 
     def _run_theorem_checks(self, verified_file: Path) -> tuple[bool, str]:
         attempts: list[str] = []
-        for attempt_index in range(1, AlphaSolveConfig.CHECK_IS_THEOREM_TIMES + 1):
+        for attempt_index in range(1, self.theorem_check_attempts + 1):
             if self._should_stop():
                 return False, _format_theorem_check_attempts(attempts)
             check_text = self._run_theorem_checker(verified_file, attempt_index=attempt_index)
@@ -1124,9 +1123,9 @@ class Worker:
             for part in [
                 "# Problem",
                 self.layout.read_problem(),
-                "# General Hint",
+                "# General Hint" if self.layout.read_hint() else "",
                 self.layout.read_hint(),
-                "# Task Guidance",
+                "# Task Guidance" if self.worker_hint else "",
                 self.worker_hint,
                 f"# Assigned Method\n{self.method_id}",
                 pinned,
@@ -1454,8 +1453,7 @@ class Worker:
             handoff_file, handoff = materialize_difficulty_handoff(
                 declaration_path=declaration_file,
                 worker_id=self.worker_id,
-                direction_id=self.direction_id,
-                gap_id=self.gap_id,
+                difficulty_id=self.difficulty_id,
                 method_id=self.method_id,
                 execution_status=status,
                 failure_kind=failure_kind,
@@ -1475,9 +1473,7 @@ class Worker:
             verified_file=verified_file,
             review_file=review_file,
             theorem_check_file=theorem_check_file,
-            route_id=self.route_id,
-            direction_id=self.direction_id,
-            gap_id=self.gap_id,
+            difficulty_id=self.difficulty_id,
             solved_problem=solved_problem,
             trace=list(self.trace),
             is_consolidation=self.is_consolidation,
@@ -1518,11 +1514,14 @@ class Worker:
         return self.stop_event is not None and self.stop_event.is_set()
 
     def _verifier_config_names(self) -> list[str]:
-        raw = self.suite.settings.get("verifier_agents") or ["verifier"]
-        if isinstance(raw, str):
-            names = [item.strip() for item in raw.split(",") if item.strip()]
+        if self.verifier_agents is not None:
+            names = list(self.verifier_agents)
         else:
-            names = [str(item).strip() for item in raw if str(item).strip()]
+            raw = getattr(self.suite, "settings", {}).get("verifier_agents") or ["verifier"]
+            if isinstance(raw, str):
+                names = [item.strip() for item in raw.split(",") if item.strip()]
+            else:
+                names = [str(item).strip() for item in raw if str(item).strip()]
         if not names:
             names = ["verifier"]
         missing = [name for name in names if name not in self.suite.agents]

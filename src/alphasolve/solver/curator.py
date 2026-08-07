@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any
 from alphasolve.solver.logging.event_log import compose_event_sinks
 
 from alphasolve.solver.ui.dashboard import make_curator_event_sink
+from .policy import SolverPolicy
+from .research_frontier_state import write_research_frontier_state
 
 if TYPE_CHECKING:
     from alphasolve.agent import AgentConfig
@@ -32,51 +34,9 @@ class CuratorTask:
     recovery_reason: str = ""
 
 
-CURATOR_HEALTH_CHECK_INTERVAL = 4
-CURATOR_OVERSIZED_ENTRY_LINE_LIMIT = 250
-
-
-def _register_route_learning_tool(registry, *, workspace_dir: Path) -> None:
-    """Allow curator to commit evidence-bounded cross-route learning, not edit state directly."""
-    from alphasolve.agent import ToolResult
-    from .research_state import ResearchStateStore
-
-    store = ResearchStateStore(workspace_dir / "verified_propositions")
-
-    def handler(args: dict[str, Any]) -> ToolResult:
-        try:
-            result = store.commit_route_learning(
-                learning_id=str(args.get("learning_id") or ""),
-                route_ids=args.get("route_ids") or [],
-                finding=str(args.get("finding") or ""),
-                confidence=str(args.get("confidence") or ""),
-                evidence_paths=args.get("evidence_paths"),
-                policy_effect=str(args.get("policy_effect") or ""),
-            )
-        except ValueError as exc:
-            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
-        return ToolResult(json.dumps(result, ensure_ascii=False))
-
-    registry.register(
-        name="CommitRouteLearning",
-        description=(
-            "Persist one reusable lesson obtained by comparing reviewer routes and their worker branches. "
-            "Use only checkpoint evidence; the record becomes strategic memory visible to future reviewers."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "learning_id": {"type": "string"},
-                "route_ids": {"type": "array", "items": {"type": "string"}},
-                "finding": {"type": "string"},
-                "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
-                "evidence_paths": {"type": "array", "items": {"type": "string"}},
-                "policy_effect": {"type": "string"},
-            },
-            "required": ["learning_id", "route_ids", "finding", "confidence"],
-        },
-        handler=handler,
-    )
+_DEFAULT_POLICY = SolverPolicy()
+CURATOR_HEALTH_CHECK_INTERVAL = _DEFAULT_POLICY.curator_health_check_interval
+CURATOR_OVERSIZED_ENTRY_LINE_LIMIT = _DEFAULT_POLICY.curator_oversized_entry_line_limit
 
 
 class CuratorQueue:
@@ -93,10 +53,12 @@ class CuratorQueue:
         log_session: "LogSession | None" = None,
         stop_event: threading.Event | None = None,
         renderer: "PropositionTeamRenderer | None" = None,
+        policy: SolverPolicy | None = None,
     ) -> None:
         self.knowledge_dir = knowledge_dir
         self.workspace_dir = workspace_dir
         self.suite = suite
+        self.policy = policy or SolverPolicy.from_settings(getattr(suite, "settings", None))
         self.client_factory = client_factory
         self.execution_gateway = execution_gateway
         self.log_session = log_session
@@ -129,7 +91,7 @@ class CuratorQueue:
             self._queue.put(task)
             if task.task_kind == "digest":
                 self._digest_tasks_since_health_check += 1
-                if self._digest_tasks_since_health_check >= CURATOR_HEALTH_CHECK_INTERVAL:
+                if self._digest_tasks_since_health_check >= self.policy.curator_health_check_interval:
                     self._digest_tasks_since_health_check = 0
                     health_task = CuratorTask(
                         trace_segment=[],
@@ -201,7 +163,7 @@ class CuratorQueue:
             return
 
         from alphasolve.agent import Agent
-        from .blocker_registry import PersistentBlockerRegistry, register_curated_blocker_registry_tool
+        from .difficulty_dag import DifficultyDagStore, register_curated_difficulty_dag_tool
         from .subagent_service import SubagentService
         from .tool_runtime import build_solver_tool_registry
         from .workspace_access import RoleWorkspaceAccess
@@ -222,11 +184,14 @@ class CuratorQueue:
         extra_registrars = ()
         if task.task_kind == "portfolio_checkpoint" and task.artifact_path is not None:
             checkpoint_id = task.artifact_path.parent.name
-            blocker_registry = PersistentBlockerRegistry(self.workspace_dir)
+            difficulty_dag = DifficultyDagStore(
+                self.workspace_dir,
+                policy=self.policy.difficulty_dag,
+            )
             extra_registrars = (
-                lambda tool_registry: register_curated_blocker_registry_tool(
+                lambda tool_registry: register_curated_difficulty_dag_tool(
                     tool_registry,
-                    blocker_registry=blocker_registry,
+                    difficulty_dag=difficulty_dag,
                     checkpoint_id=checkpoint_id,
                     replace=True,
                 ),
@@ -239,11 +204,14 @@ class CuratorQueue:
         )
 
         if task.task_kind == "health_check":
-            task_prompt = _health_check_prompt(self.knowledge_dir)
+            task_prompt = _health_check_prompt(
+                self.knowledge_dir,
+                oversized_entry_line_limit=self.policy.curator_oversized_entry_line_limit,
+            )
         elif task.task_kind == "portfolio_checkpoint":
             task_prompt = _portfolio_checkpoint_prompt(task.artifact_path, recovery_reason=task.recovery_reason)
-        elif task.task_kind == "strategy_transition":
-            task_prompt = _strategy_transition_prompt(task.artifact_path)
+        elif task.task_kind == "global_attack_review":
+            task_prompt = _global_attack_review_prompt(task.artifact_path)
         elif task.task_kind == "progress_audit":
             task_prompt = _progress_audit_prompt(task.audit_path)
         else:
@@ -315,9 +283,12 @@ class CuratorQueue:
             agent.run(task_prompt)
             if task.task_kind == "portfolio_checkpoint" and task.artifact_path is not None:
                 checkpoint_id = task.artifact_path.parent.name
-                if not PersistentBlockerRegistry(self.workspace_dir).is_checkpoint_curated(checkpoint_id):
+                if not DifficultyDagStore(
+                    self.workspace_dir,
+                    policy=self.policy.difficulty_dag,
+                ).is_checkpoint_curated(checkpoint_id):
                     raise RuntimeError(
-                        f"curator did not persist blocker curation for checkpoint {checkpoint_id}"
+                        f"curator did not persist difficulty DAG curation for checkpoint {checkpoint_id}"
                     )
             curator_success = True
         finally:
@@ -325,6 +296,14 @@ class CuratorQueue:
                 curator_sink.close()
             if self.renderer is not None:
                 self.renderer.finish_curator_task(success=curator_success)
+        if curator_success:
+            try:
+                write_research_frontier_state(
+                    self.workspace_dir,
+                    difficulty_dag_policy=self.policy.difficulty_dag,
+                )
+            except OSError:
+                pass
         touched_paths = access.touched_paths()
         _update_entry_metadata(touched_paths)
         self._record_touched_paths(touched_paths)
@@ -361,87 +340,27 @@ def _is_final_verifier_trace(trace_segment: list[dict[str, Any]]) -> bool:
     )
 
 
-def _strategy_transition_prompt(artifact_path: Path | None) -> str:
-    path_text = ""
-    if artifact_path is not None:
-        try:
-            path_text = artifact_path.resolve().relative_to(artifact_path.parents[2]).as_posix()
-        except (ValueError, IndexError):
-            path_text = str(artifact_path)
-    return (
-        "# Orchestrator Strategy Transition Curation\n\n"
-        "Read the transition fact at `" + (path_text or "(missing transition fact)") + "` and its cited process audit. "
-        "Record this as a process observation in `knowledge/portfolio/strategy-transitions.md` and update "
-        "`knowledge/portfolio/process-audit-history.md` if appropriate.\n\n"
-        "State only what the evidence supports: the prior process verdict, the terminal gap, why the old context was reset, "
-        "and what the next context is required to reconsider. Do not claim that a new direction was successful before a later "
-        "outcome supports it. When subsequent checkpoint briefs arrive, compare their actual targets, rubrics, and outcomes "
-        "against this transition. Do not copy internal worker/session identifiers or timestamps into knowledge files."
-    )
-
-
 def _portfolio_checkpoint_prompt(artifact_path: Path | None, *, recovery_reason: str = "") -> str:
-    path_text = ""
-    if artifact_path is not None:
-        try:
-            path_text = artifact_path.resolve().relative_to(artifact_path.parents[2]).as_posix()
-        except (ValueError, IndexError):
-            path_text = str(artifact_path)
-    recovery_note = (
-        "# Recovery feedback\n"
-        "A previous curation attempt did not persist. Correct the payload rather than merely repeating it. "
-        f"Previous runtime failure: {recovery_reason}\n\n"
-        if recovery_reason
-        else ""
-    )
+    path_text = str(artifact_path) if artifact_path is not None else "(missing checkpoint brief)"
+    recovery = f"Previous curation failure: {recovery_reason}\n\n" if recovery_reason else ""
     return (
-        "# Portfolio Checkpoint Curation\n\n"
-        "Read the checkpoint brief first: `" + (path_text or "(missing checkpoint brief)") + "`. "
-        "It combines the current process audit, settled worker outcomes, rubric/impact evidence, prior checkpoint comparison, "
-        "and orchestrator session/context-reset events. You may read cited files under `progress_audits/` and `curation_records/` "
-        "to verify the comparison, but never edit anything outside `knowledge/`.\n\n"
-        "Before writing knowledge, read `curation_records/blocker_registry.json` when it exists. Then call "
-        "`CuratePersistentBlockers` exactly once before finishing. You—not the process auditor—own the semantic decision "
-        "whether outcome difficulties are the same mathematical blocker across different routes. If that one call returns a "
-        "validation error, do not submit a second variant in this task: record no new semantic decision and let the runtime "
-        "retry in a fresh curation task with its recovery feedback.\n\n"
-        + recovery_note
-        + "Mandatory identity reconciliation:\n"
-        "1. List every material present difficulty in `current_difficulties`, including the audit candidate if it has one.\n"
-        "2. Compare EACH current difficulty against EACH active historical blocker in `blocker_relations`; no pair may be omitted.\n"
-        "3. Use `same` only when the mathematical obligation is identical despite different statements, directions, methods, or local lemmas. "
-        "It MUST reuse an old `blocker_id`; if several historical IDs are same, select one canonical old ID and declare all others "
-        "same with that `canonical_blocker_id`, so runtime merges them.\n"
-        "4. Use `distinct` for genuinely independent obligations, `unresolved` only when evidence cannot decide equivalence, and "
-        "`superseded` only when a new named blocker replaces the old obligation/gate. Never create a fresh ID merely because wording or route changed.\n"
-        "5. `difficulty_id` is a stable semantic slug for a current-difficulty row, not a direction/gap path and not the durable identity. "
-        "Use only letters, digits, `.`, `_`, and `-` (for example `audit-cross-term-control`); never use `direction/gap`. "
-        "Put the exact route identity in `gate={direction_id,gap_id}`. The audit candidate is included by this exact gate; its "
-        "statement may be a faithful concise restatement. `blocker_id` is the durable cross-checkpoint identity.\n"
-        "6. A current difficulty's `gate` identifies that observed route; the matching `blockers` payload chooses one "
-        "canonical actionable dispatch gate for the persistent identity. They may differ when multiple routes hit the same blocker.\n"
-        "7. Group every supporting outcome sequence by actual direction/gap/method. For outcomes with a "
-        "Structured Difficulty Handoff, compare the exact blocking obligation, last verified step, and failed inference; wording similarity alone is not evidence. "
-        "The tool derives counts from sequences and persists the classification across restarts. If no new repeated blocker exists, still submit continuing "
-        "current difficulties and their relations to every active blocker; resolve an existing blocker only when evidence discharges it.\n\n"
-        "Route learning requirement:\n"
-        "- Group outcomes by route_id; workers sharing one route are branches of the same reviewer-proposed path.\n"
-        "- Compare routes by terminal-gap progress, reusable verified evidence, blocker resolution/refutation, repeated avoidance, and cost only when available.\n"
-        "- Call `CommitRouteLearning` for each evidence-supported reusable contrast. If no route comparison is supported, do not invent one.\n\n"
-        "Maintain these durable knowledge files rather than creating an isolated narrative only:\n"
-        "- `knowledge/portfolio/current-strategy.md`: current terminal gap, verified facts that bear on it, and what a useful next proposition must accomplish.\n"
-        "- `knowledge/portfolio/attempt-patterns.md`: reusable attempt patterns. For each pattern state conditions, contrast between attempts, outcome, reusable rule, confidence, and exceptions.\n"
-        "- `knowledge/portfolio/strategy-transitions.md`: compare strategy/context generations only when the evidence shows a genuine change; record what was abandoned, what changed, and whether the new attempt improved.\n"
-        "- `knowledge/portfolio/process-audit-history.md`: compact evolution of verdicts, terminal gaps, repeated avoided obligations, and whether subsequent outcomes validated the audit.\n"
-        "- `knowledge/portfolio/index.md`, and link this folder from `knowledge/index.md`.\n\n"
-        "Evidence rules:\n"
-        "- Separate **verified mathematical facts** from **process observations** and **strategy recommendations**.\n"
-        "- A correct local proposition is not progress unless the brief shows it connected to the terminal gap and its rubric/impact evidence supports that claim.\n"
-        "- Compare attempts by target/gap, method family, rubric result, summary, avoided obligation, verification status, and later audit verdict; do not merely list them chronologically.\n"
-        "- Preserve useful contrasts: explain why one line advanced while a superficially similar line was incidental, rejected, or repeatedly avoided the same obligation.\n"
-        "- Do not copy worker IDs, session IDs, timestamps, raw prompts, or source labels into knowledge files. Refer to mathematical targets and strategy generations descriptively instead.\n"
-        "- Do not overwrite a prior lesson merely because a new audit disagrees; record the condition or evidence that explains the difference.\n"
-        "- Do not modify the checkpoint brief, raw audit, evidence, or curation records.\n"
+        "# Portfolio Checkpoint Difficulty DAG Curation\n\n"
+        f"Read the checkpoint brief at {path_text}. Then inspect curation_records/difficulty_dag.json when present and call CurateDifficultyDag exactly once.\n\n"
+        + recovery
+        + "Reconcile worker-local source difficulty records into canonical IDs. Existing aliases in difficulty_dag.json are binding: when a source is already mapped, reuse that canonical difficulty rather than assigning a new one. Legacy direction/gap source labels may be submitted verbatim and are normalized by runtime. Preserve a parent edge only when cited evidence establishes the mathematical relationship. Use all_of, any_of, or manual only when justified; runtime computes executable leaves. Write evidence-bounded knowledge notes, but do not maintain routes, direction/gap gates, or a blocker matrix."
+    )
+
+
+def _global_attack_review_prompt(artifact_path: Path | None) -> str:
+    path_text = str(artifact_path) if artifact_path is not None else "(missing global attack report)"
+    return (
+        "# Global Consolidation Review\n\n"
+        f"Read the full-problem synthesis report at `{path_text}` and inspect `curation_records/difficulty_dag.json`. "
+        "This report tests whether multiple verified paths already close `problem.md`; it is not an ordinary difficulty outcome.\n\n"
+        "Extract reusable bridge gaps, incompatible assumptions, promising combinations, and dead-end combinations into "
+        "evidence-bounded knowledge notes. When the report identifies a concrete unresolved mathematical obligation, ensure "
+        "later checkpoint curation can incorporate it into the difficulty DAG. Do not treat rejected or partial work as "
+        "verified mathematics. The next global consolidation is scheduled only by the verified-proposition count interval."
     )
 
 
@@ -470,8 +389,19 @@ def _progress_audit_prompt(audit_path: Path | None) -> str:
     )
 
 
-def _health_check_prompt(knowledge_dir: Path | None = None) -> str:
-    scan_text = _knowledge_health_scan(knowledge_dir) if knowledge_dir is not None else ""
+def _health_check_prompt(
+    knowledge_dir: Path | None = None,
+    *,
+    oversized_entry_line_limit: int = CURATOR_OVERSIZED_ENTRY_LINE_LIMIT,
+) -> str:
+    scan_text = (
+        _knowledge_health_scan(
+            knowledge_dir,
+            oversized_entry_line_limit=oversized_entry_line_limit,
+        )
+        if knowledge_dir is not None
+        else ""
+    )
     scan_section = ""
     if scan_text:
         scan_section = (
@@ -488,7 +418,7 @@ def _health_check_prompt(knowledge_dir: Path | None = None) -> str:
         "Check these items:\n"
         "- `knowledge/index.md` should be a route map of immediate children, not a giant flat summary list.\n"
         "- Each topic directory should have its own `index.md`; every index should track only immediate child files and folders.\n"
-        "- Keep broad or oversized topics in topic folders. Files over 250 lines should usually be split, "
+        f"- Keep broad or oversized topics in topic folders. Files over {oversized_entry_line_limit} lines should usually be split, "
         "except `knowledge/common-errors.md` which stays as one compressed file.\n"
         "- Keep user-provided papers, OCR markdown, and personal notes under `knowledge/references/`; rename and move reference files for organization, but do not Write/Edit reference text.\n"
         "- Check for stale links, confusing names, redundant pages, obvious duplicates, and program-reported untracked files.\n"
@@ -502,12 +432,19 @@ def _health_check_prompt(knowledge_dir: Path | None = None) -> str:
     )
 
 
-def _knowledge_health_scan(knowledge_dir: Path) -> str:
+def _knowledge_health_scan(
+    knowledge_dir: Path,
+    *,
+    oversized_entry_line_limit: int = CURATOR_OVERSIZED_ENTRY_LINE_LIMIT,
+) -> str:
     if not knowledge_dir.exists():
         return "- `knowledge/` does not exist yet."
 
     missing = _find_untracked_markdown(knowledge_dir)
-    oversized = _find_oversized_markdown(knowledge_dir)
+    oversized = _find_oversized_markdown(
+        knowledge_dir,
+        oversized_entry_line_limit=oversized_entry_line_limit,
+    )
     common_errors_lines = _common_errors_line_count(knowledge_dir)
     lines: list[str] = []
     if missing:
@@ -516,15 +453,15 @@ def _knowledge_health_scan(knowledge_dir: Path) -> str:
     if oversized:
         if lines:
             lines.append("")
-        lines.append(f"Markdown over {CURATOR_OVERSIZED_ENTRY_LINE_LIMIT} lines:")
+        lines.append(f"Markdown over {oversized_entry_line_limit} lines:")
         lines.extend(f"- {path} ({line_count} lines)" for path, line_count in oversized)
-    if common_errors_lines is not None and common_errors_lines > CURATOR_OVERSIZED_ENTRY_LINE_LIMIT:
+    if common_errors_lines is not None and common_errors_lines > oversized_entry_line_limit:
         if lines:
             lines.append("")
         lines.append("Common errors maintenance:")
         lines.append(
             f"- `knowledge/common-errors.md` is {common_errors_lines} lines. Keep it within "
-            f"{CURATOR_OVERSIZED_ENTRY_LINE_LIMIT} lines and within 15 common error patterns; "
+            f"{oversized_entry_line_limit} lines and within 15 common error patterns; "
             "if it has too many patterns, distill and abstract shared failure modes until it has at most 15."
         )
     if not lines:
@@ -561,13 +498,17 @@ def _find_untracked_markdown(knowledge_dir: Path) -> list[str]:
     return entries
 
 
-def _find_oversized_markdown(knowledge_dir: Path) -> list[tuple[str, int]]:
+def _find_oversized_markdown(
+    knowledge_dir: Path,
+    *,
+    oversized_entry_line_limit: int = CURATOR_OVERSIZED_ENTRY_LINE_LIMIT,
+) -> list[tuple[str, int]]:
     oversized: list[tuple[str, int]] = []
     for md_file in sorted(knowledge_dir.rglob("*.md")):
         if md_file.name == "common-errors.md":
             continue
         line_count = _markdown_line_count(md_file)
-        if line_count > CURATOR_OVERSIZED_ENTRY_LINE_LIMIT:
+        if line_count > oversized_entry_line_limit:
             oversized.append((f"knowledge/{_knowledge_rel(md_file, knowledge_dir)}", line_count))
     return oversized
 

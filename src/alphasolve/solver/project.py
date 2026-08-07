@@ -55,9 +55,12 @@ class ProjectLayout:
             self.verified_dir,
             self.progress_audits_dir,
             self.curation_records_dir,
+            self.global_attack_results_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         self.sync_workspace_inputs()
+        from .research_frontier_state import write_research_frontier_state
+        write_research_frontier_state(self.workspace_dir)
 
     def sync_workspace_inputs(self) -> dict[str, str | None]:
         problem_target = self.workspace_dir / "problem.md"
@@ -90,6 +93,10 @@ class ProjectLayout:
         return self.workspace_dir / "scheduler_state.json"
 
     @property
+    def research_frontier_state_path(self) -> Path:
+        return self.verified_dir / "state.md"
+
+    @property
     def attempt_graph_path(self) -> Path:
         return self.workspace_dir / "attempt_graph.jsonl"
 
@@ -112,6 +119,10 @@ class ProjectLayout:
     @property
     def curation_events_path(self) -> Path:
         return self.curation_records_dir / "events.jsonl"
+
+    @property
+    def global_attack_results_dir(self) -> Path:
+        return self.curation_records_dir / "global-attacks"
 
 
 def _resolve_under(root: Path, path: str | Path | None) -> Path:
