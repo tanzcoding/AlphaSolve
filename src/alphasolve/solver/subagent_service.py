@@ -93,7 +93,7 @@ class SubagentService:
         # research_reviewer 跨调用记忆：每次 reviewer 返回后，把 final_answer 追加到此文件。
         # 下次 reviewer 启动时读这个文件，知道前几次 reviewer 推荐了什么、发现了什么。
         self.reviewer_history_path = reviewer_history_path
-        # 当前 canonical state 由 orchestrator 显式注入 reviewer；不依赖它自行猜测或扫描生成视图。
+        # dispatch frontier 由 orchestrator 显式注入 reviewer；它是受限投影，不依赖 reviewer 扫描原始 DAG。
         self.reviewer_state_provider = reviewer_state_provider
         # 调用方可用此门禁限制某个 subagent 的可调用阶段；门禁抛出的异常会作为工具错误返回。
         self.call_guard = call_guard
@@ -149,16 +149,20 @@ class SubagentService:
         self._reserve_reviewer_delegate(agent_type)
         if self.call_guard is not None:
             self.call_guard(agent_type, depth)
-        if agent_type == "research_reviewer" and self.reviewer_state_provider is not None:
+        if (
+            agent_type == "research_reviewer"
+            and self.reviewer_state_provider is not None
+            and "## Planning Input" not in prompt
+        ):
             try:
                 snapshot = self.reviewer_state_provider()
             except Exception as exc:
                 snapshot = {"state_snapshot_error": f"{type(exc).__name__}: {exc}"}
             if snapshot:
                 prompt = (
-                    "# Canonical Research State Snapshot\n\n"
-                    "This JSON is the required strategic input for this review. Propose exactly one route based on its "
-                    "`state_id`; historical prose remains fallible.\n\n"
+                    "# Canonical Research Graph Snapshot\n\n"
+                    "This is a read-only canonical graph projection. Use it with verified propositions and knowledge; "
+                    "historical prose remains fallible.\n\n"
                     f"```json\n{json.dumps(snapshot, ensure_ascii=False, indent=2)}\n```\n\n"
                     + prompt
                 )

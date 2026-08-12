@@ -19,16 +19,10 @@ class DifficultyDagPolicy:
     """Scheduling limits for the persistent mathematical difficulty DAG."""
 
     max_persistent_depth: int = 5
-    parent_direct_attack_outcome_interval: int = 4
     global_attack_verified_proposition_interval: int = 5
 
     def __post_init__(self) -> None:
         _require_int("difficulty_dag.max_persistent_depth", self.max_persistent_depth, minimum=0)
-        _require_int(
-            "difficulty_dag.parent_direct_attack_outcome_interval",
-            self.parent_direct_attack_outcome_interval,
-            minimum=1,
-        )
         _require_int(
             "difficulty_dag.global_attack_verified_proposition_interval",
             self.global_attack_verified_proposition_interval,
@@ -120,7 +114,6 @@ class SolverPolicy:
             raise ValueError("difficulty_dag must be a mapping")
         dag_allowed = {
             "max_persistent_depth",
-            "parent_direct_attack_outcome_interval",
             "global_attack_verified_proposition_interval",
         }
         unknown_dag = sorted(set(dag_raw) - dag_allowed)

@@ -265,8 +265,14 @@ class ProgressAuditQueue:
         )
         return agent.run(prompt, description="Periodic strategic progress audit").final_answer
 
-    def _create_checkpoint_locked(self, *, watermark: int, previous_watermark: int) -> ProgressAuditTask:
-        checkpoint_id = f"checkpoint-{watermark:04d}"
+    def _create_checkpoint_locked(
+        self,
+        *,
+        watermark: int,
+        previous_watermark: int,
+        checkpoint_id: str | None = None,
+    ) -> ProgressAuditTask:
+        checkpoint_id = checkpoint_id or f"checkpoint-{watermark:04d}"
         checkpoint_dir = self.layout.progress_audits_dir / checkpoint_id
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
         outcomes = _read_jsonl(self.layout.progress_audit_outcomes_path)
@@ -307,6 +313,9 @@ class ProgressAuditQueue:
         handoff = payload.get("difficulty_handoff")
         if not isinstance(handoff, dict):
             handoff = _read_json_object(_safe_path(payload.get("difficulty_handoff_file")))
+        assessment = payload.get("difficulty_assessment")
+        if not isinstance(assessment, dict):
+            assessment = _read_json_object(_safe_path(payload.get("difficulty_assessment_file")))
         if not result_summary:
             result_summary = str(payload.get("summary") or "")[:4000]
         return {
@@ -326,6 +335,8 @@ class ProgressAuditQueue:
             "difficulty_declaration": difficulty,
             "difficulty_handoff_file": str(payload.get("difficulty_handoff_file") or ""),
             "difficulty_handoff": handoff if isinstance(handoff, dict) else None,
+            "difficulty_assessment_file": str(payload.get("difficulty_assessment_file") or ""),
+            "difficulty_assessment": assessment if isinstance(assessment, dict) else None,
             "review_excerpt": review,
             "verified_file": str(payload.get("verified_file") or ""),
             "theorem_check_file": str(payload.get("theorem_check_file") or ""),
@@ -431,6 +442,18 @@ def _render_outcomes(
                         lines.append(
                             f"  - [{verdict}] {check.get('criterion')}: {check.get('evidence')}"
                         )
+        assessment = item.get("difficulty_assessment")
+        if isinstance(assessment, dict):
+            lines.extend([
+                "#### Summarizer Difficulty Assessment",
+                f"- Status: `{assessment.get('status') or 'unknown'}`",
+                f"- Candidate: {str(assessment.get('candidate_statement') or 'not stated')[:1800]}",
+                f"- Verified boundary: {str(assessment.get('verified_boundary') or 'not stated')[:1800]}",
+                f"- Child delta: {str(assessment.get('child_delta') or 'not stated')[:1800]}",
+                f"- Handoff consistency: `{assessment.get('handoff_consistency') or 'unknown'}`",
+                f"- Reason: {str(assessment.get('reason') or 'not stated')[:1800]}",
+                "",
+            ])
         handoff = item.get("difficulty_handoff")
         if isinstance(handoff, dict):
             lines.extend([
@@ -473,6 +496,10 @@ def _render_manifest(manifest: dict[str, Any]) -> str:
         f"- Trigger interval: {manifest['outcomes_per_audit']} settled outcomes",
         f"- Created at: {manifest['created_at']}",
         f"- Evidence: `{manifest['evidence_path']}`",
+        *(
+            [f"- Trigger: `{manifest['trigger'].get('kind')}` for `{manifest['trigger'].get('difficulty_id')}`"]
+            if isinstance(manifest.get("trigger"), dict) else []
+        ),
         "",
     ])
 
@@ -488,6 +515,7 @@ def _write_curator_brief(
     previous = _previous_checkpoint_decision(layout.progress_audits_dir, before_watermark=task.watermark)
     events = read_recent_events(layout, limit=30)
     event_lines = _render_curation_events(events)
+    reviewer_observations = _recent_reviewer_observations(layout.workspace_dir)
     brief_path = task.checkpoint_dir / "curator_brief.md"
     lines = [
         f"# Portfolio Curation Brief: {task.checkpoint_id}",
@@ -498,6 +526,17 @@ def _write_curator_brief(
         f"- Evidence: `{relative_path(task.evidence_path, layout.workspace_dir)}`",
         f"- Process audit: `{relative_path(audit_path, layout.workspace_dir)}`",
         f"- Machine decision: `{relative_path(task.checkpoint_dir / 'decision.json', layout.workspace_dir)}`",
+        "",
+        "## Reviewer Graph Observations",
+        *(
+            [
+                "These are candidate graph corrections, not commands. Verify the cited evidence before changing a canonical node, edge, or status.",
+                "```json",
+                json.dumps(reviewer_observations, ensure_ascii=False, indent=2, sort_keys=True),
+                "```",
+            ]
+            if reviewer_observations else ["- None recorded since the recent planning cycle."]
+        ),
         "",
         "## Current Process Decision",
         f"- Verdict: `{decision.get('verdict') or 'unknown'}`",
@@ -534,6 +573,30 @@ def _write_curator_brief(
     ])
     brief_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     return brief_path
+
+
+def _recent_reviewer_observations(workspace_dir: Path) -> list[dict[str, Any]]:
+    plans_dir = Path(workspace_dir) / "curation_records" / "research_plans"
+    try:
+        plan_paths = sorted(
+            (path for path in plans_dir.glob("plan-*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )[:20]
+    except OSError:
+        return []
+    observations: list[dict[str, Any]] = []
+    for path in plan_paths:
+        value = _read_json_object(path)
+        recommendation = value.get("recommendation") if isinstance(value, dict) else None
+        for observation in recommendation.get("graph_observations") or [] if isinstance(recommendation, dict) else []:
+            if isinstance(observation, dict):
+                observations.append({
+                    "plan_id": str(value.get("plan_id") or path.stem),
+                    "plan_path": _relative_to_workspace(path, workspace_dir),
+                    **observation,
+                })
+    return observations[:24]
 
 
 def _previous_checkpoint_decision(progress_audits_dir: Path, *, before_watermark: int) -> dict[str, Any] | None:

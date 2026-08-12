@@ -336,14 +336,6 @@ def register_orchestrator_worker_tools(
                         "returns a leaf-first warning with active child IDs rather than rejecting that deliberate choice."
                     ),
                 },
-                "parent_direct_attack": {
-                    "type": "boolean",
-                    "description": (
-                        "Optional (default false). Mark a fixed-target attack on an internal parent returned by "
-                        "DifficultyFrontier.parent_direct_difficulties. The runtime pins the exact parent statement, records "
-                        "the attempt against its recommended interval, and returns a warning if that interval is not replenished."
-                    ),
-                },
                 "method_id": {
                     "type": "string",
                     "enum": ["direct_proof", "contradiction", "construction", "computation", "falsification", "consolidation"],
@@ -396,8 +388,8 @@ def register_orchestrator_worker_tools(
                     "description": (
                         "Optional. A concise acceptance checklist (3-6 bullet points, each starting with '- ') "
                         "specifying what the proven Statement must satisfy to count as progress on the assigned difficulty. "
-                        "The rubric is NOT shown to the worker — it is stored and returned to you in TaskOutput "
-                        "for evidence-based assessment via RecordDifficultyOutcome. "
+                        "The rubric is not shown to the worker; it is retained in the immutable worker outcome ledger "
+                        "for later curator review. "
                         "Example: '- Explicit construction of a permutation and tiling\n"
                         "- Rectangle count k <= 2111\n"
                         "- All non-hole cells covered exactly once'. "
@@ -407,21 +399,17 @@ def register_orchestrator_worker_tools(
                 "consolidation": {
                     "type": "boolean",
                     "description": (
-                        "Optional (default false). Set true to spawn a CONSOLIDATION / DUAL attempt on a FIXED "
-                        "target: the worker may NOT weaken the statement, narrow it, add fresh hypotheses, or "
-                        "isolate a smaller sub-claim to pass verification. Only two results count as success: "
-                        "proving the pinned target exactly as stated, or refuting it with an explicit checkable "
-                        "witness (construction/counterexample). Use this to (a) cash out a direction whose verified "
-                        "props have accumulated, by attacking its terminal goal head-on, or (b) run the dual/"
-                        "falsification of a persistently-failing target. Pass the target text via pinned_target and "
-                        "give the direction's mainline props via frontier_refs."
+                        "Reserved for global_attack=true. Local leaves, local assembly, and parent-direct attempts "
+                        "must leave this false so they can record a strict child, missing bridge, method block, or "
+                        "refutation. The runtime rejects consolidation=true without global_attack=true."
                     ),
                 },
                 "pinned_target": {
                     "type": "string",
                     "description": (
-                        "Optional. The exact target statement to attack when consolidation=true. If omitted, the "
-                        "worker uses the goal expressed in `hint`. Ignored when consolidation is false."
+                        "Optional target context. global_attack uses it as the fixed original-problem target; local "
+                        "assembly or parent-direct work may retain it as the current focus but may still weaken into "
+                        "a strict child difficulty."
                     ),
                 },
                 "global_attack": {
@@ -447,8 +435,9 @@ def register_orchestrator_worker_tools(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
             "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-            "Completed workers may include a worker-local difficulty_handoff. It is evidence for the next checkpoint curator, not a permission to invent a new target immediately. "
-            "Use DifficultyFrontier to read canonical executable leaves. RecordDifficultyOutcome only assesses the exact canonical difficulty assigned to a worker; parent/child structure is curator-owned. "
+            "Completed workers may include a worker-local difficulty_handoff and a summarizer-produced difficulty_assessment. "
+            "They are reviewer inputs, not permission to invent a target immediately: request a research plan, then execute the "
+            "validated plan. Canonical parent/child structure remains curator-owned. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
             "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files."
         ),

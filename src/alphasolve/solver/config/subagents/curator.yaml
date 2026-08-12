@@ -22,7 +22,7 @@ agent:
   tool_parameters:
     Read:
       path:
-        pattern: "^(?:(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md|curation_records/difficulty_dag\\.json)$"
+        pattern: "^(?:(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.(?:md|json)|progress_audit_outcomes\\.jsonl|curation_records/difficulty_dag\\.json)$"
     Write:
       path:
         pattern: "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
@@ -75,7 +75,7 @@ agent:
     Grep:
       path:
         default: knowledge
-        pattern: "^(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
+        pattern: "^(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.(?:md|json|jsonl))?/?$"
       max_results:
         default: 20
         minimum: 1

@@ -89,7 +89,7 @@ def render_research_frontier_state(
     lines.extend([
         "",
         "## Sources of Truth",
-        "- Canonical difficulty DAG: `curation_records/difficulty_dag.json`",
+        "- Canonical difficulty evidence graph: `curation_records/difficulty_dag.json`",
         "- Process-audit records: `progress_audits/`",
         "- Established mathematics: `verified_propositions/` (excluding this file)",
         "- Hypotheses and lessons: `knowledge/`",
@@ -111,14 +111,6 @@ def _render_frontier(snapshot: dict[str, Any]) -> list[str]:
     else:
         for item in leaves:
             lines.extend(_render_difficulty(item))
-
-    parents = snapshot.get("parent_direct_difficulties") or []
-    lines.extend(["", "### Eligible Fixed-Target Parent Attacks"])
-    if not parents:
-        lines.append("- None currently eligible.")
-    else:
-        for item in parents:
-            lines.extend(_render_difficulty(item, include_budget=True))
 
     directive = snapshot.get("global_consolidation_directive") or {}
     lines.extend(["", "### Global Consolidation"])
@@ -172,15 +164,12 @@ def _render_canonical_dag(state: dict[str, Any]) -> list[str]:
         if child_ids:
             lines.append("  - Children: " + ", ".join(f"`{item}`" for item in child_ids))
         lines.append(f"  - Obligation: {_compact(node.get('statement'), _MAX_STATEMENT_CHARS)}")
-        direct_attempts = node.get("parent_direct_attacks") or []
-        if direct_attempts:
-            latest = direct_attempts[-1]
-            if isinstance(latest, dict):
-                lines.append(
-                    "  - Latest parent-direct attempt: "
-                    f"`{latest.get('worker_id') or 'unknown'}`; within recommended interval="
-                    f"`{latest.get('within_recommended_interval', 'unknown')}`"
-                )
+        progress = node.get("progress") if isinstance(node.get("progress"), dict) else {}
+        if progress:
+            lines.append(f"  - Attempts: `{progress.get('attempt_count', 0)}`")
+            refs = progress.get("verified_proposition_refs") or []
+            if refs:
+                lines.append("  - Verified outputs: " + ", ".join(f"`{ref}`" for ref in refs[:_MAX_EVIDENCE_REFS]))
     return lines
 
 
@@ -219,13 +208,13 @@ def _render_frontier_deviations(events: list[dict[str, Any]]) -> list[str]:
     return lines
 
 
-def _render_difficulty(item: Any, *, include_budget: bool = False) -> list[str]:
+def _render_difficulty(item: Any) -> list[str]:
     if not isinstance(item, dict):
         return []
     difficulty_id = str(item.get("difficulty_id") or "unknown")
     lines = [
         f"- `{difficulty_id}` — status=`{item.get('status') or 'unknown'}`, "
-        f"mode=`{item.get('dispatch_mode') or 'direct'}`, attacks=`{item.get('attack_count', 0)}`",
+        f"mode=`{item.get('dispatch_mode') or 'direct'}`, attempts=`{(item.get('progress') or {}).get('attempt_count', 0)}`",
         f"  - Obligation: {_compact(item.get('statement'), _MAX_STATEMENT_CHARS)}",
     ]
     parents = item.get("parent_difficulty_ids") or []
@@ -234,14 +223,6 @@ def _render_difficulty(item: Any, *, include_budget: bool = False) -> list[str]:
     refs = [str(ref) for ref in item.get("evidence_refs") or [] if str(ref).strip()]
     if refs:
         lines.append("  - Evidence: " + ", ".join(f"`{ref}`" for ref in refs[:_MAX_EVIDENCE_REFS]))
-    if include_budget and isinstance(item.get("parent_direct_budget"), dict):
-        budget = item["parent_direct_budget"]
-        lines.append(
-            "  - Budget: available=`{available}`, next after `{remaining}` descendant outcome(s)".format(
-                available=bool(budget.get("available")),
-                remaining=budget.get("next_available_after", 0),
-            )
-        )
     return lines
 
 
@@ -262,24 +243,18 @@ def _render_audit(latest: dict[str, Any]) -> list[str]:
 
 
 def _render_recent_outcomes(state: dict[str, Any]) -> list[str]:
-    rows: list[tuple[str, str, str, str]] = []
+    rows: list[tuple[str, str, dict[str, Any]]] = []
     for difficulty_id, node in (state.get("nodes") or {}).items():
-        if not isinstance(node, dict):
-            continue
-        for outcome in node.get("attack_outcomes") or []:
-            if isinstance(outcome, dict):
-                rows.append((
-                    str(outcome.get("recorded_at") or ""),
-                    str(difficulty_id),
-                    str(outcome.get("outcome") or "unknown"),
-                    _compact(outcome.get("summary"), 700),
-                ))
+        progress = node.get("progress") if isinstance(node, dict) and isinstance(node.get("progress"), dict) else {}
+        for attempt in progress.get("attempts") or []:
+            if isinstance(attempt, dict):
+                rows.append((str(attempt.get("recorded_at") or ""), str(difficulty_id), attempt))
     if not rows:
-        return ["- No canonical difficulty outcomes have been recorded yet."]
-    lines: list[str] = []
-    for _timestamp, difficulty_id, outcome, summary in sorted(rows, reverse=True)[:_MAX_RECENT_OUTCOMES]:
-        lines.append(f"- `{difficulty_id}` → `{outcome}`: {summary or 'No summary recorded.'}")
-    return lines
+        return ["- No curator-archived worker attempts have been recorded yet."]
+    return [
+        f"- `{difficulty_id}` → `{attempt.get('status') or 'unknown'}` via `{attempt.get('method_id') or '-'}`"
+        for _timestamp, difficulty_id, attempt in sorted(rows, reverse=True)[:_MAX_RECENT_OUTCOMES]
+    ]
 
 
 def _render_runtime(runtime: dict[str, Any] | None) -> list[str]:

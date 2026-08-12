@@ -77,24 +77,25 @@ def test_reviser_locks_writes_to_proposition_file(ws):
     assert access.deny_other_unverified is True
 
 
-def test_orchestrator_owns_verified_root(ws):
+def test_orchestrator_owns_verified_root_without_reading_raw_dag(ws):
     access = RoleWorkspaceAccess.orchestrator(ws)
     assert access.write_root_rel == "verified_propositions"
     assert access.destructive_protected_file_names == ("index.md", "state.md")
     assert access.preserve_markdown_file_names_on_rename is False
+    assert access.deny_read_rels == ("unverified_propositions", "curation_records")
     # orchestrator 不绑定 worker_rel —— 它在 layout 顶层操作
     assert access.worker_rel is None
 
 
-def test_orchestrator_subagent_is_read_only_excluding_unverified(ws):
+def test_orchestrator_subagent_is_read_only_without_raw_dag(ws):
     access = RoleWorkspaceAccess.orchestrator_subagent(ws)
     assert access.write_root_rel is None
-    assert access.deny_read_rel == "unverified_propositions"
+    assert access.deny_read_rels == ("unverified_propositions", "curation_records")
 
 
 def test_curator_reads_portfolio_evidence_but_writes_only_knowledge(ws):
     access = RoleWorkspaceAccess.curator(ws)
-    assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records")
+    assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records", "verified_propositions")
     assert access.write_root_rel == "knowledge"
     assert access.deny_text_write_rels == ("knowledge/references",)
     assert access.protected_reference_rels == ("knowledge/references",)
@@ -130,7 +131,7 @@ def test_curator_reference_text_guardrails(ws, tmp_path):
 
 def test_curator_subagent_is_portfolio_read_only(ws):
     access = RoleWorkspaceAccess.curator_subagent(ws)
-    assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records")
+    assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records", "verified_propositions")
     assert access.write_root_rel is None
 
 

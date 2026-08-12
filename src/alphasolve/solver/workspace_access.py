@@ -126,15 +126,15 @@ class RoleWorkspaceAccess:
             write_root_rel="verified_propositions",
             allowed_extensions=(".md",),
             destructive_protected_file_names=("index.md", "state.md"),
-            deny_read_rel="unverified_propositions",
+            deny_read_rels=("unverified_propositions", "curation_records"),
         )
 
     @classmethod
     def orchestrator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """orchestrator 的 research_reviewer subagent：只读，且不可看 ``unverified_propositions/``。"""
+        """research reviewer：只读，只接收运行时 frontier 投影而不扫描原始 DAG。"""
         return cls(
             workspace=workspace,
-            deny_read_rel="unverified_propositions",
+            deny_read_rels=("unverified_propositions", "curation_records"),
         )
 
     @classmethod
@@ -147,10 +147,10 @@ class RoleWorkspaceAccess:
 
     @classmethod
     def curator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """主 curator：可读知识、审计和运行事实，但只允许写 ``knowledge/``。"""
+        """主 curator：可读证据、审计和已验证命题，但只允许写 ``knowledge/``。"""
         return cls(
             workspace=workspace,
-            read_root_rels=("knowledge", "progress_audits", "curation_records"),
+            read_root_rels=("knowledge", "progress_audits", "curation_records", "verified_propositions"),
             write_root_rel="knowledge",
             deny_text_write_rels=("knowledge/references",),
             protected_reference_rels=("knowledge/references",),
@@ -159,10 +159,11 @@ class RoleWorkspaceAccess:
 
     @classmethod
     def curator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """curator 的 subagent：只读知识、审计与运行事实。"""
+        """curator 的 subagent：只读证据、审计与已验证命题。"""
         return cls(
             workspace=workspace,
-            read_root_rels=("knowledge", "progress_audits", "curation_records"),
+            read_root_rels=("knowledge", "progress_audits", "curation_records", "verified_propositions"),
+            allowed_extensions=(".md", ".json", ".jsonl", ".py", ".lean"),
         )
 
     def read_text_page(

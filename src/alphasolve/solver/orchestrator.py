@@ -36,6 +36,7 @@ from .tool_runtime import build_solver_tool_registry, register_orchestrator_work
 from .workspace_access import RoleWorkspaceAccess
 from .search import SearchSession
 from .research_frontier_state import write_research_frontier_state
+from .research_planning import frontier_projection, parse_recommendation, reviewer_prompt
 
 if TYPE_CHECKING:
     from alphasolve.solver.execution import ExecutionGateway
@@ -763,6 +764,9 @@ class Orchestrator:
             self.layout.workspace_dir,
             policy=self.policy.difficulty_dag,
         )
+        self._progress_audit_queue: ProgressAuditQueue | None = None
+        self._planning_subagents: SubagentService | None = None
+        self._research_plans: dict[str, dict[str, Any]] = {}
         self._worker_difficulties: dict[str, str] = {}
         # 搜索树观测日志写入器（每 selection cycle 落一次快照）；run() 内按需创建。
         self._search_tree_sink = None
@@ -811,6 +815,7 @@ class Orchestrator:
                 outcomes_per_audit=self.policy.progress_audit_every_n_outcomes,
             )
             progress_audit_queue.start()
+            self._progress_audit_queue = progress_audit_queue
             manager = WorkerManager(
                 layout=self.layout,
                 suite=self.suite,
@@ -850,9 +855,10 @@ class Orchestrator:
                 ),
                 stop_event=self.stop_event,
                 reviewer_history_path=self.layout.knowledge_dir / "reviewer-history.md",
-                reviewer_state_provider=self.difficulty_dag.selection_snapshot,
+                reviewer_state_provider=self._reviewer_frontier_projection,
                 call_guard=self._guard_subagent_call,
             )
+            self._planning_subagents = subagents
             try:
                 agent = self.build_agent(
                     manager,
@@ -878,6 +884,8 @@ class Orchestrator:
                 )
                 manager.close(graceful=user_requested_stop)
                 progress_audit_queue.stop()
+                self._progress_audit_queue = None
+                self._planning_subagents = None
         finally:
             if orchestrator_log_sink is not None:
                 orchestrator_log_sink.close()
@@ -960,9 +968,9 @@ class Orchestrator:
             ),
             lambda registry: register_orchestrator_difficulty_tools(
                 registry,
-                outcome_handler=self._record_difficulty_outcome_tool,
                 snapshot_handler=self._difficulty_frontier_tool,
             ),
+            lambda registry: self._register_research_planning_tools(registry, manager),
             lambda registry: self._register_free_exploration_tool(registry, manager),
         )
         if subagents is not None:
@@ -1023,9 +1031,8 @@ class Orchestrator:
                 "Start one worker for open-ended, non-targeted exploration and return immediately "
                 "(does not wait). You may use this while canonical leaves exist, but must supply a concrete "
                 "reason why an orthogonal route is worth a worker slot. The runtime records that frontier "
-                "deviation, the available canonical leaves, and the worker's eventual outcome. It still refuses "
-                "this tool while a completed process audit needs curator blocker classification.\n\n"
-                "The worker receives persisted failed-method taboos, active repeated blockers, and an optional "
+                "deviation, the available canonical leaves, and the worker's eventual outcome.\n\n"
+                "The worker receives an optional "
                 "under-explored verified seed. It must choose a distinct bounded claim or record why no such "
                 "claim is available. Returns the same shape as SpawnWorker; if no slot is available it returns "
                 "spawned=false."
@@ -1065,7 +1072,6 @@ class Orchestrator:
                 worker_id=worker_id,
                 reason=reason,
                 executable_difficulty_ids=deviation.get("executable_difficulty_ids") or [],
-                parent_direct_difficulty_ids=deviation.get("parent_direct_difficulty_ids") or [],
             )
             deviations = getattr(self, "_free_exploration_deviations", {})
             deviations[worker_id] = record
@@ -1077,8 +1083,6 @@ class Orchestrator:
 
     def _free_exploration_preflight(self) -> dict[str, Any]:
         frontier = self.difficulty_dag.selection_snapshot()
-        if frontier.get("pending_checkpoints"):
-            return {"allowed": False, "reason": "difficulty_curation_pending", "pending_checkpoints": frontier["pending_checkpoints"]}
         return {
             "allowed": True,
             "frontier_deviation": {
@@ -1087,42 +1091,142 @@ class Orchestrator:
                     for item in frontier.get("executable_difficulties") or []
                     if isinstance(item, dict) and item.get("difficulty_id")
                 ],
-                "parent_direct_difficulty_ids": [
-                    str(item.get("difficulty_id"))
-                    for item in frontier.get("parent_direct_difficulties") or []
-                    if isinstance(item, dict) and item.get("difficulty_id")
-                ],
             },
         }
 
     def _free_exploration_constraints(self, reason: str, deviation: dict[str, Any]) -> str:
         leaves = ", ".join(f"`{item}`" for item in deviation.get("executable_difficulty_ids") or []) or "none"
         return (
-            "This is an explicit departure from the canonical frontier. Explore one bounded claim only; if it weakens, "
-            "blocks, or refutes, call RecordDifficulty so the curator can add a root difficulty candidate at the next checkpoint.\n\n"
-            f"Orchestrator's reason: {reason}\n"
-            f"Canonical executable difficulties at dispatch: {leaves}"
+            "Open an independent, bounded research direction. Do not repeat a refuted or split-required obligation. "
+            "If this direction yields a new obstacle or a strict child, call RecordDifficulty so the curator can archive it "
+            "as an independent graph component or evidence-backed edge at the next checkpoint.\n\n"
+            f"Reviewer direction: {reason}\n"
+            f"Current executable difficulties: {leaves}"
         )
 
-    def _difficulty_frontier_tool(self, _args: dict[str, Any]) -> ToolResult:
-        return ToolResult(json.dumps(self.difficulty_dag.selection_snapshot(), ensure_ascii=False))
+    def _reviewer_frontier_projection(self) -> dict[str, Any]:
+        return frontier_projection(self.difficulty_dag.selection_snapshot())
 
-    def _record_difficulty_outcome_tool(self, args: dict[str, Any]) -> ToolResult:
-        worker_id = str(args.get("worker_id") or "").strip()
-        target = getattr(self, "_worker_difficulties", {}).get(worker_id)
-        if not target:
-            return ToolResult(json.dumps({"error": "worker was not assigned a canonical difficulty"}), is_error=True)
+    def _difficulty_frontier_tool(self, _args: dict[str, Any]) -> ToolResult:
+        return ToolResult(json.dumps(self._reviewer_frontier_projection(), ensure_ascii=False))
+
+    def _planning_worker_projection(self, manager: WorkerManager) -> list[dict[str, Any]]:
+        projected: list[dict[str, Any]] = []
+        for result in list(getattr(manager, "results", [])[-12:]):
+            item = {
+                "worker_id": result.worker_id,
+                "status": result.status,
+                "assigned_difficulty_id": result.difficulty_id,
+                "method_id": result.method_id,
+                "failure_kind": result.failure_kind,
+                "summary": _short_summary(result.summary, limit=1000),
+                "difficulty_assessment": result.difficulty_assessment,
+                "difficulty_handoff": result.difficulty_handoff,
+            }
+            projected.append(item)
+        return projected
+
+    def _register_research_planning_tools(self, registry: ToolRegistry, manager: WorkerManager) -> None:
+        registry.register(
+            name="RequestResearchPlan",
+            description=(
+                "Ask the independent research reviewer to compare completed worker assessments and the current dispatch frontier. "
+                "Returns a validated, stored planning recommendation. This tool exposes no raw DAG and does not dispatch work."
+            ),
+            parameters={"type": "object", "properties": {}, "required": []},
+            handler=lambda args: self._request_research_plan_tool(manager, args),
+        )
+        registry.register(
+            name="ExecuteResearchPlan",
+            description=(
+                "Execute one stored reviewer recommendation after revalidating the current frontier. It may dispatch one current "
+                "leaf or launch the recommended independent direction. It rejects stale plans and never writes "
+                "canonical DAG structure."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {"plan_id": {"type": "string"}},
+                "required": ["plan_id"],
+            },
+            handler=lambda args: self._execute_research_plan_tool(manager, args),
+        )
+
+    def _request_research_plan_tool(self, manager: WorkerManager, _args: dict[str, Any]) -> ToolResult:
+        service = self._planning_subagents
+        if service is None:
+            return ToolResult(json.dumps({"error": "research planning is unavailable outside an active orchestrator run"}), is_error=True)
+        frontier = self._reviewer_frontier_projection()
+        worker_results = self._planning_worker_projection(manager)
         try:
-            result = self.difficulty_dag.record_attack_outcome(
-                difficulty_id=target,
-                worker_id=worker_id,
-                outcome=str(args.get("outcome") or ""),
-                summary=str(args.get("summary") or ""),
-                evidence_refs=args.get("evidence_refs"),
+            report = service.call(
+                "research_reviewer",
+                "Review completed worker assessments and return one validated next-step plan.",
+                reviewer_prompt(worker_results=worker_results, frontier=frontier),
             )
-        except ValueError as exc:
-            return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
-        return ToolResult(json.dumps(result, ensure_ascii=False))
+        except Exception as exc:
+            return ToolResult(json.dumps({"error": f"research reviewer failed: {exc}"}, ensure_ascii=False), is_error=True)
+        recommendation = parse_recommendation(report)
+        if recommendation is None:
+            return ToolResult(json.dumps({"error": "research reviewer did not return a valid Planning Recommendation JSON", "report": report[-4000:]}, ensure_ascii=False), is_error=True)
+        plan_id = f"plan-{uuid.uuid4().hex[:12]}"
+        plan = {
+            "plan_id": plan_id,
+            "frontier_revision": frontier["frontier_revision"],
+            "recommendation": recommendation,
+            "worker_ids": [item["worker_id"] for item in worker_results],
+            "reviewer_report": report,
+        }
+        self._research_plans[plan_id] = plan
+        plan_dir = self.layout.workspace_dir / "curation_records" / "research_plans"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        (plan_dir / f"{plan_id}.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        return ToolResult(json.dumps({
+            "plan_id": plan_id,
+            "frontier_revision": plan["frontier_revision"],
+            "recommendation": recommendation,
+            "reviewer_report": report[-4000:],
+        }, ensure_ascii=False))
+
+    def _execute_research_plan_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        plan_id = str(args.get("plan_id") or "").strip()
+        plan = self._research_plans.get(plan_id)
+        if not plan:
+            return ToolResult(json.dumps({"error": "unknown planning recommendation"}), is_error=True)
+        frontier = self._reviewer_frontier_projection()
+        if frontier["frontier_revision"] != plan["frontier_revision"]:
+            return ToolResult(json.dumps({
+                "executed": False,
+                "reason": "stale_research_plan",
+                "expected_frontier_revision": plan["frontier_revision"],
+                "current_frontier_revision": frontier["frontier_revision"],
+            }, ensure_ascii=False))
+        recommendation = plan["recommendation"]
+        action = recommendation["action"]
+        if action == "DISPATCH_LEAF":
+            dispatchable_ids = {
+                str(item.get("difficulty_id"))
+                for item in frontier["dispatchable"]
+                if isinstance(item, dict) and item.get("difficulty_id")
+            }
+            difficulty_id = recommendation["difficulty_id"]
+            if difficulty_id not in dispatchable_ids:
+                return ToolResult(json.dumps({"executed": False, "reason": "reviewer_target_not_dispatchable"}, ensure_ascii=False))
+            result = self._spawn_difficulty_leaf(manager, {
+                "difficulty_id": difficulty_id,
+                "method_id": recommendation["method_id"] or "direct_proof",
+                "hint": f"Reviewer plan: {recommendation['reason']}",
+            })
+            payload = json.loads(result.content)
+            payload["plan_id"] = plan_id
+            return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
+        if action == "DISPATCH_NEW_DIRECTION":
+            result = self._spawn_free_exploration_tool(manager, {
+                "reason": recommendation["exploration_brief"] or recommendation["reason"],
+            })
+            payload = json.loads(result.content)
+            payload["plan_id"] = plan_id
+            return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
+        return ToolResult(json.dumps({"executed": True, "action": action, "plan_id": plan_id}, ensure_ascii=False))
 
     def _spawn_difficulty_leaf(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         global_attack = bool(args.get("global_attack"))
@@ -1133,10 +1237,15 @@ class Orchestrator:
         frontier_note = str(args.get("frontier_note") or "").strip() or None
         rubric = str(args.get("rubric") or "").strip() or None
         consolidation = bool(args.get("consolidation"))
-        parent_direct_attack = bool(args.get("parent_direct_attack"))
         pinned_target = str(args.get("pinned_target") or "").strip() or None
         difficulty_statement = None
         preflight: dict[str, Any] = {}
+        if consolidation and not global_attack:
+            return ToolResult(json.dumps({
+                "spawned": False,
+                "reason": "global_consolidation_only",
+                "message": "consolidation=true is reserved for global_attack. Local leaves may still expose a strict child or missing bridge.",
+            }, ensure_ascii=False))
         if global_attack:
             global_directive = self.difficulty_dag.global_attack_preflight()
             if not global_directive.get("ready"):
@@ -1158,9 +1267,8 @@ class Orchestrator:
             try:
                 preflight = self.difficulty_dag.dispatch_preflight(
                     difficulty_id=requested_id,
-                    method_id="consolidation" if consolidation else method_id,
+                    method_id=method_id,
                     require_curation=self.curator_queue is not None,
-                    parent_direct_attack=parent_direct_attack,
                 )
             except ValueError as exc:
                 return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
@@ -1169,20 +1277,18 @@ class Orchestrator:
             difficulty = preflight.get("difficulty") or {}
             difficulty_statement = str(difficulty.get("statement") or "").strip() or None
             mode = str(difficulty.get("dispatch_mode") or "direct")
-            if mode in {"consolidation", "parent_direct"}:
-                consolidation = True
+            if mode == "consolidation":
                 method_id = "consolidation"
                 pinned_target = difficulty_statement
-            assignment_kind = "budgeted direct parent attack" if mode == "parent_direct" else "assigned difficulty"
+            assignment_kind = "assigned difficulty"
             assignment = (
                 f"# {assignment_kind.title()}\n"
                 f"Canonical difficulty: `{requested_id}`\n\n"
                 f"Exact obligation:\n{difficulty_statement or '(not recorded)'}\n\n"
                 + (
-                    "This is a low-frequency, fixed-target direct attack while child difficulties remain active. "
-                    "Do not weaken, replace, or silently decompose the parent claim; either prove this exact statement "
-                    "or give an explicit checkable refutation."
-                    if mode == "parent_direct"
+                    "Attempt the local assembly target. If the existing results do not close it, record the exact missing "
+                    "bridge, incompatibility, or strict child relation; do not silently retry or broaden scope."
+                    if mode == "consolidation"
                     else "Attack this obligation directly. If it weakens, blocks, or exposes a smaller obligation, "
                     "call RecordDifficulty with the exact child relation; do not silently retry or broaden scope."
                 )
@@ -1215,7 +1321,7 @@ class Orchestrator:
             method_id=method_id,
             frontier_refs=frontier_refs or None,
             frontier_note=frontier_note,
-            allow_weakening=not consolidation,
+            allow_weakening=not global_attack,
             pinned_target=pinned_target,
             rubric=rubric,
             on_spawn=global_on_spawn,
@@ -1229,20 +1335,6 @@ class Orchestrator:
         self._refresh_research_frontier_state(manager)
         if payload.get("spawned") and global_attack:
             payload["global_consolidation_directive"] = self.difficulty_dag.global_attack_preflight()
-        if payload.get("spawned") and requested_id and requested_id != "global-problem-attack":
-            worker_id = str(payload["worker_id"])
-            self._worker_difficulties[worker_id] = requested_id
-            if parent_direct_attack:
-                try:
-                    payload["parent_direct_attack"] = self.difficulty_dag.register_parent_direct_attack(
-                        difficulty_id=requested_id,
-                        worker_id=worker_id,
-                    )
-                except ValueError as exc:
-                    # Preflight succeeded, so this should only occur on an unexpected
-                    # concurrent state change. Preserve the started worker and surface
-                    # the bookkeeping inconsistency for immediate diagnosis.
-                    payload["parent_direct_attack_registration_error"] = str(exc)
         return ToolResult(json.dumps(payload, ensure_ascii=False), stop_agent=manager.solved_result is not None,
                           stop_answer=_solution_final_answer(manager.solution_path))
 
@@ -1416,10 +1508,17 @@ class Orchestrator:
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
-        portfolio = self._difficulty_portfolio_payload(payload)
-        if portfolio is not None:
-            payload["difficulty_portfolio"] = portfolio
-        payload["difficulty_frontier"] = self.difficulty_dag.selection_snapshot()
+        assessments = [
+            item.get("difficulty_assessment")
+            for item in payload.get("completed") or []
+            if isinstance(item, dict) and isinstance(item.get("difficulty_assessment"), dict)
+        ]
+        if assessments:
+            payload["difficulty_assessments"] = assessments
+        payload["planning_required"] = bool(payload.get("completed"))
+        payload["planning_instruction"] = (
+            "Use RequestResearchPlan after completed workers; do not infer a target from handoff prose or request the raw DAG."
+        )
         if self._search_tree_sink is not None:
             self._search_tree_sink.snapshot(self.search, label="task-output")
         self._refresh_research_frontier_state(manager)
@@ -1490,6 +1589,10 @@ def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:
     # generator 的原始困难声明是否过时）
     if result.result_summary_file:
         payload["result_summary_file"] = str(result.result_summary_file)
+    if result.difficulty_assessment_file:
+        payload["difficulty_assessment_file"] = str(result.difficulty_assessment_file)
+    if result.difficulty_assessment:
+        payload["difficulty_assessment"] = result.difficulty_assessment
     # generator 产出的困难声明：worker 回避了什么数学困难、为什么回避、尝试过但失败的路线
     if result.difficulty_declaration_file:
         payload["difficulty_declaration_file"] = str(result.difficulty_declaration_file)

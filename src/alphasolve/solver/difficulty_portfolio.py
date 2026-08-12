@@ -101,6 +101,7 @@ def _compact_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
         "difficulty_id": text("difficulty_id"),
         "method_id": text("method_id"),
         "assigned_target": text("assigned_target"),
+        "child_delta": text("child_delta"),
         "execution_status": text("execution_status"),
         "target_status": text("target_status"),
         "disposition": text("disposition"),

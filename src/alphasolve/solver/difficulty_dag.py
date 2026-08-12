@@ -16,17 +16,17 @@ from .policy import DifficultyDagPolicy
 
 
 _LOCK = threading.RLock()
-_SCHEMA_VERSION = 4
+_SCHEMA_VERSION = 7
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 _STATUSES = {"open", "advanced", "ready_for_synthesis", "resolved", "refuted", "superseded"}
 _RESOLUTION_POLICIES = {"all_of", "any_of", "manual"}
 _RELATIONS = {"prerequisite", "alternative", "weakened_target", "method_blocked", "refutes"}
 _TERMINAL = {"resolved", "refuted", "superseded"}
+_CORRECTION_KINDS = {"remove_parent_edge", "supersede_node", "reopen_node"}
 
 # Backward-compatible exports for callers that rely on the built-in defaults.
 _DEFAULT_POLICY = DifficultyDagPolicy()
 MAX_PERSISTENT_DIFFICULTY_DEPTH = _DEFAULT_POLICY.max_persistent_depth
-PARENT_DIRECT_ATTACK_OUTCOME_INTERVAL = _DEFAULT_POLICY.parent_direct_attack_outcome_interval
 GLOBAL_ATTACK_VERIFIED_PROPOSITION_INTERVAL = _DEFAULT_POLICY.global_attack_verified_proposition_interval
 
 
@@ -93,6 +93,7 @@ class DifficultyDagStore:
         self.workspace_dir = Path(workspace_dir)
         self.policy = policy or DifficultyDagPolicy()
         self.path = self.workspace_dir / "curation_records" / "difficulty_dag.json"
+        self.global_attack_path = self.workspace_dir / "curation_records" / "global_attack_state.json"
         self.audits_dir = self.workspace_dir / "progress_audits"
 
     def load(self) -> dict[str, Any]:
@@ -112,15 +113,11 @@ class DifficultyDagStore:
             aliases = state.get("aliases")
             if not isinstance(aliases, dict):
                 aliases = {}
-            global_attack = state.get("global_attack")
-            if not isinstance(global_attack, dict):
-                global_attack = {}
             state = {
                 "schema_version": _SCHEMA_VERSION,
                 "nodes": nodes,
                 "aliases": aliases,
                 "curated_checkpoints": curated,
-                "global_attack": global_attack,
                 "updated_at": str(state.get("updated_at") or ""),
             }
             self._normalize(state)
@@ -156,7 +153,6 @@ class DifficultyDagStore:
             "nodes": nodes,
             "aliases": {},
             "curated_checkpoints": {},
-            "global_attack": {"last_attempt": None},
             "updated_at": _now() if nodes else "",
         }
 
@@ -179,22 +175,33 @@ class DifficultyDagStore:
     def is_checkpoint_curated(self, checkpoint_id: str) -> bool:
         return str(checkpoint_id) in self.load()["curated_checkpoints"]
 
+    def _load_global_attack_state(self) -> dict[str, Any]:
+        try:
+            state = json.loads(self.global_attack_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            state = {}
+        return {"last_attempt": state.get("last_attempt") if isinstance(state.get("last_attempt"), dict) else None}
+
+    def _save_global_attack_state(self, state: dict[str, Any]) -> None:
+        self.global_attack_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = self.global_attack_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(temporary, self.global_attack_path)
+
     def global_attack_preflight(self) -> dict[str, Any]:
         """Return the count-based eligibility directive for a full-problem synthesis."""
-        return self._global_attack_preflight(self.load())
+        return self._global_attack_preflight(self._load_global_attack_state())
 
     def begin_global_attack(self, *, worker_id: str) -> dict[str, Any]:
-        """Reserve the single global-attack slot immediately before worker execution."""
+        """Reserve the single global-attack slot outside the canonical difficulty graph."""
         worker_id = _id(worker_id, field="worker_id")
         with _LOCK:
-            state = self.load()
+            state = self._load_global_attack_state()
             directive = self._global_attack_preflight(state)
             if not directive["ready"]:
                 raise ValueError(str(directive["message"]))
-            verified_count = self._verified_proposition_count()
-            attempt_id = f"global-{worker_id}"
-            state["global_attack"]["last_attempt"] = {
-                "attempt_id": attempt_id,
+            attempt = {
+                "attempt_id": f"global-{worker_id}",
                 "worker_id": worker_id,
                 "phase": "in_flight",
                 "started_at": _now(),
@@ -204,12 +211,12 @@ class DifficultyDagStore:
                 "target_achieved": None,
                 "solved_problem": False,
                 "result_path": "",
-                "verified_proposition_count_at_start": verified_count,
+                "verified_proposition_count_at_start": self._verified_proposition_count(),
                 "verified_proposition_count_at_completion": None,
             }
-            state["updated_at"] = _now()
-            self._save(state)
-            return self._global_attack_public(state["global_attack"]["last_attempt"], ready=False)
+            state["last_attempt"] = attempt
+            self._save_global_attack_state(state)
+            return self._global_attack_public(attempt, ready=False)
 
     def complete_global_attack(
         self,
@@ -220,54 +227,145 @@ class DifficultyDagStore:
         solved_problem: bool,
         result_path: str,
     ) -> dict[str, Any] | None:
-        """Persist a finished global attack and its verified-proposition count baseline."""
+        """Persist global-attack runtime state outside the canonical difficulty graph."""
         worker_id = _id(worker_id, field="worker_id")
         with _LOCK:
-            state = self.load()
-            attempt = state["global_attack"].get("last_attempt")
+            state = self._load_global_attack_state()
+            attempt = state.get("last_attempt")
             if not isinstance(attempt, dict) or attempt.get("worker_id") != worker_id:
                 return None
             if attempt.get("phase") != "in_flight":
                 return self._global_attack_public(attempt, ready=False)
             normalized_status = str(status or "failed").strip() or "failed"
-            attempt["phase"] = "completed"
-            attempt["completed_at"] = _now()
-            attempt["status"] = normalized_status
-            attempt["target_achieved"] = target_achieved
-            attempt["solved_problem"] = bool(solved_problem)
-            attempt["outcome"] = "solved" if solved_problem else (
-                "partial" if normalized_status == "verified" else "failed"
-            )
-            attempt["result_path"] = str(result_path or "").strip()
-            # Take the baseline after completion so propositions created by this
-            # attack do not immediately schedule another full-problem attempt.
-            attempt["verified_proposition_count_at_completion"] = self._verified_proposition_count()
-            state["updated_at"] = _now()
-            self._save(state)
+            attempt.update({
+                "phase": "completed",
+                "completed_at": _now(),
+                "status": normalized_status,
+                "target_achieved": target_achieved,
+                "solved_problem": bool(solved_problem),
+                "outcome": "solved" if solved_problem else ("partial" if normalized_status == "verified" else "failed"),
+                "result_path": str(result_path or "").strip(),
+                "verified_proposition_count_at_completion": self._verified_proposition_count(),
+            })
+            self._save_global_attack_state(state)
             return self._global_attack_public(attempt, ready=False)
 
     def selection_snapshot(self) -> dict[str, Any]:
         state = self.load()
-        if self._propagate(state):
-            state["updated_at"] = _now()
-            self._save(state)
         leaves = self.executable_leaves(state=state)
-        parent_attacks = self.parent_direct_candidates(state=state)
         return {
             "dag_revision": state["updated_at"],
-            # Leaf work is the default high-frequency dispatch frontier.
             "executable_difficulties": leaves,
-            # Internal claims remain available as low-frequency, fixed-target
-            # consolidation attempts. They never replace leaf work as default.
-            "parent_direct_difficulties": parent_attacks,
+            "reviewer_graph": self.reviewer_graph_projection(state=state),
+            "reviewer_sources": self.reviewer_source_index(),
             "max_persistent_depth": self.policy.max_persistent_depth,
             "active_difficulty_count": sum(
                 1 for node in state["nodes"].values()
                 if isinstance(node, dict) and node.get("status") not in _TERMINAL
             ),
             "pending_checkpoints": self.pending_checkpoint_ids(),
-            "global_consolidation_directive": self._global_attack_preflight(state),
+            "global_consolidation_directive": self._global_attack_preflight(self._load_global_attack_state()),
         }
+
+    def reviewer_graph_projection(self, *, state: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Return every canonical node and edge without aliases or storage internals."""
+        state = state or self.load()
+        nodes = state["nodes"]
+        children = self._children(nodes)
+        public_nodes: list[dict[str, Any]] = []
+        for difficulty_id, node in sorted(nodes.items()):
+            if not isinstance(node, dict):
+                continue
+            progress = node.get("progress") if isinstance(node.get("progress"), dict) else {}
+            attempts = [
+                {
+                    "recorded_at": str(item.get("recorded_at") or ""),
+                    "method_id": str(item.get("method_id") or ""),
+                    "status": str(item.get("status") or ""),
+                    "verified_proposition_ref": str(item.get("verified_proposition_ref") or ""),
+                }
+                for item in progress.get("attempts") or []
+                if isinstance(item, dict)
+            ][-8:]
+            public_nodes.append({
+                "difficulty_id": difficulty_id,
+                "statement": str(node.get("statement") or "")[:1600],
+                "status": str(node.get("status") or "open"),
+                "parent_ids": sorted(str(item) for item in node.get("parent_ids") or []),
+                "child_ids": children.get(difficulty_id, []),
+                "relation_to_parent": str(node.get("relation_to_parent") or "prerequisite"),
+                "resolution_policy": str(node.get("resolution_policy") or "manual"),
+                "evidence_refs": [str(item) for item in node.get("evidence_refs") or []][:16],
+                "progress": {
+                    "attempt_count": int(progress.get("attempt_count") or 0),
+                    "last_attempt_at": str(progress.get("last_attempt_at") or ""),
+                    "verified_proposition_refs": [str(item) for item in progress.get("verified_proposition_refs") or []][:16],
+                    "recent_attempts": attempts,
+                },
+            })
+        return {"nodes": public_nodes, "components": self._reviewer_components(public_nodes)}
+
+    @staticmethod
+    def _reviewer_components(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        lookup = {str(node["difficulty_id"]): node for node in nodes}
+        adjacency = {difficulty_id: set() for difficulty_id in lookup}
+        for node in nodes:
+            difficulty_id = str(node["difficulty_id"])
+            for parent_id in node.get("parent_ids") or []:
+                if parent_id in adjacency:
+                    adjacency[difficulty_id].add(parent_id)
+                    adjacency[parent_id].add(difficulty_id)
+        components: list[dict[str, Any]] = []
+        remaining = set(lookup)
+        while remaining:
+            start = remaining.pop()
+            stack, member_ids = [start], {start}
+            while stack:
+                current = stack.pop()
+                for neighbor in adjacency[current]:
+                    if neighbor not in member_ids:
+                        member_ids.add(neighbor)
+                        remaining.discard(neighbor)
+                        stack.append(neighbor)
+            members = [lookup[item] for item in sorted(member_ids)]
+            statuses: dict[str, int] = {}
+            for node in members:
+                status = str(node["status"])
+                statuses[status] = statuses.get(status, 0) + 1
+            roots = sorted(node["difficulty_id"] for node in members if not node["parent_ids"])
+            components.append({
+                "root_ids": roots,
+                "node_ids": sorted(member_ids),
+                "status_counts": statuses,
+                "attempt_count": sum(int((node.get("progress") or {}).get("attempt_count") or 0) for node in members),
+            })
+        return sorted(components, key=lambda item: item["root_ids"] or item["node_ids"])
+
+    def reviewer_source_index(self) -> dict[str, list[dict[str, str]]]:
+        return {
+            "verified_propositions": self._source_index(self.workspace_dir / "verified_propositions", limit=160),
+            "knowledge": self._source_index(self.workspace_dir / "knowledge", limit=160),
+        }
+
+    def _source_index(self, root: Path, *, limit: int) -> list[dict[str, str]]:
+        try:
+            paths = sorted(path for path in root.rglob("*.md") if path.is_file())
+        except OSError:
+            return []
+        rows: list[dict[str, str]] = []
+        for path in paths[:limit]:
+            if path.name == "state.md":
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")[:1200]
+            except OSError:
+                continue
+            title = next((line[2:].strip() for line in text.splitlines() if line.startswith("# ")), "")
+            rows.append({
+                "path": path.relative_to(self.workspace_dir).as_posix(),
+                "title": title[:240],
+            })
+        return rows
 
     def _verified_proposition_count(self) -> int:
         verified_dir = self.workspace_dir / "verified_propositions"
@@ -282,7 +380,7 @@ class DifficultyDagStore:
     def _global_attack_preflight(self, state: dict[str, Any]) -> dict[str, Any]:
         verified_count = self._verified_proposition_count()
         interval = self.policy.global_attack_verified_proposition_interval
-        attempt = state.get("global_attack", {}).get("last_attempt")
+        attempt = state.get("last_attempt")
         if not isinstance(attempt, dict):
             remaining = max(0, interval - verified_count)
             return {
@@ -367,37 +465,12 @@ class DifficultyDagStore:
                 result.append(self._public_node(node, dispatch_mode="consolidation", depth=depths[difficulty_id]))
         return result
 
-    def parent_direct_candidates(self, *, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-        """Return budget-eligible internal claims for fixed-target direct attack."""
-        state = state or self.load()
-        self._propagate(state)
-        nodes = state["nodes"]
-        children = self._children(nodes)
-        depths = self._depths(nodes)
-        result: list[dict[str, Any]] = []
-        for difficulty_id, node in sorted(nodes.items()):
-            if not isinstance(node, dict) or node.get("status") not in {"open", "advanced"}:
-                continue
-            active_children = [child for child in children.get(difficulty_id, []) if nodes[child].get("status") not in _TERMINAL]
-            if not active_children:
-                continue
-            budget = self._parent_direct_budget(state, difficulty_id)
-            if budget["available"]:
-                result.append(self._public_node(
-                    node,
-                    dispatch_mode="parent_direct",
-                    depth=depths[difficulty_id],
-                    parent_direct_budget=budget,
-                ))
-        return result
-
     def dispatch_preflight(
         self,
         *,
         difficulty_id: str | None,
         method_id: str | None,
         require_curation: bool,
-        parent_direct_attack: bool = False,
     ) -> dict[str, Any]:
         if require_curation:
             pending = self.pending_checkpoint_ids()
@@ -416,41 +489,12 @@ class DifficultyDagStore:
         node = state["nodes"].get(canonical)
         if not isinstance(node, dict):
             return {"allowed": False, "reason": "unknown_difficulty", "difficulty_id": requested}
-        if self._propagate(state):
-            state["updated_at"] = _now()
-            self._save(state)
         status = str(node.get("status") or "open")
         children = self._children(state["nodes"]).get(canonical, [])
         active_children = [child for child in children if state["nodes"][child].get("status") not in _TERMINAL]
         depth = self._depths(state["nodes"])[canonical]
         if status in _TERMINAL:
             return {"allowed": False, "reason": "difficulty_not_actionable", "difficulty": self._public_node(node, depth=depth)}
-        if parent_direct_attack:
-            if not active_children:
-                return {
-                    "allowed": False,
-                    "reason": "parent_direct_attack_requires_active_children",
-                    "difficulty": self._public_node(node, depth=depth),
-                }
-            budget = self._parent_direct_budget(state, canonical)
-            warnings = [
-                "Leaf-first is recommended: this fixed-target parent attack runs while child difficulties remain active."
-            ]
-            if not budget["available"]:
-                warnings.append(
-                    "The parent-direct interval is not yet replenished; the dispatch is permitted but should be justified against active leaf work."
-                )
-            return {
-                "allowed": True,
-                "difficulty": self._public_node(
-                    node,
-                    dispatch_mode="parent_direct",
-                    depth=depth,
-                    parent_direct_budget=budget,
-                ),
-                "open_child_difficulty_ids": active_children,
-                "dispatch_warnings": warnings,
-            }
         if status == "ready_for_synthesis" and not active_children:
             warnings = []
             if method_id != "consolidation":
@@ -474,86 +518,20 @@ class DifficultyDagStore:
             }
         return {"allowed": True, "difficulty": self._public_node(node, dispatch_mode="direct", depth=depth)}
 
-    def register_parent_direct_attack(self, *, difficulty_id: str, worker_id: str) -> dict[str, Any]:
-        """Reserve one low-frequency direct-parent attempt after a successful spawn."""
-        state = self.load()
-        canonical = self._canonical_id(state, _id(difficulty_id, field="difficulty_id"))
-        node = state["nodes"].get(canonical)
-        if not isinstance(node, dict):
-            raise ValueError(f"unknown difficulty_id: {difficulty_id}")
-        budget = self._parent_direct_budget(state, canonical)
-        log = node.setdefault("parent_direct_attacks", [])
-        log.append({
-            "worker_id": _id(worker_id, field="worker_id"),
-            "descendant_outcomes_at_dispatch": budget["descendant_outcomes"],
-            "dispatched_at": _now(),
-            "within_recommended_interval": bool(budget["available"]),
-        })
-        del log[:-20]
-        node["updated_at"] = _now()
-        state["updated_at"] = _now()
-        self._save(state)
-        return {
-            "registered": True,
-            "difficulty_id": canonical,
-            "within_recommended_interval": bool(budget["available"]),
-            "warning": None if budget["available"] else (
-                "Parent-direct interval was not replenished; the attempt was recorded as an explicit leaf-first deviation."
-            ),
-            "budget": self._parent_direct_budget(self.load(), canonical),
-        }
-
-    def record_attack_outcome(
-        self,
-        *,
-        difficulty_id: str,
-        worker_id: str,
-        outcome: str,
-        summary: str,
-        evidence_refs: Any = None,
-    ) -> dict[str, Any]:
-        if outcome not in {"resolved", "advanced", "unchanged", "refuted"}:
-            raise ValueError("outcome must be resolved, advanced, unchanged, or refuted")
-        state = self.load()
-        canonical = self._canonical_id(state, _id(difficulty_id, field="difficulty_id"))
-        node = state["nodes"].get(canonical)
-        if not isinstance(node, dict):
-            raise ValueError(f"unknown difficulty_id: {difficulty_id}")
-        if node.get("status") in _TERMINAL:
-            raise ValueError(f"difficulty {canonical} is already {node.get('status')}")
-        event = {
-            "worker_id": _id(worker_id, field="worker_id"),
-            "outcome": outcome,
-            "summary": _text(summary, field="summary", limit=4000),
-            "evidence_refs": _string_list(evidence_refs, field="evidence_refs", limit=20),
-            "recorded_at": _now(),
-        }
-        node.setdefault("attack_outcomes", []).append(event)
-        del node["attack_outcomes"][:-80]
-        if outcome == "resolved":
-            node["status"] = "resolved"
-        elif outcome == "refuted":
-            node["status"] = "refuted"
-        elif outcome == "advanced" and node.get("status") == "open":
-            node["status"] = "advanced"
-        node["updated_at"] = _now()
-        self._propagate(state)
-        state["updated_at"] = _now()
-        self._save(state)
-        return {"recorded": True, "difficulty": self._public_node(state["nodes"][canonical]), "selection": self.selection_snapshot()}
-
     def record_curation(
         self,
         *,
         checkpoint_id: str,
         difficulties: Any,
         resolved_difficulty_ids: Any = None,
+        graph_corrections: Any = None,
     ) -> dict[str, Any]:
         checkpoint_id = _id(checkpoint_id, field="checkpoint_id")
         self._checkpoint_decision(checkpoint_id)
         resolved = [_id(item, field="resolved_difficulty_ids item") for item in _string_list(
             resolved_difficulty_ids, field="resolved_difficulty_ids", limit=64
         )]
+        corrections = self._normalize_graph_corrections(graph_corrections)
         with _LOCK:
             state = self.load()
             # Existing source aliases are historical identity decisions. A later
@@ -564,6 +542,13 @@ class DifficultyDagStore:
             )
             nodes = state["nodes"]
             incoming_ids = {item["difficulty_id"] for item in normalized}
+            for item in normalized:
+                for parent_id in item["parent_ids"]:
+                    canonical_parent = self._canonical_id(state, parent_id)
+                    if canonical_parent == item["difficulty_id"]:
+                        raise ValueError(
+                            "difficulty child must be a strict child of its parent; self-parenting or alias-equivalent edges are forbidden"
+                        )
             for item in normalized:
                 if item["difficulty_id"] in nodes:
                     self._merge_node(nodes[item["difficulty_id"]], item)
@@ -579,6 +564,7 @@ class DifficultyDagStore:
                     nodes[item["difficulty_id"]]["parent_ids"] = sorted(set(
                         nodes[item["difficulty_id"]].get("parent_ids") or []
                     ) | {canonical_parent})
+            self._sync_attempt_progress(state)
             for difficulty_id in resolved:
                 canonical = self._canonical_id(state, difficulty_id)
                 node = nodes.get(canonical)
@@ -586,6 +572,7 @@ class DifficultyDagStore:
                     raise ValueError(f"cannot resolve unknown difficulty_id: {difficulty_id}")
                 node["status"] = "resolved"
                 node["updated_at"] = _now()
+            self._apply_graph_corrections(state, corrections)
             self._validate_acyclic(nodes)
             self._validate_max_depth(nodes)
             self._propagate(state)
@@ -597,6 +584,47 @@ class DifficultyDagStore:
             state["updated_at"] = _now()
             self._save(state)
         return {"recorded": True, "checkpoint_id": checkpoint_id, "selection": self.selection_snapshot()}
+
+    def _sync_attempt_progress(self, state: dict[str, Any]) -> None:
+        """Curator-side projection of immutable worker outcomes onto canonical nodes."""
+        try:
+            lines = (self.workspace_dir / "progress_audit_outcomes.jsonl").read_text(encoding="utf-8").splitlines()
+        except OSError:
+            lines = []
+        attempts: dict[str, list[dict[str, Any]]] = {difficulty_id: [] for difficulty_id in state["nodes"]}
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(record, dict) or not record.get("difficulty_id"):
+                continue
+            canonical = self._canonical_id(state, str(record["difficulty_id"]))
+            if canonical not in attempts:
+                continue
+            verified = str(record.get("verified_file") or "").strip()
+            try:
+                verified = Path(verified).resolve().relative_to(self.workspace_dir.resolve()).as_posix() if verified else ""
+            except ValueError:
+                pass
+            attempts[canonical].append({
+                "sequence": int(record.get("sequence") or 0),
+                "recorded_at": str(record.get("recorded_at") or ""),
+                "worker_id": str(record.get("worker_id") or ""),
+                "method_id": str(record.get("method_id") or ""),
+                "status": str(record.get("status") or ""),
+                "verified_proposition_ref": verified,
+            })
+        for difficulty_id, node_attempts in attempts.items():
+            node_attempts.sort(key=lambda item: (item["sequence"], item["recorded_at"]))
+            verified_refs = sorted({item["verified_proposition_ref"] for item in node_attempts if item["verified_proposition_ref"]})
+            node = state["nodes"][difficulty_id]
+            node["progress"] = {
+                "attempt_count": len(node_attempts),
+                "attempts": node_attempts[-80:],
+                "verified_proposition_refs": verified_refs[-80:],
+                "last_attempt_at": node_attempts[-1]["recorded_at"] if node_attempts else "",
+            }
 
     def _reconcile_existing_aliases(
         self,
@@ -694,6 +722,56 @@ class DifficultyDagStore:
             })
         return items
 
+    def _normalize_graph_corrections(self, value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or len(value) > 16:
+            raise ValueError("graph_corrections must be an array with at most 16 items")
+        corrections: list[dict[str, Any]] = []
+        for index, raw in enumerate(value, 1):
+            if not isinstance(raw, dict):
+                raise ValueError("graph_corrections items must be objects")
+            kind = str(raw.get("kind") or "").strip()
+            if kind not in _CORRECTION_KINDS:
+                raise ValueError(f"graph_corrections[{index}].kind is invalid")
+            difficulty_id = _id(raw.get("difficulty_id"), field=f"graph_corrections[{index}].difficulty_id")
+            parent_id = str(raw.get("parent_difficulty_id") or "").strip()
+            if kind == "remove_parent_edge":
+                parent_id = _id(parent_id, field=f"graph_corrections[{index}].parent_difficulty_id")
+            elif parent_id:
+                raise ValueError("parent_difficulty_id is only valid for remove_parent_edge")
+            refs = _string_list(raw.get("evidence_refs"), field=f"graph_corrections[{index}].evidence_refs", limit=16)
+            if not refs:
+                raise ValueError("each graph correction requires evidence_refs")
+            corrections.append({
+                "kind": kind,
+                "difficulty_id": difficulty_id,
+                "parent_difficulty_id": parent_id,
+                "evidence_refs": refs,
+            })
+        return corrections
+
+    def _apply_graph_corrections(self, state: dict[str, Any], corrections: list[dict[str, Any]]) -> None:
+        nodes = state["nodes"]
+        for correction in corrections:
+            difficulty_id = self._canonical_id(state, correction["difficulty_id"])
+            node = nodes.get(difficulty_id)
+            if not isinstance(node, dict):
+                raise ValueError(f"graph correction references unknown difficulty_id: {difficulty_id}")
+            kind = correction["kind"]
+            if kind == "remove_parent_edge":
+                parent_id = self._canonical_id(state, correction["parent_difficulty_id"])
+                parents = list(node.get("parent_ids") or [])
+                if parent_id not in parents:
+                    raise ValueError(f"graph correction references absent parent edge: {parent_id} -> {difficulty_id}")
+                node["parent_ids"] = [item for item in parents if item != parent_id]
+            elif kind == "supersede_node":
+                node["status"] = "superseded"
+            elif kind == "reopen_node":
+                node["status"] = "open"
+            node["evidence_refs"] = sorted(set(node.get("evidence_refs") or []) | set(correction["evidence_refs"]))
+            node["updated_at"] = _now()
+
     def _checkpoint_decision(self, checkpoint_id: str) -> None:
         try:
             value = json.loads((self.audits_dir / checkpoint_id / "decision.json").read_text(encoding="utf-8"))
@@ -703,40 +781,26 @@ class DifficultyDagStore:
             raise ValueError(f"checkpoint is not ready for curation: {checkpoint_id}")
 
     def _normalize(self, state: dict[str, Any]) -> None:
-        global_attack = state.setdefault("global_attack", {})
-        if not isinstance(global_attack, dict):
-            global_attack = {}
-            state["global_attack"] = global_attack
-        attempt = global_attack.get("last_attempt")
-        if not isinstance(attempt, dict):
-            global_attack["last_attempt"] = None
-        else:
-            attempt.setdefault("attempt_id", "")
-            attempt.setdefault("worker_id", "")
-            attempt.setdefault("phase", "completed")
-            attempt.setdefault("started_at", "")
-            attempt.setdefault("completed_at", "")
-            attempt.setdefault("status", "")
-            attempt.setdefault("outcome", "")
-            attempt.setdefault("target_achieved", None)
-            attempt.setdefault("solved_problem", False)
-            attempt.setdefault("result_path", "")
-            attempt.setdefault("verified_proposition_count_at_start", 0)
-            # Older global-attack records did not have a count baseline. Treat
-            # them as due for a fresh count-based cycle after this upgrade.
-            attempt.setdefault("verified_proposition_count_at_completion", 0)
         for difficulty_id, node in list(state["nodes"].items()):
             if not isinstance(node, dict):
                 del state["nodes"][difficulty_id]
                 continue
             node.setdefault("difficulty_id", difficulty_id)
+            node.pop("route_id", None)
             node.setdefault("parent_ids", [])
             node.setdefault("resolution_policy", "manual")
             node.setdefault("relation_to_parent", "prerequisite")
             node.setdefault("evidence_refs", [])
             node.setdefault("source_ids", [])
-            node.setdefault("attack_outcomes", [])
-            node.setdefault("parent_direct_attacks", [])
+            node.pop("attack_outcomes", None)
+            node.pop("parent_direct_attacks", None)
+            node.pop("split_required", None)
+            node.setdefault("progress", {
+                "attempt_count": 0,
+                "attempts": [],
+                "verified_proposition_refs": [],
+                "last_attempt_at": "",
+            })
             node.setdefault("status", "open")
             node.setdefault("created_at", "")
             node.setdefault("updated_at", "")
@@ -762,8 +826,12 @@ class DifficultyDagStore:
             "evidence_refs": sorted(set(evidence_refs)),
             "source_ids": sorted(set(source_ids)),
             "status": status,
-            "attack_outcomes": [],
-            "parent_direct_attacks": [],
+            "progress": {
+                "attempt_count": 0,
+                "attempts": [],
+                "verified_proposition_refs": [],
+                "last_attempt_at": "",
+            },
             "created_at": _now(),
             "updated_at": _now(),
         }
@@ -800,7 +868,36 @@ class DifficultyDagStore:
             child_ids = children.get(difficulty_id, [])
             if not child_ids or node.get("status") in _TERMINAL:
                 continue
-            child_statuses = [str(nodes[child].get("status") or "open") for child in child_ids]
+            resolved_refutations = [
+                child
+                for child in child_ids
+                if nodes[child].get("relation_to_parent") == "refutes"
+                and nodes[child].get("status") == "resolved"
+            ]
+            if resolved_refutations:
+                node["status"] = "refuted"
+                self._supersede_descendants(nodes, difficulty_id)
+                changed = True
+                continue
+            resolved_weakenings = [
+                child
+                for child in child_ids
+                if nodes[child].get("relation_to_parent") == "weakened_target"
+                and nodes[child].get("status") == "resolved"
+            ]
+            if resolved_weakenings:
+                if node.get("status") in {"open", "ready_for_synthesis"}:
+                    node["status"] = "advanced"
+                    changed = True
+                continue
+            completion_children = [
+                child
+                for child in child_ids
+                if nodes[child].get("relation_to_parent") in {"prerequisite", "alternative"}
+            ]
+            if not completion_children:
+                continue
+            child_statuses = [str(nodes[child].get("status") or "open") for child in completion_children]
             policy = str(node.get("resolution_policy") or "manual")
             if policy == "any_of":
                 if "resolved" in child_statuses:
@@ -811,21 +908,30 @@ class DifficultyDagStore:
                         if nodes[child].get("status") not in _TERMINAL:
                             nodes[child]["status"] = "superseded"
                             changed = True
-                # Exhausting known alternatives refutes the decomposition routes,
-                # not the parent theorem. Keep the parent open for replanning or a
-                # fixed-target direct attack.
             elif all(status == "resolved" for status in child_statuses):
                 if node.get("status") != "ready_for_synthesis":
                     node["status"] = "ready_for_synthesis"
                     changed = True
             elif node.get("status") == "ready_for_synthesis":
-                # A later curator checkpoint can add or reopen a child; synthesis is then no
-                # longer the current frontier and must not remain exposed as an executable leaf.
                 node["status"] = "advanced"
                 changed = True
-            # A refuted prerequisite or weakened target similarly invalidates only
-            # that child route. It must never auto-refute an ancestor claim.
         return changed
+
+    def _supersede_descendants(self, nodes: dict[str, Any], root_id: str) -> None:
+        children = self._children(nodes)
+        stack = list(children.get(root_id, []))
+        seen: set[str] = set()
+        while stack:
+            difficulty_id = stack.pop()
+            if difficulty_id in seen:
+                continue
+            seen.add(difficulty_id)
+            node = nodes.get(difficulty_id)
+            if not isinstance(node, dict):
+                continue
+            if node.get("status") not in _TERMINAL:
+                node["status"] = "superseded"
+            stack.extend(children.get(difficulty_id, []))
 
     @staticmethod
     def _depths(nodes: dict[str, Any]) -> dict[str, int]:
@@ -851,7 +957,7 @@ class DifficultyDagStore:
         if too_deep:
             raise ValueError(
                 f"persistent difficulty depth exceeds {max_depth}: {too_deep}; "
-                "do bounded worker-local reasoning, add a sibling/alternative, or replan an ancestor instead"
+                "do bounded worker-local reasoning, add a sibling/alternative, or create an independent component instead"
             )
 
     def _validate_acyclic(self, nodes: dict[str, Any]) -> None:
@@ -875,63 +981,27 @@ class DifficultyDagStore:
     def _canonical_id(state: dict[str, Any], difficulty_id: str) -> str:
         return str(state.get("aliases", {}).get(difficulty_id) or difficulty_id)
 
-    def _parent_direct_budget(self, state: dict[str, Any], difficulty_id: str) -> dict[str, Any]:
-        node = state["nodes"][difficulty_id]
-        interval = self.policy.parent_direct_attack_outcome_interval
-        descendant_outcomes = self._descendant_outcome_count(state["nodes"], difficulty_id)
-        history = node.get("parent_direct_attacks") or []
-        last = history[-1] if isinstance(history, list) and history else None
-        previous_outcomes = int(last.get("descendant_outcomes_at_dispatch") or 0) if isinstance(last, dict) else 0
-        new_outcomes = descendant_outcomes - previous_outcomes
-        return {
-            "available": last is None or new_outcomes >= interval,
-            "interval": interval,
-            "descendant_outcomes": descendant_outcomes,
-            "new_descendant_outcomes": new_outcomes,
-            "next_available_after": max(0, interval - new_outcomes),
-            "direct_attack_count": len(history) if isinstance(history, list) else 0,
-        }
-
-    def _descendant_outcome_count(self, nodes: dict[str, Any], root_id: str) -> int:
-        children = self._children(nodes)
-        count = 0
-        stack = list(children.get(root_id, []))
-        seen: set[str] = set()
-        while stack:
-            difficulty_id = stack.pop()
-            if difficulty_id in seen:
-                continue
-            seen.add(difficulty_id)
-            node = nodes.get(difficulty_id)
-            if not isinstance(node, dict):
-                continue
-            count += len(node.get("attack_outcomes") or [])
-            stack.extend(children.get(difficulty_id, []))
-        return count
-
     @staticmethod
     def _public_node(
         node: dict[str, Any],
         *,
         dispatch_mode: str | None = None,
         depth: int | None = None,
-        parent_direct_budget: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         result = {
             "difficulty_id": node.get("difficulty_id"),
             "statement": node.get("statement"),
             "parent_difficulty_ids": list(node.get("parent_ids") or []),
+            "relation_to_parent": node.get("relation_to_parent"),
             "resolution_policy": node.get("resolution_policy"),
             "status": node.get("status"),
             "evidence_refs": list(node.get("evidence_refs") or []),
-            "attack_count": len(node.get("attack_outcomes") or []),
+            "progress": dict(node.get("progress") or {}),
         }
         if depth is not None:
             result["depth"] = depth
         if dispatch_mode:
             result["dispatch_mode"] = dispatch_mode
-        if parent_direct_budget is not None:
-            result["parent_direct_budget"] = parent_direct_budget
         return result
 
     def _save(self, state: dict[str, Any]) -> None:
@@ -957,6 +1027,7 @@ def register_curated_difficulty_dag_tool(
                 checkpoint_id=checkpoint_id,
                 difficulties=args.get("difficulties"),
                 resolved_difficulty_ids=args.get("resolved_difficulty_ids"),
+                graph_corrections=args.get("graph_corrections"),
             )
         except ValueError as exc:
             return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
@@ -982,8 +1053,12 @@ def register_curated_difficulty_dag_tool(
             "At this checkpoint, make worker-local difficulty records into the canonical recursive difficulty DAG. "
             "Choose stable canonical IDs, merge only evidence-supported aliases through source_difficulty_ids, and attach each "
             "new obligation to its actual parent difficulty. Existing source aliases are authoritative: reuse their canonical "
-            "difficulty instead of reinterpreting them. Legacy direction/gap source labels are accepted and normalized to slugs. "
-            "Use all_of, any_of, or manual only when the evidence establishes that relation. The runtime validates acyclicity "
+            "difficulty instead of reinterpreting them. A child must be strictly smaller than its parent: do not submit self-parenting "
+            "or alias-equivalent edges. Parentless nodes are valid independent components; add a child only when the cited "
+            "evidence establishes that relation. The curator also refreshes attempt counts and verified-proposition references "
+            "from the immutable worker outcome ledger. Legacy direction/gap source labels are accepted and normalized to slugs. Use all_of, any_of, "
+            "or manual only when the evidence establishes that relation. graph_corrections may only remove one evidenced parent edge, "
+            "supersede one node, or reopen one node; they are for verified corrections, never route planning. The runtime validates acyclicity "
             "and computes executable leaves; do not invent edges from wording alone."
         ),
         parameters={
@@ -991,6 +1066,19 @@ def register_curated_difficulty_dag_tool(
             "properties": {
                 "difficulties": {"type": "array", "items": difficulty_schema},
                 "resolved_difficulty_ids": {"type": "array", "items": {"type": "string"}},
+                "graph_corrections": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "enum": sorted(_CORRECTION_KINDS)},
+                            "difficulty_id": {"type": "string"},
+                            "parent_difficulty_id": {"type": "string"},
+                            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["kind", "difficulty_id", "evidence_refs"],
+                    },
+                },
             },
             "required": ["difficulties"],
         },
@@ -1002,29 +1090,8 @@ def register_curated_difficulty_dag_tool(
 def register_orchestrator_difficulty_tools(
     registry: ToolRegistry,
     *,
-    outcome_handler,
     snapshot_handler,
 ) -> None:
-    registry.register(
-        name="RecordDifficultyOutcome",
-        description=(
-            "Record the evidence-backed outcome of one worker assigned to a canonical difficulty. This does not edit "
-            "parent/child structure: only the curator does that at checkpoints. Use resolved only when the exact assigned "
-            "difficulty is established, refuted only with a checkable counterexample, advanced for a genuine narrowed boundary, "
-            "and unchanged otherwise."
-        ),
-        parameters={
-            "type": "object",
-            "properties": {
-                "worker_id": {"type": "string"},
-                "outcome": {"type": "string", "enum": ["resolved", "advanced", "unchanged", "refuted"]},
-                "summary": {"type": "string"},
-                "evidence_refs": {"type": "array", "items": {"type": "string"}},
-            },
-            "required": ["worker_id", "outcome", "summary"],
-        },
-        handler=outcome_handler,
-    )
     registry.register(
         name="DifficultyFrontier",
         description="Return curator-owned executable leaf difficulties, pending checkpoint status, and the global_consolidation_directive. Dispatch targeted workers only against a returned leaf; launch a full-problem global attack only when that directive reports ready=true.",

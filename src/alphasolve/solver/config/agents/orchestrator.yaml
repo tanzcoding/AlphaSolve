@@ -16,11 +16,11 @@ agent:
     - MakeDir
     - Rename
     - Move
+    - RequestResearchPlan
+    - ExecuteResearchPlan
     - SpawnWorker
     - Agent
     - SpawnFreeExploration
-    - DifficultyFrontier
-    - RecordDifficultyOutcome
     - TaskOutput
     - GetCurrentTime
   tool_parameters:
@@ -56,8 +56,6 @@ agent:
         type: string
         maxLength: 80
         pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
-      parent_direct_attack:
-        type: boolean
       method_id:
         type: string
         enum: [direct_proof, contradiction, construction, computation, falsification, consolidation]

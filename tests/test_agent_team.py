@@ -130,10 +130,11 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Adversarial Review" in reviewer_prompt
     assert "DISPATCH: NEEDS_FALSIFICATION" in reviewer_prompt
     assert "read_state=true" in reviewer_prompt
-    assert "RecordDifficultyOutcome" in orchestrator_prompt
+    assert "RequestResearchPlan" in orchestrator_prompt
+    assert "ExecuteResearchPlan" in orchestrator_prompt
     assert "RecordResearchImpact" not in orchestrator_prompt
-    assert "DifficultyFrontier" in orchestrator_prompt
-    assert "difficulty_dag.json" in orchestrator_prompt
+    assert "raw DAG" in orchestrator_prompt
+    assert "curation_records/difficulty_dag.json" in orchestrator_prompt
     assert "curator" in orchestrator_prompt.lower()
     assert "fooling" not in orchestrator_prompt.lower()
     assert "permutation" not in reviewer_prompt.lower()
@@ -1394,8 +1395,10 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Move" in tool_names
         assert "Write" in tool_names
         assert "Edit" in tool_names
-        assert "DifficultyFrontier" in tool_names
-        assert "RecordDifficultyOutcome" in tool_names
+        assert "RequestResearchPlan" in tool_names
+        assert "ExecuteResearchPlan" in tool_names
+        assert "DifficultyFrontier" not in tool_names
+        assert "RecordDifficultyOutcome" not in tool_names
         assert "RecordResearchImpact" not in tool_names
         assert "SpawnFreeExploration" in tool_names
         assert "Delete" not in tool_names
@@ -1411,7 +1414,8 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
         assert "available_worker_slots" in tool_descriptions["TaskOutput"]
         assert "difficulty_handoff" in tool_descriptions["TaskOutput"]
-        assert "DifficultyFrontier" in tool_descriptions["TaskOutput"]
+        assert "difficulty_assessment" in tool_descriptions["TaskOutput"]
+        assert "research plan" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
         assert "process_audit_context_reset" not in tool_descriptions["TaskOutput"]
         assert "fresh reviewer report" not in tool_descriptions["TaskOutput"]

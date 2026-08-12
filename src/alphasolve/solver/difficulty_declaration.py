@@ -13,7 +13,7 @@ _TARGET_STATUSES = {"YES", "NO", "PARTIAL"}
 _REVISION_OUTCOMES = {"repaired", "weakened", "blocked", "refuted"}
 _RELATIONS_TO_PARENT = {"prerequisite", "alternative", "weakened_target", "method_blocked", "refutes"}
 _RESOLUTION_POLICIES = {"all_of", "any_of", "manual"}
-_HANDOFF_SCHEMA_VERSION = 2
+_HANDOFF_SCHEMA_VERSION = 3
 _NON_MATHEMATICAL_FAILURES = {"generator_protocol_failure", "execution_failed"}
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 
@@ -56,6 +56,7 @@ def materialize_difficulty_handoff(
     review_file: Path | None,
     proposition_file: Path | None,
     verified_file: Path | None,
+    difficulty_assessment_file: Path | None = None,
 ) -> tuple[Path | None, dict[str, Any] | None]:
     """Package one worker-local difficulty proposal for checkpoint curation.
 
@@ -94,7 +95,7 @@ def materialize_difficulty_handoff(
     )
     evidence_refs = [
         str(path)
-        for path in (declaration_path, result_summary_file, review_file, proposition_file, verified_file)
+        for path in (declaration_path, result_summary_file, difficulty_assessment_file, review_file, proposition_file, verified_file)
         if path is not None
     ]
     handoff: dict[str, Any] = {
@@ -107,6 +108,7 @@ def materialize_difficulty_handoff(
         "parent_resolution_policy": source.get("parent_resolution_policy") or "manual",
         "method_id": method_id or context.get("method_id"),
         "assigned_target": clean(context.get("assigned_target")),
+        "child_delta": clean(source.get("child_delta")),
         "execution_status": str(execution_status or "unknown"),
         "failure_kind": failure_kind,
         "target_status": target_status or "UNKNOWN",
@@ -142,6 +144,7 @@ def register_difficulty_declaration_tool(
             why_hard = _required_text(args, "why_hard")
             suggested_attack = _required_text(args, "suggested_attack")
             last_verified_step = _optional_text(args, "last_verified_step")
+            child_delta = _optional_text(args, "child_delta")
             dead_ends = _optional_text(args, "dead_ends")
             relation_to_parent = _optional_choice(args, "relation_to_parent", _RELATIONS_TO_PARENT) or "prerequisite"
             parent_resolution_policy = _optional_choice(args, "parent_resolution_policy", _RESOLUTION_POLICIES) or "manual"
@@ -153,6 +156,13 @@ def register_difficulty_declaration_tool(
             source_difficulty_id = _safe_source_id(
                 args.get("source_difficulty_id") or context.get("source_difficulty_id") or f"worker-{context.get('worker_id') or 'unknown'}-difficulty"
             )
+            _validate_targeted_child_handoff(
+                context=context,
+                source_difficulty_id=source_difficulty_id,
+                difficulty=difficulty,
+                last_verified_step=last_verified_step,
+                child_delta=child_delta,
+            )
             record = {
                 "source_difficulty_id": source_difficulty_id,
                 "parent_difficulty_id": context.get("difficulty_id"),
@@ -160,6 +170,7 @@ def register_difficulty_declaration_tool(
                 "parent_resolution_policy": parent_resolution_policy,
                 "target_status": target_status,
                 "difficulty": difficulty,
+                "child_delta": child_delta,
                 "last_verified_step": last_verified_step,
                 "why_hard": why_hard,
                 "suggested_attack": suggested_attack,
@@ -212,9 +223,11 @@ def register_difficulty_declaration_tool(
         description=(
             "Record a precise worker-local difficulty whenever the assigned target is weakened, blocked, or refuted. "
             "This is a proposal for the curator-owned recursive difficulty DAG, not a canonical edit. State the smallest "
-            "unresolved obligation, the last verified step, why the attempted argument fails, and a concrete attack. If this "
-            "worker was assigned an existing difficulty, classify the proposed child as prerequisite, alternative, weakened_target, "
-            "method_blocked, or refutes, and state how the parent would combine its children."
+            "unresolved obligation, the last verified step, why the attempted argument fails, and a concrete attack. For an "
+            "assigned canonical difficulty, the proposed child must be strictly smaller than the assigned target: supply the "
+            "verified boundary and the exact remaining delta; do not restate the parent or create a self-parenting record. "
+            "Classify the proposed child as prerequisite, alternative, weakened_target, method_blocked, or refutes, and state "
+            "how the parent would combine its children."
         ),
         parameters={
             "type": "object",
@@ -223,6 +236,7 @@ def register_difficulty_declaration_tool(
                 "target_status": {"type": "string", "enum": sorted(_TARGET_STATUSES)},
                 "revision_outcome": {"type": "string", "enum": sorted(_REVISION_OUTCOMES)},
                 "difficulty": {"type": "string", "description": "Exact smallest unresolved mathematical obligation."},
+                "child_delta": {"type": "string", "description": "For a targeted worker, explain why this is strictly smaller than the parent and what inference remains."},
                 "relation_to_parent": {"type": "string", "enum": sorted(_RELATIONS_TO_PARENT)},
                 "parent_resolution_policy": {"type": "string", "enum": sorted(_RESOLUTION_POLICIES)},
                 "last_verified_step": {"type": "string"},
@@ -234,6 +248,49 @@ def register_difficulty_declaration_tool(
         },
         handler=handler,
     )
+
+
+def _validate_targeted_child_handoff(
+    *,
+    context: dict[str, Any],
+    source_difficulty_id: str,
+    difficulty: str,
+    last_verified_step: str,
+    child_delta: str,
+) -> None:
+    parent_id = str(context.get("difficulty_id") or "").strip()
+    if not parent_id:
+        return
+    if source_difficulty_id == parent_id:
+        raise ValueError("source_difficulty_id must differ from the assigned parent difficulty_id")
+    if not last_verified_step:
+        raise ValueError("last_verified_step is required for a targeted child difficulty")
+    if not child_delta:
+        raise ValueError("child_delta is required for a targeted child difficulty")
+    assigned_target = str(context.get("assigned_target") or "").strip()
+    if _is_restatement_of_assigned_target(difficulty, assigned_target):
+        raise ValueError(
+            "difficulty restates the assigned parent target; record a strictly smaller remaining obligation instead"
+        )
+
+
+def _is_restatement_of_assigned_target(candidate: str, assigned_target: str) -> bool:
+    normalized_candidate = _normalize_obligation(candidate)
+    normalized_target = _normalize_obligation(assigned_target)
+    if not normalized_candidate or not normalized_target:
+        return False
+    if normalized_candidate == normalized_target:
+        return True
+    candidate_words = set(normalized_candidate.split())
+    target_words = set(normalized_target.split())
+    if len(candidate_words) < 6 or len(target_words) < 6:
+        return False
+    overlap = len(candidate_words & target_words) / min(len(candidate_words), len(target_words))
+    return overlap >= 0.9
+
+
+def _normalize_obligation(value: str) -> str:
+    return " ".join(re.findall(r"[a-z0-9]+", value.lower()))
 
 
 def _load_runtime_context(declaration_path: Path) -> dict[str, Any]:
@@ -310,6 +367,9 @@ def _generator_declaration(**record: Any) -> str:
         "## Exact Difficulty",
         record["difficulty"],
         "",
+        "## Strict Child Delta",
+        record["child_delta"] or "Not supplied.",
+        "",
         "## Last Verified Step",
         record["last_verified_step"] or "Not supplied.",
         "",
@@ -337,6 +397,8 @@ def _reviser_update(*, update_number: int, revision_outcome: str, **record: Any)
         f"- Target status: {record['target_status']}",
         "",
         "**Exact Difficulty:** " + record["difficulty"],
+        "",
+        "**Strict Child Delta:** " + (record["child_delta"] or "Not supplied."),
         "",
         "**Last Verified Step:** " + (record["last_verified_step"] or "Not supplied."),
         "",

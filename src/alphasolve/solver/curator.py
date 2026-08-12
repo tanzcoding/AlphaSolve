@@ -344,10 +344,10 @@ def _portfolio_checkpoint_prompt(artifact_path: Path | None, *, recovery_reason:
     path_text = str(artifact_path) if artifact_path is not None else "(missing checkpoint brief)"
     recovery = f"Previous curation failure: {recovery_reason}\n\n" if recovery_reason else ""
     return (
-        "# Portfolio Checkpoint Difficulty DAG Curation\n\n"
-        f"Read the checkpoint brief at {path_text}. Then inspect curation_records/difficulty_dag.json when present and call CurateDifficultyDag exactly once.\n\n"
+        "# Portfolio Checkpoint Difficulty Graph Curation\n\n"
+        f"Read the checkpoint brief at {path_text}. Then inspect curation_records/difficulty_dag.json and call CurateDifficultyDag exactly once.\n\n"
         + recovery
-        + "Reconcile worker-local source difficulty records into canonical IDs. Existing aliases in difficulty_dag.json are binding: when a source is already mapped, reuse that canonical difficulty rather than assigning a new one. Legacy direction/gap source labels may be submitted verbatim and are normalized by runtime. Preserve a parent edge only when cited evidence establishes the mathematical relationship. Use all_of, any_of, or manual only when justified; runtime computes executable leaves. Write evidence-bounded knowledge notes, but do not maintain routes, direction/gap gates, or a blocker matrix."
+        + "Reconcile worker-local source difficulty records into canonical IDs. Existing aliases in difficulty_dag.json are binding: when a source is already mapped, reuse that canonical difficulty rather than assigning a new one. A child must be strictly smaller than its parent, with a checkable statement, a verified boundary, and a remaining inference; do not submit self-parenting or alias-equivalent edges. A parentless difficulty is a valid independent component. Reviewer graph observations in the brief are candidate evidence only: verify their cited propositions, audits, or handoffs before changing a canonical node, edge, or status; do not make speculative repairs. Legacy direction/gap source labels may be submitted verbatim and are normalized by runtime. Preserve a parent edge only when cited evidence establishes the mathematical relationship. Use all_of, any_of, or manual only when justified; runtime computes executable leaves. Write evidence-bounded knowledge notes, but do not maintain routes, direction/gap gates, or a blocker matrix."
     )
 
 

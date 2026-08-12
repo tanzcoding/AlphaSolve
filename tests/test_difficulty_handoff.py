@@ -35,6 +35,7 @@ def _record_generator_difficulty(tmp_path):
             "difficulty": "Control the extra marker family in the global packing bound.",
             "relation_to_parent": "prerequisite",
             "parent_resolution_policy": "all_of",
+            "child_delta": "The remaining marker-family estimate is a standalone prerequisite after the two-family bound.",
             "last_verified_step": "The two-family matching gives an N+1 lower bound.",
             "why_hard": "The present proof controls local matches but not global packing.",
             "suggested_attack": "Analyze the marker conflict graph.",
@@ -54,8 +55,58 @@ def test_record_difficulty_preserves_parent_context_and_recursive_proposal(tmp_p
     assert declaration["generator"]["source_difficulty_id"] == "packing-extra-marker"
     assert declaration["generator"]["parent_difficulty_id"] == "global-packing"
     assert declaration["generator"]["parent_resolution_policy"] == "all_of"
+    assert declaration["generator"]["child_delta"].startswith("The remaining marker-family")
     assert difficulty_json_path(declaration_path).is_file()
     assert worker_dir.is_dir()
+
+
+def test_record_difficulty_rejects_self_or_repeated_targeted_child(tmp_path):
+    worker_dir = tmp_path / "prop-worker-self"
+    worker_dir.mkdir()
+    (worker_dir / "research_target.json").write_text(
+        json.dumps({
+            "worker_id": "worker-self",
+            "difficulty_id": "global-packing",
+            "difficulty_statement": "Prove the global packing bound.",
+        }),
+        encoding="utf-8",
+    )
+    registry = ToolRegistry()
+    register_difficulty_declaration_tool(
+        registry,
+        declaration_path=worker_dir / "difficulty_declaration.md",
+        role="generator",
+    )
+
+    self_parent = registry.execute(
+        "RecordDifficulty",
+        {
+            "target_status": "NO",
+            "source_difficulty_id": "global-packing",
+            "difficulty": "Control one unproved local packing inequality.",
+            "child_delta": "A local inequality remains.",
+            "last_verified_step": "The reduction is proved.",
+            "why_hard": "The local inequality is open.",
+            "suggested_attack": "Prove the local inequality.",
+        },
+    )
+    assert self_parent.is_error
+    assert "differ from the assigned parent" in self_parent.content
+
+    repeated_parent = registry.execute(
+        "RecordDifficulty",
+        {
+            "target_status": "NO",
+            "source_difficulty_id": "packing-reworded",
+            "difficulty": "Prove the global packing bound.",
+            "child_delta": "The original theorem remains.",
+            "last_verified_step": "No smaller boundary was found.",
+            "why_hard": "The theorem is open.",
+            "suggested_attack": "Retry the theorem.",
+        },
+    )
+    assert repeated_parent.is_error
+    assert "restates the assigned parent" in repeated_parent.content
 
 
 def test_materialized_handoff_is_curator_candidate_with_parent_relation(tmp_path):
@@ -81,6 +132,7 @@ def test_materialized_handoff_is_curator_candidate_with_parent_relation(tmp_path
     assert handoff["source_difficulty_id"] == "packing-extra-marker"
     assert handoff["parent_difficulty_id"] == "global-packing"
     assert handoff["relation_to_parent"] == "prerequisite"
+    assert handoff["child_delta"].startswith("The remaining marker-family")
     assert handoff["requires_checkpoint_curation"] is True
     assert str(review) in handoff["evidence_refs"]
 
@@ -104,3 +156,4 @@ def test_portfolio_exposes_recursive_handoff_provenance(tmp_path):
     assert compact["source_difficulty_id"] == "packing-extra-marker"
     assert compact["parent_difficulty_id"] == "global-packing"
     assert compact["relation_to_parent"] == "prerequisite"
+    assert compact["child_delta"].startswith("The remaining marker-family")

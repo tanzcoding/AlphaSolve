@@ -183,9 +183,9 @@ class WorkerRunResult:
     difficulty_id: str | None = None
     solved_problem: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
-    # --- consolidation worker 的结构化反馈 ---
+    # --- global consolidation worker 的结构化反馈 ---
     is_consolidation: bool = False
-    # None = 非 consolidation worker 或尚不确定；True = 完成了 pinned_target；False = 未完成
+    # 仅 global-problem-attack 使用：None = 未完成状态未知；True = 完成原题；False = 未完成。
     target_achieved: bool | None = None
     # 每轮 verifier 的 (verdict, review 摘要)，rejected 时供 orchestrator 判断失败模式
     verify_history: list[dict[str, Any]] = field(default_factory=list)
@@ -195,6 +195,9 @@ class WorkerRunResult:
     # worker 完成后的统一 LLM 结果总结文件路径（result_summary.md）。verified/rejected
     # 共用同一份文件和同一份 prompt，内部已经核对过 generator 的原始困难声明是否过时。
     result_summary_file: Path | None = None
+    # 总结器从最终轨迹中提取的结构化 difficulty 判断；它是 reviewer 的输入，不是 canonical DAG 写入。
+    difficulty_assessment_file: Path | None = None
+    difficulty_assessment: dict[str, Any] | None = None
     # generator 产出的困难声明文件路径（difficulty_declaration.md）
     # 记录 worker 回避了什么数学困难、为什么回避、尝试过但失败的路线
     difficulty_declaration_file: Path | None = None
@@ -292,23 +295,14 @@ class Worker:
         self.frontier_refs = list(frontier_refs) if frontier_refs else []
         self.frontier_note = frontier_note
         self.is_free = bool(is_free)
-        # 兑现/对偶环境开关：allow_weakening=False 时，禁止 generator/reviser 把命题
-        # 弱化成"勉强能证"的子命题（关掉 reviser 的 Weakening / Isolating 两个动作），
-        # 只允许「按原样证目标」或「给出显式见证证否(refute)」。pinned_target 为钉死的
-        # 目标命题文本（缺省用 worker_hint / problem 表达的目标）。默认 True 完全向后兼容。
-        self.allow_weakening = bool(allow_weakening)
+        # `allow_weakening=False` 的 no-weakening 契约仅属于 global-problem-attack。
+        # 局部 assembly 和 parent-direct 尝试始终允许产出 strict child、method block
+        # 或 refutation；忽略其调用方传入的 false，避免重新锁死 DAG。
         self.pinned_target = (pinned_target or "").strip() or None
         self.rubric = (rubric or "").strip() or None
-        # consolidation worker = 禁止弱化的正面强攻 worker（allow_weakening=False）
-        self.is_consolidation = not self.allow_weakening
-        # global_attack: 全局 consolidation，pinned_target = problem.md 全文。
-        # 由 orchestrator 通过 consolidation=true + global_attack 隐式触发（pinned_target
-        # 内容为 problem 全文时自动识别），用于在 prompt 中强调"攻击 problem 本身而非子方向"。
-        self.is_global_attack = bool(
-            self.is_consolidation
-            and self.pinned_target
-            and self.difficulty_id == "global-problem-attack"
-        )
+        self.is_global_attack = self.difficulty_id == "global-problem-attack"
+        self.allow_weakening = not self.is_global_attack
+        self.is_consolidation = self.is_global_attack
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
         self.verifier_agents = tuple(verifier_agents) if verifier_agents is not None else None
@@ -438,14 +432,15 @@ class Worker:
                         theorem_check_file = self.worker_dir / "theorem_check.md"
                         theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
                         # 成功时也跑统一结果总结器：让 orchestrator 感知 Statement 是否被弱化
-                        result_summary_file = self._run_result_summarizer(
+                        result_summary_file, difficulty_assessment_file, difficulty_assessment = self._run_result_summarizer(
                             status="verified",
                             proposition_file=proposition_file,
                             review_file=final_review_file,
                             verify_history=verify_history,
                         )
-                        # consolidation worker: verifier 通过不等于完成了 pinned_target
-                        # 代码不做 LLM 判断，只标记 verified；orchestrator 负责判断 target_achieved
+        # global consolidation: verifier 通过不等于完成原题。
+        # 代码不做 LLM 判断，只标记 verified；orchestrator 负责判断 target_achieved。
+
                         target_achieved = None if self.is_consolidation else True
                         difficulty_decl = self.worker_dir / "difficulty_declaration.md"
                         return self._finish(
@@ -460,6 +455,8 @@ class Worker:
                             verify_history=verify_history,
                             target_achieved=target_achieved,
                             result_summary_file=result_summary_file,
+                            difficulty_assessment_file=difficulty_assessment_file,
+                            difficulty_assessment=difficulty_assessment,
                             difficulty_declaration_file=difficulty_decl if difficulty_decl.exists() else None,
                         )
                     if workflow_index < self.max_verify_rounds:
@@ -479,10 +476,10 @@ class Worker:
                     final_review_file = self._write_final_review(last_review_text)
                 if final_review_file is not None and final_review_file.exists():
                     summary += "\n\nFinal review:\n" + final_review_file.read_text(encoding="utf-8")[:4000]
-                # consolidation worker rejected = 明确未完成目标
+                # global consolidation rejected = 明确未完成原题
                 target_achieved = False if self.is_consolidation else None
                 # 统一结果总结器：供 orchestrator 快速诊断失败模式
-                result_summary_file = self._run_result_summarizer(
+                result_summary_file, difficulty_assessment_file, difficulty_assessment = self._run_result_summarizer(
                     status="rejected",
                     proposition_file=proposition_file,
                     review_file=final_review_file,
@@ -496,6 +493,8 @@ class Worker:
                     verify_history=verify_history,
                     target_achieved=target_achieved,
                     result_summary_file=result_summary_file,
+                    difficulty_assessment_file=difficulty_assessment_file,
+                    difficulty_assessment=difficulty_assessment,
                     difficulty_declaration_file=difficulty_decl if difficulty_decl.exists() else None,
                     failure_kind="verification_rejected",
                     blocking_obligation=(last_review_text or "Verifier rejected the candidate proposition.")[:2000],
@@ -670,8 +669,8 @@ class Worker:
         proposition_file: Path | None,
         review_file: Path | None,
         verify_history: list[dict[str, Any]],
-    ) -> Path | None:
-        """worker 结束后的统一 LLM 结果总结：verified/rejected 共用同一份 prompt 和输出文件。
+    ) -> tuple[Path | None, Path | None, dict[str, Any] | None]:
+        """生成保留给人读的总结，并提取 reviewer 可消费的结构化 difficulty assessment。
 
         取代原来互斥的 outcome_summarizer（仅 verified）/ failure_summarizer（仅 rejected）——
         两者本来就只会二选一执行，合并后调用次数不变，只是不再维护两份几乎重复的 prompt，
@@ -680,7 +679,7 @@ class Worker:
         生成 result_summary.md 并返回其路径；若 LLM 调用失败则返回 None（不影响主流程）。
         """
         if self._should_stop():
-            return None
+            return None, None, None
         try:
             base_config = self.suite.agents.get("verifier") or self.suite.agents[self._verifier_config_names()[0]]
             config = AgentConfig(
@@ -720,12 +719,19 @@ class Worker:
                     "content": summary_text,
                 })
             if not summary_text:
-                return None
+                return None, None, None
             result_summary_file = self.worker_dir / "result_summary.md"
             result_summary_file.write_text(summary_text, encoding="utf-8")
-            return result_summary_file
+            assessment = _extract_difficulty_assessment(summary_text)
+            assessment_file: Path | None = None
+            if assessment is not None:
+                assessment_file = self.worker_dir / "difficulty_assessment.json"
+                assessment_file.write_text(
+                    json.dumps(assessment, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+                )
+            return result_summary_file, assessment_file, assessment
         except Exception:
-            return None
+            return None, None, None
 
     def _result_summary_task(
         self,
@@ -975,10 +981,7 @@ class Worker:
         _reset_directory(verifier_workspace)
 
     def _pinned_target_block(self) -> str:
-        """兑现/对偶环境的钉死目标说明（allow_weakening=False 时注入）。
-
-        普通 worker（allow_weakening=True）返回空串，行为与改动前完全一致。
-        """
+        """仅为全局 consolidation 注入禁止弱化的 original-problem target。"""
         if self.allow_weakening:
             return ""
         target = self.pinned_target or (self.worker_hint or "").strip()
@@ -1172,9 +1175,9 @@ class Worker:
 
         - free worker：始终注入“避开主流战略叙事”的指令；若有发散种子，则作为
           可选正交火种附上（明确"不要求在其上构建"）。
-        - consolidation / global_attack worker：frontier 降级为可选参考上下文，
+        - global consolidation worker：frontier 降级为可选参考上下文，
           不要求 worker 限定于这些命题的方法框架。
-        - 非 free / 非 consolidation worker：orchestrator 下发了 refs/note 才注入，
+        - 非 free / 非 global consolidation worker：orchestrator 下发了 refs/note 才注入，
           作为主上下文（curated frontier）。
         - 两者皆缺省内容时返回空串，行为与改动前一致（向后兼容）。
         """
@@ -1438,6 +1441,8 @@ class Worker:
         verify_history: list[dict[str, Any]] | None = None,
         target_achieved: bool | None = None,
         result_summary_file: Path | None = None,
+        difficulty_assessment_file: Path | None = None,
+        difficulty_assessment: dict[str, Any] | None = None,
         difficulty_declaration_file: Path | None = None,
         failure_kind: str | None = None,
         blocking_obligation: str | None = None,
@@ -1461,6 +1466,7 @@ class Worker:
                 review_file=review_file,
                 proposition_file=proposition_file,
                 verified_file=verified_file,
+                difficulty_assessment_file=difficulty_assessment_file,
             )
         trace_path = self.worker_dir / "trace.json"
         trace_path.write_text(json.dumps(self.trace, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1482,6 +1488,8 @@ class Worker:
             worker_hint=self.worker_hint,
             pinned_target=self.pinned_target,
             result_summary_file=result_summary_file,
+            difficulty_assessment_file=difficulty_assessment_file,
+            difficulty_assessment=difficulty_assessment,
             difficulty_declaration_file=declaration_file,
             difficulty_handoff_file=handoff_file,
             difficulty_handoff=handoff,
@@ -1538,6 +1546,60 @@ class Worker:
 
     def _model_name(self, config: AgentConfig) -> str:
         return config.effective_tier()
+
+
+
+_DIFFICULTY_ASSESSMENT_STATUSES = {
+    "STRICT_CHILD",
+    "SAME_AS_PARENT",
+    "METHOD_BLOCKED",
+    "NO_DIFFICULTY",
+    "UNAVAILABLE",
+}
+
+
+def _extract_difficulty_assessment(summary_text: str) -> dict[str, Any] | None:
+    marker = "### Difficulty Assessment JSON"
+    marker_index = summary_text.find(marker)
+    if marker_index < 0:
+        return None
+    match = re.search(r"```json\s*(\{.*?\})\s*```", summary_text[marker_index:], flags=re.DOTALL)
+    if match is None:
+        return None
+    try:
+        value = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, dict):
+        return None
+    status = str(value.get("status") or "").strip().upper()
+    if status not in _DIFFICULTY_ASSESSMENT_STATUSES:
+        return None
+
+    def text(key: str, *, required: bool = False, limit: int = 4000) -> str:
+        result = " ".join(str(value.get(key) or "").split())[:limit]
+        if required and not result:
+            raise ValueError(key)
+        return result
+
+    try:
+        assessment = {
+            "status": status,
+            "candidate_statement": text("candidate_statement"),
+            "parent_difficulty_id": text("parent_difficulty_id", limit=80),
+            "relation_to_parent": text("relation_to_parent", limit=80),
+            "verified_boundary": text("verified_boundary"),
+            "child_delta": text("child_delta"),
+            "handoff_consistency": text("handoff_consistency", required=True, limit=80).upper(),
+            "reason": text("reason", required=True),
+        }
+    except ValueError:
+        return None
+    if status == "STRICT_CHILD" and not all(
+        assessment[key] for key in ("candidate_statement", "parent_difficulty_id", "verified_boundary", "child_delta")
+    ):
+        return None
+    return assessment
 
 
 def _parse_review_verdict(text: str) -> str:

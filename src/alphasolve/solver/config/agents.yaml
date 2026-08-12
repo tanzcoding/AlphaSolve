@@ -18,12 +18,11 @@ settings:
   free_seed_probability: 0.6
   research_reviewer_read_state_epsilon: 0.0
   theorem_check_attempts: 5
-  curator_health_check_interval: 4
+  curator_health_check_interval: 8
   curator_oversized_entry_line_limit: 250
   difficulty_dag:
     max_persistent_depth: 5
-    parent_direct_attack_outcome_interval: 4
-    global_attack_verified_proposition_interval: 5
+    global_attack_verified_proposition_interval: 20
 
 agents_dir: ./agents
 subagents_dir: ./subagents
