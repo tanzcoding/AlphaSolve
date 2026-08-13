@@ -45,18 +45,6 @@ Rules:
 """
 
 
-_PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
-
-
-def _load_prompt(name: str) -> str:
-    path = _PROMPTS_DIR / f"{name}.md"
-    if path.is_file():
-        return path.read_text(encoding="utf-8")
-    return ""
-
-
-_RESULT_SUMMARY_PROMPT = _load_prompt("result_summarizer")
-
 
 _REMOVE_RETRY_DELAYS = (0.1, 0.3, 0.7)
 _EXTERNAL_YEAR_RE = re.compile(r"(?<![A-Za-z0-9])(?:1[7-9]\d{2}|20\d{2}|2100)(?![A-Za-z0-9])")
@@ -192,12 +180,6 @@ class WorkerRunResult:
     # 回传 hint 和 pinned_target，便于 orchestrator 对比"要求什么" vs "拿到了什么"
     worker_hint: str | None = None
     pinned_target: str | None = None
-    # worker 完成后的统一 LLM 结果总结文件路径（result_summary.md）。verified/rejected
-    # 共用同一份文件和同一份 prompt，内部已经核对过 generator 的原始困难声明是否过时。
-    result_summary_file: Path | None = None
-    # 总结器从最终轨迹中提取的结构化 difficulty 判断；它是 reviewer 的输入，不是 canonical DAG 写入。
-    difficulty_assessment_file: Path | None = None
-    difficulty_assessment: dict[str, Any] | None = None
     # generator 产出的困难声明文件路径（difficulty_declaration.md）
     # 记录 worker 回避了什么数学困难、为什么回避、尝试过但失败的路线
     difficulty_declaration_file: Path | None = None
@@ -431,13 +413,6 @@ class Worker:
                         solved_problem, theorem_check_text = self._run_theorem_checks(verified)
                         theorem_check_file = self.worker_dir / "theorem_check.md"
                         theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
-                        # 成功时也跑统一结果总结器：让 orchestrator 感知 Statement 是否被弱化
-                        result_summary_file, difficulty_assessment_file, difficulty_assessment = self._run_result_summarizer(
-                            status="verified",
-                            proposition_file=proposition_file,
-                            review_file=final_review_file,
-                            verify_history=verify_history,
-                        )
         # global consolidation: verifier 通过不等于完成原题。
         # 代码不做 LLM 判断，只标记 verified；orchestrator 负责判断 target_achieved。
 
@@ -454,9 +429,6 @@ class Worker:
                             solved_problem=solved_problem,
                             verify_history=verify_history,
                             target_achieved=target_achieved,
-                            result_summary_file=result_summary_file,
-                            difficulty_assessment_file=difficulty_assessment_file,
-                            difficulty_assessment=difficulty_assessment,
                             difficulty_declaration_file=difficulty_decl if difficulty_decl.exists() else None,
                         )
                     if workflow_index < self.max_verify_rounds:
@@ -478,13 +450,6 @@ class Worker:
                     summary += "\n\nFinal review:\n" + final_review_file.read_text(encoding="utf-8")[:4000]
                 # global consolidation rejected = 明确未完成原题
                 target_achieved = False if self.is_consolidation else None
-                # 统一结果总结器：供 orchestrator 快速诊断失败模式
-                result_summary_file, difficulty_assessment_file, difficulty_assessment = self._run_result_summarizer(
-                    status="rejected",
-                    proposition_file=proposition_file,
-                    review_file=final_review_file,
-                    verify_history=verify_history,
-                )
                 difficulty_decl = self.worker_dir / "difficulty_declaration.md"
                 return self._finish(
                     "rejected", summary,
@@ -492,9 +457,6 @@ class Worker:
                     review_file=final_review_file,
                     verify_history=verify_history,
                     target_achieved=target_achieved,
-                    result_summary_file=result_summary_file,
-                    difficulty_assessment_file=difficulty_assessment_file,
-                    difficulty_assessment=difficulty_assessment,
                     difficulty_declaration_file=difficulty_decl if difficulty_decl.exists() else None,
                     failure_kind="verification_rejected",
                     blocking_obligation=(last_review_text or "Verifier rejected the candidate proposition.")[:2000],
@@ -662,214 +624,6 @@ class Worker:
         })
         return verdict
 
-    def _run_result_summarizer(
-        self,
-        *,
-        status: str,
-        proposition_file: Path | None,
-        review_file: Path | None,
-        verify_history: list[dict[str, Any]],
-    ) -> tuple[Path | None, Path | None, dict[str, Any] | None]:
-        """生成保留给人读的总结，并提取 reviewer 可消费的结构化 difficulty assessment。
-
-        取代原来互斥的 outcome_summarizer（仅 verified）/ failure_summarizer（仅 rejected）——
-        两者本来就只会二选一执行，合并后调用次数不变，只是不再维护两份几乎重复的 prompt，
-        也不再让 orchestrator 按 status 分别去读两个不同的文件名。
-
-        生成 result_summary.md 并返回其路径；若 LLM 调用失败则返回 None（不影响主流程）。
-        """
-        if self._should_stop():
-            return None, None, None
-        try:
-            base_config = self.suite.agents.get("verifier") or self.suite.agents[self._verifier_config_names()[0]]
-            config = AgentConfig(
-                name="result_summarizer",
-                system_prompt=_RESULT_SUMMARY_PROMPT,
-                tools=(),
-                max_turns=base_config.max_turns,
-                tier=base_config.tier,
-            )
-            self._set_phase("result_summarizer", status="thinking", model=self._model_name(config))
-            agent = Agent(
-                config=config,
-                client=self.client_factory(config),
-                tool_registry=build_solver_tool_registry(
-                    RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
-                ),
-                event_sink=self._event_sink("result_summarizer"),
-                stop_event=self.stop_event,
-            )
-            task = self._result_summary_task(
-                status=status,
-                proposition_file=proposition_file,
-                review_file=review_file,
-                verify_history=verify_history,
-            )
-            result = agent.run(task)
-            summary_text = (result.final_answer or "").strip()
-            self.trace.append({
-                "role": "result_summarizer",
-                "final_answer": summary_text[:2000],
-            })
-            # 完整结果写入 worker log sink（实时可观测）
-            if self._worker_log_sink is not None:
-                self._worker_log_sink({
-                    "type": "message",
-                    "role": "result_summarizer",
-                    "content": summary_text,
-                })
-            if not summary_text:
-                return None, None, None
-            result_summary_file = self.worker_dir / "result_summary.md"
-            result_summary_file.write_text(summary_text, encoding="utf-8")
-            assessment = _extract_difficulty_assessment(summary_text)
-            assessment_file: Path | None = None
-            if assessment is not None:
-                assessment_file = self.worker_dir / "difficulty_assessment.json"
-                assessment_file.write_text(
-                    json.dumps(assessment, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-                )
-            return result_summary_file, assessment_file, assessment
-        except Exception:
-            return None, None, None
-
-    def _result_summary_task(
-        self,
-        *,
-        status: str,
-        proposition_file: Path | None,
-        review_file: Path | None,
-        verify_history: list[dict[str, Any]],
-    ) -> str:
-        """组装统一结果总结器的输入：状态 + 完整修订轨迹 (statement, proof, review) × N 轮
-        + generator 初始困难声明与 reviser 更新（如有）。
-
-        从 revision_history/ 读取每轮 proposition 快照 + 配对 review，按时间线排列；
-        另把 difficulty_declaration.md（若存在）当作一段材料喂进去——它保留 generator 的初始
-        声明并追加 reviser 的更新。让总结器核对每个障碍是否仍成立，而不是让 orchestrator
-        事后再去读一份可能过时的独立文件。
-        """
-        parts: list[str] = [f"## Outcome Status\n\n{status}"]
-        if self.worker_hint:
-            parts.append(f"## Worker Hint\n\n{self.worker_hint[:2000]}")
-        if self.pinned_target:
-            parts.append(f"## Pinned Target\n\n{self.pinned_target[:1500]}")
-        difficulty_decl = self.worker_dir / "difficulty_declaration.md"
-        if difficulty_decl.is_file():
-            try:
-                decl_text = difficulty_decl.read_text(encoding="utf-8")[:3000]
-            except OSError:
-                decl_text = ""
-            if decl_text:
-                parts.append(
-                    "## Generator's Original Difficulty Declaration (written before revision — "
-                    "may be stale; reconcile against the trail below)\n\n" + decl_text
-                )
-
-        # 从 revision_history/ 构建完整轨迹
-        history_dir = self.worker_dir / "revision_history"
-        trail_entries: list[dict[str, Any]] = []
-        if history_dir.is_dir():
-            # 收集所有 proposition 快照
-            prop_files = sorted(history_dir.glob("proposition.v*.md"))
-            for pf in prop_files:
-                version = pf.stem.replace("proposition.v", "")
-                try:
-                    prop_text = pf.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                # 提取 Statement
-                stmt = ""
-                in_stmt = False
-                for line in prop_text.split("\n"):
-                    if line.strip().startswith("## Statement"):
-                        in_stmt = True
-                        continue
-                    if in_stmt and line.strip().startswith("##"):
-                        break
-                    if in_stmt:
-                        stmt += line + "\n"
-                stmt = stmt.strip()[:600]
-
-                trail_entries.append({
-                    "version": version,
-                    "type": "proposition",
-                    "statement": stmt,
-                    "proof_preview": prop_text[:2000],
-                })
-
-            # 收集所有 review 快照
-            review_files = sorted(history_dir.glob("review.w*_a*_*.md"))
-            for rf in review_files:
-                try:
-                    review_text = rf.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                # 提取 verdict
-                verdict = "unknown"
-                for line in review_text.split("\n"):
-                    low = line.strip().lower()
-                    if "verdict" in low:
-                        verdict = "pass" if "pass" in low else ("fail" if "fail" in low else "unknown")
-                        break
-                trail_entries.append({
-                    "version": rf.stem,
-                    "type": "review",
-                    "verdict": verdict,
-                    "review_preview": review_text[:2000],
-                })
-
-        if trail_entries:
-            parts.append("## Full Revision Trail\n")
-            for entry in trail_entries:
-                if entry["type"] == "proposition":
-                    parts.append(
-                        f"### Round v{entry['version']} — Proposition\n"
-                        f"**Statement:** {entry['statement']}\n\n"
-                        f"**Proof (preview):**\n{entry['proof_preview']}\n"
-                    )
-                else:
-                    parts.append(
-                        f"### {entry['version']} — Review (verdict: {entry['verdict']})\n"
-                        f"{entry['review_preview']}\n"
-                    )
-            trail_text = "\n".join(parts)
-        else:
-            # 回退：没有 revision_history 时用旧的逻辑
-            if proposition_file and proposition_file.exists():
-                parts.append(f"## Final Proposition\n\n{proposition_file.read_text(encoding='utf-8')[:4000]}")
-            if review_file and review_file.exists():
-                parts.append(f"## Final Review\n\n{review_file.read_text(encoding='utf-8')[:3000]}")
-            if verify_history:
-                vh_lines = []
-                for vh in verify_history:
-                    vh_lines.append(f"- Round {vh.get('round', '?')}: verdict={vh.get('verdict', '?')} — {(vh.get('review_excerpt') or '')[:500]}")
-                parts.append("## Verify History (all rounds failed)\n\n" + "\n".join(vh_lines))
-            trail_text = "\n\n".join(parts)
-
-        return trail_text
-
-    def _summarize_trace_for_failure(self) -> str:
-        """从 trace 中提取关键步骤摘要，供 failure_summarizer 参考。"""
-        role_counts: dict[str, int] = {}
-        for entry in self.trace:
-            role = str(entry.get("role") or entry.get("type") or "unknown")
-            role_counts[role] = role_counts.get(role, 0) + 1
-        if not role_counts:
-            return ""
-        lines = [f"- {role}: {count} call(s)" for role, count in role_counts.items()]
-        return "Agent call breakdown:\n" + "\n".join(lines)
-
-    def _summarize_trace_for_failure(self) -> str:
-        """从 trace 中提取关键步骤摘要，供 failure_summarizer 参考。"""
-        role_counts: dict[str, int] = {}
-        for entry in self.trace:
-            role = str(entry.get("role") or entry.get("type") or "unknown")
-            role_counts[role] = role_counts.get(role, 0) + 1
-        if not role_counts:
-            return ""
-        lines = [f"- {role}: {count} call(s)" for role, count in role_counts.items()]
-        return "Agent call breakdown:\n" + "\n".join(lines)
 
     def _find_proposition_file(self) -> Path | None:
         """严格兑现 generator 的固定输出协议，绝不把 frontier/guidance 当作命题。"""
@@ -1440,9 +1194,6 @@ class Worker:
         solved_problem: bool = False,
         verify_history: list[dict[str, Any]] | None = None,
         target_achieved: bool | None = None,
-        result_summary_file: Path | None = None,
-        difficulty_assessment_file: Path | None = None,
-        difficulty_assessment: dict[str, Any] | None = None,
         difficulty_declaration_file: Path | None = None,
         failure_kind: str | None = None,
         blocking_obligation: str | None = None,
@@ -1462,11 +1213,9 @@ class Worker:
                 method_id=self.method_id,
                 execution_status=status,
                 failure_kind=failure_kind,
-                result_summary_file=result_summary_file,
                 review_file=review_file,
                 proposition_file=proposition_file,
                 verified_file=verified_file,
-                difficulty_assessment_file=difficulty_assessment_file,
             )
         trace_path = self.worker_dir / "trace.json"
         trace_path.write_text(json.dumps(self.trace, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -1487,9 +1236,6 @@ class Worker:
             verify_history=verify_history or [],
             worker_hint=self.worker_hint,
             pinned_target=self.pinned_target,
-            result_summary_file=result_summary_file,
-            difficulty_assessment_file=difficulty_assessment_file,
-            difficulty_assessment=difficulty_assessment,
             difficulty_declaration_file=declaration_file,
             difficulty_handoff_file=handoff_file,
             difficulty_handoff=handoff,
@@ -1547,59 +1293,6 @@ class Worker:
     def _model_name(self, config: AgentConfig) -> str:
         return config.effective_tier()
 
-
-
-_DIFFICULTY_ASSESSMENT_STATUSES = {
-    "STRICT_CHILD",
-    "SAME_AS_PARENT",
-    "METHOD_BLOCKED",
-    "NO_DIFFICULTY",
-    "UNAVAILABLE",
-}
-
-
-def _extract_difficulty_assessment(summary_text: str) -> dict[str, Any] | None:
-    marker = "### Difficulty Assessment JSON"
-    marker_index = summary_text.find(marker)
-    if marker_index < 0:
-        return None
-    match = re.search(r"```json\s*(\{.*?\})\s*```", summary_text[marker_index:], flags=re.DOTALL)
-    if match is None:
-        return None
-    try:
-        value = json.loads(match.group(1))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(value, dict):
-        return None
-    status = str(value.get("status") or "").strip().upper()
-    if status not in _DIFFICULTY_ASSESSMENT_STATUSES:
-        return None
-
-    def text(key: str, *, required: bool = False, limit: int = 4000) -> str:
-        result = " ".join(str(value.get(key) or "").split())[:limit]
-        if required and not result:
-            raise ValueError(key)
-        return result
-
-    try:
-        assessment = {
-            "status": status,
-            "candidate_statement": text("candidate_statement"),
-            "parent_difficulty_id": text("parent_difficulty_id", limit=80),
-            "relation_to_parent": text("relation_to_parent", limit=80),
-            "verified_boundary": text("verified_boundary"),
-            "child_delta": text("child_delta"),
-            "handoff_consistency": text("handoff_consistency", required=True, limit=80).upper(),
-            "reason": text("reason", required=True),
-        }
-    except ValueError:
-        return None
-    if status == "STRICT_CHILD" and not all(
-        assessment[key] for key in ("candidate_statement", "parent_difficulty_id", "verified_boundary", "child_delta")
-    ):
-        return None
-    return assessment
 
 
 def _parse_review_verdict(text: str) -> str:

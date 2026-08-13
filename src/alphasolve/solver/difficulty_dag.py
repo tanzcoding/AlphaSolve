@@ -470,17 +470,7 @@ class DifficultyDagStore:
         *,
         difficulty_id: str | None,
         method_id: str | None,
-        require_curation: bool,
     ) -> dict[str, Any]:
-        if require_curation:
-            pending = self.pending_checkpoint_ids()
-            if pending:
-                return {
-                    "allowed": False,
-                    "reason": "difficulty_curation_pending",
-                    "pending_checkpoints": pending,
-                    "message": "Completed checkpoints must be curated into the difficulty DAG before targeted dispatch.",
-                }
         if not difficulty_id:
             return {"allowed": True}
         requested = _id(difficulty_id, field="difficulty_id")

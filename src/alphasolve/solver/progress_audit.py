@@ -72,6 +72,7 @@ class ProgressAuditQueue:
         self._queue: queue.Queue[ProgressAuditTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="progress-audit")
         self._lock = threading.RLock()
+        self._decision_ready = threading.Condition(self._lock)
         self._started = False
         self._state = self._load_state()
 
@@ -95,18 +96,51 @@ class ProgressAuditQueue:
         self._thread.join(timeout=timeout)
 
     def record_outcome(self, payload: dict[str, Any]) -> bool:
-        """Persist one terminal worker result and schedule an audit when due.
+        """Persist one terminal worker result and schedule an audit when due."""
+        recorded, _checkpoint_id = self._record_outcome(payload)
+        return recorded
 
-        This method is intentionally idempotent because it may be called from a future
-        callback as well as a completion collector during shutdown.
-        """
+    def record_outcomes(self, payloads: list[dict[str, Any]]) -> list[str]:
+        """Persist a TaskOutput batch and return any checkpoint IDs it created."""
+        checkpoint_ids: list[str] = []
+        for payload in payloads:
+            _recorded, checkpoint_id = self._record_outcome(payload)
+            if checkpoint_id is not None:
+                checkpoint_ids.append(checkpoint_id)
+        return checkpoint_ids
+
+    def wait_for_decisions(
+        self,
+        checkpoint_ids: list[str],
+        *,
+        timeout_seconds: float | None = 1200.0,
+    ) -> list[dict[str, Any]]:
+        """Wait for specific checkpoint decisions; curator remains asynchronous."""
+        requested = [str(item) for item in checkpoint_ids if str(item).strip()]
+        if not requested:
+            return []
+        deadline = None if timeout_seconds is None else time.monotonic() + max(0.0, timeout_seconds)
+        with self._decision_ready:
+            while True:
+                decisions = [self._read_checkpoint_decision(checkpoint_id) for checkpoint_id in requested]
+                if all(decision is not None for decision in decisions):
+                    return [_compact_decision(decision) for decision in decisions if decision is not None]
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        return []
+                    self._decision_ready.wait(timeout=remaining)
+                else:
+                    self._decision_ready.wait()
+
+    def _record_outcome(self, payload: dict[str, Any]) -> tuple[bool, str | None]:
         worker_id = str(payload.get("worker_id") or "").strip()
         if not worker_id:
-            return False
+            return False, None
         with self._lock:
             seen = set(self._state.get("recorded_worker_ids") or [])
             if worker_id in seen:
-                return False
+                return False, None
             sequence = int(self._state.get("outcome_count") or 0) + 1
             record = self._outcome_record(payload, sequence=sequence)
             self.layout.progress_audit_outcomes_path.parent.mkdir(parents=True, exist_ok=True)
@@ -118,16 +152,18 @@ class ProgressAuditQueue:
             self._state["recorded_worker_ids"] = recorded[-2000:]
             self._state["updated_at"] = _now_iso()
 
+            checkpoint_id: str | None = None
             last_scheduled = int(self._state.get("last_scheduled_outcome") or 0)
             if sequence - last_scheduled >= self.outcomes_per_audit:
                 task = self._create_checkpoint_locked(watermark=sequence, previous_watermark=last_scheduled)
+                checkpoint_id = task.checkpoint_id
                 self._state["last_scheduled_outcome"] = sequence
                 pending = list(self._state.get("pending_checkpoints") or [])
-                pending.append(task.checkpoint_id)
+                pending.append(checkpoint_id)
                 self._state["pending_checkpoints"] = pending
                 self._queue.put(task)
             self._save_state_locked()
-        return True
+        return True, checkpoint_id
 
     def status_payload(self) -> dict[str, Any]:
         with self._lock:
@@ -235,7 +271,7 @@ class ProgressAuditQueue:
             )
 
     def _finish_task(self, task: ProgressAuditTask, decision: dict[str, Any]) -> dict[str, Any]:
-        with self._lock:
+        with self._decision_ready:
             self._state["pending_checkpoints"] = [
                 item for item in self._state.get("pending_checkpoints") or []
                 if item != task.checkpoint_id
@@ -244,7 +280,16 @@ class ProgressAuditQueue:
             self._state["updated_at"] = _now_iso()
             _write_json(task.checkpoint_dir / "decision.json", decision)
             self._save_state_locked()
+            self._decision_ready.notify_all()
             return decision
+
+    def _read_checkpoint_decision(self, checkpoint_id: str) -> dict[str, Any] | None:
+        path = self.layout.progress_audits_dir / checkpoint_id / "decision.json"
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
 
     def _run_auditor(self, prompt: str) -> str:
         """Run the process auditor as an independent system role.
@@ -307,17 +352,11 @@ class ProgressAuditQueue:
 
     def _outcome_record(self, payload: dict[str, Any], *, sequence: int) -> dict[str, Any]:
         worker_dir = _safe_path(payload.get("worker_dir"))
-        result_summary = _read_text(_safe_path(payload.get("result_summary_file")), limit=6000)
         difficulty = _read_text(_safe_path(payload.get("difficulty_declaration_file")), limit=4000)
         review = _read_text(_safe_path(payload.get("review_file")), limit=4000)
         handoff = payload.get("difficulty_handoff")
         if not isinstance(handoff, dict):
             handoff = _read_json_object(_safe_path(payload.get("difficulty_handoff_file")))
-        assessment = payload.get("difficulty_assessment")
-        if not isinstance(assessment, dict):
-            assessment = _read_json_object(_safe_path(payload.get("difficulty_assessment_file")))
-        if not result_summary:
-            result_summary = str(payload.get("summary") or "")[:4000]
         return {
             "sequence": sequence,
             "recorded_at": _now_iso(),
@@ -331,12 +370,9 @@ class ProgressAuditQueue:
             "orchestrator_session_id": payload.get("orchestrator_session_id"),
             "rubric": str(payload.get("rubric") or "")[:4000],
             "summary": str(payload.get("summary") or "")[:4000],
-            "result_summary": result_summary,
             "difficulty_declaration": difficulty,
             "difficulty_handoff_file": str(payload.get("difficulty_handoff_file") or ""),
             "difficulty_handoff": handoff if isinstance(handoff, dict) else None,
-            "difficulty_assessment_file": str(payload.get("difficulty_assessment_file") or ""),
-            "difficulty_assessment": assessment if isinstance(assessment, dict) else None,
             "review_excerpt": review,
             "verified_file": str(payload.get("verified_file") or ""),
             "theorem_check_file": str(payload.get("theorem_check_file") or ""),
@@ -442,34 +478,21 @@ def _render_outcomes(
                         lines.append(
                             f"  - [{verdict}] {check.get('criterion')}: {check.get('evidence')}"
                         )
-        assessment = item.get("difficulty_assessment")
-        if isinstance(assessment, dict):
-            lines.extend([
-                "#### Summarizer Difficulty Assessment",
-                f"- Status: `{assessment.get('status') or 'unknown'}`",
-                f"- Candidate: {str(assessment.get('candidate_statement') or 'not stated')[:1800]}",
-                f"- Verified boundary: {str(assessment.get('verified_boundary') or 'not stated')[:1800]}",
-                f"- Child delta: {str(assessment.get('child_delta') or 'not stated')[:1800]}",
-                f"- Handoff consistency: `{assessment.get('handoff_consistency') or 'unknown'}`",
-                f"- Reason: {str(assessment.get('reason') or 'not stated')[:1800]}",
-                "",
-            ])
         handoff = item.get("difficulty_handoff")
         if isinstance(handoff, dict):
             lines.extend([
                 "#### Structured Difficulty Handoff",
-                f"- Disposition: `{handoff.get('disposition') or 'unknown'}`",
+                f"- Event kind: `{handoff.get('event_kind') or 'unknown'}`",
                 f"- Exact obligation: {str(handoff.get('blocking_obligation') or 'not stated')[:1800]}",
-                f"- Last verified step: {str(handoff.get('last_verified_step') or 'not stated')[:1800]}",
-                f"- Why this route fails: {str(handoff.get('why_current_route_fails') or 'not stated')[:1800]}",
-                f"- Suggested attack: {str(handoff.get('suggested_attack') or 'not stated')[:1800]}",
+                f"- Verified boundary: {str(handoff.get('verified_boundary') or 'not stated')[:1800]}",
+                f"- Remaining delta: {str(handoff.get('remaining_delta') or 'not stated')[:1800]}",
+                f"- Refutation witness: {str(handoff.get('refutation_witness') or 'not applicable')[:1800]}",
                 f"- Evidence refs: {', '.join(str(ref) for ref in handoff.get('evidence_refs') or []) or 'none'}",
                 "",
             ])
         for key, label, limit in (
             ("summary", "Runtime summary", 1800),
-            ("result_summary", "Outcome summary", 3500),
-            ("difficulty_declaration", "Avoided difficulty / blocker declaration", 2200),
+            ("difficulty_declaration", "Worker difficulty declaration", 2200),
             ("review_excerpt", "Verifier review excerpt", 1800),
         ):
             text = str(item.get(key) or "").strip()
@@ -670,6 +693,22 @@ def _audit_prompt(task: ProgressAuditTask, workspace_dir: Path) -> str:
         "The auditor does not assign canonical identity, parent edges, or dispatch work. The curator reconciles evidence "
         "into the persistent difficulty DAG at the checkpoint."
     )
+
+
+def _compact_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    """Expose the bounded decision surface needed by the orchestrator."""
+    return {
+        "checkpoint_id": str(decision.get("checkpoint_id") or ""),
+        "watermark": int(decision.get("watermark") or 0),
+        "status": str(decision.get("status") or "unknown"),
+        "verdict": decision.get("verdict"),
+        "terminal_gap": str(decision.get("terminal_gap") or "")[:4000],
+        "repeated_avoided_obligation": decision.get("repeated_avoided_obligation")
+        if isinstance(decision.get("repeated_avoided_obligation"), dict) else {},
+        "recommended_next_action": str(decision.get("recommended_next_action") or "")[:4000],
+        "evidence_path": str(decision.get("evidence_path") or ""),
+        "audit_path": str(decision.get("audit_path") or ""),
+    }
 
 
 def _parse_audit(text: str) -> tuple[str | None, str, dict[str, Any], str]:

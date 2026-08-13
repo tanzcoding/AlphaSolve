@@ -26,7 +26,7 @@ def candidate_handoffs(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]
         handoff = raw_handoff if isinstance(raw_handoff, dict) else record
         if not isinstance(handoff, dict):
             continue
-        if handoff.get("disposition") != "active_candidate":
+        if str(handoff.get("event_kind") or "") not in {"blocked", "weakened", "refuted"}:
             continue
         if not str(handoff.get("blocking_obligation") or "").strip():
             continue
@@ -77,11 +77,11 @@ def build_reviewer_prompt(handoffs: list[dict[str, Any]]) -> str:
     return (
         "Review the following Difficulty Portfolio before recommending any new worker. These are worker-level "
         "handoffs reconciled only enough to preserve final evidence paths; they are not canonical blockers and may "
-        "still be stale or distinct. Read cited evidence when needed. Compare exact obligations, last verified steps, "
-        "and failed inference rather than wording. Do not edit state or dispatch work.\n\n"
+        "still be stale or distinct. Read cited evidence when needed. Compare exact obligations, verified boundaries, and "
+        "remaining deltas rather than wording. Do not edit state or dispatch work.\n\n"
         "Return the standard reviewer report, including the required `### Difficulty Comparison` section. Compare proposed "
-        "parent_difficulty_id, relation_to_parent, and exact failed inference. Recommend one smallest executable obligation, "
-        "but do not invent canonical IDs or edit the DAG: the curator performs that checkpoint-time merge.\n\n"
+        "parent_difficulty_id and exact remaining deltas. Recommend one smallest executable obligation, but do not invent "
+        "canonical IDs or edit the DAG: the curator performs that checkpoint-time merge.\n\n"
         "## Difficulty Portfolio\n\n```json\n"
         + payload
         + "\n```"
@@ -96,20 +96,15 @@ def _compact_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
         "worker_id": text("worker_id"),
         "source_difficulty_id": text("source_difficulty_id"),
         "parent_difficulty_id": text("parent_difficulty_id"),
-        "relation_to_parent": text("relation_to_parent"),
-        "parent_resolution_policy": text("parent_resolution_policy"),
         "difficulty_id": text("difficulty_id"),
         "method_id": text("method_id"),
         "assigned_target": text("assigned_target"),
-        "child_delta": text("child_delta"),
         "execution_status": text("execution_status"),
-        "target_status": text("target_status"),
-        "disposition": text("disposition"),
+        "event_kind": text("event_kind"),
         "blocking_obligation": text("blocking_obligation"),
-        "last_verified_step": text("last_verified_step"),
-        "why_current_route_fails": text("why_current_route_fails"),
-        "suggested_attack": text("suggested_attack"),
-        "dead_ends": text("dead_ends"),
+        "verified_boundary": text("verified_boundary"),
+        "remaining_delta": text("remaining_delta"),
+        "refutation_witness": text("refutation_witness"),
         "evidence_refs": [str(item)[:_MAX_TEXT] for item in handoff.get("evidence_refs") or [] if str(item).strip()],
         "source_confidence": text("source_confidence"),
     }

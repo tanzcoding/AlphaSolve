@@ -143,7 +143,7 @@ def test_task_output_handoffs_do_not_trigger_another_reviewer(tmp_path):
                 "worker_id": "worker-a",
                 "difficulty_handoff": {
                     "worker_id": "worker-a",
-                    "disposition": "active_candidate",
+                    "event_kind": "blocked",
                     "blocking_obligation": "Prove bridge A.",
                 },
             },
@@ -151,7 +151,7 @@ def test_task_output_handoffs_do_not_trigger_another_reviewer(tmp_path):
                 "worker_id": "worker-b",
                 "difficulty_handoff": {
                     "worker_id": "worker-b",
-                    "disposition": "active_candidate",
+                    "event_kind": "blocked",
                     "blocking_obligation": "Prove bridge B.",
                 },
             },

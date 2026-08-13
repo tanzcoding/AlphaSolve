@@ -218,11 +218,8 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
         initial = generator_registry.execute(
             "RecordDifficulty",
             {
-                "target_status": "PARTIAL",
-                "difficulty": "Proving the required global inequality remains open.",
-                "why_hard": "The local estimate has no mechanism to control the missing cross term.",
-                "suggested_attack": "Construct an explicit cross-term bound.",
-                "dead_ends": "Repeating the local estimate leaves the same gap.",
+                "event_kind": "blocked",
+                "blocking_obligation": "Proving the required global inequality remains open.",
             },
             enabled=list(generator_config.tools),
             tool_parameters=generator_config.tool_parameters,
@@ -241,12 +238,8 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
         update = reviser_registry.execute(
             "RecordDifficulty",
             {
-                "target_status": "NO",
-                "revision_outcome": "weakened",
-                "difficulty": "The verifier's global step cannot be repaired from the current hypotheses.",
-                "why_hard": "The missing bound is independent of every proved local estimate.",
-                "suggested_attack": "Attack the global step as a separate proposition.",
-                "dead_ends": "Adding more local lemmas does not establish the global step.",
+                "event_kind": "weakened",
+                "blocking_obligation": "The verifier's global step cannot be repaired from the current hypotheses.",
             },
             enabled=list(reviser_config.tools),
             tool_parameters=reviser_config.tool_parameters,
@@ -1414,7 +1407,8 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
         assert "available_worker_slots" in tool_descriptions["TaskOutput"]
         assert "difficulty_handoff" in tool_descriptions["TaskOutput"]
-        assert "difficulty_assessment" in tool_descriptions["TaskOutput"]
+        assert "direct proposition, review, and verification artifacts" in tool_descriptions["TaskOutput"]
+        assert "difficulty_assessment" not in tool_descriptions["TaskOutput"]
         assert "research plan" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
         assert "process_audit_context_reset" not in tool_descriptions["TaskOutput"]

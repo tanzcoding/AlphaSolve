@@ -435,11 +435,12 @@ def register_orchestrator_worker_tools(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
             "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-            "Completed workers may include a worker-local difficulty_handoff and a summarizer-produced difficulty_assessment. "
+            "Completed workers may include a worker-local difficulty_handoff plus direct proposition, review, and verification artifacts. "
             "They are reviewer inputs, not permission to invent a target immediately: request a research plan, then execute the "
             "validated plan. Canonical parent/child structure remains curator-owned. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
-            "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files."
+            "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files. "
+            "When this collection triggers a checkpoint, it waits for that process-audit decision and returns a bounded process_audit_decisions summary; read its audit_path or evidence_path only when exact evidence is needed."
         ),
         parameters={
             "type": "object",

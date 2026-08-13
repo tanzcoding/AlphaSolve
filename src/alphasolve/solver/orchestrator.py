@@ -213,6 +213,7 @@ class WorkerManager:
         self.active_info_lock = threading.Lock()
         self.results: list[WorkerRunResult] = []
         self.completed_backlog: list[dict[str, Any]] = []
+        self._task_output_audit_checkpoints: list[str] = []
         self.renderer = renderer
         self.execution_gateway = execution_gateway
         self.curator_queue = curator_queue
@@ -328,13 +329,6 @@ class WorkerManager:
             }
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
-        if self.progress_audit_queue is not None:
-            future.add_done_callback(
-                lambda done_future, worker_id=worker_id: self._record_completed_worker_for_progress_audit(
-                    done_future,
-                    worker_id,
-                )
-            )
         payload = {
             "spawned": True,
             "worker_id": worker_id,
@@ -350,9 +344,9 @@ class WorkerManager:
         if self.completed_backlog:
             completed = list(self.completed_backlog)
             self.completed_backlog.clear()
-            return self._with_runtime_updates(self._wait_payload(completed))
+            return self._with_runtime_updates(self._attach_audit_decisions(self._wait_payload(completed)))
         if not self.active:
-            return self._with_runtime_updates({"completed": [], **self._pool_status(), "message": "no active workers"})
+            return self._with_runtime_updates(self._attach_audit_decisions({"completed": [], **self._pool_status(), "message": "no active workers"}))
         timeout = self.default_wait_timeout_seconds if timeout_seconds is None else max(1200.0, float(timeout_seconds))
         done, _ = concurrent.futures.wait(
             list(self.active.keys()),
@@ -367,7 +361,19 @@ class WorkerManager:
                 "message": f"no worker finished within {timeout:g} seconds",
                 **self._pool_status(),
             })
-        return self._with_runtime_updates(self._wait_payload(self._consume_done(done)))
+        return self._with_runtime_updates(self._attach_audit_decisions(self._wait_payload(self._consume_done(done))))
+
+    def _attach_audit_decisions(self, payload: dict[str, Any]) -> dict[str, Any]:
+        checkpoint_ids = list(dict.fromkeys(self._task_output_audit_checkpoints))
+        self._task_output_audit_checkpoints.clear()
+        if not checkpoint_ids or self.progress_audit_queue is None:
+            return payload
+        decisions = self.progress_audit_queue.wait_for_decisions(checkpoint_ids)
+        payload["process_audit_decisions"] = decisions
+        payload["process_audit_decision_required"] = bool(decisions)
+        if not decisions:
+            payload["process_audit_decision_pending"] = checkpoint_ids
+        return payload
 
     def has_available_worker_slot(self) -> bool:
         self._collect_done()
@@ -532,41 +538,15 @@ class WorkerManager:
             payload.update(completion_feedback)
             self._append_worker_result_log(payload)
             completed.append(payload)
+        if completed and self.progress_audit_queue is not None:
+            try:
+                self._task_output_audit_checkpoints.extend(
+                    self.progress_audit_queue.record_outcomes(completed)
+                )
+            except Exception:
+                # Audit persistence is observational and must not hide worker results.
+                pass
         return completed
-
-    def _record_completed_worker_for_progress_audit(
-        self,
-        future: concurrent.futures.Future,
-        worker_id: str,
-    ) -> None:
-        """Publish a terminal outcome without mutating the normal completion lifecycle."""
-        if self.progress_audit_queue is None:
-            return
-        with self.active_info_lock:
-            info = dict(self.active_info.get(worker_id, {}))
-        try:
-            result = future.result()
-        except Exception as exc:
-            payload = {
-                "worker_id": worker_id,
-                "status": "failed",
-                "summary": str(exc),
-                "failure_kind": "execution_failed",
-                "difficulty_id": info.get("difficulty_id"),
-                "method_id": info.get("method_id"),
-                "worker_dir": info.get("worker_dir"),
-                "orchestrator_session_id": info.get("orchestrator_session_id"),
-            }
-        else:
-            payload = {
-                **_worker_result_payload(result),
-                "orchestrator_session_id": info.get("orchestrator_session_id"),
-            }
-        try:
-            self.progress_audit_queue.record_outcome(payload)
-        except Exception:
-            # Auditing is observational. It must never turn a completed worker into a failed run.
-            pass
 
     def _wait_payload(self, completed: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
@@ -1110,6 +1090,13 @@ class Orchestrator:
     def _difficulty_frontier_tool(self, _args: dict[str, Any]) -> ToolResult:
         return ToolResult(json.dumps(self._reviewer_frontier_projection(), ensure_ascii=False))
 
+    def _pending_process_audits(self) -> list[str]:
+        queue = self._progress_audit_queue
+        if queue is None:
+            return []
+        status = queue.status_payload()
+        return [str(item) for item in status.get("pending_checkpoints") or [] if str(item).strip()]
+
     def _planning_worker_projection(self, manager: WorkerManager) -> list[dict[str, Any]]:
         projected: list[dict[str, Any]] = []
         for result in list(getattr(manager, "results", [])[-12:]):
@@ -1120,7 +1107,6 @@ class Orchestrator:
                 "method_id": result.method_id,
                 "failure_kind": result.failure_kind,
                 "summary": _short_summary(result.summary, limit=1000),
-                "difficulty_assessment": result.difficulty_assessment,
                 "difficulty_handoff": result.difficulty_handoff,
             }
             projected.append(item)
@@ -1264,11 +1250,18 @@ class Orchestrator:
                     pinned_target = None
             hint = GLOBAL_ATTACK_HINT
         elif requested_id:
+            pending_audits = self._pending_process_audits()
+            if pending_audits:
+                return ToolResult(json.dumps({
+                    "spawned": False,
+                    "reason": "process_audit_pending",
+                    "pending_checkpoints": pending_audits,
+                    "message": "Wait for the current checkpoint audit decision before targeted dispatch.",
+                }, ensure_ascii=False))
             try:
                 preflight = self.difficulty_dag.dispatch_preflight(
                     difficulty_id=requested_id,
                     method_id=method_id,
-                    require_curation=self.curator_queue is not None,
                 )
             except ValueError as exc:
                 return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
@@ -1302,12 +1295,6 @@ class Orchestrator:
                     "reason": "difficulty_id_required",
                     "executable_difficulties": frontier["executable_difficulties"],
                     "message": "Choose one curator-owned executable difficulty leaf before spawning targeted work.",
-                }, ensure_ascii=False))
-            if self.curator_queue is not None and frontier.get("pending_checkpoints"):
-                return ToolResult(json.dumps({
-                    "spawned": False,
-                    "reason": "difficulty_curation_pending",
-                    "pending_checkpoints": frontier["pending_checkpoints"],
                 }, ensure_ascii=False))
             hint = hint or "Explore one bounded route toward problem.md. If blocked or weakened, RecordDifficulty as a root candidate."
         global_on_spawn = (
@@ -1418,7 +1405,6 @@ class Orchestrator:
             failure_kind=result.failure_kind,
             solved_problem=bool(result.solved_problem),
             verified_file=relative(result.verified_file),
-            result_summary_file=relative(result.result_summary_file),
             difficulty_handoff_file=relative(result.difficulty_handoff_file),
         )
         self._refresh_research_frontier_state()
@@ -1427,7 +1413,6 @@ class Orchestrator:
     def _write_global_attack_report(self, attempt_id: str, result: WorkerRunResult) -> Path | None:
         """Publish bounded synthesis evidence outside the private unverified worker tree."""
         path = self.layout.global_attack_results_dir / f"{attempt_id}.md"
-        result_summary = _read_worker_artifact(result.result_summary_file, limit=12000)
         review = _read_worker_artifact(result.review_file, limit=8000)
         theorem_check = _read_worker_artifact(result.theorem_check_file, limit=8000)
         lines = [
@@ -1445,8 +1430,8 @@ class Orchestrator:
             "## Full Target",
             result.pinned_target or self.layout.read_problem(),
             "",
-            "## Result Summary",
-            result_summary or result.summary or "No result summary was produced.",
+            "## Runtime Outcome",
+            result.summary or "No runtime outcome was recorded.",
             "",
             "## Verified Evidence Available for This Synthesis",
             *(_verified_proposition_paths(self.layout) or ["- None recorded."]),
@@ -1469,10 +1454,11 @@ class Orchestrator:
             lines.extend([
                 "",
                 "## Worker-Reported Integration Gap",
+                f"- Event kind: {result.difficulty_handoff.get('event_kind') or 'not stated'}",
                 f"- Exact obligation: {result.difficulty_handoff.get('blocking_obligation') or 'not stated'}",
-                f"- Last verified step: {result.difficulty_handoff.get('last_verified_step') or 'not stated'}",
-                f"- Why the route fails: {result.difficulty_handoff.get('why_current_route_fails') or 'not stated'}",
-                f"- Suggested attack: {result.difficulty_handoff.get('suggested_attack') or 'not stated'}",
+                f"- Verified boundary: {result.difficulty_handoff.get('verified_boundary') or 'not stated'}",
+                f"- Remaining delta: {result.difficulty_handoff.get('remaining_delta') or 'not stated'}",
+                f"- Refutation witness: {result.difficulty_handoff.get('refutation_witness') or 'not applicable'}",
             ])
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1508,13 +1494,6 @@ class Orchestrator:
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
-        assessments = [
-            item.get("difficulty_assessment")
-            for item in payload.get("completed") or []
-            if isinstance(item, dict) and isinstance(item.get("difficulty_assessment"), dict)
-        ]
-        if assessments:
-            payload["difficulty_assessments"] = assessments
         payload["planning_required"] = bool(payload.get("completed"))
         payload["planning_instruction"] = (
             "Use RequestResearchPlan after completed workers; do not infer a target from handoff prose or request the raw DAG."
@@ -1579,21 +1558,13 @@ def _worker_result_payload(result: WorkerRunResult) -> dict[str, Any]:
     if result.is_consolidation:
         payload["is_consolidation"] = True
         payload["target_achieved"] = result.target_achieved
-    # rejected worker 的失败反馈：verify_history（LLM 结果总结统一走 result_summary_file）
+    # rejected worker 的失败反馈：保留 verifier 轨迹供 process audit 直接核对。
     # （对 consolidation worker 也适用，上面已设 target_achieved）
     if result.status == "rejected":
         if result.verify_history:
             payload["verify_history"] = result.verify_history
         payload["unverified_dir"] = str(result.worker_dir)
-    # worker 完成后的统一 LLM 结果总结（verified/rejected 共用同一份文件，已核对过
-    # generator 的原始困难声明是否过时）
-    if result.result_summary_file:
-        payload["result_summary_file"] = str(result.result_summary_file)
-    if result.difficulty_assessment_file:
-        payload["difficulty_assessment_file"] = str(result.difficulty_assessment_file)
-    if result.difficulty_assessment:
-        payload["difficulty_assessment"] = result.difficulty_assessment
-    # generator 产出的困难声明：worker 回避了什么数学困难、为什么回避、尝试过但失败的路线
+    # generator/reviser 产出的最小障碍声明，供 audit 与 curator 按证据核对。
     if result.difficulty_declaration_file:
         payload["difficulty_declaration_file"] = str(result.difficulty_declaration_file)
     # 这是根据最终 revision/review 轨迹打包的候选困难卡片；仍需 reviewer/curator 跨尝试确认。

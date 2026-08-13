@@ -97,7 +97,7 @@ def test_attempts_do_not_block_leaf_dispatch(tmp_path):
     )
 
     preflight = dag.dispatch_preflight(
-        difficulty_id="open-leaf", method_id="direct_proof", require_curation=False
+        difficulty_id="open-leaf", method_id="direct_proof"
     )
     assert preflight["allowed"] is True
     assert dag.load()["nodes"]["open-leaf"]["progress"]["attempt_count"] == 3
