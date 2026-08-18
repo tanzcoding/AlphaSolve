@@ -271,7 +271,12 @@ class SubagentService:
         session_id = self._make_session_id(agent_type=agent_type, depth=depth)
         effective_max_depth = self._effective_max_depth(agent_type, depth)
         registry = self._build_subagent_registry(
-            depth=depth, session_id=session_id, config=config, max_depth=effective_max_depth,
+            depth=depth,
+            session_id=session_id,
+            config=config,
+            max_depth=effective_max_depth,
+            delegated_description=description,
+            delegated_task=prompt,
         )
         enabled_tools = list(config.tools)
         # TODO(B-phase): 这段在 Python 里硬过滤 subagent 能用的文件/Agent 工具，
@@ -340,7 +345,14 @@ class SubagentService:
         return session_id, result
 
     def _build_subagent_registry(
-        self, *, depth: int, session_id: str, config: AgentConfig, max_depth: int,
+        self,
+        *,
+        depth: int,
+        session_id: str,
+        config: AgentConfig,
+        max_depth: int,
+        delegated_description: str,
+        delegated_task: str,
     ) -> ToolRegistry:
         """子 agent 的工具集：第三层基础工具 + RunPython/RunWolfram。
 
@@ -353,7 +365,15 @@ class SubagentService:
         """
         if self.file_access_factory is not None:
             access = self.file_access_factory()
-            registry = build_solver_tool_registry(access)
+            registry = build_solver_tool_registry(
+                access,
+                agent_config=config,
+                difficulty_record_context={
+                    "delegated_description": delegated_description,
+                    "delegated_task": delegated_task,
+                    "subagent_session_id": session_id,
+                },
+            )
         else:
             registry = ToolRegistry()
         python_env: dict[str, Any] = {}

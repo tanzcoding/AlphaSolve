@@ -331,9 +331,9 @@ def register_orchestrator_worker_tools(
                 "difficulty_id": {
                     "type": "string",
                     "description": (
-                        "Canonical curator-owned difficulty ID. Prefer an executable leaf returned by DifficultyFrontier, "
-                        "but an internal parent may be selected when its exact obligation is more informative. The runtime "
-                        "returns a leaf-first warning with active child IDs rather than rejecting that deliberate choice."
+                        "Canonical curator-owned active difficulty ID. Any active node, including an internal parent, may "
+                        "be selected when its exact obligation is more informative. The runtime returns active child IDs so "
+                        "the worker can explain how a parent-level attack adds evidence beyond them."
                     ),
                 },
                 "method_id": {
@@ -466,6 +466,7 @@ def build_solver_tool_registry(
     dispatcher: Any | None = None,
     extra_registrars: tuple[ToolRegistrar, ...] = (),
     read_state_resolver: Callable[[str, Any], bool | None] | None = None,
+    difficulty_record_context: dict[str, Any] | None = None,
 ) -> ToolRegistry:
     """构造第三层最终 ToolRegistry。"""
     registry = build_default_tool_registry(workspace)
@@ -481,7 +482,7 @@ def build_solver_tool_registry(
             )
     for registrar in extra_registrars:
         registrar(registry)
-    if agent_config is not None and agent_config.name in {"generator", "reviser"}:
+    if agent_config is not None and agent_config.name in {"generator", "reviser", "reasoning_subagent"}:
         worker_rel = getattr(workspace, "worker_rel", None)
         workspace_root = getattr(getattr(workspace, "workspace", None), "root", None)
         if worker_rel and workspace_root:
@@ -489,6 +490,7 @@ def build_solver_tool_registry(
                 registry,
                 declaration_path=workspace_root / worker_rel / "difficulty_declaration.md",
                 role=agent_config.name,
+                record_context=difficulty_record_context,
             )
     if agent_config is not None and dispatcher is not None:
         register_agent_tool(

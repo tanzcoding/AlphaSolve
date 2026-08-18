@@ -321,7 +321,7 @@
           "type": "boolean"
         },
         "difficulty_id": {
-          "description": "Canonical curator-owned difficulty ID. Prefer an executable leaf returned by DifficultyFrontier, but an internal parent may be selected when its exact obligation is more informative. The runtime returns a leaf-first warning with active child IDs rather than rejecting that deliberate choice.",
+          "description": "Canonical curator-owned active difficulty ID. Any active node, including an internal parent, may be selected when its exact obligation is more informative. The runtime returns active child IDs so the worker can explain how a parent-level attack adds evidence beyond them.",
           "maxLength": 80,
           "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$",
           "type": "string"

@@ -63,7 +63,8 @@ def test_orchestrator_agent_profile_uses_real_orchestrator_prompt_and_tools(tmp_
     assert tool_names == list(suite.agents["orchestrator"].tools)
     assert "SpawnWorker" in tool_names
     assert "TaskOutput" in tool_names
-    assert "Agent" in tool_names
+    assert "RequestResearchPlan" in tool_names
+    assert "Agent" not in tool_names
     assert not (tmp_path / "unverified_propositions").exists()
 
 

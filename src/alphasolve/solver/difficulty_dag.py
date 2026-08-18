@@ -16,7 +16,7 @@ from .policy import DifficultyDagPolicy
 
 
 _LOCK = threading.RLock()
-_SCHEMA_VERSION = 7
+_SCHEMA_VERSION = 8
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}")
 _STATUSES = {"open", "advanced", "ready_for_synthesis", "resolved", "refuted", "superseded"}
 _RESOLUTION_POLICIES = {"all_of", "any_of", "manual"}
@@ -95,6 +95,7 @@ class DifficultyDagStore:
         self.path = self.workspace_dir / "curation_records" / "difficulty_dag.json"
         self.global_attack_path = self.workspace_dir / "curation_records" / "global_attack_state.json"
         self.audits_dir = self.workspace_dir / "progress_audits"
+        self.evidence_checkpoints_dir = self.workspace_dir / "curation_records" / "evidence_checkpoints"
 
     def load(self) -> dict[str, Any]:
         with _LOCK:
@@ -170,7 +171,26 @@ class DifficultyDagStore:
             checkpoint_id = str(decision.get("checkpoint_id") or directory.name)
             if checkpoint_id not in curated:
                 pending.append(checkpoint_id)
+        for directory in sorted(self.evidence_checkpoints_dir.glob("targeted-verified-*")):
+            try:
+                ready = json.loads((directory / "curation_ready.json").read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(ready, dict) or ready.get("status") != "ready":
+                continue
+            checkpoint_id = str(ready.get("checkpoint_id") or directory.name)
+            if checkpoint_id not in curated:
+                pending.append(checkpoint_id)
         return pending
+
+    def checkpoint_artifact_path(self, checkpoint_id: str) -> Path:
+        evidence = self.evidence_checkpoints_dir / str(checkpoint_id) / "curator_brief.md"
+        if evidence.is_file():
+            return evidence
+        return self.audits_dir / str(checkpoint_id) / "curator_brief.md"
+
+    def checkpoint_task_kind(self, checkpoint_id: str) -> str:
+        return "evidence_checkpoint" if (self.evidence_checkpoints_dir / str(checkpoint_id)).is_dir() else "portfolio_checkpoint"
 
     def is_checkpoint_curated(self, checkpoint_id: str) -> bool:
         return str(checkpoint_id) in self.load()["curated_checkpoints"]
@@ -503,7 +523,7 @@ class DifficultyDagStore:
                 "difficulty": self._public_node(node, dispatch_mode="direct", depth=depth),
                 "open_child_difficulty_ids": active_children,
                 "dispatch_warnings": [
-                    "Leaf-first is recommended: this internal difficulty still has active child difficulties."
+                    "This internal difficulty has active child difficulties; record why the parent-level attack adds evidence beyond them."
                 ],
             }
         return {"allowed": True, "difficulty": self._public_node(node, dispatch_mode="direct", depth=depth)}
@@ -514,6 +534,7 @@ class DifficultyDagStore:
         checkpoint_id: str,
         difficulties: Any,
         resolved_difficulty_ids: Any = None,
+        status_updates: Any = None,
         graph_corrections: Any = None,
     ) -> dict[str, Any]:
         checkpoint_id = _id(checkpoint_id, field="checkpoint_id")
@@ -521,6 +542,7 @@ class DifficultyDagStore:
         resolved = [_id(item, field="resolved_difficulty_ids item") for item in _string_list(
             resolved_difficulty_ids, field="resolved_difficulty_ids", limit=64
         )]
+        updates = self._normalize_status_updates(status_updates)
         corrections = self._normalize_graph_corrections(graph_corrections)
         with _LOCK:
             state = self.load()
@@ -560,8 +582,11 @@ class DifficultyDagStore:
                 node = nodes.get(canonical)
                 if not isinstance(node, dict):
                     raise ValueError(f"cannot resolve unknown difficulty_id: {difficulty_id}")
+                if node.get("status") == "refuted":
+                    raise ValueError(f"cannot resolve refuted difficulty_id: {difficulty_id}")
                 node["status"] = "resolved"
                 node["updated_at"] = _now()
+            self._apply_status_updates(state, updates)
             self._apply_graph_corrections(state, corrections)
             self._validate_acyclic(nodes)
             self._validate_max_depth(nodes)
@@ -570,6 +595,7 @@ class DifficultyDagStore:
                 "curated_at": _now(),
                 "difficulty_ids": sorted(incoming_ids),
                 "resolved_difficulty_ids": resolved,
+                "status_updates": updates,
             }
             state["updated_at"] = _now()
             self._save(state)
@@ -695,11 +721,14 @@ class DifficultyDagStore:
             parents = [_id(item, field=f"difficulties[{index}].parent_difficulty_ids item") for item in _string_list(
                 raw.get("parent_difficulty_ids"), field=f"difficulties[{index}].parent_difficulty_ids"
             )]
-            source_ids = [_source_id(item, field=f"difficulties[{index}].source_difficulty_ids item") for item in _string_list(
-                raw.get("source_difficulty_ids"), field=f"difficulties[{index}].source_difficulty_ids"
+            raw_handoff_ids = raw.get("source_handoff_ids")
+            if raw_handoff_ids is None:
+                raw_handoff_ids = raw.get("source_difficulty_ids")
+            source_ids = [_source_id(item, field=f"difficulties[{index}].source_handoff_ids item") for item in _string_list(
+                raw_handoff_ids, field=f"difficulties[{index}].source_handoff_ids"
             )]
             if not source_ids:
-                raise ValueError("each curated difficulty requires source_difficulty_ids from worker handoffs")
+                raise ValueError("each curated difficulty requires source_handoff_ids from checkpoint handoffs")
             items.append({
                 "difficulty_id": difficulty_id,
                 "statement": _text(raw.get("statement"), field=f"difficulties[{index}].statement"),
@@ -711,6 +740,56 @@ class DifficultyDagStore:
                 "status": status,
             })
         return items
+
+    def _normalize_status_updates(self, value: Any) -> list[dict[str, Any]]:
+        if value is None:
+            return []
+        if not isinstance(value, list) or len(value) > 64:
+            raise ValueError("status_updates must be an array with at most 64 items")
+        updates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for index, raw in enumerate(value, 1):
+            if not isinstance(raw, dict):
+                raise ValueError("status_updates items must be objects")
+            difficulty_id = _id(raw.get("difficulty_id"), field=f"status_updates[{index}].difficulty_id")
+            if difficulty_id in seen:
+                raise ValueError("status_updates must not contain duplicate difficulty_id values")
+            seen.add(difficulty_id)
+            status = str(raw.get("status") or "").strip()
+            if status not in _STATUSES:
+                raise ValueError(f"status_updates[{index}].status is invalid")
+            evidence_refs = _string_list(
+                raw.get("evidence_refs"), field=f"status_updates[{index}].evidence_refs", limit=20
+            )
+            if not evidence_refs:
+                raise ValueError("each status update requires evidence_refs")
+            updates.append({
+                "difficulty_id": difficulty_id,
+                "status": status,
+                "evidence_refs": evidence_refs,
+            })
+        return updates
+
+    def _apply_status_updates(self, state: dict[str, Any], updates: list[dict[str, Any]]) -> None:
+        nodes = state["nodes"]
+        for update in updates:
+            difficulty_id = self._canonical_id(state, update["difficulty_id"])
+            node = nodes.get(difficulty_id)
+            if not isinstance(node, dict):
+                raise ValueError(f"status update references unknown difficulty_id: {difficulty_id}")
+            current = str(node.get("status") or "open")
+            target = update["status"]
+            if current in _TERMINAL and target != current:
+                raise ValueError(
+                    f"cannot replace terminal status {current!r} for {difficulty_id}; use an explicit graph correction if evidence overturns it"
+                )
+            if target == "open" and current != "open":
+                raise ValueError("use graph_corrections.reopen_node to reopen a difficulty")
+            node["status"] = target
+            node["evidence_refs"] = sorted(set(node.get("evidence_refs") or []) | set(update["evidence_refs"]))
+            node["updated_at"] = _now()
+            if target == "refuted":
+                self._supersede_descendants(nodes, difficulty_id)
 
     def _normalize_graph_corrections(self, value: Any) -> list[dict[str, Any]]:
         if value is None:
@@ -766,9 +845,18 @@ class DifficultyDagStore:
         try:
             value = json.loads((self.audits_dir / checkpoint_id / "decision.json").read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
-            raise ValueError(f"checkpoint decision is unavailable: {checkpoint_id}") from None
-        if not isinstance(value, dict) or value.get("status") not in {"completed", "invalid_audit"}:
-            raise ValueError(f"checkpoint is not ready for curation: {checkpoint_id}")
+            value = None
+        if isinstance(value, dict) and value.get("status") in {"completed", "invalid_audit"}:
+            return
+        try:
+            ready = json.loads(
+                (self.evidence_checkpoints_dir / checkpoint_id / "curation_ready.json").read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError):
+            ready = None
+        if isinstance(ready, dict) and ready.get("status") == "ready":
+            return
+        raise ValueError(f"checkpoint is not ready for curation: {checkpoint_id}")
 
     def _normalize(self, state: dict[str, Any]) -> None:
         for difficulty_id, node in list(state["nodes"].items()):
@@ -1017,6 +1105,7 @@ def register_curated_difficulty_dag_tool(
                 checkpoint_id=checkpoint_id,
                 difficulties=args.get("difficulties"),
                 resolved_difficulty_ids=args.get("resolved_difficulty_ids"),
+                status_updates=args.get("status_updates"),
                 graph_corrections=args.get("graph_corrections"),
             )
         except ValueError as exc:
@@ -1032,30 +1121,42 @@ def register_curated_difficulty_dag_tool(
             "relation_to_parent": {"type": "string", "enum": sorted(_RELATIONS)},
             "resolution_policy": {"type": "string", "enum": sorted(_RESOLUTION_POLICIES)},
             "status": {"type": "string", "enum": ["open", "advanced", "resolved", "refuted"]},
-            "source_difficulty_ids": {"type": "array", "items": {"type": "string"}},
+            "source_handoff_ids": {"type": "array", "items": {"type": "string"}},
+            "source_difficulty_ids": {"type": "array", "items": {"type": "string"}, "description": "Legacy alias for source_handoff_ids."},
             "evidence_refs": {"type": "array", "items": {"type": "string"}},
         },
-        "required": ["difficulty_id", "statement", "source_difficulty_ids"],
+        "required": ["difficulty_id", "statement"],
     }
     registry.register(
         name="CurateDifficultyDag",
         description=(
-            "At this checkpoint, make worker-local difficulty records into the canonical recursive difficulty DAG. "
-            "Choose stable canonical IDs, merge only evidence-supported aliases through source_difficulty_ids, and attach each "
-            "new obligation to its actual parent difficulty. Existing source aliases are authoritative: reuse their canonical "
-            "difficulty instead of reinterpreting them. A child must be strictly smaller than its parent: do not submit self-parenting "
-            "or alias-equivalent edges. Parentless nodes are valid independent components; add a child only when the cited "
-            "evidence establishes that relation. The curator also refreshes attempt counts and verified-proposition references "
-            "from the immutable worker outcome ledger. Legacy direction/gap source labels are accepted and normalized to slugs. Use all_of, any_of, "
-            "or manual only when the evidence establishes that relation. graph_corrections may only remove one evidenced parent edge, "
-            "supersede one node, or reopen one node; they are for verified corrections, never route planning. The runtime validates acyclicity "
-            "and computes executable leaves; do not invent edges from wording alone."
+            "At this checkpoint, reconcile worker obstacle handoffs and verified evidence into the canonical recursive difficulty DAG. "
+            "Read the current DAG before choosing placement. For each new obligation, use source_handoff_ids copied from runtime handoffs; "
+            "merge only evidence-supported handoffs into an existing canonical node, and create a node only for a separately checkable obligation. "
+            "Existing handoff aliases are authoritative: reuse their canonical difficulty instead of reinterpreting them. A child must be strictly "
+            "smaller than its parent; add a parent edge only when cited mathematics establishes that dependency. Parentless nodes are valid independent "
+            "components. status_updates changes an existing node only with cited evidence; use status=refuted when a verified proposition directly contradicts "
+            "its statement. The curator also refreshes attempt counts and verified-proposition references from the immutable outcome ledger. graph_corrections "
+            "may only remove one evidenced parent edge, supersede one node, or reopen one node; they are for verified corrections, never route planning. "
+            "The runtime validates acyclicity and computes executable leaves; do not invent edges or statuses from obstacle wording alone."
         ),
         parameters={
             "type": "object",
             "properties": {
                 "difficulties": {"type": "array", "items": difficulty_schema},
                 "resolved_difficulty_ids": {"type": "array", "items": {"type": "string"}},
+                "status_updates": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "difficulty_id": {"type": "string"},
+                            "status": {"type": "string", "enum": sorted(_STATUSES)},
+                            "evidence_refs": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["difficulty_id", "status", "evidence_refs"],
+                    },
+                },
                 "graph_corrections": {
                     "type": "array",
                     "items": {

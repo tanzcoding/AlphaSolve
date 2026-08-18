@@ -724,7 +724,6 @@ class Orchestrator:
         self.stop_event = stop_event
         self.worker_stop_event = worker_stop_event or threading.Event()
         self.session_id = session_id or f"orchestrator-{uuid.uuid4().hex[:12]}"
-        self._reviewer_call_count = 0
         self._has_dispatched_worker = False
         self.cold_start_runtime = cold_start_runtime or ColdStartRuntime(
             layout=self.layout,
@@ -747,6 +746,9 @@ class Orchestrator:
         self._progress_audit_queue: ProgressAuditQueue | None = None
         self._planning_subagents: SubagentService | None = None
         self._research_plans: dict[str, dict[str, Any]] = {}
+        self._research_plan_created = False
+        self._active_research_plan: dict[str, Any] | None = None
+        self._plan_restart_reason: dict[str, Any] | None = None
         self._worker_difficulties: dict[str, str] = {}
         # 搜索树观测日志写入器（每 selection cycle 落一次快照）；run() 内按需创建。
         self._search_tree_sink = None
@@ -834,9 +836,7 @@ class Orchestrator:
                     Workspace(self.layout.workspace_dir)
                 ),
                 stop_event=self.stop_event,
-                reviewer_history_path=self.layout.knowledge_dir / "reviewer-history.md",
                 reviewer_state_provider=self._reviewer_frontier_projection,
-                call_guard=self._guard_subagent_call,
             )
             self._planning_subagents = subagents
             try:
@@ -953,29 +953,8 @@ class Orchestrator:
             lambda registry: self._register_research_planning_tools(registry, manager),
             lambda registry: self._register_free_exploration_tool(registry, manager),
         )
-        if subagents is not None:
-            from alphasolve.agent import AgentConfig
-            return build_solver_tool_registry(
-                access,
-                agent_config=AgentConfig(
-                    name="_orchestrator_subagent",
-                    system_prompt="",
-                    tools=["Agent"],
-                    tool_parameters={"Agent": {"type": {"enum": ["research_reviewer"]}}},
-                ),
-                dispatcher=subagents,
-                extra_registrars=extra_registrars,
-                read_state_resolver=self._reviewer_read_state_resolver,
-            )
+        del subagents
         return build_solver_tool_registry(access, extra_registrars=extra_registrars)
-
-    def _guard_subagent_call(self, agent_type: str, _depth: int) -> None:
-        """Limit reviewer use during the orchestrator phase."""
-        if agent_type != "research_reviewer":
-            return
-        if self._reviewer_call_count:
-            raise RuntimeError("research_reviewer may be called at most once per orchestrator run")
-        self._reviewer_call_count += 1
 
     def _reviewer_read_state_resolver(self, agent_type: str, requested: Any) -> bool | None:
         """orchestrator 的 Agent 工具用它决定被调 subagent 的 read_state。
@@ -1078,8 +1057,8 @@ class Orchestrator:
         leaves = ", ".join(f"`{item}`" for item in deviation.get("executable_difficulty_ids") or []) or "none"
         return (
             "Open an independent, bounded research direction. Do not repeat a refuted or split-required obligation. "
-            "If this direction yields a new obstacle or a strict child, call RecordDifficulty so the curator can archive it "
-            "as an independent graph component or evidence-backed edge at the next checkpoint.\n\n"
+            "If a concrete obstacle prevents completion, call RecordDifficulty so the curator can review it with the worker evidence "
+            "at the next checkpoint.\n\n"
             f"Reviewer direction: {reason}\n"
             f"Current executable difficulties: {leaves}"
         )
@@ -1116,8 +1095,9 @@ class Orchestrator:
         registry.register(
             name="RequestResearchPlan",
             description=(
-                "Ask the independent research reviewer to compare completed worker assessments and the current dispatch frontier. "
-                "Returns a validated, stored planning recommendation. This tool exposes no raw DAG and does not dispatch work."
+                "Ask the independent research reviewer to compare the full canonical graph projection, available worker evidence, "
+                "and source indexes. One successful research plan is permitted per orchestrator run; its invalidation ends the run for fresh review. "
+                "This tool exposes no raw DAG and does not dispatch work."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
             handler=lambda args: self._request_research_plan_tool(manager, args),
@@ -1125,9 +1105,9 @@ class Orchestrator:
         registry.register(
             name="ExecuteResearchPlan",
             description=(
-                "Execute one stored reviewer recommendation after revalidating the current frontier. It may dispatch one current "
-                "leaf or launch the recommended independent direction. It rejects stale plans and never writes "
-                "canonical DAG structure."
+                "Execute the bounded implementation of one stored research strategy after revalidating a targeted leaf. It may "
+                "dispatch one current leaf, launch the recommended independent direction, or hold. It never writes canonical DAG "
+                "structure."
             ),
             parameters={
                 "type": "object",
@@ -1138,6 +1118,11 @@ class Orchestrator:
         )
 
     def _request_research_plan_tool(self, manager: WorkerManager, _args: dict[str, Any]) -> ToolResult:
+        if self._research_plan_created:
+            return ToolResult(json.dumps({
+                "error": "research_plan_already_created",
+                "message": "This orchestrator run explores its existing research plan. A plan invalidation ends the run and triggers fresh review after restart.",
+            }, ensure_ascii=False), is_error=True)
         service = self._planning_subagents
         if service is None:
             return ToolResult(json.dumps({"error": "research planning is unavailable outside an active orchestrator run"}), is_error=True)
@@ -1146,14 +1131,14 @@ class Orchestrator:
         try:
             report = service.call(
                 "research_reviewer",
-                "Review completed worker assessments and return one validated next-step plan.",
+                "Review the current research portfolio and return one validated strategy with a bounded next step; completed worker evidence may be empty.",
                 reviewer_prompt(worker_results=worker_results, frontier=frontier),
             )
         except Exception as exc:
             return ToolResult(json.dumps({"error": f"research reviewer failed: {exc}"}, ensure_ascii=False), is_error=True)
         recommendation = parse_recommendation(report)
         if recommendation is None:
-            return ToolResult(json.dumps({"error": "research reviewer did not return a valid Planning Recommendation JSON", "report": report[-4000:]}, ensure_ascii=False), is_error=True)
+            return ToolResult(json.dumps({"error": "research reviewer did not return a valid Research Strategy JSON", "report": report[-4000:]}, ensure_ascii=False), is_error=True)
         plan_id = f"plan-{uuid.uuid4().hex[:12]}"
         plan = {
             "plan_id": plan_id,
@@ -1163,6 +1148,7 @@ class Orchestrator:
             "reviewer_report": report,
         }
         self._research_plans[plan_id] = plan
+        self._research_plan_created = True
         plan_dir = self.layout.workspace_dir / "curation_records" / "research_plans"
         plan_dir.mkdir(parents=True, exist_ok=True)
         (plan_dir / f"{plan_id}.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1178,41 +1164,38 @@ class Orchestrator:
         plan = self._research_plans.get(plan_id)
         if not plan:
             return ToolResult(json.dumps({"error": "unknown planning recommendation"}), is_error=True)
-        frontier = self._reviewer_frontier_projection()
-        if frontier["frontier_revision"] != plan["frontier_revision"]:
-            return ToolResult(json.dumps({
-                "executed": False,
-                "reason": "stale_research_plan",
-                "expected_frontier_revision": plan["frontier_revision"],
-                "current_frontier_revision": frontier["frontier_revision"],
-            }, ensure_ascii=False))
         recommendation = plan["recommendation"]
-        action = recommendation["action"]
-        if action == "DISPATCH_LEAF":
-            dispatchable_ids = {
-                str(item.get("difficulty_id"))
-                for item in frontier["dispatchable"]
-                if isinstance(item, dict) and item.get("difficulty_id")
-            }
-            difficulty_id = recommendation["difficulty_id"]
-            if difficulty_id not in dispatchable_ids:
-                return ToolResult(json.dumps({"executed": False, "reason": "reviewer_target_not_dispatchable"}, ensure_ascii=False))
+        research_strategy = recommendation["research_strategy"]
+        next_step = recommendation["next_step"]
+        kind = next_step["kind"]
+        if kind == "TARGET_NODE":
             result = self._spawn_difficulty_leaf(manager, {
-                "difficulty_id": difficulty_id,
-                "method_id": recommendation["method_id"] or "direct_proof",
-                "hint": f"Reviewer plan: {recommendation['reason']}",
+                "difficulty_id": next_step["difficulty_id"],
+                "method_id": next_step["method_id"] or "direct_proof",
+                "hint": _strategy_worker_hint(research_strategy, next_step),
             })
             payload = json.loads(result.content)
             payload["plan_id"] = plan_id
+            payload["research_strategy"] = research_strategy
+            if payload.get("spawned"):
+                self._active_research_plan = plan
             return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
-        if action == "DISPATCH_NEW_DIRECTION":
+        if kind == "NEW_DIRECTION":
             result = self._spawn_free_exploration_tool(manager, {
-                "reason": recommendation["exploration_brief"] or recommendation["reason"],
+                "reason": _strategy_worker_hint(research_strategy, next_step),
             })
             payload = json.loads(result.content)
             payload["plan_id"] = plan_id
+            payload["research_strategy"] = research_strategy
+            if payload.get("spawned"):
+                self._active_research_plan = plan
             return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
-        return ToolResult(json.dumps({"executed": True, "action": action, "plan_id": plan_id}, ensure_ascii=False))
+        return ToolResult(json.dumps({
+            "executed": True,
+            "next_step_kind": kind,
+            "plan_id": plan_id,
+            "research_strategy": research_strategy,
+        }, ensure_ascii=False))
 
     def _spawn_difficulty_leaf(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         global_attack = bool(args.get("global_attack"))
@@ -1328,8 +1311,42 @@ class Orchestrator:
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         return self._spawn_difficulty_leaf(manager, args)
 
+    def _invalidate_active_research_plan(self, *, reason: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
+        active_plan = getattr(self, "_active_research_plan", None)
+        if active_plan is None or getattr(self, "_plan_restart_reason", None) is not None:
+            return None
+        plan_id = str(active_plan.get("plan_id") or "")
+        payload = {
+            "reason": reason,
+            "plan_id": plan_id,
+            "evidence": evidence,
+        }
+        self._plan_restart_reason = payload
+        append_curation_event(
+            self.layout,
+            "research_plan_invalidated",
+            orchestrator_session_id=self.session_id,
+            **payload,
+        )
+        return payload
+
+    def _invalidate_plan_from_audits(self, decisions: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for decision in decisions:
+            verdict = str(decision.get("verdict") or "").upper()
+            if verdict in {"STALLED", "MISALIGNED"}:
+                return self._invalidate_active_research_plan(
+                    reason=f"process_audit_{verdict.lower()}",
+                    evidence={
+                        "checkpoint_id": str(decision.get("checkpoint_id") or ""),
+                        "verdict": verdict,
+                        "evidence_path": str(decision.get("evidence_path") or ""),
+                        "audit_path": str(decision.get("audit_path") or ""),
+                    },
+                )
+        return None
+
     def _handle_worker_completion(self, result: WorkerRunResult) -> dict[str, Any] | None:
-        """Persist completion facts for explicit frontier deviations and global synthesis."""
+        """Persist completion facts and any free-exploration deviation."""
         feedback: dict[str, Any] = {}
         if result.difficulty_id is None and result.method_id == "free_exploration":
             deviation = self._record_free_exploration_completion(result)
@@ -1453,12 +1470,8 @@ class Orchestrator:
         if result.difficulty_handoff:
             lines.extend([
                 "",
-                "## Worker-Reported Integration Gap",
-                f"- Event kind: {result.difficulty_handoff.get('event_kind') or 'not stated'}",
-                f"- Exact obligation: {result.difficulty_handoff.get('blocking_obligation') or 'not stated'}",
-                f"- Verified boundary: {result.difficulty_handoff.get('verified_boundary') or 'not stated'}",
-                f"- Remaining delta: {result.difficulty_handoff.get('remaining_delta') or 'not stated'}",
-                f"- Refutation witness: {result.difficulty_handoff.get('refutation_witness') or 'not applicable'}",
+                "## Worker-Reported Obstacle",
+                f"- Obstacle: {result.difficulty_handoff.get('obstacle') or 'not stated'}",
             ])
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1468,7 +1481,7 @@ class Orchestrator:
         return path
 
     def _difficulty_portfolio_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        """Surface unresolved worker difficulty evidence without re-running the startup reviewer."""
+        """Surface unresolved worker difficulty evidence for strategic reassessment."""
         current = candidate_handoffs(payload.get("completed") or [])
         layout = getattr(self, "layout", None)
         outcomes_path = getattr(layout, "progress_audit_outcomes_path", None)
@@ -1485,23 +1498,37 @@ class Orchestrator:
             "handoffs": handoffs,
             "review_status": "orchestrator_decision_required",
             "message": (
-                "These are worker-level difficulty candidates reconciled only against their own final trail. "
-                "Compare their exact obligations and evidence before deciding the next dispatch; reviewer synthesis is "
-                "optional and never invoked automatically."
+                "These are worker-level obstacle reports reconciled only against their own final trail. "
+                "Compare their concrete obstacles and evidence before deciding the next dispatch; request strategic "
+                "reassessment when their portfolio significance is unclear."
             ),
         }
 
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
-        payload["planning_required"] = bool(payload.get("completed"))
+        audit_invalidation = self._invalidate_plan_from_audits(
+            [item for item in payload.get("process_audit_decisions") or [] if isinstance(item, dict)]
+        )
+        if audit_invalidation is not None:
+            payload["research_plan_invalidated"] = audit_invalidation
         payload["planning_instruction"] = (
-            "Use RequestResearchPlan after completed workers; do not infer a target from handoff prose or request the raw DAG."
+            "A run explores one research plan deeply. Do not request another plan in this run; if the plan is invalidated, "
+            "the runtime ends this run so a fresh orchestrator context can obtain the next plan."
         )
         if self._search_tree_sink is not None:
             self._search_tree_sink.snapshot(self.search, label="task-output")
         self._refresh_research_frontier_state(manager)
-        return ToolResult(json.dumps(payload, ensure_ascii=False), stop_agent=manager.solved_result is not None, stop_answer=_solution_final_answer(manager.solution_path))
+        plan_invalidated = self._plan_restart_reason is not None
+        return ToolResult(
+            json.dumps(payload, ensure_ascii=False),
+            stop_agent=manager.solved_result is not None or plan_invalidated,
+            stop_answer=(
+                _solution_final_answer(manager.solution_path)
+                if manager.solved_result is not None
+                else "Research plan invalidated; ending this orchestrator run for fresh strategic review."
+            ) if (manager.solved_result is not None or plan_invalidated) else None,
+        )
 
     def _task(self) -> str:
         hint = self.layout.read_hint()
@@ -1607,6 +1634,15 @@ def _short_summary(summary: str, *, limit: int = 180) -> str:
     if len(clean) <= limit:
         return clean
     return clean[: limit - 3] + "..."
+
+
+def _strategy_worker_hint(research_strategy: str, next_step: dict[str, str]) -> str:
+    # Render the reviewer strategy as one bounded worker-facing assignment.
+    return (
+        "# Reviewer Research Strategy\n\n"
+        f"{research_strategy}\n\n"
+        f"## Bounded worker task\n{next_step['brief']}"
+    )
 
 
 def _format_worker_phase(phase: str) -> str:

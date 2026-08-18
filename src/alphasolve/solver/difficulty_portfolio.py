@@ -1,8 +1,8 @@
-"""Structured difficulty portfolio helpers.
+"""Worker obstacle portfolio helpers.
 
-This module deliberately performs no semantic clustering. It prepares bounded,
-provenance-preserving worker difficulty handoffs for the orchestrator, research
-reviewer, process audit, and curator. Canonical blocker identity remains curator-owned.
+This module preserves bounded worker-local obstacles for the orchestrator, research
+reviewer, process audit, and curator. Canonical difficulty identity remains
+curator-owned.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _MAX_TEXT = 2000
 
 
 def candidate_handoffs(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Return deduplicated active handoffs in stable encounter order."""
+    """Return deduplicated obstacle handoffs in stable encounter order."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for record in records:
@@ -26,9 +26,7 @@ def candidate_handoffs(records: Iterable[dict[str, Any]]) -> list[dict[str, Any]
         handoff = raw_handoff if isinstance(raw_handoff, dict) else record
         if not isinstance(handoff, dict):
             continue
-        if str(handoff.get("event_kind") or "") not in {"blocked", "weakened", "refuted"}:
-            continue
-        if not str(handoff.get("blocking_obligation") or "").strip():
+        if not str(handoff.get("obstacle") or "").strip():
             continue
         worker_id = str(handoff.get("worker_id") or record.get("worker_id") or "").strip()
         if not worker_id or worker_id in seen:
@@ -72,17 +70,15 @@ def review_batch_key(handoffs: Iterable[dict[str, Any]]) -> str:
 
 
 def build_reviewer_prompt(handoffs: list[dict[str, Any]]) -> str:
-    """Build a bounded, evidence-oriented reviewer request for difficulty comparison."""
+    """Build a bounded, evidence-oriented reviewer request for obstacle comparison."""
     payload = json.dumps(handoffs, ensure_ascii=False, indent=2)
     return (
-        "Review the following Difficulty Portfolio before recommending any new worker. These are worker-level "
-        "handoffs reconciled only enough to preserve final evidence paths; they are not canonical blockers and may "
-        "still be stale or distinct. Read cited evidence when needed. Compare exact obligations, verified boundaries, and "
-        "remaining deltas rather than wording. Do not edit state or dispatch work.\n\n"
-        "Return the standard reviewer report, including the required `### Difficulty Comparison` section. Compare proposed "
-        "parent_difficulty_id and exact remaining deltas. Recommend one smallest executable obligation, but do not invent "
-        "canonical IDs or edit the DAG: the curator performs that checkpoint-time merge.\n\n"
-        "## Difficulty Portfolio\n\n```json\n"
+        "Review the following worker obstacle portfolio before recommending any new worker. These are local observations, "
+        "not canonical graph structure; read cited evidence when needed. `obstacle_records` may include task-specific reasoning "
+        "observations, so compare their delegated scope, concrete obstacles, and evidence rather than wording. Do not edit state or dispatch work.\n\n"
+        "Return the standard reviewer report. Recommend one bounded next step, but do not invent canonical IDs or edit the DAG: "
+        "the curator reconciles evidence at checkpoints.\n\n"
+        "## Worker Obstacle Portfolio\n\n```json\n"
         + payload
         + "\n```"
     )
@@ -93,18 +89,23 @@ def _compact_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
         return " ".join(str(handoff.get(key) or "").split())[:_MAX_TEXT]
 
     return {
+        "handoff_id": text("handoff_id"),
         "worker_id": text("worker_id"),
-        "source_difficulty_id": text("source_difficulty_id"),
-        "parent_difficulty_id": text("parent_difficulty_id"),
         "difficulty_id": text("difficulty_id"),
         "method_id": text("method_id"),
         "assigned_target": text("assigned_target"),
         "execution_status": text("execution_status"),
-        "event_kind": text("event_kind"),
-        "blocking_obligation": text("blocking_obligation"),
-        "verified_boundary": text("verified_boundary"),
-        "remaining_delta": text("remaining_delta"),
-        "refutation_witness": text("refutation_witness"),
+        "obstacle": text("obstacle"),
+        "obstacle_records": [
+            {
+                "role": " ".join(str(record.get("role") or "").split())[:100],
+                "obstacle": " ".join(str(record.get("obstacle") or "").split())[:_MAX_TEXT],
+                "delegated_description": " ".join(str(record.get("delegated_description") or "").split())[:_MAX_TEXT],
+                "delegated_task": " ".join(str(record.get("delegated_task") or "").split())[:_MAX_TEXT],
+            }
+            for record in handoff.get("obstacle_records") or []
+            if isinstance(record, dict) and str(record.get("obstacle") or "").strip()
+        ][-8:],
         "evidence_refs": [str(item)[:_MAX_TEXT] for item in handoff.get("evidence_refs") or [] if str(item).strip()],
         "source_confidence": text("source_confidence"),
     }

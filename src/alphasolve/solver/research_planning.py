@@ -1,4 +1,4 @@
-"""Validated reviewer recommendations for direct orchestration."""
+"""Validated research strategies returned by the independent reviewer."""
 from __future__ import annotations
 
 import hashlib
@@ -7,8 +7,7 @@ import re
 from typing import Any
 
 
-_PLAN_ACTIONS = {"DISPATCH_LEAF", "DISPATCH_NEW_DIRECTION", "NO_ACTION"}
-_DISPATCH_MODES = {"direct", "consolidation"}
+_NEXT_STEP_KINDS = {"TARGET_NODE", "NEW_DIRECTION", "HOLD"}
 _METHOD_IDS = {
     "direct_proof",
     "contradiction",
@@ -51,34 +50,39 @@ def frontier_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
 def reviewer_prompt(*, worker_results: list[dict[str, Any]], frontier: dict[str, Any]) -> str:
     payload = json.dumps({"worker_results": worker_results, "frontier": frontier}, ensure_ascii=False, indent=2)
     return (
-        "Review completed worker evidence and recommend exactly one next action. The difficulty DAG is a curator-owned "
-        "evidence graph, not a route approval system. Do not invent canonical IDs, edit state, curate identities, or dispatch workers. "
-        "You may select a current executable leaf or open one bounded independent direction. A new direction need not be a child "
-        "of an old method unless evidence establishes that dependency.\n\n"
-        "Use the complete graph, source indexes, and recent worker evidence together. Evidence priority is strict: verified propositions "
-        "establish mathematical claims; the DAG records the current canonical hypothesis and attempt history but may be wrong; knowledge "
-        "is a navigation aid and never by itself proves a claim, edge, or status. Worker attempts, including repeated no-progress attempts, "
-        "are facts for the curator to archive; they are not a reason to force a split. Do not select refuted or superseded nodes for ordinary dispatch.\n\n"
-        "End your answer with exactly one `### Planning Recommendation JSON` heading followed by one fenced JSON object:\n"
+        "Review completed worker evidence and return exactly one research strategy. The difficulty DAG is a curator-owned "
+        "evidence graph, not a route approval system. Do not invent canonical IDs, edit state, curate identities, or dispatch workers.\n\n"
+        "Use the complete graph, its component and node attempt statistics, recent methods/outcomes, verified-proposition links, "
+        "worker results, and knowledge to choose the next mathematical direction and active target node freely. When a leaf has "
+        "repeatedly failed under the same or equivalent method without new verified evidence, you may change method, attack an active "
+        "parent or ancestor from another angle, or choose a bounded independent direction. Treat recent repeated "
+        "(node, method) attempts as tabu unless new evidence changes the target. Prefer underexplored node-method combinations among "
+        "otherwise comparable routes, but let terminal-gap relevance and verified evidence override raw attempt counts.\n\n"
+        "Only verified propositions establish mathematical claims. The DAG records canonical identity, relations, and attempt history "
+        "but may be wrong; knowledge is a navigation aid and never by itself proves a claim, edge, or status. Do not target refuted "
+        "or superseded nodes. A target node may be any active projected graph node; runtime performs the final safety check.\n\n"
+        "End your answer with exactly one `### Research Strategy JSON` heading followed by one fenced JSON object:\n"
         "```json\n{\n"
-        "  \"action\": \"DISPATCH_LEAF | DISPATCH_NEW_DIRECTION | NO_ACTION\",\n"
-        "  \"difficulty_id\": \"an ID from frontier.dispatchable, otherwise empty\",\n"
-        "  \"dispatch_mode\": \"direct | consolidation | empty\",\n"
-        "  \"method_id\": \"direct_proof | contradiction | construction | computation | falsification | consolidation | empty\",\n"
-        "  \"reason\": \"concise evidence-based rationale\",\n"
-        "  \"exploration_brief\": \"precise independent direction, target, and evidence boundary; required only for DISPATCH_NEW_DIRECTION\",\n"
+        "  \"research_strategy\": \"concise evidence-based research direction, including the relevant DAG statistics, what to try, and what not to repeat\",\n"
+        "  \"next_step\": {\n"
+        "    \"kind\": \"TARGET_NODE | NEW_DIRECTION | HOLD\",\n"
+        "    \"difficulty_id\": \"active canonical graph ID for TARGET_NODE, otherwise empty\",\n"
+        "    \"method_id\": \"direct_proof | contradiction | construction | computation | falsification | consolidation | empty\",\n"
+        "    \"brief\": \"precise bounded task for this worker; required unless HOLD\"\n"
+        "  },\n"
         "  \"graph_observations\": [{\"kind\": \"EDGE_SUSPECT | NODE_SCOPE_SUSPECT | COMPONENT_STAGNANT | STATUS_SUSPECT | DUPLICATE_NODE\", \"target_ids\": [\"canonical IDs\"], \"summary\": \"bounded graph concern\", \"evidence_refs\": [\"verified proposition, audit, or handoff path\"], \"recommended_graph_effect\": \"reconsider_edge | supersede_node | merge_candidate | keep_independent\"}]\n"
         "}\n```\n"
-        "Use DISPATCH_LEAF only for a projected executable ID. Use DISPATCH_NEW_DIRECTION only with a concrete brief that does not "
-        "repeat a refuted inference. graph_observations are optional, must cite evidence, and never directly edit the graph. The orchestrator "
-        "executes valid plans; the curator later verifies observations and reconciles worker attempts and verified propositions into canonical progress.\n\n## Planning Input\n\n```json\n"
+        "`TARGET_NODE` requires an active canonical ID. `NEW_DIRECTION` requires a concrete bounded brief and need not be a child of "
+        "an old method. `HOLD` means no evidence-backed bounded attempt is justified. graph_observations are optional, must cite "
+        "evidence, and never directly edit the graph. The orchestrator executes valid next steps; the curator later reconciles "
+        "worker attempts and verified propositions into canonical progress.\n\n## Planning Input\n\n```json\n"
         + payload
         + "\n```"
     )
 
 
 def parse_recommendation(text: str) -> dict[str, Any] | None:
-    marker = "### Planning Recommendation JSON"
+    marker = "### Research Strategy JSON"
     match = re.search(r"```json\s*(\{.*?\})\s*```", text[text.find(marker):], flags=re.DOTALL) if marker in text else None
     if match is None:
         return None
@@ -88,27 +92,39 @@ def parse_recommendation(text: str) -> dict[str, Any] | None:
         return None
     if not isinstance(value, dict):
         return None
-    action = str(value.get("action") or "").strip().upper()
-    dispatch_mode = str(value.get("dispatch_mode") or "").strip()
-    method_id = str(value.get("method_id") or "").strip()
-    reason = " ".join(str(value.get("reason") or "").split())[:4000]
-    exploration_brief = " ".join(str(value.get("exploration_brief") or "").split())[:4000]
-    if action not in _PLAN_ACTIONS or (dispatch_mode and dispatch_mode not in _DISPATCH_MODES):
-        return None
-    if method_id and method_id not in _METHOD_IDS:
-        return None
+    research_strategy = _clean_text(value.get("research_strategy"), limit=6000)
+    next_step = _parse_next_step(value.get("next_step"))
     observations = _parse_graph_observations(value.get("graph_observations"))
-    if observations is None or not reason or (action == "DISPATCH_NEW_DIRECTION" and not exploration_brief):
+    if not research_strategy or next_step is None or observations is None:
+        return None
+    if next_step["kind"] == "TARGET_NODE" and not next_step["difficulty_id"]:
+        return None
+    if next_step["kind"] in {"TARGET_NODE", "NEW_DIRECTION"} and not next_step["brief"]:
         return None
     return {
-        "action": action,
-        "difficulty_id": str(value.get("difficulty_id") or "").strip(),
-        "dispatch_mode": dispatch_mode,
-        "method_id": method_id,
-        "reason": reason,
-        "exploration_brief": exploration_brief,
+        "research_strategy": research_strategy,
+        "next_step": next_step,
         "graph_observations": observations,
     }
+
+
+def _parse_next_step(value: Any) -> dict[str, str] | None:
+    if not isinstance(value, dict):
+        return None
+    kind = _clean_text(value.get("kind"), limit=80).upper()
+    method_id = _clean_text(value.get("method_id"), limit=80)
+    if kind not in _NEXT_STEP_KINDS or (method_id and method_id not in _METHOD_IDS):
+        return None
+    return {
+        "kind": kind,
+        "difficulty_id": _clean_text(value.get("difficulty_id"), limit=80),
+        "method_id": method_id,
+        "brief": _clean_text(value.get("brief"), limit=4000),
+    }
+
+
+def _clean_text(value: Any, *, limit: int) -> str:
+    return " ".join(str(value or "").split())[:limit]
 
 
 def _parse_graph_observations(value: Any) -> list[dict[str, Any]] | None:

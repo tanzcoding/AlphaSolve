@@ -52,8 +52,10 @@ class SolverPolicy:
     free_seed_probability: float = 0.6
     research_reviewer_read_state_epsilon: float = 0.0
     theorem_check_attempts: int = 5
-    curator_health_check_interval: int = 4
+    curator_health_check_interval: int = 8
     curator_oversized_entry_line_limit: int = 250
+    curator_digest_batch_window_seconds: float = 0.2
+    curator_digest_max_batch: int = 8
     difficulty_dag: DifficultyDagPolicy = field(default_factory=DifficultyDagPolicy)
 
     def __post_init__(self) -> None:
@@ -77,6 +79,8 @@ class SolverPolicy:
         _require_int("theorem_check_attempts", self.theorem_check_attempts, minimum=1)
         _require_int("curator_health_check_interval", self.curator_health_check_interval, minimum=1)
         _require_int("curator_oversized_entry_line_limit", self.curator_oversized_entry_line_limit, minimum=1)
+        _require_float("curator_digest_batch_window_seconds", self.curator_digest_batch_window_seconds, minimum=0.0)
+        _require_int("curator_digest_max_batch", self.curator_digest_max_batch, minimum=1)
         if not isinstance(self.difficulty_dag, DifficultyDagPolicy):
             raise ValueError("difficulty_dag must be a mapping of DAG policy values")
 
@@ -101,6 +105,8 @@ class SolverPolicy:
             "theorem_check_attempts",
             "curator_health_check_interval",
             "curator_oversized_entry_line_limit",
+            "curator_digest_batch_window_seconds",
+            "curator_digest_max_batch",
             "difficulty_dag",
         }
         unknown = sorted(set(raw) - allowed)

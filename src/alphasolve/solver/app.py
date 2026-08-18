@@ -155,14 +155,15 @@ class AlphaSolve:
                     policy=runtime_policy.difficulty_dag,
                 )
                 for checkpoint_id in difficulty_dag.pending_checkpoint_ids():
-                    checkpoint_dir = self.layout.progress_audits_dir / checkpoint_id
+                    task_kind = difficulty_dag.checkpoint_task_kind(checkpoint_id)
+                    artifact_path = difficulty_dag.checkpoint_artifact_path(checkpoint_id)
                     curator_queue.submit(
                         CuratorTask(
                             trace_segment=[],
-                            source_label=f"portfolio-checkpoint-recovery/{checkpoint_id}",
-                            task_kind="portfolio_checkpoint",
-                            artifact_path=checkpoint_dir / "curator_brief.md",
-                            audit_path=checkpoint_dir / "audit.md",
+                            source_label=f"{task_kind}-recovery/{checkpoint_id}",
+                            task_kind=task_kind,
+                            artifact_path=artifact_path,
+                            audit_path=(artifact_path.parent / "audit.md") if task_kind == "portfolio_checkpoint" else None,
                         )
                     )
 

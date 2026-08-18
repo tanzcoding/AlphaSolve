@@ -81,11 +81,81 @@ class ProgressAuditQueue:
             if self._started:
                 return
             self._started = True
+            self._schedule_recovered_targeted_verified_checkpoint_locked()
             for checkpoint_id in self._state.get("pending_checkpoints") or []:
                 task = self._restore_pending_task(str(checkpoint_id))
                 if task is not None:
                     self._queue.put(task)
             self._thread.start()
+
+    def _schedule_recovered_targeted_verified_checkpoint_locked(self) -> None:
+        """Recover missed direct DAG curation without scheduling a process audit."""
+        last_scheduled = int(self._state.get("last_scheduled_outcome") or 0)
+        outcomes = _read_jsonl(self.layout.progress_audit_outcomes_path)
+        missed = [
+            item
+            for item in outcomes
+            if int(item.get("sequence") or 0) > last_scheduled
+            and str(item.get("status") or "") == "verified"
+            and str(item.get("difficulty_id") or "").strip()
+        ]
+        if not missed:
+            return
+        watermark = max(int(item.get("sequence") or 0) for item in outcomes)
+        self._submit_evidence_checkpoint_locked(
+            checkpoint_id=f"targeted-verified-recovery-{last_scheduled + 1:04d}-{watermark:04d}",
+            previous_watermark=last_scheduled,
+            watermark=watermark,
+            trigger_reason="recovered_targeted_verified_evidence",
+        )
+
+    def _submit_evidence_checkpoint_locked(
+        self,
+        *,
+        checkpoint_id: str,
+        previous_watermark: int,
+        watermark: int,
+        trigger_reason: str,
+    ) -> None:
+        """Persist and submit direct DAG curation evidence without a process audit."""
+        checkpoint_dir = self.layout.workspace_dir / "curation_records" / "evidence_checkpoints" / checkpoint_id
+        ready_path = checkpoint_dir / "curation_ready.json"
+        if ready_path.is_file():
+            return
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        task = ProgressAuditTask(
+            checkpoint_id=checkpoint_id,
+            watermark=watermark,
+            previous_watermark=previous_watermark,
+            evidence_path=checkpoint_dir / "curation_input.json",
+            checkpoint_dir=checkpoint_dir,
+        )
+        curation_input_path = _write_curation_input(layout=self.layout, task=task)
+        _write_json(ready_path, {
+            "checkpoint_id": checkpoint_id,
+            "status": "ready",
+            "trigger_reason": trigger_reason,
+            "watermark": watermark,
+            "previous_watermark": previous_watermark,
+            "curation_input_path": _relative_to_workspace(curation_input_path, self.layout.workspace_dir),
+            "created_at": _now_iso(),
+        })
+        brief_path = _write_evidence_checkpoint_brief(
+            layout=self.layout,
+            checkpoint_id=checkpoint_id,
+            curation_input_path=curation_input_path,
+            trigger_reason=trigger_reason,
+        )
+        if self.curator_queue is not None:
+            from .curator import CuratorTask
+            self.curator_queue.submit(
+                CuratorTask(
+                    trace_segment=[],
+                    source_label=f"targeted-verified-evidence/{checkpoint_id}",
+                    task_kind="evidence_checkpoint",
+                    artifact_path=brief_path,
+                )
+            )
 
     def stop(self, timeout: float = 60.0) -> None:
         with self._lock:
@@ -154,8 +224,23 @@ class ProgressAuditQueue:
 
             checkpoint_id: str | None = None
             last_scheduled = int(self._state.get("last_scheduled_outcome") or 0)
+            targeted_verified = (
+                str(record.get("status") or "") == "verified"
+                and bool(str(record.get("difficulty_id") or "").strip())
+            )
+            if targeted_verified:
+                self._submit_evidence_checkpoint_locked(
+                    checkpoint_id=f"targeted-verified-{sequence:04d}",
+                    previous_watermark=sequence - 1,
+                    watermark=sequence,
+                    trigger_reason="targeted_verified_evidence",
+                )
             if sequence - last_scheduled >= self.outcomes_per_audit:
-                task = self._create_checkpoint_locked(watermark=sequence, previous_watermark=last_scheduled)
+                task = self._create_checkpoint_locked(
+                    watermark=sequence,
+                    previous_watermark=last_scheduled,
+                    trigger_reason="periodic",
+                )
                 checkpoint_id = task.checkpoint_id
                 self._state["last_scheduled_outcome"] = sequence
                 pending = list(self._state.get("pending_checkpoints") or [])
@@ -316,6 +401,7 @@ class ProgressAuditQueue:
         watermark: int,
         previous_watermark: int,
         checkpoint_id: str | None = None,
+        trigger_reason: str = "periodic",
     ) -> ProgressAuditTask:
         checkpoint_id = checkpoint_id or f"checkpoint-{watermark:04d}"
         checkpoint_dir = self.layout.progress_audits_dir / checkpoint_id
@@ -337,6 +423,7 @@ class ProgressAuditQueue:
             "watermark": watermark,
             "previous_watermark": previous_watermark,
             "outcomes_per_audit": self.outcomes_per_audit,
+            "trigger_reason": trigger_reason,
             "created_at": _now_iso(),
             "evidence_path": _relative_to_workspace(evidence_path, self.layout.workspace_dir),
         }
@@ -481,12 +568,14 @@ def _render_outcomes(
         handoff = item.get("difficulty_handoff")
         if isinstance(handoff, dict):
             lines.extend([
-                "#### Structured Difficulty Handoff",
-                f"- Event kind: `{handoff.get('event_kind') or 'unknown'}`",
-                f"- Exact obligation: {str(handoff.get('blocking_obligation') or 'not stated')[:1800]}",
-                f"- Verified boundary: {str(handoff.get('verified_boundary') or 'not stated')[:1800]}",
-                f"- Remaining delta: {str(handoff.get('remaining_delta') or 'not stated')[:1800]}",
-                f"- Refutation witness: {str(handoff.get('refutation_witness') or 'not applicable')[:1800]}",
+                "#### Worker-Reported Obstacle",
+                f"- Obstacle: {str(handoff.get('obstacle') or 'not stated')[:1800]}",
+                *[
+                    f"- {str(record.get('role') or 'worker')}: {str(record.get('obstacle') or '')[:1200]}"
+                    + (f" [task: {str(record.get('delegated_description') or '')[:400]}]" if record.get('delegated_description') else "")
+                    for record in handoff.get("obstacle_records") or []
+                    if isinstance(record, dict) and str(record.get("obstacle") or "").strip()
+                ][-8:],
                 f"- Evidence refs: {', '.join(str(ref) for ref in handoff.get('evidence_refs') or []) or 'none'}",
                 "",
             ])
@@ -517,14 +606,92 @@ def _render_manifest(manifest: dict[str, Any]) -> str:
         f"- Outcome watermark: {manifest['watermark']}",
         f"- Previous watermark: {manifest['previous_watermark']}",
         f"- Trigger interval: {manifest['outcomes_per_audit']} settled outcomes",
+        f"- Trigger reason: `{manifest.get('trigger_reason') or 'periodic'}`",
         f"- Created at: {manifest['created_at']}",
         f"- Evidence: `{manifest['evidence_path']}`",
-        *(
-            [f"- Trigger: `{manifest['trigger'].get('kind')}` for `{manifest['trigger'].get('difficulty_id')}`"]
-            if isinstance(manifest.get("trigger"), dict) else []
-        ),
         "",
     ])
+
+
+def _write_curation_input(*, layout: "ProjectLayout", task: ProgressAuditTask) -> Path:
+    """Build the curator's structured, evidence-only DAG reconciliation view."""
+    outcomes = _read_jsonl(layout.progress_audit_outcomes_path)
+    delta = [
+        item for item in outcomes
+        if task.previous_watermark < int(item.get("sequence") or 0) <= task.watermark
+    ]
+    handoffs: list[dict[str, Any]] = []
+    targeted_verified: list[dict[str, Any]] = []
+    for item in delta:
+        handoff = item.get("difficulty_handoff")
+        if isinstance(handoff, dict) and str(handoff.get("obstacle") or "").strip():
+            handoffs.append({
+                "handoff_id": str(handoff.get("handoff_id") or "").strip(),
+                "assigned_difficulty_id": str(item.get("difficulty_id") or "").strip() or None,
+                "assigned_target": str(handoff.get("assigned_target") or item.get("pinned_target") or "")[:4000],
+                "method_id": str(item.get("method_id") or ""),
+                "execution_status": str(item.get("status") or ""),
+                "obstacle": str(handoff.get("obstacle") or "")[:4000],
+                "obstacle_records": [
+                    {
+                        "role": str(record.get("role") or ""),
+                        "obstacle": str(record.get("obstacle") or "")[:4000],
+                        "delegated_description": str(record.get("delegated_description") or "")[:2000],
+                        "delegated_task": str(record.get("delegated_task") or "")[:4000],
+                        "subagent_session_id": str(record.get("subagent_session_id") or "")[:300],
+                    }
+                    for record in handoff.get("obstacle_records") or []
+                    if isinstance(record, dict) and str(record.get("obstacle") or "").strip()
+                ][-16:],
+                "evidence_refs": [str(value) for value in handoff.get("evidence_refs") or [] if str(value).strip()],
+            })
+        if str(item.get("status") or "") == "verified" and str(item.get("difficulty_id") or "").strip():
+            targeted_verified.append({
+                "assigned_difficulty_id": str(item.get("difficulty_id") or ""),
+                "method_id": str(item.get("method_id") or ""),
+                "summary": str(item.get("summary") or "")[:4000],
+                "verified_file": str(item.get("verified_file") or ""),
+                "theorem_check_file": str(item.get("theorem_check_file") or ""),
+                "review_file": str(item.get("review_file") or ""),
+            })
+    path = task.checkpoint_dir / "curation_input.json"
+    _write_json(path, {
+        "schema_version": 1,
+        "checkpoint_id": task.checkpoint_id,
+        "outcome_range": [task.previous_watermark + 1, task.watermark],
+        "canonical_dag_path": "curation_records/difficulty_dag.json",
+        "worker_obstacles": handoffs,
+        "targeted_verified_results": targeted_verified,
+        "instructions": (
+            "Read canonical_dag_path and cited artifacts before curation. Handoffs are local obstacle reports; "
+            "only create or merge nodes when evidence supports a checkable obligation. A targeted verified result may "
+            "support status=refuted only when it directly contradicts the assigned canonical node."
+        ),
+    })
+    return path
+
+
+def _write_evidence_checkpoint_brief(
+    *,
+    layout: "ProjectLayout",
+    checkpoint_id: str,
+    curation_input_path: Path,
+    trigger_reason: str,
+) -> Path:
+    """Write the minimal curator brief for direct verified-evidence curation."""
+    path = curation_input_path.with_name("curator_brief.md")
+    path.write_text("\n".join([
+        f"# Targeted Verified Evidence Checkpoint: {checkpoint_id}",
+        "",
+        "This checkpoint exists for direct canonical-DAG curation after a verified result. It is not a process audit and has no audit verdict.",
+        "",
+        f"- Trigger: `{trigger_reason}`",
+        "- Read `curation_input.json`, `curation_records/difficulty_dag.json`, and cited verified artifacts.",
+        "- Decide whether the verified result advances, resolves, or directly refutes its assigned canonical difficulty.",
+        "- Call `CurateDifficultyDag` exactly once; do not request or wait for a process audit.",
+        "",
+    ]), encoding="utf-8")
+    return path
 
 
 def _write_curator_brief(
@@ -539,6 +706,7 @@ def _write_curator_brief(
     events = read_recent_events(layout, limit=30)
     event_lines = _render_curation_events(events)
     reviewer_observations = _recent_reviewer_observations(layout.workspace_dir)
+    curation_input_path = _write_curation_input(layout=layout, task=task)
     brief_path = task.checkpoint_dir / "curator_brief.md"
     lines = [
         f"# Portfolio Curation Brief: {task.checkpoint_id}",
@@ -549,6 +717,7 @@ def _write_curator_brief(
         f"- Evidence: `{relative_path(task.evidence_path, layout.workspace_dir)}`",
         f"- Process audit: `{relative_path(audit_path, layout.workspace_dir)}`",
         f"- Machine decision: `{relative_path(task.checkpoint_dir / 'decision.json', layout.workspace_dir)}`",
+        f"- Structured DAG curation input: `{relative_path(curation_input_path, layout.workspace_dir)}`",
         "",
         "## Reviewer Graph Observations",
         *(

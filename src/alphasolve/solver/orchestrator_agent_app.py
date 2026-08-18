@@ -136,10 +136,8 @@ class OrchestratorAgentApp:
                 Workspace(self.layout.workspace_dir)
             ),
             stop_event=self.stop_event,
-            reviewer_history_path=self.layout.knowledge_dir / "reviewer-history.md",
         )
-        subagents.reviewer_state_provider = orchestrator.difficulty_dag.selection_snapshot
-        subagents.call_guard = orchestrator._guard_subagent_call
+        subagents.reviewer_state_provider = orchestrator._reviewer_frontier_projection
         agent = orchestrator.build_agent(
             manager,
             subagents=subagents,

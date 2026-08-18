@@ -3,7 +3,8 @@ from __future__ import annotations
 import json
 import queue
 import threading
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -32,11 +33,16 @@ class CuratorTask:
     artifact_path: Path | None = None
     attempts: int = 0
     recovery_reason: str = ""
+    # 合批后承载多段原始 trace：[(source_label, trace_segment, caller_context), ...]。
+    # 仅合批 digest 使用；单条 digest 该字段为空。
+    sub_traces: list[tuple[str, list[dict[str, Any]], dict[str, Any] | None]] = field(default_factory=list)
 
 
 _DEFAULT_POLICY = SolverPolicy()
 CURATOR_HEALTH_CHECK_INTERVAL = _DEFAULT_POLICY.curator_health_check_interval
 CURATOR_OVERSIZED_ENTRY_LINE_LIMIT = _DEFAULT_POLICY.curator_oversized_entry_line_limit
+CURATOR_DIGEST_BATCH_WINDOW_SECONDS = _DEFAULT_POLICY.curator_digest_batch_window_seconds
+CURATOR_DIGEST_MAX_BATCH = _DEFAULT_POLICY.curator_digest_max_batch
 
 
 class CuratorQueue:
@@ -65,6 +71,10 @@ class CuratorQueue:
         self.stop_event = stop_event
         self.renderer = renderer
         self._queue: queue.Queue[CuratorTask | None] = queue.Queue()
+        self._digest_batch_window = float(
+            self.policy.curator_digest_batch_window_seconds
+        )
+        self._digest_max_batch = max(1, int(self.policy.curator_digest_max_batch))
         self._thread = threading.Thread(target=self._worker, daemon=True, name="curator")
         self._started = False
         self._digest_tasks_since_health_check = 0
@@ -128,6 +138,8 @@ class CuratorQueue:
             task = self._queue.get()
             if task is None:
                 break
+            if task.task_kind == "digest":
+                task = self._coalesce_digest_batch(task)
             self._set_task_active(True)
             try:
                 self._run_curator(task)
@@ -139,6 +151,46 @@ class CuratorQueue:
                     self._queue.put(task)
             finally:
                 self._set_task_active(False)
+
+    def _coalesce_digest_batch(self, first: CuratorTask) -> CuratorTask:
+        """把短窗口内的多个 digest 任务合并成一次 curator 运行。
+
+        只合并普通 ``digest`` 任务；``health_check`` / ``portfolio_checkpoint`` /
+        ``evidence_checkpoint`` / ``global_attack_review`` / ``progress_audit`` 等特殊任务必须单独立即处理，
+        不会在窗口内被吸走。合并后的任务把多段 trace 拼成一个 ``trace_segment``，
+        让 curator 一次读完 index、一次写回，省去每个 digest 重复读 index 的往返。
+        """
+        if self._digest_batch_window <= 0 or self._digest_max_batch <= 1:
+            return first
+        batch: list[CuratorTask] = [first]
+        deadline = time.monotonic() + self._digest_batch_window
+        while len(batch) < self._digest_max_batch:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                nxt = self._queue.get(timeout=remaining)
+            except queue.Empty:
+                break
+            if nxt is None:
+                # 停止信号：放回哨兵让主循环正常退出。
+                self._queue.put(None)
+                break
+            if nxt.task_kind != "digest":
+                # 特殊任务不能合批，放回队首让主循环单独处理。
+                self._queue.put(nxt)
+                break
+            batch.append(nxt)
+        if len(batch) == 1:
+            return first
+        merged = CuratorTask(
+            trace_segment=[],
+            source_label=f"digest-batch/{len(batch)}",
+            task_kind="digest",
+        )
+        # 用 sub_traces 承载多段原始 trace，供 prompt 渲染时区分。
+        merged.sub_traces = [(item.source_label, item.trace_segment, item.caller_context) for item in batch]
+        return merged
 
     def _record_failure(self, task: CuratorTask, exc: Exception) -> None:
         """Persist curator failures because missing learning must never be silent."""
@@ -182,7 +234,7 @@ class CuratorQueue:
             ),
         )
         extra_registrars = ()
-        if task.task_kind == "portfolio_checkpoint" and task.artifact_path is not None:
+        if task.task_kind in {"portfolio_checkpoint", "evidence_checkpoint"} and task.artifact_path is not None:
             checkpoint_id = task.artifact_path.parent.name
             difficulty_dag = DifficultyDagStore(
                 self.workspace_dir,
@@ -210,55 +262,17 @@ class CuratorQueue:
             )
         elif task.task_kind == "portfolio_checkpoint":
             task_prompt = _portfolio_checkpoint_prompt(task.artifact_path, recovery_reason=task.recovery_reason)
+        elif task.task_kind == "evidence_checkpoint":
+            task_prompt = _evidence_checkpoint_prompt(task.artifact_path, recovery_reason=task.recovery_reason)
         elif task.task_kind == "global_attack_review":
             task_prompt = _global_attack_review_prompt(task.artifact_path)
         elif task.task_kind == "progress_audit":
             task_prompt = _progress_audit_prompt(task.audit_path)
         else:
-            trace_kind = _trace_kind(task.source_label)
-            is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
-            payload: Any = {
-                "trace_kind": trace_kind,
-                "trace": task.trace_segment,
-            }
-            if task.caller_context:
-                payload = {
-                    "trace_kind": trace_kind,
-                    "caller_context": task.caller_context,
-                    "subagent_trace": task.trace_segment,
-                }
-            trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
-            if is_verifier_final:
-                extra = (
-                    "This trace contains a verifier's final review of a generator's proposition. "
-                    "In addition to normal knowledge updates, carefully read the verifier's review "
-                    "to understand what mistake was made. "
-                    "Append up to 3 general error patterns to `knowledge/common-errors.md` when useful. "
-                    "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
-                    "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
-                    "Keep patterns general enough to apply across different problems. "
-                    "Do not add bullets for issues already covered. "
-                    "`knowledge/common-errors.md` must contain at most 15 error patterns; if it already has 15 patterns "
-                    "and a genuinely new one should be added, first merge, compress, or abstract existing related patterns "
-                    "so the final file still has no more than 15."
-                )
+            if task.sub_traces:
+                task_prompt = self._batch_digest_prompt(task)
             else:
-                extra = "Do not modify `knowledge/common-errors.md`."
-            task_prompt = (
-                "# Trace Segment for Knowledge Base\n\n"
-                f"```json\n{trace_text}\n```\n\n"
-                "Update the knowledge base in `knowledge/` based on this trace segment. "
-                "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
-                "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
-                "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
-                "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
-                "and carefully organized topic pages. "
-                "At the start of the task, read `knowledge/index.md` before browsing or editing other wiki entries. "
-                "If an entry is becoming too long for useful LLM reads, split it into a topic folder with focused subtopic pages "
-                "and a local `index.md`, rather than scattering fragments in the knowledge root. "
-                f"{extra} "
-                "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately as a route map."
-            )
+                task_prompt = self._single_digest_prompt(task)
 
         curator_sink = self.log_session.create_curator_sink() if self.log_session is not None else None
         curator_success = False
@@ -281,7 +295,7 @@ class CuratorQueue:
                 stop_event=self.stop_event,
             )
             agent.run(task_prompt)
-            if task.task_kind == "portfolio_checkpoint" and task.artifact_path is not None:
+            if task.task_kind in {"portfolio_checkpoint", "evidence_checkpoint"} and task.artifact_path is not None:
                 checkpoint_id = task.artifact_path.parent.name
                 if not DifficultyDagStore(
                     self.workspace_dir,
@@ -307,6 +321,97 @@ class CuratorQueue:
         touched_paths = access.touched_paths()
         _update_entry_metadata(touched_paths)
         self._record_touched_paths(touched_paths)
+
+    def _single_digest_prompt(self, task: CuratorTask) -> str:
+        trace_kind = _trace_kind(task.source_label)
+        is_verifier_final = trace_kind == "verifier" and _is_final_verifier_trace(task.trace_segment)
+        payload: Any = {
+            "trace_kind": trace_kind,
+            "trace": task.trace_segment,
+        }
+        if task.caller_context:
+            payload = {
+                "trace_kind": trace_kind,
+                "caller_context": task.caller_context,
+                "subagent_trace": task.trace_segment,
+            }
+        trace_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        extra = _verifier_final_extra(is_verifier_final)
+        return (
+            "# Trace Segment for Knowledge Base\n\n"
+            f"```json\n{trace_text}\n```\n\n"
+            "Update the knowledge base in `knowledge/` based on this trace segment. "
+            "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
+            "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
+            "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
+            "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
+            "and carefully organized topic pages. "
+            "At the start of the task, read `knowledge/index.md` before browsing or editing other wiki entries. "
+            "If an entry is becoming too long for useful LLM reads, split it into a topic folder with focused subtopic pages "
+            "and a local `index.md`, rather than scattering fragments in the knowledge root. "
+            f"{extra} "
+            "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately as a route map."
+        )
+
+    def _batch_digest_prompt(self, task: CuratorTask) -> str:
+        blocks: list[str] = []
+        has_verifier_final = False
+        for source_label, trace_segment, caller_context in task.sub_traces:
+            trace_kind = _trace_kind(source_label)
+            if trace_kind == "verifier" and _is_final_verifier_trace(trace_segment):
+                has_verifier_final = True
+            payload: Any = {
+                "trace_kind": trace_kind,
+                "trace": trace_segment,
+            }
+            if caller_context:
+                payload = {
+                    "trace_kind": trace_kind,
+                    "caller_context": caller_context,
+                    "subagent_trace": trace_segment,
+                }
+            blocks.append(json.dumps(payload, ensure_ascii=False, indent=2))
+        joined = "\n\n".join(
+            f"## Trace {index}\n\n```json\n{block}\n```"
+            for index, block in enumerate(blocks, start=1)
+        )
+        extra = _verifier_final_extra(has_verifier_final)
+        return (
+            "# Trace Segments for Knowledge Base\n\n"
+            f"Below are {len(blocks)} trace segments produced in the same scheduling batch. "
+            "Process all of them in a single pass.\n\n"
+            f"{joined}\n\n"
+            "Update the knowledge base in `knowledge/` based on all of these trace segments. "
+            "Trace metadata is for private triage only; do not copy source labels, worker names, proposition IDs, "
+            "generator/verifier/reviser roles, round numbers, attempt numbers, or session IDs into the knowledge base. "
+            "If `caller_context` is present, use it to understand the mathematical context, not as provenance text. "
+            "Maintain the knowledge base as a problem-specific wiki with detailed derivations, reusable observations, "
+            "and carefully organized topic pages. "
+            "At the start of the task, read `knowledge/index.md` only once before browsing or editing other wiki entries; "
+            "do not re-read it between the trace segments. "
+            "If an entry is becoming too long for useful LLM reads, split it into a topic folder with focused subtopic pages "
+            "and a local `index.md`, rather than scattering fragments in the knowledge root. "
+            f"{extra} "
+            "Before finishing, make sure `knowledge/index.md` still describes the current entries accurately as a route map."
+        )
+
+
+def _verifier_final_extra(is_verifier_final: bool) -> str:
+    if is_verifier_final:
+        return (
+            "This batch contains a verifier's final review of a generator's proposition. "
+            "In addition to normal knowledge updates, carefully read the verifier's review "
+            "to understand what mistake was made. "
+            "Append up to 3 general error patterns to `knowledge/common-errors.md` when useful. "
+            "Each bullet must describe a reusable pattern of mistakes that the generator tends to make, "
+            "not a specific failed proposition, reviewer, worker, round, attempt, or source label. "
+            "Keep patterns general enough to apply across different problems. "
+            "Do not add bullets for issues already covered. "
+            "`knowledge/common-errors.md` must contain at most 15 error patterns; if it already has 15 patterns "
+            "and a genuinely new one should be added, first merge, compress, or abstract existing related patterns "
+            "so the final file still has no more than 15."
+        )
+    return "Do not modify `knowledge/common-errors.md`."
 
 
 def _make_workspace(workspace_dir: Path):
@@ -347,7 +452,21 @@ def _portfolio_checkpoint_prompt(artifact_path: Path | None, *, recovery_reason:
         "# Portfolio Checkpoint Difficulty Graph Curation\n\n"
         f"Read the checkpoint brief at {path_text}. Then inspect curation_records/difficulty_dag.json and call CurateDifficultyDag exactly once.\n\n"
         + recovery
-        + "Reconcile worker-local source difficulty records into canonical IDs. Existing aliases in difficulty_dag.json are binding: when a source is already mapped, reuse that canonical difficulty rather than assigning a new one. A child must be strictly smaller than its parent, with a checkable statement, a verified boundary, and a remaining inference; do not submit self-parenting or alias-equivalent edges. A parentless difficulty is a valid independent component. Reviewer graph observations in the brief are candidate evidence only: verify their cited propositions, audits, or handoffs before changing a canonical node, edge, or status; do not make speculative repairs. Legacy direction/gap source labels may be submitted verbatim and are normalized by runtime. Preserve a parent edge only when cited evidence establishes the mathematical relationship. Use all_of, any_of, or manual only when justified; runtime computes executable leaves. Write evidence-bounded knowledge notes, but do not maintain routes, direction/gap gates, or a blocker matrix."
+        + "Read the current DAG and curation_input.json before deciding placement. Reconcile runtime handoff IDs into canonical IDs only when cited evidence establishes the same mathematical obligation; otherwise archive the obstacle as an attempt without creating a node. Existing aliases in difficulty_dag.json are binding: when a handoff is already mapped, reuse that canonical difficulty rather than assigning a new one. Add a child only when cited mathematics establishes a separately checkable, strictly smaller dependency; parentless components are valid. When a verified proposition directly contradicts an existing node's statement, submit a cited status_updates entry with status=refuted; an obstacle report alone never changes status. Reviewer observations are candidates only: verify their cited propositions, audits, or handoffs before changing a canonical node, edge, or status. Preserve a parent edge only when cited evidence establishes the mathematical relationship. Use all_of, any_of, or manual only when justified; runtime computes executable leaves. Write evidence-bounded knowledge notes, but do not maintain routes, direction/gap gates, or a blocker matrix."
+    )
+
+
+def _evidence_checkpoint_prompt(artifact_path: Path | None, *, recovery_reason: str = "") -> str:
+    path_text = str(artifact_path) if artifact_path is not None else "(missing evidence checkpoint brief)"
+    recovery = f"Previous curation failure: {recovery_reason}\n\n" if recovery_reason else ""
+    return (
+        "# Targeted Verified Evidence Curation\n\n"
+        f"Read the evidence checkpoint brief at {path_text}, its curation_input.json, and curation_records/difficulty_dag.json. "
+        "This is direct DAG curation after a verified proposition, not a progress audit: do not wait for, request, or infer an audit verdict. "
+        "Determine only whether the verified proposition changes its assigned canonical node. If it directly contradicts that node, "
+        "submit a cited status_updates entry with status=refuted; if it advances or resolves a node, record only the supported status and evidence. "
+        "Archive any worker obstacle as evidence, but do not create a node or edge from wording alone. Call CurateDifficultyDag exactly once.\n\n"
+        + recovery
     )
 
 

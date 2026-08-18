@@ -12,7 +12,7 @@ from alphasolve.solver.difficulty_declaration import (
 from alphasolve.solver.difficulty_portfolio import candidate_handoffs
 
 
-def _record_generator_difficulty(tmp_path):
+def _worker_dir(tmp_path):
     worker_dir = tmp_path / "prop-worker-a"
     worker_dir.mkdir()
     (worker_dir / "research_target.json").write_text(
@@ -24,99 +24,93 @@ def _record_generator_difficulty(tmp_path):
         }),
         encoding="utf-8",
     )
-    declaration_path = worker_dir / "difficulty_declaration.md"
+    return worker_dir, worker_dir / "difficulty_declaration.md"
+
+
+def _record_generator_obstacle(tmp_path):
+    worker_dir, declaration_path = _worker_dir(tmp_path)
     registry = ToolRegistry()
     register_difficulty_declaration_tool(registry, declaration_path=declaration_path, role="generator")
     result = registry.execute(
         "RecordDifficulty",
         {
-            "event_kind": "blocked",
-            "source_difficulty_id": "packing-extra-marker",
-            "blocking_obligation": "Control the extra marker family in the global packing bound.",
-            "verified_boundary": "The two-family matching gives an N+1 lower bound.",
-            "remaining_delta": "Prove the standalone marker-family estimate beyond the two-family bound.",
+            "obstacle": "The current matching argument does not control the extra marker family, so it cannot prove the global packing bound.",
         },
     )
     assert not result.is_error
     return worker_dir, declaration_path
 
 
-def test_record_difficulty_preserves_minimal_targeted_obstacle(tmp_path):
-    worker_dir, declaration_path = _record_generator_difficulty(tmp_path)
-    declaration = load_difficulty_declaration(declaration_path)
+def test_record_difficulty_appends_generator_reviser_and_reasoning_records(tmp_path):
+    worker_dir, declaration_path = _worker_dir(tmp_path)
+    reasoning = ToolRegistry()
+    register_difficulty_declaration_tool(
+        reasoning,
+        declaration_path=declaration_path,
+        role="reasoning_subagent",
+        record_context={
+            "delegated_description": "Check marker-family lemma",
+            "delegated_task": "Prove the marker-family inequality under the current assumptions.",
+            "subagent_session_id": "worker-a/reasoning/1",
+        },
+    )
+    generator = ToolRegistry()
+    register_difficulty_declaration_tool(generator, declaration_path=declaration_path, role="generator")
+    reviser = ToolRegistry()
+    register_difficulty_declaration_tool(reviser, declaration_path=declaration_path, role="reviser")
 
+    assert not reasoning.execute("RecordDifficulty", {"obstacle": "The reduction leaves an equality case with no exclusion argument."}).is_error
+    assert not generator.execute("RecordDifficulty", {"obstacle": "Without the marker-family lemma, the global packing bound remains unproved."}).is_error
+    assert not reviser.execute("RecordDifficulty", {"obstacle": "The verifier's global step cannot be repaired from the current hypotheses."}).is_error
+
+    declaration = load_difficulty_declaration(declaration_path)
     assert declaration is not None
     assert declaration["runtime_context"]["difficulty_id"] == "global-packing"
-    record = declaration["generator"]
-    assert record["source_difficulty_id"] == "packing-extra-marker"
-    assert record["parent_difficulty_id"] == "global-packing"
-    assert record["event_kind"] == "blocked"
-    assert record["verified_boundary"].startswith("The two-family")
-    assert record["remaining_delta"].startswith("Prove the standalone")
-    assert "why_hard" not in record
-    assert "suggested_attack" not in record
+    records = declaration["records"]
+    assert [record["role"] for record in records] == ["reasoning_subagent", "generator", "reviser"]
+    assert records[0]["delegated_description"] == "Check marker-family lemma"
+    assert records[0]["delegated_task"].startswith("Prove the marker-family")
+    assert records[0]["subagent_session_id"] == "worker-a/reasoning/1"
     assert difficulty_json_path(declaration_path).is_file()
+    markdown = declaration_path.read_text(encoding="utf-8")
+    assert "### Record 1 — reasoning_subagent" in markdown
+    assert "### Record 2 — generator" in markdown
+    assert "### Record 3 — reviser" in markdown
     assert worker_dir.is_dir()
 
 
-def test_record_difficulty_rejects_invalid_targeted_child_or_unwitnessed_refutation(tmp_path):
-    worker_dir = tmp_path / "prop-worker-self"
+def test_record_difficulty_requires_a_nonempty_obstacle(tmp_path):
+    worker_dir = tmp_path / "prop-worker-empty"
     worker_dir.mkdir()
-    (worker_dir / "research_target.json").write_text(
-        json.dumps({
-            "worker_id": "worker-self",
-            "difficulty_id": "global-packing",
-            "difficulty_statement": "Prove the global packing bound.",
-        }),
-        encoding="utf-8",
-    )
     registry = ToolRegistry()
     register_difficulty_declaration_tool(
         registry,
         declaration_path=worker_dir / "difficulty_declaration.md",
-        role="generator",
+        role="reasoning_subagent",
     )
 
-    self_parent = registry.execute(
-        "RecordDifficulty",
-        {
-            "event_kind": "blocked",
-            "source_difficulty_id": "global-packing",
-            "blocking_obligation": "Control one unproved local packing inequality.",
-            "verified_boundary": "The reduction is proved.",
-            "remaining_delta": "A local inequality remains.",
+    result = registry.execute("RecordDifficulty", {"obstacle": ""})
+
+    assert result.is_error
+    assert "obstacle must not be empty" in result.content
+
+
+def test_materialized_handoff_prefers_outer_obstacle_and_retains_reasoning_evidence(tmp_path):
+    worker_dir, declaration_path = _worker_dir(tmp_path)
+    reasoning = ToolRegistry()
+    register_difficulty_declaration_tool(
+        reasoning,
+        declaration_path=declaration_path,
+        role="reasoning_subagent",
+        record_context={
+            "delegated_description": "Check marker-family lemma",
+            "delegated_task": "Prove the marker-family inequality under the current assumptions.",
         },
     )
-    assert self_parent.is_error
-    assert "differ from the assigned parent" in self_parent.content
-
-    repeated_parent = registry.execute(
-        "RecordDifficulty",
-        {
-            "event_kind": "blocked",
-            "source_difficulty_id": "packing-reworded",
-            "blocking_obligation": "Prove the global packing bound.",
-            "verified_boundary": "No smaller boundary was found.",
-            "remaining_delta": "The original theorem remains.",
-        },
-    )
-    assert repeated_parent.is_error
-    assert "restates the assigned parent" in repeated_parent.content
-
-    root_refutation = registry.execute(
-        "RecordDifficulty",
-        {
-            "event_kind": "refuted",
-            "source_difficulty_id": "packing-counterexample",
-            "blocking_obligation": "The proposed packing inequality.",
-        },
-    )
-    assert root_refutation.is_error
-    assert "refutation_witness is required" in root_refutation.content
-
-
-def test_materialized_handoff_contains_only_minimal_obstacle_facts(tmp_path):
-    worker_dir, declaration_path = _record_generator_difficulty(tmp_path)
+    generator = ToolRegistry()
+    register_difficulty_declaration_tool(generator, declaration_path=declaration_path, role="generator")
+    assert not reasoning.execute("RecordDifficulty", {"obstacle": "The equality case is not excluded."}).is_error
+    assert not generator.execute("RecordDifficulty", {"obstacle": "The unresolved equality case prevents proving the global packing bound."}).is_error
     review = worker_dir / "review.md"
     review.write_text("Verdict: fail\nThe global packing step is absent.\n", encoding="utf-8")
 
@@ -134,20 +128,22 @@ def test_materialized_handoff_contains_only_minimal_obstacle_facts(tmp_path):
 
     assert handoff_path is not None and handoff_path.is_file()
     assert handoff is not None
-    assert handoff["source_difficulty_id"] == "packing-extra-marker"
-    assert handoff["parent_difficulty_id"] == "global-packing"
-    assert handoff["event_kind"] == "blocked"
-    assert handoff["verified_boundary"].startswith("The two-family")
-    assert handoff["remaining_delta"].startswith("Prove the standalone")
+    assert handoff["handoff_id"] == "handoff-worker-a"
+    assert handoff["difficulty_id"] == "global-packing"
+    assert handoff["obstacle_source_role"] == "generator"
+    assert handoff["obstacle"].startswith("The unresolved equality")
+    assert [record["role"] for record in handoff["obstacle_records"]] == ["reasoning_subagent", "generator"]
+    assert handoff["obstacle_records"][0]["delegated_description"] == "Check marker-family lemma"
     assert handoff["requires_checkpoint_curation"] is True
     assert str(review) in handoff["evidence_refs"]
-    assert "why_current_route_fails" not in handoff
-    assert "suggested_attack" not in handoff
-    assert "dead_ends" not in handoff
+    assert "event_kind" not in handoff
+    assert "verified_boundary" not in handoff
+    assert "remaining_delta" not in handoff
+    assert "refutation_witness" not in handoff
 
 
-def test_portfolio_exposes_minimal_handoff_facts(tmp_path):
-    _, declaration_path = _record_generator_difficulty(tmp_path)
+def test_portfolio_exposes_task_specific_reasoning_observation(tmp_path):
+    _, declaration_path = _record_generator_obstacle(tmp_path)
     _, handoff = materialize_difficulty_handoff(
         declaration_path=declaration_path,
         worker_id="worker-a",
@@ -159,10 +155,11 @@ def test_portfolio_exposes_minimal_handoff_facts(tmp_path):
         proposition_file=None,
         verified_file=None,
     )
+
     assert handoff is not None
     compact = candidate_handoffs([{"difficulty_handoff": handoff}])[0]
-    assert compact["source_difficulty_id"] == "packing-extra-marker"
-    assert compact["event_kind"] == "blocked"
-    assert compact["blocking_obligation"].startswith("Control the extra marker")
-    assert compact["verified_boundary"].startswith("The two-family")
-    assert compact["remaining_delta"].startswith("Prove the standalone")
+    assert compact["handoff_id"] == "handoff-worker-a"
+    assert compact["difficulty_id"] == "global-packing"
+    assert compact["obstacle"].startswith("The current matching")
+    assert compact["obstacle_records"][0]["role"] == "generator"
+    assert set(compact).isdisjoint({"event_kind", "verified_boundary", "remaining_delta", "refutation_witness"})

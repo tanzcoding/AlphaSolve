@@ -12,6 +12,7 @@ agent:
     - Glob
     - Grep
     - GetCurrentTime
+    - RecordDifficulty
   tool_parameters:
     Agent:
       type:

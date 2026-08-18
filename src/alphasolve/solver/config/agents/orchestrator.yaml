@@ -19,7 +19,6 @@ agent:
     - RequestResearchPlan
     - ExecuteResearchPlan
     - SpawnWorker
-    - Agent
     - SpawnFreeExploration
     - TaskOutput
     - GetCurrentTime

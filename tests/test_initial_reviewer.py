@@ -18,7 +18,7 @@ def _response(content: str) -> CompletionResponse:
     return CompletionResponse(message=Message(role="assistant", content=content), finish_reason="stop")
 
 
-def test_orchestrator_starts_without_preemptive_reviewer_and_exposes_reviewer_tool(tmp_path):
+def test_orchestrator_does_not_force_reviewer_for_simple_startup(tmp_path):
     (tmp_path / "problem.md").write_text("# Problem\n\nProve the target.\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()
@@ -36,12 +36,10 @@ def test_orchestrator_starts_without_preemptive_reviewer_and_exposes_reviewer_to
 
         def complete(self, *, messages, tools):
             calls.setdefault(self.role, []).append(list(messages))
-            combined = "\n".join(str(message.content or "") for message in messages)
             if self.role == "orchestrator":
-                agent_tool = next(tool for tool in tools if tool.name == "Agent")
-                assert "research_reviewer" in agent_tool.parameters["properties"]["type"]["enum"]
-                assert "# Initial Independent Research Reviewer Assessment" not in combined
-                return _response("I started directly; no reviewer is needed for this test.")
+                assert any(tool.name == "RequestResearchPlan" for tool in tools)
+                assert not any(tool.name == "Agent" for tool in tools)
+                return _response("This simple problem needs no research plan.")
             raise AssertionError(f"unexpected role: {self.role}")
 
     orchestrator = Orchestrator(
@@ -61,14 +59,18 @@ def test_orchestrator_starts_without_preemptive_reviewer_and_exposes_reviewer_to
     assert len(calls["orchestrator"]) == 1
 
 
-def test_reviewer_is_limited_to_one_orchestrator_phase_call():
-    orchestrator = object.__new__(Orchestrator)
-    orchestrator._reviewer_call_count = 0
+def test_orchestrator_allows_only_one_successful_research_plan(tmp_path):
+    (tmp_path / "problem.md").write_text("# Problem\n\nProve the target.\n", encoding="utf-8")
+    layout = ProjectLayout.create(tmp_path)
+    layout.ensure()
+    suite = load_agent_suite(Path(solver_pkg.__file__).parent / "config")
+    orchestrator = Orchestrator(layout=layout, suite=suite, client_factory=lambda _config: None)
+    orchestrator._research_plan_created = True
 
-    orchestrator._guard_subagent_call("research_reviewer", 0)
+    result = orchestrator._request_research_plan_tool(object(), {})
 
-    with pytest.raises(RuntimeError, match="at most once"):
-        orchestrator._guard_subagent_call("research_reviewer", 0)
+    assert result.is_error
+    assert "research_plan_already_created" in result.content
 
 
 def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestration(tmp_path):
@@ -143,16 +145,14 @@ def test_task_output_handoffs_do_not_trigger_another_reviewer(tmp_path):
                 "worker_id": "worker-a",
                 "difficulty_handoff": {
                     "worker_id": "worker-a",
-                    "event_kind": "blocked",
-                    "blocking_obligation": "Prove bridge A.",
+                    "obstacle": "Bridge A remains unproved by the current route.",
                 },
             },
             {
                 "worker_id": "worker-b",
                 "difficulty_handoff": {
                     "worker_id": "worker-b",
-                    "event_kind": "blocked",
-                    "blocking_obligation": "Prove bridge B.",
+                    "obstacle": "Bridge B remains unproved by the current route.",
                 },
             },
         ]

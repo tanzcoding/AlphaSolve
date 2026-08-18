@@ -50,6 +50,33 @@ def test_curator_curation_archives_attempts_and_verified_outputs(tmp_path):
     assert node["progress"]["verified_proposition_refs"] == ["verified_propositions/bridge.md"]
 
 
+def test_curator_can_mark_an_existing_node_refuted_from_verified_evidence(tmp_path):
+    layout = _layout(tmp_path)
+    dag = DifficultyDagStore(layout.workspace_dir)
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[{
+            "difficulty_id": "false-lower-bound",
+            "statement": "Prove the proposed lower bound.",
+            "source_handoff_ids": ["handoff-worker-a"],
+        }],
+    )
+
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[],
+        status_updates=[{
+            "difficulty_id": "false-lower-bound",
+            "status": "refuted",
+            "evidence_refs": ["verified_propositions/counterexample.md"],
+        }],
+    )
+
+    node = dag.load()["nodes"]["false-lower-bound"]
+    assert node["status"] == "refuted"
+    assert "verified_propositions/counterexample.md" in node["evidence_refs"]
+
+
 def test_curator_can_remove_an_evidenced_wrong_parent_edge(tmp_path):
     layout = _layout(tmp_path)
     dag = DifficultyDagStore(layout.workspace_dir)

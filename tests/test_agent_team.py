@@ -25,6 +25,7 @@ from alphasolve.solver.curator import (  # noqa: E402
     _update_entry_metadata,
     init_knowledge_base,
 )
+from alphasolve.solver.policy import SolverPolicy  # noqa: E402
 from alphasolve.solver.orchestrator import Orchestrator  # noqa: E402
 from alphasolve.solver.orchestrator import verified_count  # noqa: E402
 from alphasolve.solver.worker import Worker  # noqa: E402
@@ -93,7 +94,8 @@ def test_default_agent_suite_loads_yaml_roles():
         "theorem_checker",
     } <= set(suite.agents)
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
-    assert "Agent" in suite.agents["orchestrator"].tools
+    assert "Agent" not in suite.agents["orchestrator"].tools
+    assert "RequestResearchPlan" in suite.agents["orchestrator"].tools
     assert "Write" in suite.agents["orchestrator"].tools
     assert "Edit" in suite.agents["orchestrator"].tools
     assert "MakeDir" in suite.agents["orchestrator"].tools
@@ -128,7 +130,9 @@ def test_default_agent_suite_loads_yaml_roles():
     orchestrator_prompt = suite.agents["orchestrator"].system_prompt
     assert "Only verified propositions are established" in reviewer_prompt
     assert "Adversarial Review" in reviewer_prompt
-    assert "DISPATCH: NEEDS_FALSIFICATION" in reviewer_prompt
+    assert "Research Strategy JSON" in reviewer_prompt
+    assert "research_strategy" in reviewer_prompt
+    assert "next_step" in reviewer_prompt
     assert "read_state=true" in reviewer_prompt
     assert "RequestResearchPlan" in orchestrator_prompt
     assert "ExecuteResearchPlan" in orchestrator_prompt
@@ -218,8 +222,7 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
         initial = generator_registry.execute(
             "RecordDifficulty",
             {
-                "event_kind": "blocked",
-                "blocking_obligation": "Proving the required global inequality remains open.",
+                "obstacle": "The required global inequality remains unproved by the current argument.",
             },
             enabled=list(generator_config.tools),
             tool_parameters=generator_config.tool_parameters,
@@ -227,8 +230,8 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
         assert not initial.is_error
         declaration = worker_dir / "difficulty_declaration.md"
         initial_text = declaration.read_text(encoding="utf-8")
-        assert "## Generator Declaration" in initial_text
-        assert "global inequality remains open" in initial_text
+        assert "### Record 1 — generator" in initial_text
+        assert "global inequality remains unproved" in initial_text
 
         reviser_config = suite.agents["reviser"]
         reviser_access = RoleWorkspaceAccess.reviser(
@@ -238,16 +241,15 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
         update = reviser_registry.execute(
             "RecordDifficulty",
             {
-                "event_kind": "weakened",
-                "blocking_obligation": "The verifier's global step cannot be repaired from the current hypotheses.",
+                "obstacle": "The verifier's global step cannot be repaired from the current hypotheses.",
             },
             enabled=list(reviser_config.tools),
             tool_parameters=reviser_config.tool_parameters,
         )
         assert not update.is_error
         updated_text = declaration.read_text(encoding="utf-8")
-        assert "## Generator Declaration" in updated_text
-        assert "### Reviser Update 1" in updated_text
+        assert "### Record 1 — generator" in updated_text
+        assert "### Record 2 — reviser" in updated_text
         assert "global step cannot be repaired" in updated_text
 
 
@@ -562,6 +564,7 @@ def test_knowledge_curator_queue_updates_renderer_state(tmp_path):
         suite=Suite(),
         client_factory=lambda config: None,
         renderer=renderer,
+        policy=SolverPolicy(curator_digest_batch_window_seconds=0),
     )
     started = threading.Event()
     release = threading.Event()
@@ -1334,15 +1337,8 @@ def test_orchestrator_review_tool_returns_only_reviewer_final_report():
             tool_parameters=config.tool_parameters,
         )
 
-        assert not result.is_error
-        assert "agent_id: orchestrator/research_reviewer/depth-0/" in result.content
-        assert "actual_subagent_type: research_reviewer" in result.content
-        assert "status: completed" in result.content
-        assert "[summary]" in result.content
-        assert "## Current state\nClean reviewer report." in result.content
-        assert '"trace"' not in result.content
-        assert '"final_answer"' not in result.content
-        assert "internal read content" not in result.content
+        assert result.is_error
+        assert "tool is not enabled" in result.content
 
 
 def test_orchestrator_can_organize_verified_propositions_without_renaming_markdown_files():
@@ -1414,8 +1410,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "process_audit_context_reset" not in tool_descriptions["TaskOutput"]
         assert "fresh reviewer report" not in tool_descriptions["TaskOutput"]
         assert "open-ended, non-targeted exploration" in tool_descriptions["SpawnFreeExploration"]
-        assert "Launch a new specialized agent" in tool_descriptions["Agent"]
-        assert "separate session" in tool_descriptions["Agent"]
+        assert "Agent" not in tool_descriptions
         rename_description = next(t.description for t in defs if t.name == "Rename")
         assert "Rename a folder" in rename_description
         assert "Use this only when the item stays in the same directory" in rename_description
@@ -1955,6 +1950,8 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
             session_id="pytest/session",
             config=reasoning_config,
             max_depth=service.max_depth,
+            delegated_description="Identity check",
+            delegated_task="Check x=x.",
         )
         python_result = registry.execute("RunPython", {"code": "value = 6 * 7\nvalue"})
         denied = registry.execute("RunPython", {"code": "open('leak.txt', 'w')"})
@@ -1995,10 +1992,60 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
             session_id="pytest/deep",
             config=reasoning_config,
             max_depth=service.max_depth,
+            delegated_description="Deep identity check",
+            delegated_task="Check x=x without delegation.",
         )
         assert "Agent" not in [tool.name for tool in max_depth_registry.registered_tools()]
     finally:
         gateway.close()
+
+
+def test_reasoning_subagent_registry_records_obstacle_with_delegated_task(tmp_path):
+    (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
+    layout = ProjectLayout.create(tmp_path)
+    layout.ensure()
+    worker_rel = "unverified_propositions/prop-reasoning"
+    worker_dir = layout.workspace_dir / worker_rel
+    worker_dir.mkdir(parents=True)
+    (worker_dir / "research_target.json").write_text(json.dumps({
+        "worker_id": "worker-reasoning",
+        "difficulty_id": "local-lemma",
+        "difficulty_statement": "Prove the local lemma.",
+    }), encoding="utf-8")
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
+    reasoning_config = suite.subagents["reasoning_subagent"]
+    service = SubagentService(
+        suite=suite,
+        client_factory=make_demo_client_factory(),
+        file_access_factory=lambda: RoleWorkspaceAccess.worker_read_only(Workspace(layout.workspace_dir), worker_rel),
+    )
+
+    registry = service._build_subagent_registry(
+        depth=0,
+        session_id="worker-reasoning/reasoning/1",
+        config=reasoning_config,
+        max_depth=0,
+        delegated_description="Check local lemma",
+        delegated_task="Prove the local lemma under assumptions A and B.",
+    )
+    recorded = registry.execute(
+        "RecordDifficulty",
+        {"obstacle": "The equality case cannot be excluded under assumptions A and B."},
+        enabled=list(reasoning_config.tools),
+        tool_parameters=reasoning_config.tool_parameters,
+    )
+
+    assert not recorded.is_error
+    declaration = json.loads((worker_dir / "difficulty_declaration.json").read_text(encoding="utf-8"))
+    assert declaration["records"] == [{
+        "index": 1,
+        "role": "reasoning_subagent",
+        "obstacle": "The equality case cannot be excluded under assumptions A and B.",
+        "delegated_description": "Check local lemma",
+        "delegated_task": "Prove the local lemma under assumptions A and B.",
+        "subagent_session_id": "worker-reasoning/reasoning/1",
+    }]
+    assert "Write" not in [tool.name for tool in registry.registered_tools()]
 
 
 def test_subagent_service_cleans_up_gateway_session_after_return():

@@ -23,8 +23,8 @@ agent:
   tool_descriptions:
     Agent:
       suffix: |-
-        - Use `reasoning_subagent` at most once to adversarially review your selected post-batch recommendation before finalizing it.
-        - Use `numerical_experiment_subagent` at most once, and only for a decision-critical finite fact absent from worker evidence.
+        - Use `reasoning_subagent` at most once to adversarially review your selected research strategy before finalizing it.
+        - Use `numerical_experiment_subagent` at most once, and only for a decision-critical finite fact absent from available evidence.
         - Do NOT call `research_reviewer` (yourself) — it is not in your allowed types.
     Read:
       suffix: |-
