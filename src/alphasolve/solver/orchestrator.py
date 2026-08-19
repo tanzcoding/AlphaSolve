@@ -19,7 +19,7 @@ from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
-from .difficulty_dag import DifficultyDagStore, register_orchestrator_difficulty_tools
+from .research_planning import ReviewerPlanGateway, parse_recommendation, reviewer_prompt
 from .curation_records import append_event as append_curation_event
 from .cold_start import ColdStartRuntime
 from .policy import SolverPolicy
@@ -36,7 +36,6 @@ from .tool_runtime import build_solver_tool_registry, register_orchestrator_work
 from .workspace_access import RoleWorkspaceAccess
 from .search import SearchSession
 from .research_frontier_state import write_research_frontier_state
-from .research_planning import frontier_projection, parse_recommendation, reviewer_prompt
 
 if TYPE_CHECKING:
     from alphasolve.solver.execution import ExecutionGateway
@@ -739,7 +738,7 @@ class Orchestrator:
             scheduler_state_path=self.layout.scheduler_state_path,
             attempt_graph_path=self.layout.attempt_graph_path,
         )
-        self.difficulty_dag = DifficultyDagStore(
+        self._reviewer_plan_gateway = ReviewerPlanGateway(
             self.layout.workspace_dir,
             policy=self.policy.difficulty_dag,
         )
@@ -748,8 +747,8 @@ class Orchestrator:
         self._research_plans: dict[str, dict[str, Any]] = {}
         self._research_plan_created = False
         self._active_research_plan: dict[str, Any] | None = None
-        self._plan_restart_reason: dict[str, Any] | None = None
         self._worker_difficulties: dict[str, str] = {}
+        self._local_followup_handoff_ids: set[str] = set()
         # 搜索树观测日志写入器（每 selection cycle 落一次快照）；run() 内按需创建。
         self._search_tree_sink = None
 
@@ -757,11 +756,7 @@ class Orchestrator:
         runtime_provider = getattr(manager, "research_frontier_runtime", None)
         runtime = runtime_provider() if callable(runtime_provider) else None
         policy = getattr(self, "policy", None)
-        difficulty_dag_policy = getattr(
-            policy,
-            "difficulty_dag",
-            getattr(getattr(self, "difficulty_dag", None), "policy", None),
-        )
+        difficulty_dag_policy = getattr(policy, "difficulty_dag", None)
         try:
             write_research_frontier_state(
                 self.layout.workspace_dir,
@@ -946,10 +941,6 @@ class Orchestrator:
                     self.policy.worker_wait_timeout_seconds,
                 ),
             ),
-            lambda registry: register_orchestrator_difficulty_tools(
-                registry,
-                snapshot_handler=self._difficulty_frontier_tool,
-            ),
             lambda registry: self._register_research_planning_tools(registry, manager),
             lambda registry: self._register_free_exploration_tool(registry, manager),
         )
@@ -988,9 +979,8 @@ class Orchestrator:
             name="SpawnFreeExploration",
             description=(
                 "Start one worker for open-ended, non-targeted exploration and return immediately "
-                "(does not wait). You may use this while canonical leaves exist, but must supply a concrete "
-                "reason why an orthogonal route is worth a worker slot. The runtime records that frontier "
-                "deviation, the available canonical leaves, and the worker's eventual outcome.\n\n"
+                "(does not wait). Supply a concrete reason why an orthogonal route is worth a worker slot. "
+                "The runtime records the deviation and the worker's eventual outcome.\n\n"
                 "The worker receives an optional "
                 "under-explored verified seed. It must choose a distinct bounded claim or record why no such "
                 "claim is available. Returns the same shape as SpawnWorker; if no slot is available it returns "
@@ -1001,13 +991,33 @@ class Orchestrator:
                 "properties": {
                     "reason": {
                         "type": "string",
-                        "description": "Concrete reason for departing from the canonical frontier; name the orthogonal hypothesis, evidence, or expected information gain.",
+                        "description": "Concrete reason for choosing an orthogonal route; name the hypothesis, evidence, or expected information gain.",
                     },
                 },
                 "required": ["reason"],
             },
             handler=lambda args: self._spawn_free_exploration_tool(manager, args),
         )
+
+    def _available_local_handoffs(
+        self,
+        manager: WorkerManager,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        if isinstance(payload, dict):
+            records.extend(item for item in payload.get("completed") or [] if isinstance(item, dict))
+        for result in list(getattr(manager, "results", [])[-24:]):
+            if isinstance(getattr(result, "difficulty_handoff", None), dict):
+                records.append({"worker_id": result.worker_id, "difficulty_handoff": result.difficulty_handoff})
+        current = candidate_handoffs(records)
+        persisted = load_recent_candidate_handoffs(self.layout.progress_audit_outcomes_path)
+        handoffs = merge_candidate_handoffs(persisted, current)
+        return {
+            str(item.get("handoff_id") or ""): item
+            for item in handoffs
+            if str(item.get("handoff_id") or "")
+        }
 
     def _spawn_free_exploration_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         reason = str(args.get("reason") or "").strip()
@@ -1030,7 +1040,6 @@ class Orchestrator:
                 "frontier_deviation_started",
                 worker_id=worker_id,
                 reason=reason,
-                executable_difficulty_ids=deviation.get("executable_difficulty_ids") or [],
             )
             deviations = getattr(self, "_free_exploration_deviations", {})
             deviations[worker_id] = record
@@ -1041,33 +1050,18 @@ class Orchestrator:
         return ToolResult(json.dumps(payload, ensure_ascii=False))
 
     def _free_exploration_preflight(self) -> dict[str, Any]:
-        frontier = self.difficulty_dag.selection_snapshot()
-        return {
-            "allowed": True,
-            "frontier_deviation": {
-                "executable_difficulty_ids": [
-                    str(item.get("difficulty_id"))
-                    for item in frontier.get("executable_difficulties") or []
-                    if isinstance(item, dict) and item.get("difficulty_id")
-                ],
-            },
-        }
+        return {"allowed": True, "frontier_deviation": {}}
 
     def _free_exploration_constraints(self, reason: str, deviation: dict[str, Any]) -> str:
-        leaves = ", ".join(f"`{item}`" for item in deviation.get("executable_difficulty_ids") or []) or "none"
+        del deviation
         return (
-            "Open an independent, bounded research direction. Do not repeat a refuted or split-required obligation. "
-            "If a concrete obstacle prevents completion, call RecordDifficulty so the curator can review it with the worker evidence "
-            "at the next checkpoint.\n\n"
-            f"Reviewer direction: {reason}\n"
-            f"Current executable difficulties: {leaves}"
+            "Open an independent, bounded research direction. If a concrete obstacle prevents completion, "
+            "call RecordDifficulty so the curator can review the worker evidence at the next checkpoint.\n\n"
+            f"Reviewer direction: {reason}"
         )
 
     def _reviewer_frontier_projection(self) -> dict[str, Any]:
-        return frontier_projection(self.difficulty_dag.selection_snapshot())
-
-    def _difficulty_frontier_tool(self, _args: dict[str, Any]) -> ToolResult:
-        return ToolResult(json.dumps(self._reviewer_frontier_projection(), ensure_ascii=False))
+        return self._reviewer_plan_gateway.reviewer_frontier()
 
     def _pending_process_audits(self) -> list[str]:
         queue = self._progress_audit_queue
@@ -1095,9 +1089,9 @@ class Orchestrator:
         registry.register(
             name="RequestResearchPlan",
             description=(
-                "Ask the independent research reviewer to compare the full canonical graph projection, available worker evidence, "
-                "and source indexes. One successful research plan is permitted per orchestrator run; its invalidation ends the run for fresh review. "
-                "This tool exposes no raw DAG and does not dispatch work."
+                "Ask the independent research reviewer to compare the graph projection, available worker evidence, audits, and source indexes. "
+                "Its plan is advisory: use it when strategy is unclear, a route is stale, or new evidence changes priorities. "
+                "It exposes no raw DAG and does not dispatch work."
             ),
             parameters={"type": "object", "properties": {}, "required": []},
             handler=lambda args: self._request_research_plan_tool(manager, args),
@@ -1118,21 +1112,21 @@ class Orchestrator:
         )
 
     def _request_research_plan_tool(self, manager: WorkerManager, _args: dict[str, Any]) -> ToolResult:
-        if self._research_plan_created:
-            return ToolResult(json.dumps({
-                "error": "research_plan_already_created",
-                "message": "This orchestrator run explores its existing research plan. A plan invalidation ends the run and triggers fresh review after restart.",
-            }, ensure_ascii=False), is_error=True)
         service = self._planning_subagents
         if service is None:
             return ToolResult(json.dumps({"error": "research planning is unavailable outside an active orchestrator run"}), is_error=True)
-        frontier = self._reviewer_frontier_projection()
         worker_results = self._planning_worker_projection(manager)
+        reviewer_frontier = self._reviewer_plan_gateway.reviewer_frontier()
+        audit_status = self._progress_audit_queue.status_payload() if self._progress_audit_queue is not None else {}
         try:
             report = service.call(
                 "research_reviewer",
                 "Review the current research portfolio and return one validated strategy with a bounded next step; completed worker evidence may be empty.",
-                reviewer_prompt(worker_results=worker_results, frontier=frontier),
+                reviewer_prompt(
+                    worker_results=worker_results,
+                    frontier=reviewer_frontier,
+                    process_audit=audit_status,
+                ),
             )
         except Exception as exc:
             return ToolResult(json.dumps({"error": f"research reviewer failed: {exc}"}, ensure_ascii=False), is_error=True)
@@ -1142,7 +1136,7 @@ class Orchestrator:
         plan_id = f"plan-{uuid.uuid4().hex[:12]}"
         plan = {
             "plan_id": plan_id,
-            "frontier_revision": frontier["frontier_revision"],
+            "frontier_revision": reviewer_frontier["frontier_revision"],
             "recommendation": recommendation,
             "worker_ids": [item["worker_id"] for item in worker_results],
             "reviewer_report": report,
@@ -1168,25 +1162,20 @@ class Orchestrator:
         research_strategy = recommendation["research_strategy"]
         next_step = recommendation["next_step"]
         kind = next_step["kind"]
-        if kind == "TARGET_NODE":
-            result = self._spawn_difficulty_leaf(manager, {
-                "difficulty_id": next_step["difficulty_id"],
-                "method_id": next_step["method_id"] or "direct_proof",
-                "hint": _strategy_worker_hint(research_strategy, next_step),
-            })
+        if kind in {"TARGET_NODE", "NEW_DIRECTION"}:
+            result = self._spawn_difficulty_leaf(
+                manager,
+                {
+                    "difficulty_id": next_step["difficulty_id"] or None,
+                    "method_id": next_step["method_id"] or "direct_proof",
+                    "hint": _strategy_worker_hint(research_strategy, next_step),
+                    "pinned_target": next_step["brief"],
+                },
+            )
             payload = json.loads(result.content)
             payload["plan_id"] = plan_id
             payload["research_strategy"] = research_strategy
-            if payload.get("spawned"):
-                self._active_research_plan = plan
-            return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
-        if kind == "NEW_DIRECTION":
-            result = self._spawn_free_exploration_tool(manager, {
-                "reason": _strategy_worker_hint(research_strategy, next_step),
-            })
-            payload = json.loads(result.content)
-            payload["plan_id"] = plan_id
-            payload["research_strategy"] = research_strategy
+            payload["reviewer_step_kind"] = kind
             if payload.get("spawned"):
                 self._active_research_plan = plan
             return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
@@ -1203,12 +1192,13 @@ class Orchestrator:
         method_id = str(args.get("method_id") or "").strip() or "direct_proof"
         hint = str(args.get("hint") or "").strip() or None
         frontier_refs = [str(item) for item in args.get("frontier_refs") or [] if str(item).strip()]
+        evidence_refs = [str(item) for item in args.get("evidence_refs") or [] if str(item).strip()]
+        followup_handoff_ids = [str(item) for item in args.get("followup_handoff_ids") or [] if str(item).strip()]
         frontier_note = str(args.get("frontier_note") or "").strip() or None
         rubric = str(args.get("rubric") or "").strip() or None
         consolidation = bool(args.get("consolidation"))
         pinned_target = str(args.get("pinned_target") or "").strip() or None
         difficulty_statement = None
-        preflight: dict[str, Any] = {}
         if consolidation and not global_attack:
             return ToolResult(json.dumps({
                 "spawned": False,
@@ -1216,7 +1206,7 @@ class Orchestrator:
                 "message": "consolidation=true is reserved for global_attack. Local leaves may still expose a strict child or missing bridge.",
             }, ensure_ascii=False))
         if global_attack:
-            global_directive = self.difficulty_dag.global_attack_preflight()
+            global_directive = self._reviewer_plan_gateway.global_attack_preflight()
             if not global_directive.get("ready"):
                 return ToolResult(json.dumps({
                     "spawned": False,
@@ -1232,56 +1222,58 @@ class Orchestrator:
                 except OSError:
                     pinned_target = None
             hint = GLOBAL_ATTACK_HINT
-        elif requested_id:
-            pending_audits = self._pending_process_audits()
-            if pending_audits:
-                return ToolResult(json.dumps({
-                    "spawned": False,
-                    "reason": "process_audit_pending",
-                    "pending_checkpoints": pending_audits,
-                    "message": "Wait for the current checkpoint audit decision before targeted dispatch.",
-                }, ensure_ascii=False))
-            try:
-                preflight = self.difficulty_dag.dispatch_preflight(
-                    difficulty_id=requested_id,
-                    method_id=method_id,
-                )
-            except ValueError as exc:
-                return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
-            if not preflight.get("allowed"):
-                return ToolResult(json.dumps({"spawned": False, **preflight}, ensure_ascii=False))
-            difficulty = preflight.get("difficulty") or {}
-            difficulty_statement = str(difficulty.get("statement") or "").strip() or None
-            mode = str(difficulty.get("dispatch_mode") or "direct")
-            if mode == "consolidation":
-                method_id = "consolidation"
-                pinned_target = difficulty_statement
-            assignment_kind = "assigned difficulty"
-            assignment = (
-                f"# {assignment_kind.title()}\n"
-                f"Canonical difficulty: `{requested_id}`\n\n"
-                f"Exact obligation:\n{difficulty_statement or '(not recorded)'}\n\n"
-                + (
-                    "Attempt the local assembly target. If the existing results do not close it, record the exact missing "
-                    "bridge, incompatibility, or strict child relation; do not silently retry or broaden scope."
-                    if mode == "consolidation"
-                    else "Attack this obligation directly. If it weakens, blocks, or exposes a smaller obligation, "
-                    "call RecordDifficulty with the exact child relation; do not silently retry or broaden scope."
-                )
-            )
-            hint = assignment + ("\n\n" + hint if hint else "")
         else:
-            frontier = self.difficulty_dag.selection_snapshot()
-            if frontier.get("executable_difficulties"):
-                return ToolResult(json.dumps({
-                    "spawned": False,
-                    "reason": "difficulty_id_required",
-                    "executable_difficulties": frontier["executable_difficulties"],
-                    "message": "Choose one curator-owned executable difficulty leaf before spawning targeted work.",
-                }, ensure_ascii=False))
-            hint = hint or "Explore one bounded route toward problem.md. If blocked or weakened, RecordDifficulty as a root candidate."
+            if followup_handoff_ids:
+                available_handoffs = self._available_local_handoffs(manager)
+                selected_handoffs: list[dict[str, Any]] = []
+                for handoff_id in dict.fromkeys(followup_handoff_ids):
+                    handoff = available_handoffs.get(handoff_id)
+                    if handoff is None:
+                        return ToolResult(json.dumps({
+                            "spawned": False,
+                            "reason": "unknown_local_handoff",
+                            "message": "Use followup_handoff_ids returned by TaskOutput.local_difficulties.",
+                            "handoff_id": handoff_id,
+                        }, ensure_ascii=False))
+                    if handoff_id in self._local_followup_handoff_ids:
+                        return ToolResult(json.dumps({
+                            "spawned": False,
+                            "reason": "local_handoff_already_followed_up",
+                            "message": "Each local handoff permits one bounded follow-up in this orchestrator run.",
+                            "handoff_id": handoff_id,
+                        }, ensure_ascii=False))
+                    selected_handoffs.append(handoff)
+                followup_context = []
+                for handoff in selected_handoffs:
+                    obstacle = str(handoff.get("obstacle") or "").strip()
+                    target = str(handoff.get("assigned_target") or "").strip()
+                    if target or obstacle:
+                        followup_context.append(
+                            f"- Target: {target or '(not recorded)'}\n  Obstacle: {obstacle or '(not recorded)'}"
+                        )
+                    evidence_refs.extend(
+                        str(item) for item in handoff.get("evidence_refs") or [] if str(item).strip()
+                    )
+                if followup_context:
+                    hint = (
+                        "# Evidence-backed local follow-up\n"
+                        "Use the worker-local evidence below to test, repair, narrow, or refute a concrete obstacle.\n\n"
+                        + "\n".join(followup_context)
+                        + "\n\n# Assigned bounded task\n"
+                        + (hint or "Produce one precise, independently checkable next result.")
+                        + "\n\nTreat handoffs as local evidence only. Do not infer canonical graph structure; if blocked, "
+                        "RecordDifficulty with the exact remaining obstacle."
+                    )
+                pinned_target = pinned_target or next(
+                    (str(item.get("assigned_target") or "").strip() for item in selected_handoffs if str(item.get("assigned_target") or "").strip()),
+                    None,
+                )
+            hint = hint or "Explore one bounded route toward problem.md. If blocked or weakened, RecordDifficulty with the exact obstacle."
+            if evidence_refs:
+                evidence_note = "Relevant prior evidence: " + ", ".join(list(dict.fromkeys(evidence_refs))[:16])
+                frontier_note = f"{frontier_note}\n{evidence_note}" if frontier_note else evidence_note
         global_on_spawn = (
-            (lambda worker: self.difficulty_dag.begin_global_attack(worker_id=worker.worker_id))
+            (lambda worker: self._reviewer_plan_gateway.begin_global_attack(worker_id=worker.worker_id))
             if global_attack else None
         )
         payload = manager.spawn(
@@ -1298,52 +1290,30 @@ class Orchestrator:
         )
         if payload.get("spawned"):
             self._has_dispatched_worker = True
-            if preflight.get("dispatch_warnings"):
-                payload["dispatch_warnings"] = preflight["dispatch_warnings"]
-            if preflight.get("open_child_difficulty_ids"):
-                payload["open_child_difficulty_ids"] = preflight["open_child_difficulty_ids"]
+            self._local_followup_handoff_ids.update(followup_handoff_ids)
+            if followup_handoff_ids:
+                append_curation_event(
+                    self.layout,
+                    "local_difficulty_followup_started",
+                    orchestrator_session_id=self.session_id,
+                    source_handoff_ids=list(dict.fromkeys(followup_handoff_ids)),
+                    method_id=method_id,
+                    brief=(hint or "")[:4000],
+                    evidence_refs=list(dict.fromkeys(evidence_refs))[:16],
+                    worker_id=payload.get("worker_id"),
+                )
         self._refresh_research_frontier_state(manager)
         if payload.get("spawned") and global_attack:
-            payload["global_consolidation_directive"] = self.difficulty_dag.global_attack_preflight()
-        return ToolResult(json.dumps(payload, ensure_ascii=False), stop_agent=manager.solved_result is not None,
-                          stop_answer=_solution_final_answer(manager.solution_path))
+            payload["global_consolidation_directive"] = self._reviewer_plan_gateway.global_attack_preflight()
+        solved_result = getattr(manager, "solved_result", None)
+        return ToolResult(
+            json.dumps(payload, ensure_ascii=False),
+            stop_agent=solved_result is not None,
+            stop_answer=_solution_final_answer(getattr(manager, "solution_path", None)) if solved_result is not None else None,
+        )
 
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         return self._spawn_difficulty_leaf(manager, args)
-
-    def _invalidate_active_research_plan(self, *, reason: str, evidence: dict[str, Any]) -> dict[str, Any] | None:
-        active_plan = getattr(self, "_active_research_plan", None)
-        if active_plan is None or getattr(self, "_plan_restart_reason", None) is not None:
-            return None
-        plan_id = str(active_plan.get("plan_id") or "")
-        payload = {
-            "reason": reason,
-            "plan_id": plan_id,
-            "evidence": evidence,
-        }
-        self._plan_restart_reason = payload
-        append_curation_event(
-            self.layout,
-            "research_plan_invalidated",
-            orchestrator_session_id=self.session_id,
-            **payload,
-        )
-        return payload
-
-    def _invalidate_plan_from_audits(self, decisions: list[dict[str, Any]]) -> dict[str, Any] | None:
-        for decision in decisions:
-            verdict = str(decision.get("verdict") or "").upper()
-            if verdict in {"STALLED", "MISALIGNED"}:
-                return self._invalidate_active_research_plan(
-                    reason=f"process_audit_{verdict.lower()}",
-                    evidence={
-                        "checkpoint_id": str(decision.get("checkpoint_id") or ""),
-                        "verdict": verdict,
-                        "evidence_path": str(decision.get("evidence_path") or ""),
-                        "audit_path": str(decision.get("audit_path") or ""),
-                    },
-                )
-        return None
 
     def _handle_worker_completion(self, result: WorkerRunResult) -> dict[str, Any] | None:
         """Persist completion facts and any free-exploration deviation."""
@@ -1362,7 +1332,7 @@ class Orchestrator:
                 report_rel = report_path.relative_to(self.layout.workspace_dir).as_posix()
             except ValueError:
                 report_rel = str(report_path)
-        completed = self.difficulty_dag.complete_global_attack(
+        completed = self._reviewer_plan_gateway.complete_global_attack(
             worker_id=result.worker_id,
             status=result.status,
             target_achieved=result.target_achieved,
@@ -1394,7 +1364,7 @@ class Orchestrator:
         return {
             **feedback,
             "global_attack_report": report_rel or None,
-            "global_consolidation_directive": self.difficulty_dag.global_attack_preflight(),
+            "global_consolidation_directive": self._reviewer_plan_gateway.global_attack_preflight(),
         }
 
     def _record_free_exploration_completion(self, result: WorkerRunResult) -> dict[str, Any] | None:
@@ -1507,27 +1477,25 @@ class Orchestrator:
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
-        audit_invalidation = self._invalidate_plan_from_audits(
-            [item for item in payload.get("process_audit_decisions") or [] if isinstance(item, dict)]
-        )
-        if audit_invalidation is not None:
-            payload["research_plan_invalidated"] = audit_invalidation
+        local_handoffs = self._available_local_handoffs(manager, payload)
+        if local_handoffs:
+            payload["local_difficulties"] = list(local_handoffs.values())
+        audit_decisions = [
+            item for item in payload.get("process_audit_decisions") or [] if isinstance(item, dict)
+        ]
+        if any(str(item.get("verdict") or "").upper() in {"STALLED", "MISALIGNED"} for item in audit_decisions):
+            payload["strategic_reassessment_recommended"] = True
         payload["planning_instruction"] = (
-            "A run explores one research plan deeply. Do not request another plan in this run; if the plan is invalidated, "
-            "the runtime ends this run so a fresh orchestrator context can obtain the next plan."
+            "Treat audit decisions and local difficulties as evidence. A STALLED or MISALIGNED audit means do not repeat the "
+            "old route without new evidence; request reviewer advice or choose another bounded evidence-backed task."
         )
         if self._search_tree_sink is not None:
             self._search_tree_sink.snapshot(self.search, label="task-output")
         self._refresh_research_frontier_state(manager)
-        plan_invalidated = self._plan_restart_reason is not None
         return ToolResult(
             json.dumps(payload, ensure_ascii=False),
-            stop_agent=manager.solved_result is not None or plan_invalidated,
-            stop_answer=(
-                _solution_final_answer(manager.solution_path)
-                if manager.solved_result is not None
-                else "Research plan invalidated; ending this orchestrator run for fresh strategic review."
-            ) if (manager.solved_result is not None or plan_invalidated) else None,
+            stop_agent=manager.solved_result is not None,
+            stop_answer=_solution_final_answer(manager.solution_path) if manager.solved_result is not None else None,
         )
 
     def _task(self) -> str:

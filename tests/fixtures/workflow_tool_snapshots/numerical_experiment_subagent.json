@@ -1,6 +1,6 @@
 [
   {
-    "description": "Executes Python code in a persistent in-memory environment without filesystem access.\n\nUsage:\n- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n- The Python environment persists across calls within the same session.\n- No filesystem access is permitted; use file tools separately if needed.",
+    "description": "Executes Python code in a persistent in-memory environment without filesystem access.\n\nUsage:\n- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n- The Python environment persists across calls within the same session.\n- No filesystem access is permitted; use file tools separately if needed.\n- For regexes or strings containing backslashes, use raw strings (for example `r\"\\{\"`) or double escaping (for example `\"\\\\{\"`); never write `\"\\{\"`.",
     "name": "RunPython",
     "parameters": {
       "properties": {

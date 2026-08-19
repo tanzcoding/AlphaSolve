@@ -171,7 +171,16 @@ class DifficultyDagStore:
             checkpoint_id = str(decision.get("checkpoint_id") or directory.name)
             if checkpoint_id not in curated:
                 pending.append(checkpoint_id)
-        for directory in sorted(self.evidence_checkpoints_dir.glob("targeted-verified-*")):
+        # Evidence checkpoints include targeted verified outcomes and explicit
+        # maintenance corrections.  Discovery is marker-based rather than
+        # name-based so historical graph repairs are queued just like ordinary
+        # evidence curation.
+        evidence_directories = (
+            sorted(path for path in self.evidence_checkpoints_dir.iterdir() if path.is_dir())
+            if self.evidence_checkpoints_dir.is_dir()
+            else []
+        )
+        for directory in evidence_directories:
             try:
                 ready = json.loads((directory / "curation_ready.json").read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -181,7 +190,7 @@ class DifficultyDagStore:
             checkpoint_id = str(ready.get("checkpoint_id") or directory.name)
             if checkpoint_id not in curated:
                 pending.append(checkpoint_id)
-        return pending
+        return sorted(set(pending))
 
     def checkpoint_artifact_path(self, checkpoint_id: str) -> Path:
         evidence = self.evidence_checkpoints_dir / str(checkpoint_id) / "curator_brief.md"
@@ -590,6 +599,7 @@ class DifficultyDagStore:
             self._apply_graph_corrections(state, corrections)
             self._validate_acyclic(nodes)
             self._validate_max_depth(nodes)
+            self._validate_prerequisite_parent_status(nodes)
             self._propagate(state)
             state["curated_checkpoints"][checkpoint_id] = {
                 "curated_at": _now(),
@@ -1037,6 +1047,29 @@ class DifficultyDagStore:
                 f"persistent difficulty depth exceeds {max_depth}: {too_deep}; "
                 "do bounded worker-local reasoning, add a sibling/alternative, or create an independent component instead"
             )
+
+    @staticmethod
+    def _validate_prerequisite_parent_status(nodes: dict[str, Any]) -> None:
+        """A resolved/refuted/superseded obligation cannot retain an open prerequisite.
+
+        A child with ``relation_to_parent=prerequisite`` represents work required to
+        settle its parent.  Route discovery belongs beside the route's target, not
+        beneath a completed reduction node, so this invariant catches inverted
+        dependency edges before they are persisted.
+        """
+        for child_id, child in nodes.items():
+            if str(child.get("relation_to_parent") or "prerequisite") != "prerequisite":
+                continue
+            if str(child.get("status") or "open") in _TERMINAL:
+                continue
+            for parent_id in child.get("parent_ids") or []:
+                parent = nodes.get(parent_id)
+                if parent is None or str(parent.get("status") or "open") not in _TERMINAL:
+                    continue
+                raise ValueError(
+                    f"open prerequisite {child_id!r} cannot have terminal parent {parent_id!r}; "
+                    "attach it to the unresolved obligation it serves, or use a non-prerequisite relation"
+                )
 
     def _validate_acyclic(self, nodes: dict[str, Any]) -> None:
         visited: set[str] = set()

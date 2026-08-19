@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -59,18 +60,42 @@ def test_orchestrator_does_not_force_reviewer_for_simple_startup(tmp_path):
     assert len(calls["orchestrator"]) == 1
 
 
-def test_orchestrator_allows_only_one_successful_research_plan(tmp_path):
+def test_orchestrator_allows_repeated_research_plans_when_new_evidence_requires_review(tmp_path):
     (tmp_path / "problem.md").write_text("# Problem\n\nProve the target.\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()
     suite = load_agent_suite(Path(solver_pkg.__file__).parent / "config")
     orchestrator = Orchestrator(layout=layout, suite=suite, client_factory=lambda _config: None)
-    orchestrator._research_plan_created = True
+    calls: list[str] = []
 
-    result = orchestrator._request_research_plan_tool(object(), {})
+    class PlanningService:
+        def call(self, agent_type, description, prompt):
+            assert agent_type == "research_reviewer"
+            assert "process_audit" in prompt
+            calls.append(description)
+            return (
+                "### Research Strategy JSON\n```json\n"
+                '{"research_strategy":"Try one bounded bridge.","next_step":{"kind":"NEW_DIRECTION","difficulty_id":"","method_id":"direct_proof","brief":"Prove the bridge."},"graph_observations":[]}\n'
+                "```"
+            )
 
-    assert result.is_error
-    assert "research_plan_already_created" in result.content
+    class Gateway:
+        def reviewer_frontier(self):
+            return {"frontier_revision": "test", "dispatchable": [], "graph": {}, "sources": {}}
+
+    class Manager:
+        results = []
+
+    orchestrator._planning_subagents = PlanningService()
+    orchestrator._reviewer_plan_gateway = Gateway()
+    orchestrator._progress_audit_queue = None
+
+    first = orchestrator._request_research_plan_tool(Manager(), {})
+    second = orchestrator._request_research_plan_tool(Manager(), {})
+
+    assert not first.is_error
+    assert not second.is_error
+    assert len(calls) == 2
 
 
 def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestration(tmp_path):
@@ -116,34 +141,38 @@ def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestra
     assert non_cold_manager.calls == []
 
 
-def test_reviewer_delegate_budget_allows_one_of_each_type():
+def test_reviewer_can_repeat_compute_and_reasoning_checks_but_limits_numerical_experiments():
     service = SubagentService(
         suite=SimpleNamespace(subagents={}),
         client_factory=lambda _config: None,
     )
-    service._reviewer_delegate_budget.value = dict(service.REVIEWER_DELEGATE_LIMITS)
+    service._reviewer_delegate_budget.value = dict(service.REVIEWER_LIMITED_DELEGATE_LIMITS)
 
-    service._reserve_reviewer_delegate("reasoning_subagent")
+    for _ in range(3):
+        service._reserve_reviewer_delegate("reasoning_subagent")
+        service._reserve_reviewer_delegate("compute_subagent")
     service._reserve_reviewer_delegate("numerical_experiment_subagent")
 
     with pytest.raises(RuntimeError, match="budget exhausted"):
-        service._reserve_reviewer_delegate("reasoning_subagent")
+        service._reserve_reviewer_delegate("numerical_experiment_subagent")
     with pytest.raises(PermissionError, match="may delegate only"):
-        service._reserve_reviewer_delegate("compute_subagent")
+        service._reserve_reviewer_delegate("curator")
 
 
-def test_task_output_handoffs_do_not_trigger_another_reviewer(tmp_path):
+def test_spawn_worker_uses_handoffs_as_evidence_for_local_follow_up(tmp_path):
     (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()
     orchestrator = object.__new__(Orchestrator)
     orchestrator.layout = layout
+    orchestrator._local_followup_handoff_ids = set()
 
     payload = {
         "completed": [
             {
                 "worker_id": "worker-a",
                 "difficulty_handoff": {
+                    "handoff_id": "handoff-worker-a",
                     "worker_id": "worker-a",
                     "obstacle": "Bridge A remains unproved by the current route.",
                 },
@@ -164,3 +193,45 @@ def test_task_output_handoffs_do_not_trigger_another_reviewer(tmp_path):
     assert portfolio["review_status"] == "orchestrator_decision_required"
     assert "research_reviewer_report" not in portfolio
     assert portfolio["candidate_worker_ids"] == ["worker-a", "worker-b"]
+    assert [item["obstacle"] for item in portfolio["handoffs"]] == [
+        "Bridge A remains unproved by the current route.",
+        "Bridge B remains unproved by the current route.",
+    ]
+
+    class Manager:
+        results = []
+        solved_result = None
+
+        def spawn(self, hint, **kwargs):
+            self.hint = hint
+            self.kwargs = kwargs
+            return {"spawned": True, "worker_id": "follow-up-a"}
+
+    manager = Manager()
+    orchestrator._available_local_handoffs = lambda _manager: {
+        "handoff-worker-a": portfolio["handoffs"][0],
+    }
+    orchestrator._refresh_research_frontier_state = lambda _manager: None
+    orchestrator.session_id = "test-session"
+    orchestrator._reviewer_plan_gateway = SimpleNamespace(global_attack_preflight=lambda: {"ready": False})
+    first = orchestrator._spawn_difficulty_leaf(
+        manager,
+        {
+            "method_id": "contradiction",
+            "hint": "Construct a witness or prove the missing bridge lemma.",
+            "followup_handoff_ids": ["handoff-worker-a"],
+            "evidence_refs": ["unverified_propositions/prop-a/difficulty_handoff.json"],
+        },
+    )
+    first_payload = json.loads(first.content)
+    assert first_payload["spawned"] is True
+    assert manager.kwargs["difficulty_id"] is None
+    assert manager.kwargs["method_id"] == "contradiction"
+    assert "Bridge A remains unproved" in manager.hint
+    assert "Relevant prior evidence" in manager.kwargs["frontier_note"]
+
+    second = orchestrator._spawn_difficulty_leaf(
+        manager,
+        {"hint": "Retry.", "followup_handoff_ids": ["handoff-worker-a"]},
+    )
+    assert "local_handoff_already_followed_up" in second.content

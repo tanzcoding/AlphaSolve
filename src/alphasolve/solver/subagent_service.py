@@ -48,8 +48,14 @@ def _format_subagent_result(*, agent_type: str, session_id: str, text: str) -> s
 
 
 class SubagentService:
-    REVIEWER_DELEGATE_LIMITS = {
-        "reasoning_subagent": 1,
+    # The reviewer may consult symbolic/numerical computation and adversarial reasoning
+    # repeatedly during one strategic review.  The ordinary recursive-depth guard still
+    # prevents those delegates from expanding into an unbounded agent tree.
+    REVIEWER_UNLIMITED_DELEGATE_TYPES = {
+        "compute_subagent",
+        "reasoning_subagent",
+    }
+    REVIEWER_LIMITED_DELEGATE_LIMITS = {
         "numerical_experiment_subagent": 1,
     }
 
@@ -134,11 +140,13 @@ class SubagentService:
         budget = getattr(self._reviewer_delegate_budget, "value", None)
         if budget is None:
             return
-        remaining = budget.get(agent_type)
-        if remaining is None:
+        if agent_type in self.REVIEWER_UNLIMITED_DELEGATE_TYPES:
+            return
+        if agent_type not in self.REVIEWER_LIMITED_DELEGATE_LIMITS:
             raise PermissionError(
-                "research_reviewer may delegate only to reasoning_subagent or numerical_experiment_subagent"
+                "research_reviewer may delegate only to compute_subagent, reasoning_subagent, or numerical_experiment_subagent"
             )
+        remaining = budget.get(agent_type, self.REVIEWER_LIMITED_DELEGATE_LIMITS[agent_type])
         if remaining <= 0:
             raise RuntimeError(f"research_reviewer delegation budget exhausted for {agent_type}")
         budget[agent_type] = remaining - 1
@@ -174,9 +182,8 @@ class SubagentService:
             prompt=prompt,
             result=result,
         )
-        # research_reviewer 跨调用记忆：把最终报告追加到 history 文件。它拥有一层
-        # 受限 Agent 委派预算：一次 reasoning 对抗复核和至多一次数值核验，不能膨胀为
-        # 多轮自由探索。
+        # research_reviewer 跨调用记忆：把最终报告追加到 history 文件。它可以反复咨询
+        # reasoning/compute 子代理，并对数值实验保持独立预算；递归深度仍由运行时限制。
         if agent_type == "research_reviewer" and self.reviewer_history_path is not None:
             self._append_reviewer_history(
                 session_id=session_id,
@@ -249,10 +256,10 @@ class SubagentService:
         """一般由 ``self.max_depth`` 决定这次调用还能否再用 `Agent` 工具往下委派。
 
         ``research_reviewer`` 是唯一例外：不管 ``self.max_depth``（orchestrator 直调
-        其它 subagent 时通常是 0，禁止再委派）取值如何，reviewer 自己总能拿到恰好一层
-        委派预算——用来在生成正式 plan 前自行调用 `Agent(type="reasoning_subagent")`
-        做对抗复核、调用 `Agent(type="numerical_experiment_subagent")` 做数值核验，
-        次数由它自己按需决定，而不是由 Python 代码固定拼接一次。
+        其它 subagent 时通常是 0，禁止再委派）取值如何，reviewer 自己总能拿到一层
+        委派能力——可按需调用 `Agent(type="reasoning_subagent")`、
+        `Agent(type="compute_subagent")` 做核验，并调用 `Agent(type="numerical_experiment_subagent")`
+        进行受限数值检查。
         这一层不会继续放宽：reviewer 委派出去的下一层调用（agent_type 不是
         research_reviewer）仍然只服从 ``self.max_depth``，因此不可能出现委派预算
         逐层膨胀的无限递归。且 research_reviewer 自身不在它能调用的类型枚举里
@@ -314,7 +321,7 @@ class SubagentService:
             event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink)
         previous_reviewer_budget = getattr(self._reviewer_delegate_budget, "value", None)
         if agent_type == "research_reviewer":
-            self._reviewer_delegate_budget.value = dict(self.REVIEWER_DELEGATE_LIMITS)
+            self._reviewer_delegate_budget.value = dict(self.REVIEWER_LIMITED_DELEGATE_LIMITS)
         try:
             # 按 agent_type 决定是否注入上下文压缩策略
             context_policy = None

@@ -158,5 +158,21 @@
       "required": [],
       "type": "object"
     }
+  },
+  {
+    "description": "Record a concrete obstacle only when the assigned task cannot be completed and must be weakened or stopped. State the missing step, condition, construction, or repair and why it blocks this task. This is worker-local evidence for curator review, never a canonical DAG edit or research plan. Role, assigned target, artifacts, and (for reasoning subagents) delegated task context are attached automatically.",
+    "name": "RecordDifficulty",
+    "parameters": {
+      "properties": {
+        "obstacle": {
+          "description": "Concrete current obstacle: the missing step or condition, and why it prevents completing the assigned task.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "obstacle"
+      ],
+      "type": "object"
+    }
   }
 ]

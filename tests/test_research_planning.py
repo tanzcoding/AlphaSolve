@@ -84,6 +84,6 @@ def test_reviewer_prompt_uses_attempt_statistics_and_parent_attack_guidance():
     assert "knowledge is a navigation aid" in prompt
     assert "(node, method)" in prompt
     assert "parent or ancestor" in prompt
-    assert "active target node freely" in prompt
+    assert "next mathematical direction freely" in prompt
     assert "research_strategy" in prompt
     assert "next_step" in prompt

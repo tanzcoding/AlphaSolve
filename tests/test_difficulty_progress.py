@@ -19,6 +19,24 @@ def _layout(tmp_path):
     return layout
 
 
+def test_dag_discovers_ready_maintenance_checkpoint(tmp_path):
+    layout = _layout(tmp_path)
+    checkpoint_dir = layout.workspace_dir / "curation_records" / "evidence_checkpoints" / "maintenance-edge-0001"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "curation_ready.json").write_text(json.dumps({
+        "checkpoint_id": "maintenance-edge-0001",
+        "status": "ready",
+        "trigger_reason": "evidenced_parent_edge_correction",
+    }), encoding="utf-8")
+    (checkpoint_dir / "curator_brief.md").write_text("# Maintenance\n", encoding="utf-8")
+
+    dag = DifficultyDagStore(layout.workspace_dir)
+
+    assert "maintenance-edge-0001" in dag.pending_checkpoint_ids()
+    assert dag.checkpoint_task_kind("maintenance-edge-0001") == "evidence_checkpoint"
+    assert dag.checkpoint_artifact_path("maintenance-edge-0001") == checkpoint_dir / "curator_brief.md"
+
+
 def test_curator_curation_archives_attempts_and_verified_outputs(tmp_path):
     layout = _layout(tmp_path)
     verified = layout.verified_dir / "bridge.md"
@@ -75,6 +93,35 @@ def test_curator_can_mark_an_existing_node_refuted_from_verified_evidence(tmp_pa
     node = dag.load()["nodes"]["false-lower-bound"]
     assert node["status"] == "refuted"
     assert "verified_propositions/counterexample.md" in node["evidence_refs"]
+
+
+def test_curator_rejects_open_prerequisite_under_resolved_parent(tmp_path):
+    layout = _layout(tmp_path)
+    dag = DifficultyDagStore(layout.workspace_dir)
+
+    try:
+        dag.record_curation(
+            checkpoint_id="checkpoint-0001",
+            difficulties=[
+                {
+                    "difficulty_id": "resolved-reduction",
+                    "statement": "Complete the reduction.",
+                    "source_difficulty_ids": ["source-reduction"],
+                    "status": "resolved",
+                },
+                {
+                    "difficulty_id": "open-bridge",
+                    "statement": "Prove the bridge left by the reduction.",
+                    "parent_difficulty_ids": ["resolved-reduction"],
+                    "source_difficulty_ids": ["source-bridge"],
+                    "status": "open",
+                },
+            ],
+        )
+    except ValueError as exc:
+        assert "open prerequisite" in str(exc)
+    else:
+        raise AssertionError("an open prerequisite must not remain beneath a resolved parent")
 
 
 def test_curator_can_remove_an_evidenced_wrong_parent_edge(tmp_path):

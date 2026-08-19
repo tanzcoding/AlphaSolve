@@ -137,8 +137,9 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "RequestResearchPlan" in orchestrator_prompt
     assert "ExecuteResearchPlan" in orchestrator_prompt
     assert "RecordResearchImpact" not in orchestrator_prompt
-    assert "raw DAG" in orchestrator_prompt
-    assert "curation_records/difficulty_dag.json" in orchestrator_prompt
+    assert "followup_handoff_ids" in orchestrator_prompt
+    assert "AttackLocalDifficulty" not in orchestrator_prompt
+    assert "visible only to the research reviewer" in orchestrator_prompt
     assert "curator" in orchestrator_prompt.lower()
     assert "fooling" not in orchestrator_prompt.lower()
     assert "permutation" not in reviewer_prompt.lower()
@@ -195,9 +196,11 @@ def test_research_reviewer_can_delegate_decision_relevant_numerical_checks():
 
     reviewer = suite.subagents["research_reviewer"]
     assert reviewer.tool_parameters["Agent"]["type"]["enum"] == [
+        "compute_subagent",
         "reasoning_subagent",
         "numerical_experiment_subagent",
     ]
+    assert "reasoning_subagent` and `compute_subagent` as needed" in reviewer.system_prompt
     assert "numerical_experiment_subagent` at most once" in reviewer.system_prompt
     assert "EXHAUSTIVE" in reviewer.system_prompt
     assert "STRATIFIED_SAMPLE" in reviewer.system_prompt
@@ -1390,6 +1393,7 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "RecordDifficultyOutcome" not in tool_names
         assert "RecordResearchImpact" not in tool_names
         assert "SpawnFreeExploration" in tool_names
+        assert "AttackLocalDifficulty" not in tool_names
         assert "Delete" not in tool_names
         # Task 8: build_workspace_tool_registry now always registers the full
         # 12-tool base set (the registry is shared across agents). Per-agent
@@ -1403,9 +1407,14 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
         assert "available_worker_slots" in tool_descriptions["TaskOutput"]
         assert "difficulty_handoff" in tool_descriptions["TaskOutput"]
+        assert "local_difficulties" in tool_descriptions["TaskOutput"]
         assert "direct proposition, review, and verification artifacts" in tool_descriptions["TaskOutput"]
+        spawn_definition = next(tool for tool in defs if tool.name == "SpawnWorker")
+        assert "followup_handoff_ids" in spawn_definition.parameters["properties"]
+        assert "evidence_refs" in spawn_definition.parameters["properties"]
+        assert "local_difficulties" in tool_descriptions["TaskOutput"]
         assert "difficulty_assessment" not in tool_descriptions["TaskOutput"]
-        assert "research plan" in tool_descriptions["TaskOutput"]
+        assert "RequestResearchPlan" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
         assert "process_audit_context_reset" not in tool_descriptions["TaskOutput"]
         assert "fresh reviewer report" not in tool_descriptions["TaskOutput"]

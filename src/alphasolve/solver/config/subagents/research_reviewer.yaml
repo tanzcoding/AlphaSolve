@@ -18,12 +18,13 @@ agent:
     Agent:
       type:
         enum:
+          - compute_subagent
           - reasoning_subagent
           - numerical_experiment_subagent
   tool_descriptions:
     Agent:
       suffix: |-
-        - Use `reasoning_subagent` at most once to adversarially review your selected research strategy before finalizing it.
+        - You may call `reasoning_subagent` and `compute_subagent` as often as needed for bounded strategic checks; synthesize their evidence rather than merely forwarding it.
         - Use `numerical_experiment_subagent` at most once, and only for a decision-critical finite fact absent from available evidence.
         - Do NOT call `research_reviewer` (yourself) — it is not in your allowed types.
     Read:

@@ -460,12 +460,12 @@ def _evidence_checkpoint_prompt(artifact_path: Path | None, *, recovery_reason: 
     path_text = str(artifact_path) if artifact_path is not None else "(missing evidence checkpoint brief)"
     recovery = f"Previous curation failure: {recovery_reason}\n\n" if recovery_reason else ""
     return (
-        "# Targeted Verified Evidence Curation\n\n"
+        "# Evidence Checkpoint Curation\n\n"
         f"Read the evidence checkpoint brief at {path_text}, its curation_input.json, and curation_records/difficulty_dag.json. "
-        "This is direct DAG curation after a verified proposition, not a progress audit: do not wait for, request, or infer an audit verdict. "
-        "Determine only whether the verified proposition changes its assigned canonical node. If it directly contradicts that node, "
-        "submit a cited status_updates entry with status=refuted; if it advances or resolves a node, record only the supported status and evidence. "
-        "Archive any worker obstacle as evidence, but do not create a node or edge from wording alone. Call CurateDifficultyDag exactly once.\n\n"
+        "This is direct canonical-DAG curation, not a progress audit: do not wait for, request, or infer an audit verdict. "
+        "Follow the checkpoint's stated maintenance or verified-evidence scope. A verified proposition may justify a cited status update "
+        "only when it directly supports that change; an evidence-backed maintenance request may correct an existing edge or placement. "
+        "Archive worker obstacles as evidence, but do not create a node or edge from wording alone. Call CurateDifficultyDag exactly once.\n\n"
         + recovery
     )
 

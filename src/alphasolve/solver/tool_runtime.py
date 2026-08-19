@@ -331,27 +331,30 @@ def register_orchestrator_worker_tools(
                 "difficulty_id": {
                     "type": "string",
                     "description": (
-                        "Canonical curator-owned active difficulty ID. Any active node, including an internal parent, may "
-                        "be selected when its exact obligation is more informative. The runtime returns active child IDs so "
-                        "the worker can explain how a parent-level attack adds evidence beyond them."
+                        "Optional provenance label for a known difficulty. It is not a dispatch prerequisite and does not "
+                        "create, edit, or validate canonical DAG structure."
+                    ),
+                },
+                "followup_handoff_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional worker-local handoff IDs from TaskOutput.local_difficulties that justify this bounded follow-up. "
+                        "Each cited handoff may be followed up once per orchestrator run."
+                    ),
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional workspace-relative evidence paths that the worker should inspect, such as a handoff, proposition, "
+                        "review, theorem check, or process audit. These are evidence references, not mathematical facts by themselves."
                     ),
                 },
                 "method_id": {
                     "type": "string",
                     "enum": ["direct_proof", "contradiction", "construction", "computation", "falsification", "consolidation"],
                     "description": "Optional proof/search method for the selected difficulty leaf.",
-                },
-                "parent_id": {
-                    "type": "string",
-                    "description": "Backward-compatible single parent attempt state_id. These describe attempt lineage only; they do not modify the difficulty DAG.",
-                },
-                "parent_ids": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Optional parent attempt state_ids for the attempt DAG. Pass multiple ids for crossover. "
-                        "These describe lineage only; the canonical difficulty_id identifies the mathematical obligation."
-                    ),
                 },
                 "frontier_refs": {
                     "type": "array",
@@ -373,14 +376,6 @@ def register_orchestrator_worker_tools(
                         "Optional. One short note telling the worker what the curated frontier means for this hint "
                         "or what to avoid (e.g. 'avoid the anchor-graph mainline; try construction/number-theoretic "
                         "structure such as 45^2'). Shown alongside frontier_refs."
-                    ),
-                },
-                "blocker_override_reason": {
-                    "type": "string",
-                    "description": (
-                        "Required only when this direction has an active process-audit blocker and this spawn targets "
-                        "a different gap. State the concrete new evidence that justifies pivoting instead of directly "
-                        "attacking that blocker."
                     ),
                 },
                 "rubric": {
@@ -417,8 +412,8 @@ def register_orchestrator_worker_tools(
                     "description": (
                         "Optional (default false). Set true to launch a GLOBAL consolidation that attacks "
                         "`problem.md` directly — not any canonical difficulty leaf. This implies "
-                        "consolidation=true (no weakening allowed). Read DifficultyFrontier.global_consolidation_directive "
-                        "first: the runtime permits the first attack and each later attack only after the configured number "
+                        "consolidation=true (no weakening allowed). The runtime permits the first attack and each later "
+                        "attack only after the configured number "
                         "of verified propositions has accumulated; a completed attack resets that count. Every completed global "
                         "attack is reported to the curator for knowledge and later DAG curation. If pinned_target is omitted, the runtime "
                         "reads problem.md into pinned_target automatically. Do NOT pass difficulty_id with global_attack."
@@ -436,8 +431,10 @@ def register_orchestrator_worker_tools(
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
             "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
             "Completed workers may include a worker-local difficulty_handoff plus direct proposition, review, and verification artifacts. "
-            "They are reviewer inputs, not permission to invent a target immediately: request a research plan, then execute the "
-            "validated plan. Canonical parent/child structure remains curator-owned. "
+            "When available, local_difficulties lists compact worker and reasoning-subagent obstacle handoffs. For one concrete "
+            "follow-up, use SpawnWorker with followup_handoff_ids and evidence_refs; each handoff may be cited once per run. "
+            "Use RequestResearchPlan when local evidence does not justify a bounded continuation or the strategic direction is unclear. "
+            "Canonical parent/child structure remains curator-owned. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
             "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files. "
             "When this collection triggers a checkpoint, it waits for that process-audit decision and returns a bounded process_audit_decisions summary; read its audit_path or evidence_path only when exact evidence is needed."

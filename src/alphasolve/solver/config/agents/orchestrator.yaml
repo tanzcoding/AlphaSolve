@@ -55,18 +55,21 @@ agent:
         type: string
         maxLength: 80
         pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+      followup_handoff_ids:
+        type: array
+        maxItems: 4
+        items:
+          type: string
+          maxLength: 120
+      evidence_refs:
+        type: array
+        maxItems: 16
+        items:
+          type: string
+          maxLength: 2000
       method_id:
         type: string
         enum: [direct_proof, contradiction, construction, computation, falsification, consolidation]
-      parent_id:
-        type: string
-        maxLength: 64
-      parent_ids:
-        type: array
-        maxItems: 8
-        items:
-          type: string
-          maxLength: 64
       frontier_refs:
         type: array
         maxItems: 20
@@ -109,7 +112,6 @@ agent:
         - Use `mode="overwrite"` to replace the whole file.
         - Use `mode="append"` to append content to the end of the file.
         - If this is an existing file, you MUST use the Read tool first to read the file's contents.
-        - Treat index writes as objective bookkeeping after the research target is clear. Use SyncResearchState rather than Write for strategic state.md.
       parameters:
         mode:
           description: "Whether to overwrite the whole file or append to the end."
@@ -120,7 +122,6 @@ agent:
         Usage:
         - The edit will FAIL if old_string is not unique in the file.
         - Provide a larger string with more surrounding context to make it unique.
-        - Treat index edits as objective bookkeeping after the research target is clear. Use SyncResearchState rather than Edit for strategic state.md.
       parameters:
         new_str:
           description: "The text to replace it with (must be different from old_string)."
@@ -183,26 +184,6 @@ agent:
           description: "Treat pattern as a regex (default: true; set false for substring matching)."
         context_lines:
           description: "Number of context lines around each match."
-    Agent:
-      suffix: |-
-        - `research_reviewer` returns a single research plan, not a list to pick from. It has its own scoped `Agent` tool (restricted to `reasoning_subagent`/`numerical_experiment_subagent`) and must return both an "Adversarial Review" and a `Route Validation` section. `VERDICT: CLEAR` only means the plan survived critique; before dispatch, obey `Route Validation`'s `DISPATCH:` status. For `BLOCKED` or `NEEDS_FALSIFICATION`, record the supplied evidence with `RecordDispatchConstraint`; only `READY_FOR_PROOF` permits a normal proof worker. This remains a prompt-level report, so check that its cited numerical coverage and counterexample search are substantive before trusting it.
-        - When using `research_reviewer`, delegate an independent progress audit rather than a proof attempt for the route you currently favor.
-        - Include any already-seen proposition-index gaps or underclaimed proof-tail evidence in the prompt, especially any `ResearchProgressReview` suggested next proposition and selected target, and ask the reviewer to rank that candidate against broader theorem work.
-        - If underclaimed proof-tail evidence only quantifies why one conditional route is obstructed, and the problem still asks for an existential choice among models, parameters, data, weights, or ansatzes, ask the reviewer to use that obstruction as a constraint on the choice-classification target rather than replacing the constructive scan.
-        - If underclaimed proof-tail evidence changes a numerical bound, objective value, threshold, stopping condition, or answer-facing inequality, do not demote explicit Statement consolidation below speculative research directions unless another verified Statement already records it.
-        - When the workspace has many verified local estimates for one shared energy, bootstrap, reduction, or interface system, ask whether the next proposition should assemble the exact system levels, constants, remainders, and restrictions before attacking another local lemma.
-        - If a local repair appears to be one component of a larger system interface, ask the reviewer whether the durable next proposition should be the exact interface with that repair listed as a premise, rather than the repair in isolation.
-        - If downstream propositions look ready to promote but rely on a support, domain, time-scale, interface, or parameter-choice prerequisite that is still conditional, slackened, or not Statement-visible, ask the reviewer to rank that prerequisite before the downstream promotion unless the prerequisite is already established in verified_propositions.
-        - If the problem asks for existence of a model, parameter regime, input family, weight, or ansatz, and the workspace already has a conditional theorem chain, ask the reviewer whether the next proposition should classify choices that make the existing chain's hypotheses hold before inventing stronger general estimates.
-        - A choice-classification target should cover the whole theorem interface, including support/domain conditions, lower-bound or positivity hypotheses, nonlinear remainder control, regularity/smallness assumptions, and the timescale on which the resulting inequality must hold.
-        - Do not let a framework-formalization, conditional assembly, or gap-naming task outrank a choice-classification task when it would only restate that some model, parameter, data, weight, or ansatz choice must satisfy the existing chain's hypotheses.
-        - Do not replace that scan with re-proving verified infrastructure, sharper constants, alternative test functions, or stronger PDE/ODE machinery unless the choice-classification scan is already complete or rules out viable choices.
-        - When a verified proposition Statement conflicts with an index or knowledge summary, treat the verified Statement as authoritative and ask whether the summary is stale rather than planning from the weaker summary.
-        - If a reviewed `unverified_propositions/` file already has a passed review and records a system interface, constants, derivative levels, assumptions, or obstruction, ask whether promoting or repairing that proposition is the best verified-progress step before opening a new local route.
-        - `research_reviewer` now returns one primary plan (plus ≤2 one-line rejected alternatives), not a ranked list — treat that plan as a prior, not a command. Each `selection_advice` from `TaskOutput` carries a read-only `frontier` list ranking active worker nodes by cheap proxy signals (open subgoals, verified implications, falsification hits) — nothing is pre-selected for you. If the reviewer's plan targets a direction whose recent workers only produced necessary_condition_only/orthogonal outputs, while `frontier` shows another direction with stronger verified implications and no falsification hits, prefer the latter. The reviewer's plan reflects a static workspace snapshot; `frontier` reflects what workers actually achieved. Update your belief accordingly.
-        - If the reviewer's plan is an exact system or interface assembly, do not demote it as bookkeeping merely because it may expose a harder local gap; that assembly may be the research proposition needed to determine which local gap is actually blocking the proof.
-        - Do not present an unverified route as the core blocker unless a verified proposition, knowledge synthesis, or prior reviewer report explicitly identifies it as such.
-        - Whether `research_reviewer` reads `verified_propositions/**/state.md` (your prior strategic notes) is decided automatically by the system via an epsilon-greedy policy and recorded in the run log. You do not need to set `read_state` for `research_reviewer` — the system assigns it and overrides any value you pass.
     ResearchProgressReview:
       override: |-
         Audit a Markdown research/proof workspace before deciding current progress or next propositions.

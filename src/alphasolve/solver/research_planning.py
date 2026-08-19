@@ -4,7 +4,11 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
+
+from .difficulty_dag import DifficultyDagStore
+from .policy import DifficultyDagPolicy
 
 
 _NEXT_STEP_KINDS = {"TARGET_NODE", "NEW_DIRECTION", "HOLD"}
@@ -18,6 +22,58 @@ _METHOD_IDS = {
 }
 _GRAPH_OBSERVATION_KINDS = {"EDGE_SUSPECT", "NODE_SCOPE_SUSPECT", "COMPONENT_STAGNANT", "STATUS_SUSPECT", "DUPLICATE_NODE"}
 _GRAPH_EFFECTS = {"reconsider_edge", "supersede_node", "merge_candidate", "keep_independent"}
+
+
+class ReviewerPlanGateway:
+    """Opaque runtime boundary between reviewer plans and the curator-owned DAG.
+
+    The reviewer receives only a semantic projection. The orchestrator receives only
+    a plan-validation result, never a frontier or raw canonical graph.
+    """
+
+    def __init__(self, workspace_dir: Path, *, policy: DifficultyDagPolicy | None = None) -> None:
+        self._dag = DifficultyDagStore(workspace_dir, policy=policy)
+
+    def reviewer_frontier(self) -> dict[str, Any]:
+        return frontier_projection(self._dag.selection_snapshot())
+
+    def validate_target(
+        self,
+        *,
+        frontier_revision: str,
+        difficulty_id: str,
+        method_id: str | None,
+    ) -> dict[str, Any]:
+        current = self.reviewer_frontier()
+        if str(frontier_revision or "") != str(current.get("frontier_revision") or ""):
+            return {
+                "allowed": False,
+                "reason": "reviewer_plan_stale",
+                "message": "The canonical frontier changed after reviewer planning; request a fresh reviewer plan.",
+            }
+        try:
+            result = self._dag.dispatch_preflight(
+                difficulty_id=difficulty_id,
+                method_id=method_id,
+            )
+        except ValueError as exc:
+            return {"allowed": False, "reason": "invalid_reviewer_target", "message": str(exc)}
+        if not result.get("allowed"):
+            return {
+                "allowed": False,
+                "reason": "reviewer_target_not_actionable",
+                "message": "The reviewer-selected canonical target is no longer actionable; request a fresh reviewer plan.",
+            }
+        return result
+
+    def global_attack_preflight(self) -> dict[str, Any]:
+        return self._dag.global_attack_preflight()
+
+    def begin_global_attack(self, *, worker_id: str) -> dict[str, Any]:
+        return self._dag.begin_global_attack(worker_id=worker_id)
+
+    def complete_global_attack(self, **kwargs: Any) -> dict[str, Any] | None:
+        return self._dag.complete_global_attack(**kwargs)
 
 
 def frontier_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
@@ -47,13 +103,26 @@ def frontier_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
     return projection
 
 
-def reviewer_prompt(*, worker_results: list[dict[str, Any]], frontier: dict[str, Any]) -> str:
-    payload = json.dumps({"worker_results": worker_results, "frontier": frontier}, ensure_ascii=False, indent=2)
+def reviewer_prompt(
+    *,
+    worker_results: list[dict[str, Any]],
+    frontier: dict[str, Any],
+    process_audit: dict[str, Any] | None = None,
+) -> str:
+    payload = json.dumps(
+        {
+            "worker_results": worker_results,
+            "process_audit": process_audit or None,
+            "frontier": frontier,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
     return (
         "Review completed worker evidence and return exactly one research strategy. The difficulty DAG is a curator-owned "
         "evidence graph, not a route approval system. Do not invent canonical IDs, edit state, curate identities, or dispatch workers.\n\n"
         "Use the complete graph, its component and node attempt statistics, recent methods/outcomes, verified-proposition links, "
-        "worker results, and knowledge to choose the next mathematical direction and active target node freely. When a leaf has "
+        "worker results, local handoffs, process audits, and knowledge to choose the next mathematical direction freely. When a leaf has "
         "repeatedly failed under the same or equivalent method without new verified evidence, you may change method, attack an active "
         "parent or ancestor from another angle, or choose a bounded independent direction. Treat recent repeated "
         "(node, method) attempts as tabu unless new evidence changes the target. Prefer underexplored node-method combinations among "
