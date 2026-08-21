@@ -7,19 +7,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from .difficulty_dag import DifficultyDagStore
+from .difficulty_dag import _METHOD_IDS, DifficultyDagStore
 from .policy import DifficultyDagPolicy
 
 
 _NEXT_STEP_KINDS = {"TARGET_NODE", "NEW_DIRECTION", "HOLD"}
-_METHOD_IDS = {
-    "direct_proof",
-    "contradiction",
-    "construction",
-    "computation",
-    "falsification",
-    "consolidation",
-}
 _GRAPH_OBSERVATION_KINDS = {"EDGE_SUSPECT", "NODE_SCOPE_SUSPECT", "COMPONENT_STAGNANT", "STATUS_SUSPECT", "DUPLICATE_NODE"}
 _GRAPH_EFFECTS = {"reconsider_edge", "supersede_node", "merge_candidate", "keep_independent"}
 
@@ -36,6 +28,31 @@ class ReviewerPlanGateway:
 
     def reviewer_frontier(self) -> dict[str, Any]:
         return frontier_projection(self._dag.selection_snapshot())
+
+    def dispatch_preflight(
+        self,
+        *,
+        difficulty_id: str | None,
+        method_id: str | None,
+    ) -> dict[str, Any]:
+        """Check one provenance difficulty ID against the canonical graph before dispatch.
+
+        The orchestrator may cite a canonical ID as provenance without owning the graph.
+        This keeps a terminal (resolved / refuted / superseded) obligation from being
+        re-attacked silently, and surfaces the node's canonical statement plus any
+        dispatch warnings so the worker receives the obligation it is actually assigned.
+        """
+        if not difficulty_id:
+            return {"allowed": True}
+        try:
+            return self._dag.dispatch_preflight(difficulty_id=difficulty_id, method_id=method_id)
+        except ValueError as exc:
+            return {
+                "allowed": False,
+                "reason": "invalid_difficulty_id",
+                "message": str(exc),
+                "difficulty_id": difficulty_id,
+            }
 
     def validate_target(
         self,
@@ -127,6 +144,12 @@ def reviewer_prompt(
         "parent or ancestor from another angle, or choose a bounded independent direction. Treat recent repeated "
         "(node, method) attempts as tabu unless new evidence changes the target. Prefer underexplored node-method combinations among "
         "otherwise comparable routes, but let terminal-gap relevance and verified evidence override raw attempt counts.\n\n"
+        "The runtime precomputes these facts for you; do not recount them. Each node's `progress` carries "
+        "`method_attempt_counts` (attempts per method), `consecutive_no_progress` (trailing attempts that produced no verified "
+        "proposition), `last_verified_at`, and `untried_methods`. `graph.underexplored_pairs` lists active nodes with untried "
+        "methods, ordered by how long they have gone without progress. These are neutral facts, not a ranking: a high "
+        "`consecutive_no_progress` is evidence that the current method is exhausted, not proof that the node is wrong, and an "
+        "untried method is not automatically worth trying.\n\n"
         "Only verified propositions establish mathematical claims. The DAG records canonical identity, relations, and attempt history "
         "but may be wrong; knowledge is a navigation aid and never by itself proves a claim, edge, or status. Do not target refuted "
         "or superseded nodes. A target node may be any active projected graph node; runtime performs the final safety check.\n\n"
@@ -164,7 +187,7 @@ def parse_recommendation(text: str) -> dict[str, Any] | None:
     research_strategy = _clean_text(value.get("research_strategy"), limit=6000)
     next_step = _parse_next_step(value.get("next_step"))
     observations = _parse_graph_observations(value.get("graph_observations"))
-    if not research_strategy or next_step is None or observations is None:
+    if not research_strategy or next_step is None:
         return None
     if next_step["kind"] == "TARGET_NODE" and not next_step["difficulty_id"]:
         return None
@@ -196,15 +219,19 @@ def _clean_text(value: Any, *, limit: int) -> str:
     return " ".join(str(value or "").split())[:limit]
 
 
-def _parse_graph_observations(value: Any) -> list[dict[str, Any]] | None:
-    if value is None:
+def _parse_graph_observations(value: Any) -> list[dict[str, Any]]:
+    """Keep every well-formed observation and silently drop malformed ones.
+
+    Observations are optional, advisory, and never edit the graph. A single malformed
+    entry must not invalidate an otherwise usable strategy, because one reviewer call
+    may have already consumed bounded reasoning and numerical-experiment budget.
+    """
+    if not isinstance(value, list):
         return []
-    if not isinstance(value, list) or len(value) > 8:
-        return None
     observations: list[dict[str, Any]] = []
-    for raw in value:
+    for raw in value[:8]:
         if not isinstance(raw, dict):
-            return None
+            continue
         kind = str(raw.get("kind") or "").strip().upper()
         effect = str(raw.get("recommended_graph_effect") or "").strip()
         target_ids = raw.get("target_ids")
@@ -214,18 +241,15 @@ def _parse_graph_observations(value: Any) -> list[dict[str, Any]] | None:
             kind not in _GRAPH_OBSERVATION_KINDS
             or effect not in _GRAPH_EFFECTS
             or not isinstance(target_ids, list)
-            or not target_ids
-            or len(target_ids) > 8
             or not isinstance(evidence_refs, list)
-            or not evidence_refs
-            or len(evidence_refs) > 16
             or not summary
         ):
-            return None
-        targets = [" ".join(str(item).split())[:80] for item in target_ids]
-        refs = [" ".join(str(item).split())[:2000] for item in evidence_refs]
-        if not all(targets) or not all(refs):
-            return None
+            continue
+        targets = [text for text in (" ".join(str(item).split())[:80] for item in target_ids[:8]) if text]
+        refs = [text for text in (" ".join(str(item).split())[:2000] for item in evidence_refs[:16]) if text]
+        # 未引证据的观察对 curator 无法核对，等于噪声，直接丢弃。
+        if not targets or not refs:
+            continue
         observations.append({
             "kind": kind,
             "target_ids": targets,

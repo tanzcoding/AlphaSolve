@@ -5,6 +5,7 @@ import json
 from alphasolve.solver.difficulty_dag import DifficultyDagStore
 from alphasolve.solver.orchestrator import Orchestrator
 from alphasolve.solver.project import ProjectLayout
+from alphasolve.solver.research_planning import ReviewerPlanGateway
 
 
 class _Manager:
@@ -42,10 +43,12 @@ def _orchestrator(layout):
     orchestrator.layout = layout
     orchestrator.curator_queue = None
     orchestrator.difficulty_dag = DifficultyDagStore(layout.workspace_dir)
+    orchestrator._reviewer_plan_gateway = ReviewerPlanGateway(layout.workspace_dir)
     orchestrator._research_plans = {}
     orchestrator._planning_subagents = None
     orchestrator._progress_audit_queue = None
     orchestrator._has_dispatched_worker = False
+    orchestrator._local_followup_handoff_ids = set()
     return orchestrator
 
 
@@ -60,16 +63,60 @@ def _curate_leaf(dag):
     )
 
 
+_RUBRIC = "- The Statement bounds the global packing term as required."
+
+
 def test_orchestrator_dispatches_only_curated_leaf(tmp_path):
     layout = _layout(tmp_path)
     orchestrator = _orchestrator(layout)
     manager = _Manager()
-    assert json.loads(orchestrator._spawn_tool(manager, {"difficulty_id": "unknown"}).content)["reason"] == "unknown_difficulty"
+    unknown = json.loads(
+        orchestrator._spawn_tool(manager, {"difficulty_id": "unknown", "rubric": _RUBRIC}).content
+    )
+    assert unknown["reason"] == "unknown_difficulty"
 
     _curate_leaf(orchestrator.difficulty_dag)
-    payload = json.loads(orchestrator._spawn_tool(manager, {"difficulty_id": "packing-leaf"}).content)
+    payload = json.loads(
+        orchestrator._spawn_tool(manager, {"difficulty_id": "packing-leaf", "rubric": _RUBRIC}).content
+    )
     assert payload["spawned"] is True
     assert manager.calls[0][1]["difficulty_id"] == "packing-leaf"
+    # preflight 校验通过后，节点的 canonical statement 必须随派发一起下发给 worker，
+    # 否则 worker 只拿到一个无数学含义的溯源标签。
+    assert manager.calls[0][1]["difficulty_statement"] == "Control the global packing term."
+    # 验收标准随派发落到 worker 结果里，供短程任务审计核对。
+    assert manager.calls[0][1]["rubric"] == _RUBRIC
+
+
+def test_orchestrator_refuses_dispatch_against_terminal_difficulty(tmp_path):
+    layout = _layout(tmp_path)
+    orchestrator = _orchestrator(layout)
+    manager = _Manager()
+    _curate_leaf(orchestrator.difficulty_dag)
+
+    ready = layout.workspace_dir / "curation_records" / "evidence_checkpoints" / "evidence-0001"
+    ready.mkdir(parents=True)
+    (ready / "curation_ready.json").write_text(
+        json.dumps({"checkpoint_id": "evidence-0001", "status": "ready"}),
+        encoding="utf-8",
+    )
+    orchestrator.difficulty_dag.record_curation(
+        checkpoint_id="evidence-0001",
+        difficulties=[],
+        status_updates=[{
+            "difficulty_id": "packing-leaf",
+            "status": "refuted",
+            "evidence_refs": ["verified_propositions/counterexample.md"],
+        }],
+    )
+
+    payload = json.loads(
+        orchestrator._spawn_tool(manager, {"difficulty_id": "packing-leaf", "rubric": _RUBRIC}).content
+    )
+
+    assert payload["spawned"] is False
+    assert payload["reason"] == "difficulty_not_actionable"
+    assert manager.calls == []
 
 
 def test_orchestrator_can_start_independent_direction(tmp_path):

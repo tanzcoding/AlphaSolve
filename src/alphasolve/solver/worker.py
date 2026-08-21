@@ -869,6 +869,48 @@ class Worker:
 
         return "\n".join(parts)
 
+    def _common_error_patterns_block(self) -> str:
+        """注入 curator 维护的通用证明错误清单。
+
+        `knowledge/common-errors.md` 由 curator 在读到 verifier 终审后持续提炼并压缩到
+        至多 15 条可复用模式。它此前只被写入、从未被任何生产角色读取，导致离线学习无法
+        回流到在线生成。这里直接注入，避免依赖关键词扫描碰巧命中该文件。
+        """
+        path = self.workspace.root / "knowledge" / "common-errors.md"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+        body = _strip_frontmatter(text).strip()
+        # 只保留条目行，去掉标题；无任何条目时不注入空标题段。
+        bullets = [line.rstrip() for line in body.splitlines() if line.lstrip().startswith(("-", "*"))]
+        if not bullets:
+            return ""
+        return (
+            "# Known Proof Error Patterns\n"
+            "These are recurring mistakes distilled from previous verifier rejections on this problem. "
+            "They are process lessons, not mathematical facts: do not cite them, and do not let them "
+            "narrow your approach. Check your draft against them before finishing.\n\n"
+            + "\n".join(bullets[:15])
+        )
+
+    def _assigned_difficulty_block(self) -> str:
+        """注入调度侧核对过的 canonical 义务陈述。
+
+        `difficulty_id` 本身只是溯源标签，对 worker 没有数学含义。当 orchestrator 引用了
+        一个 canonical 节点时，运行时会把该节点的 statement 一并带下来，避免 worker 只知道
+        标签、却要从 hint 里反推自己究竟被指派了哪条义务。
+        """
+        if not self.difficulty_statement:
+            return ""
+        return (
+            "# Assigned Canonical Difficulty\n"
+            "This is the curator-owned obligation this task was dispatched against. Treat it as the "
+            "obligation you must advance, refute, or precisely narrow; it is a statement of the open "
+            "problem, not an established fact you may cite.\n\n"
+            + self.difficulty_statement
+        )
+
     def _generator_task(self, frontier: str | None = None) -> str:
         if frontier is None:
             frontier = self._render_frontier()
@@ -884,11 +926,13 @@ class Worker:
                 self.layout.read_hint(),
                 "# Task Guidance" if self.worker_hint else "",
                 self.worker_hint,
+                self._assigned_difficulty_block(),
                 f"# Assigned Method\n{self.method_id}",
                 pinned,
                 frontier_header if frontier else "",
                 frontier,
                 failed_history,
+                self._common_error_patterns_block(),
                 "# Output",
                 (
                     "Create a file named `proposition.md` directly in your own directory "
@@ -1156,6 +1200,7 @@ class Worker:
     def _reviser_task(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> str:
         rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
         failed_history = self._scan_failed_history(max_results=3)
+        common_errors = self._common_error_patterns_block()
         no_weakening = ""
         if not self.allow_weakening:
             no_weakening = (
@@ -1171,16 +1216,22 @@ class Worker:
         return (
             "# Problem\n"
             + self.layout.read_problem()
+            + self._assigned_difficulty_block_suffix()
             + "\n\n# Candidate Proposition File\n"
             + rel
             + "\n\n# Review\n"
             + review_text
             + "\n\n"
             + failed_history
+            + ("\n\n" + common_errors if common_errors else "")
             + no_weakening
             + "\n\nRewrite the same proposition markdown file in place, addressing every review issue."
             + f"\n\nRevision after verifier workflow: {workflow_index}"
         )
+
+    def _assigned_difficulty_block_suffix(self) -> str:
+        block = self._assigned_difficulty_block()
+        return f"\n\n{block}" if block else ""
 
     def _finish(
         self,
@@ -1293,6 +1344,12 @@ class Worker:
     def _model_name(self, config: AgentConfig) -> str:
         return config.effective_tier()
 
+
+
+def _strip_frontmatter(text: str) -> str:
+    """去掉可选的 YAML frontmatter（curator 会写 modification_count）。"""
+    match = re.match(r"\A---\s*\n.*?\n---(?:\s*\n|\Z)", text, re.DOTALL)
+    return text[match.end():] if match else text
 
 
 def _parse_review_verdict(text: str) -> str:

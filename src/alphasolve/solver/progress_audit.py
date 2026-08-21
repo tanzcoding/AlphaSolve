@@ -354,6 +354,16 @@ class ProgressAuditQueue:
                     audit_path=audit_path,
                 )
             )
+            # 审计报告本身也要沉淀成可复用知识：DAG curation 只改结构，不写失败模式。
+            # 该任务派在结构 curation 之后，因此摘要可以反映刚刚归档的图状态。
+            self.curator_queue.submit(
+                CuratorTask(
+                    trace_segment=[],
+                    source_label=f"progress-audit/{task.checkpoint_id}",
+                    task_kind="progress_audit",
+                    audit_path=audit_path,
+                )
+            )
 
     def _finish_task(self, task: ProgressAuditTask, decision: dict[str, Any]) -> dict[str, Any]:
         with self._decision_ready:
@@ -498,7 +508,6 @@ def _render_evidence(
 ) -> str:
     visible = [item for item in outcomes if int(item.get("sequence") or 0) <= watermark]
     delta = [item for item in visible if int(item.get("sequence") or 0) > previous_watermark]
-    impacts: dict[str, Any] = {}
     counts: dict[str, int] = {}
     for item in visible:
         status = str(item.get("status") or "unknown")
@@ -522,23 +531,19 @@ def _render_evidence(
         "",
         "## Newly Settled Outcomes",
     ]
-    lines.extend(_render_outcomes(delta, layout.workspace_dir, impacts=impacts))
-    lines.extend(["", "## Cumulative Outcome Ledger", *(_render_outcomes(visible, layout.workspace_dir, impacts=impacts))])
+    lines.extend(_render_outcomes(delta, layout.workspace_dir))
+    lines.extend(["", "## Cumulative Outcome Ledger (Index)", *_render_ledger_summary(visible, layout.workspace_dir)])
     return "\n".join(lines).rstrip() + "\n"
 
 
 def _render_outcomes(
     outcomes: list[dict[str, Any]],
     workspace_dir: Path,
-    *,
-    impacts: dict[str, Any],
 ) -> list[str]:
     if not outcomes:
         return ["- None."]
     lines: list[str] = []
     for item in outcomes:
-        worker_id = str(item.get("worker_id") or "")
-        impact = impacts.get(worker_id) if isinstance(impacts.get(worker_id), dict) else {}
         lines.extend([
             f"### Outcome {item.get('sequence', '?')}: {item.get('status', 'unknown')}",
             f"- Difficulty / method: `{item.get('difficulty_id') or '(root candidate)'} / {item.get('method_id') or '-'}`",
@@ -546,25 +551,6 @@ def _render_outcomes(
             f"- Failure kind: `{item.get('failure_kind') or '-'}`",
             f"- Solves original problem: `{bool(item.get('solved_problem'))}`",
         ])
-        rubric = str(item.get("rubric") or "").strip()
-        if rubric:
-            lines.extend(["#### Pre-dispatch Rubric", rubric])
-        if impact:
-            lines.extend([
-                "#### Legacy Impact Evidence",
-                f"- Assessment summary: {str(impact.get('summary') or '')[:1800]}",
-            ])
-            rubric_assessment = impact.get("rubric_assessment")
-            if isinstance(rubric_assessment, dict):
-                lines.append(
-                    f"- Rubric score: `{rubric_assessment.get('passed_count', 0)}/{rubric_assessment.get('total_checks', 0)}`"
-                )
-                for check in rubric_assessment.get("checks") or []:
-                    if isinstance(check, dict):
-                        verdict = "pass" if check.get("passed") else "fail"
-                        lines.append(
-                            f"  - [{verdict}] {check.get('criterion')}: {check.get('evidence')}"
-                        )
         handoff = item.get("difficulty_handoff")
         if isinstance(handoff, dict):
             lines.extend([
@@ -596,6 +582,39 @@ def _render_outcomes(
         if refs:
             lines.append("- Artifact paths: " + ", ".join(f"`{path}`" for path in refs))
         lines.append("")
+    return lines
+
+
+def _render_ledger_summary(outcomes: list[dict[str, Any]], workspace_dir: Path) -> list[str]:
+    """Render the cumulative ledger as one compact row per outcome.
+
+    The delta section already carries full evidence for newly settled work.  Repeating
+    every historical summary, declaration, and review excerpt at each checkpoint makes
+    audit cost grow quadratically in the number of outcomes, so history is kept as a
+    scannable index whose cited artifacts can be read on demand.
+    """
+    if not outcomes:
+        return ["- None."]
+    lines = [
+        "One row per settled outcome. Read a cited artifact only when the audit needs its exact content.",
+        "",
+        "| # | Status | Difficulty | Method | Session | Failure | Verified artifact |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for item in outcomes:
+        verified = str(item.get("verified_file") or "").strip()
+        verified_cell = f"`{_display_path(verified, workspace_dir)}`" if verified else "-"
+        lines.append(
+            "| {sequence} | {status} | `{difficulty}` | `{method}` | `{session}` | `{failure}` | {verified} |".format(
+                sequence=item.get("sequence", "?"),
+                status=item.get("status", "unknown"),
+                difficulty=item.get("difficulty_id") or "(root candidate)",
+                method=item.get("method_id") or "-",
+                session=item.get("orchestrator_session_id") or "-",
+                failure=item.get("failure_kind") or "-",
+                verified=verified_cell,
+            )
+        )
     return lines
 
 
@@ -746,7 +765,7 @@ def _write_curator_brief(
             f"- Previous verdict: `{previous.get('verdict') or 'unknown'}`",
             f"- Previous terminal gap: {previous.get('terminal_gap') or 'not stated'}",
             f"- Previous recommended action: {previous.get('recommended_next_action') or 'not stated'}",
-            "- Compare whether the terminal gap, outcome classifications, rubric scores, and avoided obligations changed substantively rather than cosmetically.",
+            "- Compare whether the terminal gap, outcome classifications, and avoided obligations changed substantively rather than cosmetically.",
         ])
     else:
         lines.append("- No earlier completed checkpoint is available; establish the first comparison baseline.")
@@ -756,8 +775,8 @@ def _write_curator_brief(
         *event_lines,
         "",
         "## Required Comparison Questions",
-        "- Which attempts share the same target/gap but differ in method, rubric score, summary, or verification outcome?",
-        "- Which correct propositions were incidental because their rubric or impact evidence did not connect them to the terminal gap?",
+        "- Which attempts share the same target/gap but differ in method, summary, or verification outcome?",
+        "- Which correct propositions were incidental because the audit could not connect them to the terminal gap?",
         "- Which avoided obligation repeats across multiple outcomes?",
         "- Which observed pattern is reusable enough to record as a strategy rule, and what evidence or exception bounds that rule?",
         "",
@@ -825,13 +844,10 @@ def _render_curation_events(events: list[dict[str, Any]]) -> list[str]:
                 "- An orchestrator session ended: "
                 f"solved={bool(event.get('solved'))}, worker_results={event.get('worker_results', 0)}."
             )
-        elif kind == "worker_impact_recorded":
+        elif kind == "local_difficulty_followup_started":
             lines.append(
-                "- A worker impact was classified: "
-                f"relation={event.get('relation_to_target') or 'unknown'}, "
-                f"gap effect={event.get('gap_effect') or 'unknown'}, "
-                f"rubric={event.get('rubric_passed_count') if event.get('rubric_passed_count') is not None else '?'}"
-                f"/{event.get('rubric_total_checks') if event.get('rubric_total_checks') is not None else '?'}."
+                "- A bounded local follow-up was dispatched from a recorded worker obstacle "
+                f"(method={event.get('method_id') or 'unknown'})."
             )
     return lines or ["- No relevant orchestrator transition facts in the retained window."]
 
@@ -854,6 +870,8 @@ def _audit_prompt(task: ProgressAuditTask, workspace_dir: Path) -> str:
         "### Cited Evidence\n\n"
         "Classify every new outcome as direct_advance, supporting, incidental, duplicate, or failed. "
         "A mathematically correct result is incidental unless you can cite how it closes a named terminal gap. "
+        "A separate per-worker task audit already judged whether each dispatch was delivered; do not re-check acceptance "
+        "criteria here. Your question is whether the portfolio advances `problem.md`. "
         "State one precise next target, but do not prescribe a method family.\n\n"
         "If the repeated avoided obligation is concrete enough to give the curator a lead, append these exact candidate lines "
         "after the cited evidence (otherwise write NONE for both):\n"

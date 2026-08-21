@@ -79,6 +79,10 @@ agent:
       frontier_note:
         type: string
         maxLength: 2000
+      rubric:
+        type: string
+        minLength: 1
+        maxLength: 4000
     SpawnFreeExploration:
       reason:
         type: string

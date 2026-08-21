@@ -311,6 +311,9 @@ def register_orchestrator_worker_tools(
         name="SpawnWorker",
         description=(
             "Start one worker and return immediately; this tool does not wait for the worker to finish.\n\n"
+            "Every dispatch must state both what to do (`hint`) and what would count as done (`rubric`). "
+            "When the worker finishes, an independent task auditor checks the proven Statement against that rubric and "
+            "TaskOutput reports whether the task was delivered, plus any scope drift.\n\n"
             "Worker lifecycle:\n"
             "- The worker first runs generator to draft one candidate proposition.\n"
             "- It then runs verifier; if verification fails and rounds remain, it runs reviser and repeats verifier -> reviser.\n"
@@ -381,14 +384,16 @@ def register_orchestrator_worker_tools(
                 "rubric": {
                     "type": "string",
                     "description": (
-                        "Optional. A concise acceptance checklist (3-6 bullet points, each starting with '- ') "
-                        "specifying what the proven Statement must satisfy to count as progress on the assigned difficulty. "
-                        "The rubric is not shown to the worker; it is retained in the immutable worker outcome ledger "
-                        "for later curator review. "
-                        "Example: '- Explicit construction of a permutation and tiling\n"
-                        "- Rectangle count k <= 2111\n"
-                        "- All non-hole cells covered exactly once'. "
-                        "Write criteria that are checkable against the proven Statement alone."
+                        "Required. The acceptance checklist for this task: 3-6 bullet points, each starting with '- ', "
+                        "each checkable against the proven Statement alone. Write it together with the hint — it is how you "
+                        "state what would count as delivering this task, not a formality.\n\n"
+                        "When the worker finishes, an independent task auditor checks each criterion against the proven "
+                        "Statement and returns a delivery verdict plus any scope drift on TaskOutput. A vague rubric yields "
+                        "a useless audit; a criterion the Statement cannot settle will come back as `unclear`.\n\n"
+                        "State the required quantifiers, bounds, constants, and conditions explicitly, so a correct but "
+                        "weakened or narrowed result is detected rather than accepted. Example: '- Statement holds for every "
+                        "integrable H with the stated normalization\n- Bound is exactly 2, not an unspecified constant\n"
+                        "- No extra smoothness or boundedness hypothesis is introduced'."
                     ),
                 },
                 "consolidation": {
@@ -420,7 +425,7 @@ def register_orchestrator_worker_tools(
                     ),
                 },
             },
-            "required": [],
+            "required": ["rubric"],
         },
         handler=spawn_handler,
     )
@@ -430,13 +435,17 @@ def register_orchestrator_worker_tools(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
             "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
-            "Completed workers may include a worker-local difficulty_handoff plus direct proposition, review, and verification artifacts. "
+            "Each completed worker carries a `task_audit`: an independent short-horizon verdict on whether the task you assigned "
+            "was delivered (`delivered`, `partial`, `off_target`, `not_delivered`), its rubric score, any scope drift, and the "
+            "residual obligation. A verified proposition with an unmet rubric means the obligation is still open. "
+            "`task_audit_summary` aggregates those verdicts for this batch. "
+            "Completed workers may also include a worker-local difficulty_handoff plus direct proposition, review, and verification artifacts. "
             "When available, local_difficulties lists compact worker and reasoning-subagent obstacle handoffs. For one concrete "
             "follow-up, use SpawnWorker with followup_handoff_ids and evidence_refs; each handoff may be cited once per run. "
             "Use RequestResearchPlan when local evidence does not justify a bounded continuation or the strategic direction is unclear. "
             "Canonical parent/child structure remains curator-owned. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
-            "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent process auditor's latest verdict and persisted checkpoint files. "
+            "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent long-horizon process auditor's latest verdict and persisted checkpoint files. "
             "When this collection triggers a checkpoint, it waits for that process-audit decision and returns a bounded process_audit_decisions summary; read its audit_path or evidence_path only when exact evidence is needed."
         ),
         parameters={

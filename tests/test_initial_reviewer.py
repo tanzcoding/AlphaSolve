@@ -130,7 +130,13 @@ def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestra
 
     assert [item["worker_id"] for item in evidence] == ["worker-1", "worker-2"]
     assert all(hint is None for hint, _kwargs in manager.calls)
-    assert all(kwargs == {"difficulty_id": None, "method_id": "direct_proof"} for _hint, kwargs in manager.calls)
+    # 冷启动批先于 orchestrator LLM 运行，因此验收标准由运行时提供，而非 LLM 编写。
+    from alphasolve.solver.cold_start import COLD_START_RUBRIC
+
+    assert all(
+        kwargs == {"difficulty_id": None, "method_id": "direct_proof", "rubric": COLD_START_RUBRIC}
+        for _hint, kwargs in manager.calls
+    )
     assert "first evidence" in runtime.context_for_orchestrator()
 
     for index in range(3):
@@ -187,16 +193,13 @@ def test_spawn_worker_uses_handoffs_as_evidence_for_local_follow_up(tmp_path):
         ]
     }
 
-    portfolio = orchestrator._difficulty_portfolio_payload(payload)
+    class NoResultsManager:
+        results = []
 
-    assert portfolio is not None
-    assert portfolio["review_status"] == "orchestrator_decision_required"
-    assert "research_reviewer_report" not in portfolio
-    assert portfolio["candidate_worker_ids"] == ["worker-a", "worker-b"]
-    assert [item["obstacle"] for item in portfolio["handoffs"]] == [
-        "Bridge A remains unproved by the current route.",
-        "Bridge B remains unproved by the current route.",
-    ]
+    available = orchestrator._available_local_handoffs(NoResultsManager(), payload)
+
+    assert set(available) == {"handoff-worker-a"}
+    assert available["handoff-worker-a"]["obstacle"] == "Bridge A remains unproved by the current route."
 
     class Manager:
         results = []
@@ -209,7 +212,7 @@ def test_spawn_worker_uses_handoffs_as_evidence_for_local_follow_up(tmp_path):
 
     manager = Manager()
     orchestrator._available_local_handoffs = lambda _manager: {
-        "handoff-worker-a": portfolio["handoffs"][0],
+        "handoff-worker-a": available["handoff-worker-a"],
     }
     orchestrator._refresh_research_frontier_state = lambda _manager: None
     orchestrator.session_id = "test-session"
@@ -219,6 +222,7 @@ def test_spawn_worker_uses_handoffs_as_evidence_for_local_follow_up(tmp_path):
         {
             "method_id": "contradiction",
             "hint": "Construct a witness or prove the missing bridge lemma.",
+            "rubric": "- The Statement exhibits an explicit witness or proves the bridge lemma.",
             "followup_handoff_ids": ["handoff-worker-a"],
             "evidence_refs": ["unverified_propositions/prop-a/difficulty_handoff.json"],
         },
@@ -232,6 +236,37 @@ def test_spawn_worker_uses_handoffs_as_evidence_for_local_follow_up(tmp_path):
 
     second = orchestrator._spawn_difficulty_leaf(
         manager,
-        {"hint": "Retry.", "followup_handoff_ids": ["handoff-worker-a"]},
+        {
+            "hint": "Retry.",
+            "rubric": "- The Statement closes the previously reported obstacle.",
+            "followup_handoff_ids": ["handoff-worker-a"],
+        },
     )
     assert "local_handoff_already_followed_up" in second.content
+
+
+def test_spawn_worker_requires_acceptance_rubric(tmp_path):
+    """下发 hint 必须同时给出验收标准，否则任务审计无从判断"是否完成"。"""
+    (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
+    layout = ProjectLayout.create(tmp_path)
+    layout.ensure()
+    orchestrator = object.__new__(Orchestrator)
+    orchestrator.layout = layout
+    orchestrator._local_followup_handoff_ids = set()
+
+    class Manager:
+        results = []
+        solved_result = None
+        calls = 0
+
+        def spawn(self, hint, **kwargs):
+            type(self).calls += 1
+            return {"spawned": True, "worker_id": "should-not-spawn"}
+
+    result = orchestrator._spawn_difficulty_leaf(Manager(), {"hint": "Try something."})
+    payload = json.loads(result.content)
+
+    assert result.is_error
+    assert payload["spawned"] is False
+    assert payload["reason"] == "rubric_required"
+    assert Manager.calls == 0

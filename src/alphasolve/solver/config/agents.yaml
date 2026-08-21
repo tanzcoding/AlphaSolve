@@ -16,7 +16,6 @@ settings:
   worker_wait_timeout_seconds: 3600
   verified_propositions_organization_threshold: 20
   free_seed_probability: 0.6
-  research_reviewer_read_state_epsilon: 0.0
   theorem_check_attempts: 5
   curator_health_check_interval: 8
   curator_oversized_entry_line_limit: 250

@@ -19,6 +19,14 @@ DEFAULT_COLD_START_VERIFIED_PROPOSITION_THRESHOLD = (
     SolverPolicy().cold_start_verified_proposition_threshold
 )
 
+# 冷启动批没有 orchestrator 指令可循（它先于 LLM 运行），因此验收标准也由运行时定义：
+# 只要求一条可独立检验的、朝向原题的命题。
+COLD_START_RUBRIC = (
+    "- The Statement is one precise, independently checkable mathematical claim about `problem.md`\n"
+    "- The Statement is self-contained: every hypothesis it needs is stated in it\n"
+    "- If the attempt stalled, a precise obstacle was recorded rather than a weakened restatement"
+)
+
 
 def cold_start_verified_proposition_threshold(settings: dict[str, Any] | None) -> int:
     """Compatibility helper for callers that still pass a raw settings mapping."""
@@ -70,7 +78,12 @@ class ColdStartRuntime:
         for _ in range(self.max_workers):
             if not manager.has_available_worker_slot():
                 break
-            payload = manager.spawn(hint=None, difficulty_id=None, method_id="direct_proof")
+            payload = manager.spawn(
+                hint=None,
+                difficulty_id=None,
+                method_id="direct_proof",
+                rubric=COLD_START_RUBRIC,
+            )
             if not payload.get("spawned"):
                 break
             worker_id = str(payload.get("worker_id") or "").strip()

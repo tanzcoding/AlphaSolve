@@ -130,12 +130,12 @@ def test_close_is_idempotent(tmp_path: Path):
 def test_note_writes_free_text_line(tmp_path: Path):
     log_path = tmp_path / "run.log"
     writer = RunLogWriter(log_path, flush_interval=3600)
-    writer.note("research_reviewer read_state decision: SKIP state.md (independent assessment)")
+    writer.note("dispatch preflight decision: leaf is actionable")
     writer.close()
 
     text = log_path.read_text(encoding="utf-8")
     assert "NOTE │" in text
-    assert "research_reviewer read_state decision: SKIP state.md (independent assessment)" in text
+    assert "dispatch preflight decision: leaf is actionable" in text
 
 
 def test_note_is_noop_after_close(tmp_path: Path):

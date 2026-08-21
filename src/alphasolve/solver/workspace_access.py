@@ -146,6 +146,23 @@ class RoleWorkspaceAccess:
         )
 
     @classmethod
+    def task_auditor(cls, workspace: Workspace, worker_rel: str | None = None) -> "RoleWorkspaceAccess":
+        """短程任务审计器：只读被审 worker 自己的产出与已验证命题。
+
+        它与 ``process_auditor`` 的取舍相反：进度审计不得把未验证草稿当证据，而任务审计
+        的对象**就是**那一次交付，因此必须能读该 worker 的 `proposition.md` / `review.md`。
+        隔离靠 ``deny_other_unverified`` 收紧到单个 worker 目录，避免它顺带把别人的失败
+        草稿当成本次交付的证据。它没有任何写权限，也不读 knowledge/（验收只对陈述负责，
+        不引入战略叙事）。
+        """
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+            deny_read_rels=("knowledge", "curation_records", "progress_audits"),
+        )
+
+    @classmethod
     def curator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
         """主 curator：可读证据、审计和已验证命题，但只允许写 ``knowledge/``。"""
         return cls(

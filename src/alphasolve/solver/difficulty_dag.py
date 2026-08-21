@@ -23,6 +23,16 @@ _RESOLUTION_POLICIES = {"all_of", "any_of", "manual"}
 _RELATIONS = {"prerequisite", "alternative", "weakened_target", "method_blocked", "refutes"}
 _TERMINAL = {"resolved", "refuted", "superseded"}
 _CORRECTION_KINDS = {"remove_parent_edge", "supersede_node", "reopen_node"}
+# 派发方法族的权威枚举。它同时约束 SpawnWorker 的 method_id、reviewer 的 next_step，
+# 以及本模块计算 untried_methods / underexplored_pairs 的取值域。
+_METHOD_IDS = frozenset({
+    "direct_proof",
+    "contradiction",
+    "construction",
+    "computation",
+    "falsification",
+    "consolidation",
+})
 
 # Backward-compatible exports for callers that rely on the built-in defaults.
 _DEFAULT_POLICY = DifficultyDagPolicy()
@@ -306,6 +316,7 @@ class DifficultyDagStore:
             if not isinstance(node, dict):
                 continue
             progress = node.get("progress") if isinstance(node.get("progress"), dict) else {}
+            raw_attempts = [item for item in progress.get("attempts") or [] if isinstance(item, dict)]
             attempts = [
                 {
                     "recorded_at": str(item.get("recorded_at") or ""),
@@ -313,8 +324,7 @@ class DifficultyDagStore:
                     "status": str(item.get("status") or ""),
                     "verified_proposition_ref": str(item.get("verified_proposition_ref") or ""),
                 }
-                for item in progress.get("attempts") or []
-                if isinstance(item, dict)
+                for item in raw_attempts
             ][-8:]
             public_nodes.append({
                 "difficulty_id": difficulty_id,
@@ -330,9 +340,78 @@ class DifficultyDagStore:
                     "last_attempt_at": str(progress.get("last_attempt_at") or ""),
                     "verified_proposition_refs": [str(item) for item in progress.get("verified_proposition_refs") or []][:16],
                     "recent_attempts": attempts,
+                    **self._attempt_statistics(raw_attempts),
                 },
             })
-        return {"nodes": public_nodes, "components": self._reviewer_components(public_nodes)}
+        return {
+            "nodes": public_nodes,
+            "components": self._reviewer_components(public_nodes),
+            "underexplored_pairs": self._underexplored_pairs(public_nodes),
+        }
+
+    @staticmethod
+    def _attempt_statistics(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        """Precompute per-node attempt facts so the reviewer never has to count them.
+
+        These are runtime-computed facts, not rankings or policy: the reviewer still
+        decides what matters.  Counting from a long attempt list is exactly the kind of
+        bookkeeping an LLM gets wrong, so the runtime does it deterministically.
+
+        ``consecutive_no_progress`` counts trailing attempts that produced no verified
+        proposition reference, i.e. how many times in a row the node was attacked
+        without yielding established mathematics.
+        """
+        ordered = sorted(
+            attempts,
+            key=lambda item: (int(item.get("sequence") or 0), str(item.get("recorded_at") or "")),
+        )
+        method_counts: dict[str, int] = {}
+        attempted_methods: list[str] = []
+        last_verified_at = ""
+        consecutive_no_progress = 0
+        for item in ordered:
+            method_id = str(item.get("method_id") or "").strip() or "unspecified"
+            method_counts[method_id] = method_counts.get(method_id, 0) + 1
+            if method_id not in attempted_methods:
+                attempted_methods.append(method_id)
+            if str(item.get("verified_proposition_ref") or "").strip():
+                last_verified_at = str(item.get("recorded_at") or "") or last_verified_at
+                consecutive_no_progress = 0
+            else:
+                consecutive_no_progress += 1
+        return {
+            "method_attempt_counts": dict(sorted(method_counts.items())),
+            "consecutive_no_progress": consecutive_no_progress,
+            "last_verified_at": last_verified_at,
+            "untried_methods": sorted(_METHOD_IDS - set(attempted_methods)),
+        }
+
+    @staticmethod
+    def _underexplored_pairs(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """List active (node, method) combinations never attempted, as neutral candidates.
+
+        This is a factual complement of the attempt history, not a recommendation: the
+        reviewer weighs terminal-gap relevance and verified evidence above raw counts.
+        """
+        pairs: list[dict[str, Any]] = []
+        for node in nodes:
+            if str(node.get("status") or "open") in _TERMINAL:
+                continue
+            progress = node.get("progress") if isinstance(node.get("progress"), dict) else {}
+            untried = [str(item) for item in progress.get("untried_methods") or []]
+            if not untried:
+                continue
+            pairs.append({
+                "difficulty_id": str(node.get("difficulty_id") or ""),
+                "attempt_count": int(progress.get("attempt_count") or 0),
+                "consecutive_no_progress": int(progress.get("consecutive_no_progress") or 0),
+                "untried_methods": untried,
+            })
+        # 先看尝试过但一直没进展的节点：那里最需要换方法。
+        return sorted(
+            pairs,
+            key=lambda item: (-item["consecutive_no_progress"], item["attempt_count"], item["difficulty_id"]),
+        )[:16]
 
     @staticmethod
     def _reviewer_components(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:

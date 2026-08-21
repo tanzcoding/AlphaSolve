@@ -30,6 +30,7 @@ from .difficulty_portfolio import (
 )
 from .progress_audit import ProgressAuditQueue
 from .solution import write_solution
+from .task_audit import TaskAuditor, summarize_task_audits
 from .client_factory import ClientFactory
 from .subagent_service import SubagentService
 from .tool_runtime import build_solver_tool_registry, register_orchestrator_worker_tools
@@ -62,6 +63,22 @@ FREE_EXPLORATION_WORKER_HINT = (
     "repeat a settled fact, a recorded dead end, or the current dominant method under new wording. "
     "Read the injected Free Exploration Constraints before choosing a route. Choose one bounded idea, "
     "state its exact claim, and record a precise difficulty if it does not advance the assigned problem."
+)
+
+
+# 这两条验收标准由运行时定义，因为它们的目标不是 orchestrator 选的：global attack 的
+# 目标恒为原题，自由探索的目标恒为"一条有界的正交主张"。其余派发必须由 orchestrator
+# 在下发 hint 时自行给出 rubric。
+GLOBAL_ATTACK_RUBRIC = (
+    "- The Statement resolves `problem.md` exactly as stated, or refutes it with an explicit checkable witness\n"
+    "- No weakening: no added hypothesis, reduced bound, special case, or dropped quantifier\n"
+    "- Every external step is either proved here or cited from a verified proposition"
+)
+
+FREE_EXPLORATION_RUBRIC = (
+    "- The Statement is one precise, self-contained mathematical claim\n"
+    "- The claim is materially orthogonal to the current dominant method and to recorded dead ends\n"
+    "- If the route did not close, a precise obstacle was recorded rather than a vague retry"
 )
 
 
@@ -182,10 +199,12 @@ class WorkerManager:
         execution_gateway: ExecutionGateway | None = None,
         curator_queue: CuratorQueue | None = None,
         progress_audit_queue: ProgressAuditQueue | None = None,
+        task_auditor: TaskAuditor | None = None,
         orchestrator_session_id: str | None = None,
         log_session: LogSession | None = None,
         stop_event: threading.Event | None = None,
         policy: SolverPolicy | None = None,
+        attempt_observer: Any | None = None,
     ) -> None:
         self.layout = layout
         self.suite = suite
@@ -217,8 +236,14 @@ class WorkerManager:
         self.execution_gateway = execution_gateway
         self.curator_queue = curator_queue
         self.progress_audit_queue = progress_audit_queue
+        # 短程交付验收器（同步）。它与 progress_audit_queue（长程、异步）职责不同：
+        # 前者只回答"这次分派被完成了吗"，后者只回答"整体是否在推进原题"。
+        self.task_auditor = task_auditor
         self.orchestrator_session_id = orchestrator_session_id
         self.log_session = log_session
+        # 只读的 attempt 谱系观测器（SearchSession）。它记录 spawn/result 血缘，
+        # 不参与任何调度决策；写入失败绝不能影响 worker 执行。
+        self.attempt_observer = attempt_observer
         self.stop_event = stop_event or threading.Event()
         self.solution_path: Path | None = None
         self.solved_result: WorkerRunResult | None = None
@@ -320,6 +345,9 @@ class WorkerManager:
                 "difficulty_id": difficulty_id,
                 "difficulty_statement": difficulty_statement,
                 "method_id": method_id,
+                "worker_hint": hint,
+                "rubric": rubric,
+                "pinned_target": pinned_target,
                 "orchestrator_session_id": self.orchestrator_session_id,
                 "started_at": time.time(),
                 "phase": "spawned",
@@ -328,6 +356,12 @@ class WorkerManager:
             }
         future = self.executor.submit(worker.run)
         self.active[future] = worker_id
+        self._observe_spawn(
+            worker_id=worker_id,
+            hint=hint,
+            difficulty_id=difficulty_id,
+            method_id=method_id,
+        )
         payload = {
             "spawned": True,
             "worker_id": worker_id,
@@ -337,6 +371,36 @@ class WorkerManager:
             **self._pool_status(),
         }
         return payload
+
+    def _observe_spawn(
+        self,
+        *,
+        worker_id: str,
+        hint: str | None,
+        difficulty_id: str | None,
+        method_id: str | None,
+    ) -> None:
+        if self.attempt_observer is None:
+            return
+        try:
+            self.attempt_observer.on_spawn(
+                worker_id,
+                hint,
+                difficulty_id=difficulty_id,
+                method_id=method_id,
+            )
+        except Exception:
+            # 观测层是只读附加信号；它绝不能影响真实派发。
+            pass
+
+    def _observe_result(self, payload: dict[str, Any]) -> None:
+        if self.attempt_observer is None:
+            return
+        try:
+            self.attempt_observer.on_worker_result(payload)
+        except Exception:
+            # 观测层是只读附加信号；它绝不能隐藏已完成的 worker 结果。
+            pass
 
     def wait(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         self._collect_done()
@@ -403,6 +467,7 @@ class WorkerManager:
             frontier_refs=seed or None,
             frontier_note=note or None,
             is_free=True,
+            rubric=FREE_EXPLORATION_RUBRIC,
         )
 
     def _pick_free_divergence_seed(self) -> list[str]:
@@ -505,8 +570,19 @@ class WorkerManager:
                 "failure_kind": "execution_failed",
                 "difficulty_id": finished_info.get("difficulty_id"),
                 "method_id": finished_info.get("method_id"),
+                "orchestrator_session_id": finished_info.get("orchestrator_session_id")
+                or self.orchestrator_session_id,
+                # 交付验收需要知道"当初要求了什么"；worker 崩溃时结果对象不存在，
+                # 因此这些分派事实只能由调度侧从 active_info 补回。
+                "worker_hint": finished_info.get("worker_hint"),
+                "rubric": finished_info.get("rubric"),
+                "pinned_target": finished_info.get("pinned_target"),
                 }
+                task_audit = self._run_task_audit(payload)
+                if task_audit is not None:
+                    payload["task_audit"] = task_audit
                 self._append_worker_result_log(payload)
+                self._observe_result(payload)
                 completed.append(payload)
                 continue
             self.results.append(replace(result, trace=[]))
@@ -534,8 +610,20 @@ class WorkerManager:
                     verified_count=self._verified_count(),
                 )
             payload = _worker_result_payload(result)
+            # 归因字段由调度侧持有：worker 不知道自己属于哪个 orchestrator session，
+            # 而 audit/curator 需要它来判断同一障碍是否跨 session 重复出现。
+            payload["orchestrator_session_id"] = (
+                finished_info.get("orchestrator_session_id") or self.orchestrator_session_id
+            )
             payload.update(completion_feedback)
+            # 短程任务验收在收割路径内同步执行：它的唯一读者是 orchestrator，且必须在
+            # 同一次 TaskOutput 里回答"我刚下发的那个任务被完成了吗"。若异步执行，结论
+            # 会晚于 orchestrator 的下一次派发决策而失去意义。
+            task_audit = self._run_task_audit(payload)
+            if task_audit is not None:
+                payload["task_audit"] = task_audit
             self._append_worker_result_log(payload)
+            self._observe_result(payload)
             completed.append(payload)
         if completed and self.progress_audit_queue is not None:
             try:
@@ -546,6 +634,16 @@ class WorkerManager:
                 # Audit persistence is observational and must not hide worker results.
                 pass
         return completed
+
+    def _run_task_audit(self, payload: dict[str, Any]) -> dict[str, Any] | None:
+        """Check one finished worker against its acceptance rubric before returning it."""
+        if self.task_auditor is None:
+            return None
+        try:
+            return self.task_auditor.audit(payload)
+        except Exception:
+            # 交付验收是附加信号；它绝不能隐藏一个已完成的 worker 结果。
+            return None
 
     def _wait_payload(self, completed: list[dict[str, Any]]) -> dict[str, Any]:
         payload = {
@@ -666,22 +764,17 @@ def _resolve_reviewer_read_state(
     epsilon: float,
     rng: Callable[[], float] = random.random,
 ) -> bool | None:
-    """orchestrator 调用 subagent 时，由系统决定 research_reviewer 的 read_state。
+    """Deprecated no-op retained only for backward-compatible imports.
 
-    - 仅对 ``research_reviewer`` 生效：以 ``epsilon`` 概率「读」state.md（参考历史战略笔记），
-      以 ``1-epsilon`` 概率「不读」（保持独立评估、避免被此前的错误路线带偏）。判定式为
-      ``rng() < epsilon``；因此 ``epsilon`` 即「读 state.md 的概率」。
-    - 其它 subagent 保持调用方显式传入的 read_state（通常为 ``None``，即不注入指令）。
+    ``read_state`` 曾以 epsilon-greedy 由系统决定 research_reviewer 是否读 state.md。
+    现在 reviewer 只消费 orchestrator 显式注入的 canonical 图投影，orchestrator 也不再
+    注册 ``Agent`` 工具，因此该策略钩子没有任何生效路径。保留函数签名仅为兼容旧调用方。
     """
-    if agent_type != "research_reviewer":
-        return requested
-    return rng() < epsilon
+    del epsilon, rng
+    return requested
 
 
 class Orchestrator:
-    # Backward-compatible default export; live runs use ``SolverPolicy`` instead.
-    RESEARCH_REVIEWER_READ_STATE_EPSILON = SolverPolicy().research_reviewer_read_state_epsilon
-
     def __init__(
         self,
         *,
@@ -743,6 +836,7 @@ class Orchestrator:
             policy=self.policy.difficulty_dag,
         )
         self._progress_audit_queue: ProgressAuditQueue | None = None
+        self._task_auditor: TaskAuditor | None = None
         self._planning_subagents: SubagentService | None = None
         self._research_plans: dict[str, dict[str, Any]] = {}
         self._research_plan_created = False
@@ -793,6 +887,15 @@ class Orchestrator:
             )
             progress_audit_queue.start()
             self._progress_audit_queue = progress_audit_queue
+            # 短程交付验收：同步运行在 worker 收割路径内，结论随 TaskOutput 一起返回。
+            task_auditor = TaskAuditor(
+                layout=self.layout,
+                suite=self.suite,
+                client_factory=self.client_factory,
+                log_session=self.log_session,
+                stop_event=self.stop_event,
+            )
+            self._task_auditor = task_auditor
             manager = WorkerManager(
                 layout=self.layout,
                 suite=self.suite,
@@ -805,10 +908,12 @@ class Orchestrator:
                 execution_gateway=self.execution_gateway,
                 curator_queue=self.curator_queue,
                 progress_audit_queue=progress_audit_queue,
+                task_auditor=task_auditor,
                 orchestrator_session_id=self.session_id,
                 log_session=self.log_session,
                 stop_event=self.worker_stop_event,
                 policy=self.policy,
+                attempt_observer=self.search,
             )
             self._startup_evidence = self.cold_start_runtime.prepare(manager)
             self._refresh_research_frontier_state(manager)
@@ -832,6 +937,9 @@ class Orchestrator:
                 ),
                 stop_event=self.stop_event,
                 reviewer_state_provider=self._reviewer_frontier_projection,
+                # reviewer 跨调用记忆：让它看到自己此前的策略与 next_step，
+                # 避免在没有新证据时来回翻转同一条路线。
+                reviewer_history_path=self.layout.curation_records_dir / "reviewer_history.md",
             )
             self._planning_subagents = subagents
             try:
@@ -860,6 +968,7 @@ class Orchestrator:
                 manager.close(graceful=user_requested_stop)
                 progress_audit_queue.stop()
                 self._progress_audit_queue = None
+                self._task_auditor = None
                 self._planning_subagents = None
         finally:
             if orchestrator_log_sink is not None:
@@ -946,26 +1055,6 @@ class Orchestrator:
         )
         del subagents
         return build_solver_tool_registry(access, extra_registrars=extra_registrars)
-
-    def _reviewer_read_state_resolver(self, agent_type: str, requested: Any) -> bool | None:
-        """orchestrator 的 Agent 工具用它决定被调 subagent 的 read_state。
-
-        对 research_reviewer 走 epsilon-greedy（系统决定），并把「是否探索（读 state.md）」
-        写进统一运行日志（alphasolve_run.log）；其它 subagent 原样透传调用方请求值。
-        """
-        epsilon = self.policy.research_reviewer_read_state_epsilon
-        decision = _resolve_reviewer_read_state(
-            agent_type,
-            requested,
-            epsilon=epsilon,
-        )
-        if agent_type == "research_reviewer" and self.log_session is not None:
-            mode = "READ state.md (consult prior strategy)" if decision else "SKIP state.md (independent assessment)"
-            self.log_session.run_log.note(
-                f"research_reviewer read_state decision: {mode} "
-                f"[read-probability={epsilon}, read_state={bool(decision)}]"
-            )
-        return decision
 
     def _register_free_exploration_tool(self, registry: ToolRegistry, manager: WorkerManager) -> None:
         """注册显式的自由探索工具（不再由代码自动 gate/派发）。
@@ -1101,12 +1190,26 @@ class Orchestrator:
             description=(
                 "Execute the bounded implementation of one stored research strategy after revalidating a targeted leaf. It may "
                 "dispatch one current leaf, launch the recommended independent direction, or hold. It never writes canonical DAG "
-                "structure."
+                "structure.\n\n"
+                "Supply the acceptance `rubric` for the reviewer's bounded step: the reviewer states the mathematical direction, "
+                "but committing to what would count as delivering it remains your decision, and the task auditor checks the "
+                "proven Statement against it."
             ),
             parameters={
                 "type": "object",
-                "properties": {"plan_id": {"type": "string"}},
-                "required": ["plan_id"],
+                "properties": {
+                    "plan_id": {"type": "string"},
+                    "rubric": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4000,
+                        "description": (
+                            "Required acceptance checklist for the reviewer's bounded next step: 3-6 bullets, each starting "
+                            "with '- ', each checkable against the proven Statement alone."
+                        ),
+                    },
+                },
+                "required": ["plan_id", "rubric"],
             },
             handler=lambda args: self._execute_research_plan_tool(manager, args),
         )
@@ -1170,6 +1273,8 @@ class Orchestrator:
                     "method_id": next_step["method_id"] or "direct_proof",
                     "hint": _strategy_worker_hint(research_strategy, next_step),
                     "pinned_target": next_step["brief"],
+                    # 方向由 reviewer 给出，但"什么算交付"仍由 orchestrator 承诺。
+                    "rubric": str(args.get("rubric") or "").strip(),
                 },
             )
             payload = json.loads(result.content)
@@ -1222,7 +1327,19 @@ class Orchestrator:
                 except OSError:
                     pinned_target = None
             hint = GLOBAL_ATTACK_HINT
+            # global attack 的验收标准是固定的、由运行时定义的：解决原题或给出反驳witness。
+            rubric = rubric or GLOBAL_ATTACK_RUBRIC
         else:
+            if not rubric:
+                return ToolResult(json.dumps({
+                    "spawned": False,
+                    "reason": "rubric_required",
+                    "message": (
+                        "State the acceptance rubric together with the hint: 3-6 bullet criteria, each starting with '- ' and "
+                        "each checkable against the proven Statement alone. A task auditor uses it to report whether this "
+                        "dispatch was delivered, so a dispatch without acceptance criteria cannot be audited."
+                    ),
+                }, ensure_ascii=False), is_error=True)
             if followup_handoff_ids:
                 available_handoffs = self._available_local_handoffs(manager)
                 selected_handoffs: list[dict[str, Any]] = []
@@ -1272,6 +1389,33 @@ class Orchestrator:
             if evidence_refs:
                 evidence_note = "Relevant prior evidence: " + ", ".join(list(dict.fromkeys(evidence_refs))[:16])
                 frontier_note = f"{frontier_note}\n{evidence_note}" if frontier_note else evidence_note
+            # 引用了 canonical ID 时做一次运行时安全检查：终态（resolved/refuted/superseded）
+            # 义务不得被静默重攻，并把该节点的 canonical statement 与 dispatch 警告一并带出，
+            # 使 worker 拿到的是它真正被指派的那条义务，而不是只有一个无语义的标签。
+            if requested_id:
+                preflight = self._reviewer_plan_gateway.dispatch_preflight(
+                    difficulty_id=requested_id,
+                    method_id=method_id,
+                )
+                if not preflight.get("allowed"):
+                    return ToolResult(json.dumps({
+                        "spawned": False,
+                        "reason": preflight.get("reason") or "difficulty_not_actionable",
+                        "message": preflight.get("message")
+                        or "This canonical difficulty is not actionable; choose another bounded target or request reviewer advice.",
+                        "difficulty_id": requested_id,
+                        "difficulty": preflight.get("difficulty"),
+                    }, ensure_ascii=False))
+                node = preflight.get("difficulty")
+                if isinstance(node, dict):
+                    difficulty_statement = str(node.get("statement") or "").strip() or None
+                    dispatch_warnings = [
+                        str(item) for item in preflight.get("dispatch_warnings") or [] if str(item).strip()
+                    ]
+                    if dispatch_warnings:
+                        frontier_note = "\n".join(
+                            part for part in (frontier_note, *dispatch_warnings) if part
+                        )
         global_on_spawn = (
             (lambda worker: self._reviewer_plan_gateway.begin_global_attack(worker_id=worker.worker_id))
             if global_attack else None
@@ -1450,46 +1594,38 @@ class Orchestrator:
             return None
         return path
 
-    def _difficulty_portfolio_payload(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        """Surface unresolved worker difficulty evidence for strategic reassessment."""
-        current = candidate_handoffs(payload.get("completed") or [])
-        layout = getattr(self, "layout", None)
-        outcomes_path = getattr(layout, "progress_audit_outcomes_path", None)
-        persisted = (
-            load_recent_candidate_handoffs(outcomes_path)
-            if isinstance(outcomes_path, Path)
-            else []
-        )
-        handoffs = merge_candidate_handoffs(persisted, current)
-        if not handoffs:
-            return None
-        return {
-            "candidate_worker_ids": [item["worker_id"] for item in handoffs],
-            "handoffs": handoffs,
-            "review_status": "orchestrator_decision_required",
-            "message": (
-                "These are worker-level obstacle reports reconciled only against their own final trail. "
-                "Compare their concrete obstacles and evidence before deciding the next dispatch; request strategic "
-                "reassessment when their portfolio significance is unclear."
-            ),
-        }
-
     def _wait_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
         timeout_seconds = args.get("seconds")
         payload = manager.wait(timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None)
         local_handoffs = self._available_local_handoffs(manager, payload)
         if local_handoffs:
             payload["local_difficulties"] = list(local_handoffs.values())
+        # 短程交付验收（每个完成的 worker 一份）已在收割时同步完成，这里只做汇总。
+        task_audit_summary = summarize_task_audits([
+            item.get("task_audit")
+            for item in payload.get("completed") or []
+            if isinstance(item, dict) and isinstance(item.get("task_audit"), dict)
+        ])
+        if task_audit_summary is not None:
+            payload["task_audit_summary"] = task_audit_summary
         audit_decisions = [
             item for item in payload.get("process_audit_decisions") or [] if isinstance(item, dict)
         ]
         if any(str(item.get("verdict") or "").upper() in {"STALLED", "MISALIGNED"} for item in audit_decisions):
             payload["strategic_reassessment_recommended"] = True
         payload["planning_instruction"] = (
-            "Treat audit decisions and local difficulties as evidence. A STALLED or MISALIGNED audit means do not repeat the "
-            "old route without new evidence; request reviewer advice or choose another bounded evidence-backed task."
+            "Two independent audits inform the next step. Each completed worker carries a `task_audit`: it says whether the "
+            "task you assigned was actually delivered, and its residual obligation stays open even when the proposition was "
+            "verified. The periodic `process_audit_decisions` say whether the portfolio advances problem.md; a STALLED or "
+            "MISALIGNED verdict means do not repeat the old route without new evidence. Treat both, plus local difficulties, "
+            "as evidence rather than commands."
         )
         if self._search_tree_sink is not None:
+            # 推进 selection cycle 并落一次 attempt 谱系快照（纯观测，不参与决策）。
+            try:
+                self.search.advise()
+            except Exception:
+                pass
             self._search_tree_sink.snapshot(self.search, label="task-output")
         self._refresh_research_frontier_state(manager)
         return ToolResult(

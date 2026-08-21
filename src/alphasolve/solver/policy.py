@@ -50,7 +50,6 @@ class SolverPolicy:
     worker_wait_timeout_seconds: float = 3600.0
     verified_propositions_organization_threshold: int = 20
     free_seed_probability: float = 0.6
-    research_reviewer_read_state_epsilon: float = 0.0
     theorem_check_attempts: int = 5
     curator_health_check_interval: int = 8
     curator_oversized_entry_line_limit: int = 250
@@ -75,7 +74,6 @@ class SolverPolicy:
             minimum=1,
         )
         _require_probability("free_seed_probability", self.free_seed_probability)
-        _require_probability("research_reviewer_read_state_epsilon", self.research_reviewer_read_state_epsilon)
         _require_int("theorem_check_attempts", self.theorem_check_attempts, minimum=1)
         _require_int("curator_health_check_interval", self.curator_health_check_interval, minimum=1)
         _require_int("curator_oversized_entry_line_limit", self.curator_oversized_entry_line_limit, minimum=1)
@@ -101,7 +99,6 @@ class SolverPolicy:
             "worker_wait_timeout_seconds",
             "verified_propositions_organization_threshold",
             "free_seed_probability",
-            "research_reviewer_read_state_epsilon",
             "theorem_check_attempts",
             "curator_health_check_interval",
             "curator_oversized_entry_line_limit",

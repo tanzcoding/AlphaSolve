@@ -63,19 +63,16 @@ def local_project_dir(name):
             shutil.rmtree(path)
 
 
-def test_reviewer_read_state_epsilon_greedy():
+def test_reviewer_read_state_hook_is_a_backward_compatible_no_op():
     from alphasolve.solver.orchestrator import _resolve_reviewer_read_state
 
-    # 非 research_reviewer：原样返回调用方请求值，不参与 epsilon-greedy。
+    # read_state 策略钩子已退役：orchestrator 不再注册 Agent 工具，reviewer 只消费注入的
+    # canonical 图投影。函数保留签名但必须原样透传调用方请求值，不再做 epsilon-greedy。
     assert _resolve_reviewer_read_state("reasoning_subagent", None, epsilon=1.0) is None
     assert _resolve_reviewer_read_state("critic", True, epsilon=0.0) is True
-
-    # research_reviewer：由系统按 epsilon-greedy 决定，忽略调用方传入值。
-    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=1.0, rng=lambda: 0.99) is True
-    assert _resolve_reviewer_read_state("research_reviewer", True, epsilon=0.0, rng=lambda: 0.0) is False
-    # 判定式为 rng() < epsilon。
-    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=0.2, rng=lambda: 0.1) is True
-    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=0.2, rng=lambda: 0.5) is False
+    assert _resolve_reviewer_read_state("research_reviewer", None, epsilon=1.0, rng=lambda: 0.0) is None
+    assert _resolve_reviewer_read_state("research_reviewer", True, epsilon=1.0, rng=lambda: 0.0) is True
+    assert _resolve_reviewer_read_state("research_reviewer", False, epsilon=0.0, rng=lambda: 0.9) is False
 
 
 def test_default_agent_suite_loads_yaml_roles():
@@ -133,7 +130,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Research Strategy JSON" in reviewer_prompt
     assert "research_strategy" in reviewer_prompt
     assert "next_step" in reviewer_prompt
-    assert "read_state=true" in reviewer_prompt
+    assert "read_state" not in reviewer_prompt
     assert "RequestResearchPlan" in orchestrator_prompt
     assert "ExecuteResearchPlan" in orchestrator_prompt
     assert "RecordResearchImpact" not in orchestrator_prompt
@@ -738,7 +735,10 @@ def test_theorem_checker_not_verifier_decides_problem_solved():
                             ToolCall(
                                 id="spawn_worker",
                                 name="SpawnWorker",
-                                args={"hint": "Try a near miss."},
+                                args={
+                                    "hint": "Try a near miss.",
+                                    "rubric": "- The Statement establishes the near-miss bound exactly.",
+                                },
                             ),
                         ),
                     )

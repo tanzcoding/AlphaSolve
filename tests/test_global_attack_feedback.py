@@ -4,6 +4,7 @@ from alphasolve.solver.difficulty_dag import (
 )
 from alphasolve.solver.orchestrator import Orchestrator
 from alphasolve.solver.project import ProjectLayout
+from alphasolve.solver.research_planning import ReviewerPlanGateway
 from alphasolve.solver.worker import WorkerRunResult
 
 
@@ -79,6 +80,7 @@ def test_global_attack_completion_writes_report_and_submits_curator_review(tmp_p
     orchestrator = object.__new__(Orchestrator)
     orchestrator.layout = layout
     orchestrator.difficulty_dag = dag
+    orchestrator._reviewer_plan_gateway = ReviewerPlanGateway(layout.workspace_dir)
     orchestrator.curator_queue = curator_queue
 
     result = WorkerRunResult(

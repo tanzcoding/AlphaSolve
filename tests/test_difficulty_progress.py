@@ -175,3 +175,85 @@ def test_attempts_do_not_block_leaf_dispatch(tmp_path):
     )
     assert preflight["allowed"] is True
     assert dag.load()["nodes"]["open-leaf"]["progress"]["attempt_count"] == 3
+
+
+def test_reviewer_projection_precomputes_attempt_statistics(tmp_path):
+    """method_attempt_counts / consecutive_no_progress / underexplored_pairs 必须由运行时算好。
+
+    这些是事实计算而非策略：reviewer 不应从 attempt 列表里自己数，代码也不替它排序选路。
+    """
+    from alphasolve.solver.difficulty_dag import DifficultyDagStore
+
+    workspace = tmp_path / "workspace"
+    (workspace / "curation_records").mkdir(parents=True)
+    dag = DifficultyDagStore(workspace)
+
+    checkpoint = workspace / "progress_audits" / "checkpoint-0001"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "decision.json").write_text(
+        json.dumps({"checkpoint_id": "checkpoint-0001", "status": "completed"}), encoding="utf-8"
+    )
+    (workspace / "progress_audit_outcomes.jsonl").write_text(
+        "\n".join(json.dumps(item) for item in [
+            {"sequence": 1, "recorded_at": "2026-01-01T00:00:00Z", "difficulty_id": "leaf",
+             "method_id": "direct_proof", "status": "rejected", "verified_file": ""},
+            {"sequence": 2, "recorded_at": "2026-01-02T00:00:00Z", "difficulty_id": "leaf",
+             "method_id": "direct_proof", "status": "verified",
+             "verified_file": str(workspace / "verified_propositions" / "a.md")},
+            {"sequence": 3, "recorded_at": "2026-01-03T00:00:00Z", "difficulty_id": "leaf",
+             "method_id": "contradiction", "status": "rejected", "verified_file": ""},
+            {"sequence": 4, "recorded_at": "2026-01-04T00:00:00Z", "difficulty_id": "leaf",
+             "method_id": "contradiction", "status": "rejected", "verified_file": ""},
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[{
+            "difficulty_id": "leaf",
+            "statement": "Bound the packing term.",
+            "source_handoff_ids": ["handoff-a"],
+        }],
+    )
+
+    projection = dag.reviewer_graph_projection()
+    node = next(item for item in projection["nodes"] if item["difficulty_id"] == "leaf")
+    progress = node["progress"]
+
+    assert progress["method_attempt_counts"] == {"contradiction": 2, "direct_proof": 2}
+    # 最近两次 contradiction 均无 verified 产出 → 连续无进展为 2。
+    assert progress["consecutive_no_progress"] == 2
+    assert progress["last_verified_at"] == "2026-01-02T00:00:00Z"
+    assert "construction" in progress["untried_methods"]
+    assert "direct_proof" not in progress["untried_methods"]
+
+    pair = next(item for item in projection["underexplored_pairs"] if item["difficulty_id"] == "leaf")
+    assert pair["consecutive_no_progress"] == 2
+    assert "computation" in pair["untried_methods"]
+
+
+def test_terminal_node_is_excluded_from_underexplored_pairs(tmp_path):
+    from alphasolve.solver.difficulty_dag import DifficultyDagStore
+
+    workspace = tmp_path / "workspace"
+    (workspace / "curation_records").mkdir(parents=True)
+    dag = DifficultyDagStore(workspace)
+    checkpoint = workspace / "progress_audits" / "checkpoint-0001"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "decision.json").write_text(
+        json.dumps({"checkpoint_id": "checkpoint-0001", "status": "completed"}), encoding="utf-8"
+    )
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[{
+            "difficulty_id": "settled",
+            "statement": "Already settled obligation.",
+            "source_handoff_ids": ["handoff-settled"],
+            "status": "resolved",
+        }],
+    )
+
+    projection = dag.reviewer_graph_projection()
+
+    assert [item["difficulty_id"] for item in projection["underexplored_pairs"]] == []

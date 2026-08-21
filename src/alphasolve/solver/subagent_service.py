@@ -159,6 +159,21 @@ class SubagentService:
             self.call_guard(agent_type, depth)
         if (
             agent_type == "research_reviewer"
+            and self.reviewer_history_path is not None
+            and "## Prior Reviewer Decisions" not in prompt
+        ):
+            history = self._recent_reviewer_history()
+            if history:
+                prompt = (
+                    "## Prior Reviewer Decisions\n\n"
+                    "These are your own recent strategies and next steps in this project. They are fallible and may be "
+                    "outdated; use them to avoid re-recommending a route you already rejected, and to state explicitly "
+                    "what new evidence justifies reversing one.\n\n"
+                    f"{history}\n\n---\n\n"
+                    + prompt
+                )
+        if (
+            agent_type == "research_reviewer"
             and self.reviewer_state_provider is not None
             and "## Planning Input" not in prompt
         ):
@@ -195,6 +210,41 @@ class SubagentService:
             session_id=session_id,
             text=_last_plain_assistant_content(result),
         )
+
+    REVIEWER_HISTORY_ENTRIES = 3
+    REVIEWER_HISTORY_MAX_CHARS = 6000
+
+    def _recent_reviewer_history(self) -> str:
+        """Return the most recent reviewer reports so strategy does not oscillate.
+
+        Only the trailing entries are injected, and only their `Research Strategy JSON`
+        section when present, so the reviewer sees what it previously decided without
+        re-reading full adversarial-review prose.
+        """
+        path = self.reviewer_history_path
+        if path is None or not path.is_file():
+            return ""
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+        entries = [item.strip() for item in text.split("\n---\n\n") if item.strip()]
+        if not entries:
+            return ""
+        selected = entries[-self.REVIEWER_HISTORY_ENTRIES:]
+        rendered: list[str] = []
+        for entry in selected:
+            marker = "### Research Strategy JSON"
+            index = entry.find(marker)
+            if index != -1:
+                header = entry[: entry.find("\n\n")] if "\n\n" in entry else ""
+                rendered.append((header + "\n\n" + entry[index:]).strip())
+            else:
+                rendered.append(entry)
+        joined = "\n\n---\n\n".join(rendered)
+        if len(joined) > self.REVIEWER_HISTORY_MAX_CHARS:
+            joined = joined[-self.REVIEWER_HISTORY_MAX_CHARS:]
+        return joined
 
     def _append_reviewer_history(
         self,
