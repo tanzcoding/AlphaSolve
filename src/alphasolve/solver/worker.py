@@ -19,7 +19,11 @@ from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory
-from .difficulty_declaration import materialize_difficulty_handoff
+from .difficulty_declaration import (
+    difficulty_handoff_path,
+    difficulty_json_path,
+    materialize_difficulty_handoff,
+)
 from .role import Role, RoleContext
 from .tool_runtime import build_solver_tool_registry
 from .workspace_access import RoleWorkspaceAccess
@@ -712,11 +716,17 @@ class Worker:
 
     def _reset_verifier_workflow_workspace(self, proposition_file: Path) -> None:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
+        # 困难声明是跨 verify/revise 轮次累积的 worker 证据：.md 是可读日志，
+        # .json 是 curator 唯一可消费的结构化状态。两者必须一起保留，
+        # 否则 handoff 会在下一轮 reset 后静默丢失。
+        declaration_file = self.worker_dir / "difficulty_declaration.md"
         protected = {
             proposition_file.resolve(),
             (self.worker_dir / "worker_hint.md").resolve(),
             (self.worker_dir / "research_target.json").resolve(),
-            (self.worker_dir / "difficulty_declaration.md").resolve(),
+            declaration_file.resolve(),
+            difficulty_json_path(declaration_file).resolve(),
+            difficulty_handoff_path(declaration_file).resolve(),
             (self.worker_dir / "revision_history").resolve(),
         }
         verifier_workspace = self.worker_dir / "verifier_workspace"
@@ -1254,20 +1264,22 @@ class Worker:
         if declaration_file is None:
             candidate = self.worker_dir / "difficulty_declaration.md"
             declaration_file = candidate if candidate.is_file() else None
-        handoff_file: Path | None = None
-        handoff: dict[str, Any] | None = None
-        if declaration_file is not None:
-            handoff_file, handoff = materialize_difficulty_handoff(
-                declaration_path=declaration_file,
-                worker_id=self.worker_id,
-                difficulty_id=self.difficulty_id,
-                method_id=self.method_id,
-                execution_status=status,
-                failure_kind=failure_kind,
-                review_file=review_file,
-                proposition_file=proposition_file,
-                verified_file=verified_file,
-            )
+        # 未交付/偏离目标时的残留义务：若无角色记录障碍，用它补一条可归因的占位记录，
+        # 使"应记未记"成为 curator 可见的证据，而不是静默消失。
+        unmet_obligation = blocking_obligation if status != "verified" else None
+        declaration_path = declaration_file or (self.worker_dir / "difficulty_declaration.md")
+        handoff_file, handoff = materialize_difficulty_handoff(
+            declaration_path=declaration_path,
+            worker_id=self.worker_id,
+            difficulty_id=self.difficulty_id,
+            method_id=self.method_id,
+            execution_status=status,
+            failure_kind=failure_kind,
+            review_file=review_file,
+            proposition_file=proposition_file,
+            verified_file=verified_file,
+            unmet_obligation=unmet_obligation,
+        )
         trace_path = self.worker_dir / "trace.json"
         trace_path.write_text(json.dumps(self.trace, ensure_ascii=False, indent=2), encoding="utf-8")
         return WorkerRunResult(

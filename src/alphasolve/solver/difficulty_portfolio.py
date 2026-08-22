@@ -75,7 +75,12 @@ def build_reviewer_prompt(handoffs: list[dict[str, Any]]) -> str:
     return (
         "Review the following worker obstacle portfolio before recommending any new worker. These are local observations, "
         "not canonical graph structure; read cited evidence when needed. `obstacle_records` may include task-specific reasoning "
-        "observations, so compare their delegated scope, concrete obstacles, and evidence rather than wording. Do not edit state or dispatch work.\n\n"
+        "observations, so compare their delegated scope, concrete obstacles, and evidence rather than wording. "
+        "`delivered_instead` states how far each attempt actually got against its assigned target, `obstacle_scope` marks a "
+        "worker's own reading of whether the obstacle is local to its task or a global obstruction, and "
+        "`obstacle_reporting` is `runtime_reconstructed_from_task_audit` when no role recorded the obstacle and the runtime "
+        "substituted the audit's residual obligation. Treat routes reported as already excluded as tabu, and let the portfolio "
+        "suggest directions no current node represents. Do not edit state or dispatch work.\n\n"
         "Return the standard reviewer report. Recommend one bounded next step, but do not invent canonical IDs or edit the DAG: "
         "the curator reconciles evidence at checkpoints.\n\n"
         "## Worker Obstacle Portfolio\n\n```json\n"
@@ -96,10 +101,15 @@ def _compact_handoff(handoff: dict[str, Any]) -> dict[str, Any]:
         "assigned_target": text("assigned_target"),
         "execution_status": text("execution_status"),
         "obstacle": text("obstacle"),
+        "delivered_instead": text("delivered_instead"),
+        "obstacle_scope": text("obstacle_scope") or "unclear",
+        "obstacle_reporting": text("obstacle_reporting") or "worker_recorded",
         "obstacle_records": [
             {
                 "role": " ".join(str(record.get("role") or "").split())[:100],
                 "obstacle": " ".join(str(record.get("obstacle") or "").split())[:_MAX_TEXT],
+                "delivered_instead": " ".join(str(record.get("delivered_instead") or "").split())[:_MAX_TEXT],
+                "obstacle_scope": " ".join(str(record.get("obstacle_scope") or "").split())[:40],
                 "delegated_description": " ".join(str(record.get("delegated_description") or "").split())[:_MAX_TEXT],
                 "delegated_task": " ".join(str(record.get("delegated_task") or "").split())[:_MAX_TEXT],
             }

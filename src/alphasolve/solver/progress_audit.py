@@ -454,12 +454,20 @@ class ProgressAuditQueue:
         handoff = payload.get("difficulty_handoff")
         if not isinstance(handoff, dict):
             handoff = _read_json_object(_safe_path(payload.get("difficulty_handoff_file")))
+        # 短程交付验收的结论要随不可变 outcome 一起留存：没有它，节点上的多次尝试
+        # 只剩状态与次数，无法回答"为什么失败"。
+        task_audit = payload.get("task_audit") if isinstance(payload.get("task_audit"), dict) else {}
         return {
             "sequence": sequence,
             "recorded_at": _now_iso(),
             "worker_id": str(payload.get("worker_id") or ""),
             "status": str(payload.get("status") or "unknown"),
             "failure_kind": str(payload.get("failure_kind") or ""),
+            "delivery": str(task_audit.get("delivery") or ""),
+            "rejection_locus": str(task_audit.get("rejection_locus") or ""),
+            "retry_assessment": str(task_audit.get("retry_assessment") or "")[:2000],
+            "salvageable_content": str(task_audit.get("salvageable_content") or "")[:2000],
+            "residual_obligation": str(task_audit.get("residual_obligation") or "")[:2000],
             "difficulty_id": payload.get("difficulty_id"),
             "method_id": payload.get("method_id"),
             "pinned_target": str(payload.get("pinned_target") or "")[:2000],
@@ -556,6 +564,8 @@ def _render_outcomes(
             lines.extend([
                 "#### Worker-Reported Obstacle",
                 f"- Obstacle: {str(handoff.get('obstacle') or 'not stated')[:1800]}",
+                f"- Delivered instead of assigned target: {str(handoff.get('delivered_instead') or 'not stated')[:1800]}",
+                f"- Obstacle scope: `{handoff.get('obstacle_scope') or 'unclear'}` (reported by `{handoff.get('obstacle_reporting') or 'worker_recorded'}`)",
                 *[
                     f"- {str(record.get('role') or 'worker')}: {str(record.get('obstacle') or '')[:1200]}"
                     + (f" [task: {str(record.get('delegated_description') or '')[:400]}]" if record.get('delegated_description') else "")
@@ -651,10 +661,15 @@ def _write_curation_input(*, layout: "ProjectLayout", task: ProgressAuditTask) -
                 "method_id": str(item.get("method_id") or ""),
                 "execution_status": str(item.get("status") or ""),
                 "obstacle": str(handoff.get("obstacle") or "")[:4000],
+                "delivered_instead": str(handoff.get("delivered_instead") or "")[:4000],
+                "obstacle_scope": str(handoff.get("obstacle_scope") or "unclear"),
+                "obstacle_reporting": str(handoff.get("obstacle_reporting") or "worker_recorded"),
                 "obstacle_records": [
                     {
                         "role": str(record.get("role") or ""),
                         "obstacle": str(record.get("obstacle") or "")[:4000],
+                        "delivered_instead": str(record.get("delivered_instead") or "")[:4000],
+                        "obstacle_scope": str(record.get("obstacle_scope") or ""),
                         "delegated_description": str(record.get("delegated_description") or "")[:2000],
                         "delegated_task": str(record.get("delegated_task") or "")[:4000],
                         "subagent_session_id": str(record.get("subagent_session_id") or "")[:300],

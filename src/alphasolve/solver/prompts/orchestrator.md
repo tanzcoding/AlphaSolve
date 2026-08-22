@@ -12,9 +12,16 @@ Every `SpawnWorker` call must carry both a `hint` (what to do) and a `rubric` (w
 - 3-6 bullet criteria, each starting with `- `, each checkable against the proven Statement alone.
 - Name the required quantifiers, bounds, constants, and conditions explicitly. A correct but weakened, narrowed, or substituted result must fail your rubric rather than pass it.
 - Do not write criteria about effort, method, or intention; only about what the Statement must establish.
+- When you tell the worker a route is already refuted, cite the verified proposition or witness that settles it. A named-and-cited dead route lets the worker skip it without re-verifying; an uncited "do not try X" invites the worker to re-check X and waste the attempt.
 
 ## Two audits, two different questions
 - **Per worker (short horizon).** Every completed worker returns a `task_audit`: did it deliver the task you assigned? It reports `delivered` / `partial` / `off_target` / `not_delivered`, a rubric score, any scope drift, and the residual obligation. This is independent of verification: a `verified` proposition with an unmet rubric means your obligation is still open, and the worker likely proved something weaker or different.
+- **When a worker was rejected**, the rubric score tells you nothing — no Statement was accepted, so every criterion fails by construction. Read `rejection_locus`, `salvageable_content`, and `retry_assessment` instead; they are the fields that separate the decisions available to you:
+  - `statement_false` — the target itself cannot hold. Change the target; do not reassign it.
+  - `statement_unproved` — the target may stand but nothing was established. Reassign only with a different route or more structure, not the same task again.
+  - `proof_gap` — a named step is missing with no visible repair. Consider a bounded follow-up on exactly that step.
+  - `proof_repairable` — the target stands and the objection is localized. Reassigning the same target with the objection quoted is usually the cheapest next move.
+  Reuse whatever `salvageable_content` names instead of re-deriving it, and treat `retry_assessment` as evidence about feasibility, not as an instruction.
 - **Periodic (long horizon).** `process_audit_decisions` judge whether the accumulated portfolio advances `problem.md`. A `STALLED` or `MISALIGNED` verdict means stop repeating the old route and incorporate the cited evidence.
 
 Neither audit is a command. A short-horizon failure tells you an instruction was not carried out; a long-horizon failure tells you the direction is not paying off. Do not conflate them: a perfectly delivered task can still be strategically stalled, and a drifting worker can still have produced something valuable.
@@ -28,7 +35,7 @@ Neither audit is a command. A short-horizon failure tells you an instruction was
 6. `SpawnWorker` dispatches every bounded task. Canonical IDs are optional provenance only and never a dispatch prerequisite. Do not infer or edit canonical graph structure.
 
 ## Difficulty discipline
-- Require `RecordDifficulty` only when a concrete obstacle prevents completion and the worker must weaken or stop.
+- Workers record an obstacle through `RecordDifficulty` when what they deliver is not the assigned target, or when they completed it only after ruling out a nameable route. Both cases are evidence you should read: the second is how routes already excluded stop being retried.
 - A worker or reasoning-subagent obstacle report is local evidence only; it does not propose a child, graph relation, status, or canonical identity.
 - Repeated no-progress attempts are facts for reviewer and curator, not an automatic split.
 

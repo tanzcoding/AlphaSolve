@@ -62,6 +62,10 @@ class TaskAuditResult:
     rubric_checks: list[dict[str, str]]
     audit_path: str
     status: str = "completed"
+    # 仅在 verifier 拒绝时填写：拒绝落在哪一层、还剩什么可复用、是否值得再试。
+    rejection_locus: str = ""
+    salvageable_content: str = ""
+    retry_assessment: str = ""
 
     def payload(self) -> dict[str, Any]:
         """Return the bounded surface the orchestrator sees on TaskOutput."""
@@ -81,6 +85,14 @@ class TaskAuditResult:
             result["rubric_total"] = self.rubric_total
         if self.rubric_checks:
             result["rubric_checks"] = self.rubric_checks
+        # 拒绝诊断替代 rubric 成为 orchestrator 的决策依据：定理错 vs 证明错，
+        # 决定了应当换目标还是修证明。
+        if self.rejection_locus:
+            result["rejection_locus"] = self.rejection_locus
+        if self.salvageable_content:
+            result["salvageable_content"] = self.salvageable_content
+        if self.retry_assessment:
+            result["retry_assessment"] = self.retry_assessment
         return result
 
 
@@ -166,6 +178,9 @@ class TaskAuditor:
             rubric_checks=parsed["rubric_checks"],
             audit_path="",
             status="completed" if parsed["delivery"] else "invalid_audit",
+            rejection_locus=parsed["rejection_locus"],
+            salvageable_content=parsed["salvageable_content"],
+            retry_assessment=parsed["retry_assessment"],
         )
         result = self._write_report(result, payload, audit_text=audit_text)
         return result.payload()
@@ -261,6 +276,9 @@ class TaskAuditor:
             rubric_checks=result.rubric_checks,
             audit_path=relative,
             status=result.status,
+            rejection_locus=result.rejection_locus,
+            salvageable_content=result.salvageable_content,
+            retry_assessment=result.retry_assessment,
         )
 
 
@@ -278,12 +296,22 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
     }
     if drifted:
         summary["scope_drift_worker_ids"] = [str(item.get("worker_id")) for item in drifted]
+    # 被拒绝的 worker 没有可读的 rubric 分数；把拒绝落点按类别聚合，
+    # 让 orchestrator 直接看到"该换目标"还是"该修证明"。
+    rejected = [item for item in usable if str(item.get("rejection_locus") or "").strip()]
+    if rejected:
+        loci: dict[str, list[str]] = {}
+        for item in rejected:
+            loci.setdefault(str(item.get("rejection_locus")), []).append(str(item.get("worker_id")))
+        summary["rejection_loci"] = {key: loci[key] for key in sorted(loci)}
     if undelivered:
         summary["instruction"] = (
             "A task audit compares the assigned rubric with the proven Statement. Where delivery is partial, "
             "off_target, or not_delivered, the residual obligation is still open even if a proposition was verified: "
             "do not treat it as done. Either reassign the residual obligation with a sharper rubric, or record why "
-            "it is no longer worth pursuing."
+            "it is no longer worth pursuing. For a rejected worker the rubric score is uninformative; read its "
+            "rejection_locus, salvageable_content, and retry_assessment instead, and note that statement_false means "
+            "change the target while proof_repairable means the same target is worth another pass."
         )
     else:
         summary["instruction"] = (
@@ -333,6 +361,14 @@ def _audit_prompt(payload: dict[str, Any], layout: "ProjectLayout", *, criteria:
     obstacle = ""
     if isinstance(handoff, dict):
         obstacle = str(handoff.get("obstacle") or "").strip()
+    # 被拒绝时没有可验收的 Statement，rubric 逐条核对退化为全 fail；此时真正有决策价值的
+    # 是拒绝落在哪一层。把 verifier 的拒绝理由注入，让审计能区分定理错与证明错。
+    rejected = str(payload.get("status") or "") == "rejected"
+    rejection_block = ""
+    if rejected:
+        rejection_block = _read_text(_safe_audit_path(payload.get("review_file")), limit=6000) or str(
+            payload.get("blocking_obligation") or ""
+        )[:6000]
     return "\n".join(
         part
         for part in [
@@ -361,15 +397,29 @@ def _audit_prompt(payload: dict[str, Any], layout: "ProjectLayout", *, criteria:
             "## Proven Statement",
             statement or "(No verified or candidate Statement is available.)",
             "",
+            "## Why The Verifier Rejected It" if rejection_block else "",
+            rejection_block,
+            "",
             "## Artifacts You May Read",
             "\n".join(artifacts) if artifacts else "- None recorded.",
             "",
-            "Judge each rubric criterion against the Proven Statement. A `verified` status does not by itself mean "
-            "the assigned task was delivered. Follow your required output sections exactly, and end with the "
-            "`RUBRIC_SCORE` and `SCOPE_DRIFT` lines.",
+            (
+                "This worker was REJECTED, so no Statement was accepted and every substantive criterion is unmet. "
+                "Record the rubric verdicts briefly, then spend your effort on the rejection diagnosis sections: "
+                "where the rejection falls, what survives, and whether a retry is worth it. That diagnosis, not the "
+                "rubric score, is what the orchestrator needs."
+                if rejected
+                else "Judge each rubric criterion against the Proven Statement. A `verified` status does not by itself "
+                "mean the assigned task was delivered."
+            ),
+            "Follow your required output sections exactly, and end with the trailing marker lines.",
         ]
         if part
     )
+
+
+def _safe_audit_path(value: Any) -> Path:
+    return Path(str(value or ""))
 
 
 def _proven_statement(payload: dict[str, Any], workspace_dir: Path) -> str:
@@ -408,13 +458,23 @@ def _render_report(result: TaskAuditResult, payload: dict[str, Any], *, audit_te
         "## Residual Obligation",
         result.residual_obligation or "None reported.",
         "",
+    ]
+    if result.rejection_locus or result.salvageable_content or result.retry_assessment:
+        lines.extend([
+            "## Rejection Diagnosis",
+            f"- Locus: `{result.rejection_locus or 'unclassified'}`",
+            f"- Salvageable content: {result.salvageable_content or 'None reported.'}",
+            f"- Retry assessment: {result.retry_assessment or 'None reported.'}",
+            "",
+        ])
+    lines.extend([
         "## Assigned Task",
         str(payload.get("worker_hint") or "(no hint was given)"),
         "",
         "## Acceptance Rubric",
         str(payload.get("rubric") or "(no rubric was supplied)"),
         "",
-    ]
+    ])
     if audit_text.strip():
         lines.extend(["## Auditor Report", audit_text.strip(), ""])
     return "\n".join(lines).rstrip() + "\n"
@@ -438,6 +498,13 @@ def _parse_task_audit(text: str, *, expected_criteria: int) -> dict[str, Any]:
     drift = drift_match.group(1).strip() if drift_match else ""
     if drift.upper() == "NONE":
         drift = ""
+    locus_match = re.search(
+        r"(?mi)^\s*REJECTION_LOCUS:\s*(statement_false|statement_unproved|proof_gap|proof_repairable|not_applicable)\s*$",
+        text or "",
+    )
+    locus = locus_match.group(1).lower() if locus_match else ""
+    if locus == "not_applicable":
+        locus = ""
     return {
         "delivery": delivery,
         "rubric_passed": passed,
@@ -446,6 +513,9 @@ def _parse_task_audit(text: str, *, expected_criteria: int) -> dict[str, Any]:
         "scope_drift": drift[:2000],
         "residual_obligation": _section(text, "Residual Obligation"),
         "assigned_versus_delivered": _section(text, "Assigned Versus Delivered"),
+        "rejection_locus": locus,
+        "salvageable_content": _section(text, "Salvageable Content"),
+        "retry_assessment": _section(text, "Retry Assessment"),
     }
 
 

@@ -1616,9 +1616,11 @@ class Orchestrator:
         payload["planning_instruction"] = (
             "Two independent audits inform the next step. Each completed worker carries a `task_audit`: it says whether the "
             "task you assigned was actually delivered, and its residual obligation stays open even when the proposition was "
-            "verified. The periodic `process_audit_decisions` say whether the portfolio advances problem.md; a STALLED or "
-            "MISALIGNED verdict means do not repeat the old route without new evidence. Treat both, plus local difficulties, "
-            "as evidence rather than commands."
+            "verified. For a rejected worker the rubric score is uninformative — read `rejection_locus`, "
+            "`salvageable_content`, and `retry_assessment`, where `statement_false` means change the target and "
+            "`proof_repairable` means the same target deserves another pass. The periodic `process_audit_decisions` say "
+            "whether the portfolio advances problem.md; a STALLED or MISALIGNED verdict means do not repeat the old route "
+            "without new evidence. Treat both, plus local difficulties, as evidence rather than commands."
         )
         if self._search_tree_sink is not None:
             # 推进 selection cycle 并落一次 attempt 谱系快照（纯观测，不参与决策）。

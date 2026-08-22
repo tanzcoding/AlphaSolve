@@ -86,6 +86,14 @@ def _string_list(value: Any, *, field: str, limit: int = 32) -> list[str]:
     return [str(item).strip() for item in value if str(item).strip()]
 
 
+def _attempt_obstacle_field(record: dict[str, Any], key: str) -> str:
+    """Read one field of a worker's obstacle handoff out of an immutable outcome record."""
+    handoff = record.get("difficulty_handoff")
+    if not isinstance(handoff, dict):
+        return ""
+    return " ".join(str(handoff.get(key) or "").split())
+
+
 class DifficultyDagStore:
     """The sole durable authority for recursive mathematical difficulties.
 
@@ -323,6 +331,11 @@ class DifficultyDagStore:
                     "method_id": str(item.get("method_id") or ""),
                     "status": str(item.get("status") or ""),
                     "verified_proposition_ref": str(item.get("verified_proposition_ref") or ""),
+                    "delivery": str(item.get("delivery") or ""),
+                    "failure_kind": str(item.get("failure_kind") or ""),
+                    "rejection_locus": str(item.get("rejection_locus") or ""),
+                    "obstacle_scope": str(item.get("obstacle_scope") or ""),
+                    "obstacle_digest": str(item.get("obstacle_digest") or ""),
                 }
                 for item in raw_attempts
             ][-8:]
@@ -360,27 +373,53 @@ class DifficultyDagStore:
         ``consecutive_no_progress`` counts trailing attempts that produced no verified
         proposition reference, i.e. how many times in a row the node was attacked
         without yielding established mathematics.
+
+        Beyond raw counts, this also splits each method's attempts into yielded /
+        barren and tallies why the barren ones failed.  A method with many attempts
+        and no yield is a different situation from one whose single attempt died on a
+        protocol error, and only the breakdown distinguishes them.
         """
         ordered = sorted(
             attempts,
             key=lambda item: (int(item.get("sequence") or 0), str(item.get("recorded_at") or "")),
         )
         method_counts: dict[str, int] = {}
+        method_stats: dict[str, dict[str, int]] = {}
         attempted_methods: list[str] = []
+        failure_kinds: dict[str, int] = {}
+        rejection_loci: dict[str, int] = {}
         last_verified_at = ""
         consecutive_no_progress = 0
         for item in ordered:
             method_id = str(item.get("method_id") or "").strip() or "unspecified"
             method_counts[method_id] = method_counts.get(method_id, 0) + 1
+            stats = method_stats.setdefault(method_id, {"attempts": 0, "yielded": 0, "barren": 0})
+            stats["attempts"] += 1
             if method_id not in attempted_methods:
                 attempted_methods.append(method_id)
             if str(item.get("verified_proposition_ref") or "").strip():
+                stats["yielded"] += 1
                 last_verified_at = str(item.get("recorded_at") or "") or last_verified_at
                 consecutive_no_progress = 0
             else:
+                stats["barren"] += 1
                 consecutive_no_progress += 1
+                kind = str(item.get("failure_kind") or "").strip()
+                if kind:
+                    failure_kinds[kind] = failure_kinds.get(kind, 0) + 1
+                locus = str(item.get("rejection_locus") or "").strip()
+                if locus:
+                    rejection_loci[locus] = rejection_loci.get(locus, 0) + 1
+        # 交付判定与 verifier 状态是两件事：verified 但 off_target 说明目标被悄悄换掉了。
+        off_target = sum(1 for item in ordered if str(item.get("delivery") or "") in {"off_target", "partial"})
+        global_scope = sum(1 for item in ordered if str(item.get("obstacle_scope") or "") == "global")
         return {
             "method_attempt_counts": dict(sorted(method_counts.items())),
+            "method_outcome_breakdown": {key: method_stats[key] for key in sorted(method_stats)},
+            "barren_failure_kinds": dict(sorted(failure_kinds.items())),
+            "barren_rejection_loci": dict(sorted(rejection_loci.items())),
+            "undelivered_attempts": off_target,
+            "global_scope_obstacle_reports": global_scope,
             "consecutive_no_progress": consecutive_no_progress,
             "last_verified_at": last_verified_at,
             "untried_methods": sorted(_METHOD_IDS - set(attempted_methods)),
@@ -719,6 +758,14 @@ class DifficultyDagStore:
                 "method_id": str(record.get("method_id") or ""),
                 "status": str(record.get("status") or ""),
                 "verified_proposition_ref": verified,
+                # 结果之外的"为什么"：交付判定、失败类别、拒绝落点，以及 worker 自报的
+                # 障碍摘要与范围。有了它们，同一节点的多次尝试才可对比出结论，
+                # 而不是只剩一串次数。
+                "delivery": str(record.get("delivery") or ""),
+                "failure_kind": str(record.get("failure_kind") or ""),
+                "rejection_locus": str(record.get("rejection_locus") or ""),
+                "obstacle_scope": _attempt_obstacle_field(record, "obstacle_scope"),
+                "obstacle_digest": _attempt_obstacle_field(record, "obstacle")[:400],
             })
         for difficulty_id, node_attempts in attempts.items():
             node_attempts.sort(key=lambda item: (item["sequence"], item["recorded_at"]))
