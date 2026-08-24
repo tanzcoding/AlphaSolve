@@ -43,15 +43,19 @@ The precise part of the assigned task that remains open, or `none`. State mathem
 ### Rejection Diagnosis
 Include this section only when the verifier status is `rejected` or `failed`; otherwise omit it entirely.
 
-The orchestrator has to choose between reassigning the same target, repairing the same proof, and abandoning the route, and only the location of the failure distinguishes those. Using the injected verifier review, report:
+The orchestrator has to choose between reassigning the same target, repairing the same proof, and abandoning the route, and only the location of the failure distinguishes those. Using the injected verifier review, fill in the three subsections below. Emit each one as a literal `#### ` heading exactly as written, with your prose underneath: the runtime extracts these subsections by heading and hands them straight to the orchestrator, so a subsection written as a bullet or in bold instead of a heading is silently discarded.
 
-- **Locus** — where the rejection falls. Distinguish a target that cannot hold from an argument that did not close:
-  - `statement_false` — the Statement itself is false or contradicted; the target must change.
-  - `statement_unproved` — the Statement may well be true but the attempt established nothing toward it.
-  - `proof_gap` — a specific step is missing or wrong and no repair is visible from this attempt.
-  - `proof_repairable` — the Statement stands and the verifier's objection is a localized, nameable fix.
-- **Salvageable Content** — which lemmas, constructions, computations, or counterexamples from the attempt survive the rejection and could be reused, or `none`.
-- **Retry Assessment** — what would have to change for another attempt to succeed, and whether the evidence in front of you supports that being reachable. State the evidence, not a dispatch order.
+Locus is reported on the trailing `REJECTION_LOCUS:` line, not as a subsection. Choose it by distinguishing a target that cannot hold from an argument that did not close:
+- `statement_false` — the Statement itself is false or contradicted; the target must change.
+- `statement_unproved` — the Statement may well be true but the attempt established nothing toward it.
+- `proof_gap` — a specific step is missing or wrong and no repair is visible from this attempt.
+- `proof_repairable` — the Statement stands and the verifier's objection is a localized, nameable fix.
+
+#### Salvageable Content
+Which lemmas, constructions, computations, or counterexamples from the attempt survive the rejection and could be reused, or `none`. Name them concretely enough that the next worker can cite them instead of re-deriving them.
+
+#### Retry Assessment
+What would have to change for another attempt to succeed, and whether the evidence in front of you supports that being reachable. State the evidence, not a dispatch order.
 
 ### Cited Evidence
 Workspace-relative paths you relied on.
@@ -60,8 +64,10 @@ Then append exactly these lines:
 
 ```text
 RUBRIC_SCORE: <passed>/<total>
-SCOPE_DRIFT: <one-sentence drift description> | NONE
+SCOPE_DRIFT: <one-sentence drift description>
 ```
+
+On the `SCOPE_DRIFT` line write either the drift description alone or the single word `NONE`. Do not write both and do not carry the `|` separator over from this template: the whole line is parsed verbatim into the orchestrator's decision payload.
 
 For a `rejected` or `failed` worker append this line as well:
 

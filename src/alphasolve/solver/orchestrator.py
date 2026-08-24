@@ -230,6 +230,9 @@ class WorkerManager:
         self.active_info: dict[str, dict[str, Any]] = {}
         self.active_info_lock = threading.Lock()
         self.results: list[WorkerRunResult] = []
+        # 完成 payload 是 reviewer 的实时只读证据层：它保留 task audit 与 route 归因，
+        # 而 canonical DAG 只会在异步 curator checkpoint 后更新。
+        self.completed_evidence: list[dict[str, Any]] = []
         self.completed_backlog: list[dict[str, Any]] = []
         self._task_output_audit_checkpoints: list[str] = []
         self.renderer = renderer
@@ -270,6 +273,10 @@ class WorkerManager:
         allow_weakening: bool = True,
         pinned_target: str | None = None,
         rubric: str | None = None,
+        # 纯归因元数据：不改变 worker 的执行语义，只让这次尝试的"走的是哪条路线"
+        # 与"是否图外探索"在结算时可被归档。
+        route_label: str | None = None,
+        reviewer_step_kind: str | None = None,
         on_spawn: Callable[[Worker], None] | None = None,
     ) -> dict[str, Any]:
         self._collect_done()
@@ -348,6 +355,8 @@ class WorkerManager:
                 "worker_hint": hint,
                 "rubric": rubric,
                 "pinned_target": pinned_target,
+                "route_label": route_label or "",
+                "reviewer_step_kind": reviewer_step_kind or "",
                 "orchestrator_session_id": self.orchestrator_session_id,
                 "started_at": time.time(),
                 "phase": "spawned",
@@ -577,12 +586,15 @@ class WorkerManager:
                 "worker_hint": finished_info.get("worker_hint"),
                 "rubric": finished_info.get("rubric"),
                 "pinned_target": finished_info.get("pinned_target"),
+                "route_label": str(finished_info.get("route_label") or ""),
+                "reviewer_step_kind": str(finished_info.get("reviewer_step_kind") or ""),
                 }
                 task_audit = self._run_task_audit(payload)
                 if task_audit is not None:
                     payload["task_audit"] = task_audit
                 self._append_worker_result_log(payload)
                 self._observe_result(payload)
+                self._record_completed_evidence(payload)
                 completed.append(payload)
                 continue
             self.results.append(replace(result, trace=[]))
@@ -615,6 +627,11 @@ class WorkerManager:
             payload["orchestrator_session_id"] = (
                 finished_info.get("orchestrator_session_id") or self.orchestrator_session_id
             )
+            # 同理，"这次走的是哪条数学路线"和"是否来自图外探索"只有调度侧知道。
+            for key in ("route_label", "reviewer_step_kind"):
+                value = str(finished_info.get(key) or "").strip()
+                if value:
+                    payload[key] = value
             payload.update(completion_feedback)
             # 短程任务验收在收割路径内同步执行：它的唯一读者是 orchestrator，且必须在
             # 同一次 TaskOutput 里回答"我刚下发的那个任务被完成了吗"。若异步执行，结论
@@ -624,6 +641,7 @@ class WorkerManager:
                 payload["task_audit"] = task_audit
             self._append_worker_result_log(payload)
             self._observe_result(payload)
+            self._record_completed_evidence(payload)
             completed.append(payload)
         if completed and self.progress_audit_queue is not None:
             try:
@@ -634,6 +652,15 @@ class WorkerManager:
                 # Audit persistence is observational and must not hide worker results.
                 pass
         return completed
+
+    def _record_completed_evidence(self, payload: dict[str, Any]) -> None:
+        """Retain a bounded realtime evidence window without changing canonical state."""
+        evidence = getattr(self, "completed_evidence", None)
+        if not isinstance(evidence, list):
+            evidence = []
+            self.completed_evidence = evidence
+        evidence.append(dict(payload))
+        del evidence[:-48]
 
     def _run_task_audit(self, payload: dict[str, Any]) -> dict[str, Any] | None:
         """Check one finished worker against its acceptance rubric before returning it."""
@@ -1160,18 +1187,43 @@ class Orchestrator:
         return [str(item) for item in status.get("pending_checkpoints") or [] if str(item).strip()]
 
     def _planning_worker_projection(self, manager: WorkerManager) -> list[dict[str, Any]]:
+        """Return recent completed evidence before asynchronous DAG curation catches up.
+
+        The canonical graph remains curator-owned. This projection deliberately exposes
+        only settled worker facts already recorded by the orchestrator, so the reviewer
+        can distinguish a delivered advance from a verified-but-off-target side result
+        and can apply route tabu to the most recent attempts.
+        """
+        evidence = list(getattr(manager, "completed_evidence", [])[-16:])
+        if not evidence:
+            # Compatibility fallback for callers that construct a lightweight manager.
+            for result in list(getattr(manager, "results", [])[-12:]):
+                evidence.append(_worker_result_payload(result))
         projected: list[dict[str, Any]] = []
-        for result in list(getattr(manager, "results", [])[-12:]):
-            item = {
-                "worker_id": result.worker_id,
-                "status": result.status,
-                "assigned_difficulty_id": result.difficulty_id,
-                "method_id": result.method_id,
-                "failure_kind": result.failure_kind,
-                "summary": _short_summary(result.summary, limit=1000),
-                "difficulty_handoff": result.difficulty_handoff,
-            }
-            projected.append(item)
+        for payload in evidence[-16:]:
+            if not isinstance(payload, dict):
+                continue
+            audit = payload.get("task_audit") if isinstance(payload.get("task_audit"), dict) else {}
+            handoff = payload.get("difficulty_handoff")
+            projected.append({
+                "worker_id": str(payload.get("worker_id") or ""),
+                "status": str(payload.get("status") or "unknown"),
+                "assigned_difficulty_id": payload.get("difficulty_id"),
+                "method_id": payload.get("method_id"),
+                "route_label": str(payload.get("route_label") or ""),
+                "reviewer_step_kind": str(payload.get("reviewer_step_kind") or ""),
+                "failure_kind": str(payload.get("failure_kind") or ""),
+                "delivery": str(audit.get("delivery") or "unknown"),
+                "scope_drift": str(audit.get("scope_drift") or "")[:1200],
+                "residual_obligation": str(audit.get("residual_obligation") or "")[:2000],
+                "rejection_locus": str(audit.get("rejection_locus") or ""),
+                "salvageable_content": str(audit.get("salvageable_content") or "")[:1200],
+                "retry_assessment": str(audit.get("retry_assessment") or "")[:1200],
+                "pinned_target": str(payload.get("pinned_target") or "")[:2000],
+                "verified_file": str(payload.get("verified_file") or ""),
+                "summary": _short_summary(str(payload.get("summary") or ""), limit=1000),
+                "difficulty_handoff": handoff if isinstance(handoff, dict) else None,
+            })
         return projected
 
     def _register_research_planning_tools(self, registry: ToolRegistry, manager: WorkerManager) -> None:
@@ -1188,28 +1240,44 @@ class Orchestrator:
         registry.register(
             name="ExecuteResearchPlan",
             description=(
-                "Execute the bounded implementation of one stored research strategy after revalidating a targeted leaf. It may "
-                "dispatch one current leaf, launch the recommended independent direction, or hold. It never writes canonical DAG "
-                "structure.\n\n"
-                "Supply the acceptance `rubric` for the reviewer's bounded step: the reviewer states the mathematical direction, "
-                "but committing to what would count as delivering it remains your decision, and the task auditor checks the "
-                "proven Statement against it."
+                "Compile one stored reviewer research plan into bounded worker tasks. The reviewer owns research tracks, priorities, "
+                "and tabu constraints; you own execution: select tracks that fit the available worker slots, decompose each selected "
+                "track into one worker-sized task, and provide one acceptance rubric per task. This tool dispatches only the selected "
+                "tracks and never writes canonical DAG structure.\n\n"
+                "Use a primary track first. Fill additional available slots with reviewer-provided challenger or supporting tracks only "
+                "when they are independent and your bounded tasks respect each track's avoid constraints."
             ),
             parameters={
                 "type": "object",
                 "properties": {
                     "plan_id": {"type": "string"},
-                    "rubric": {
-                        "type": "string",
-                        "minLength": 1,
-                        "maxLength": 4000,
-                        "description": (
-                            "Required acceptance checklist for the reviewer's bounded next step: 3-6 bullets, each starting "
-                            "with '- ', each checkable against the proven Statement alone."
-                        ),
+                    "tasks": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 4,
+                        "description": "Bounded executions selected from this plan; each track may appear once.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "track_id": {"type": "string", "maxLength": 80},
+                                "task": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4000,
+                                    "description": "A worker-sized artifact or check that advances this research track.",
+                                },
+                                "rubric": {
+                                    "type": "string",
+                                    "minLength": 1,
+                                    "maxLength": 4000,
+                                    "description": "3-6 '- ' bullets, each checkable against the proven Statement alone.",
+                                },
+                            },
+                            "required": ["track_id", "task", "rubric"],
+                        },
                     },
                 },
-                "required": ["plan_id", "rubric"],
+                "required": ["plan_id", "tasks"],
             },
             handler=lambda args: self._execute_research_plan_tool(manager, args),
         )
@@ -1224,7 +1292,7 @@ class Orchestrator:
         try:
             report = service.call(
                 "research_reviewer",
-                "Review the current research portfolio and return one validated strategy with a bounded next step; completed worker evidence may be empty.",
+                "Review the current research portfolio and return a validated multi-track research plan; completed worker evidence may be empty.",
                 reviewer_prompt(
                     worker_results=worker_results,
                     frontier=reviewer_frontier,
@@ -1235,7 +1303,14 @@ class Orchestrator:
             return ToolResult(json.dumps({"error": f"research reviewer failed: {exc}"}, ensure_ascii=False), is_error=True)
         recommendation = parse_recommendation(report)
         if recommendation is None:
-            return ToolResult(json.dumps({"error": "research reviewer did not return a valid Research Strategy JSON", "report": report[-4000:]}, ensure_ascii=False), is_error=True)
+            # 一次 reviewer 调用可能耗时数百秒并消耗大量 token；解析失败时丢弃全文
+            # 等于把那次思考彻底作废。把原始报告落盘，让失败可诊断、内容可人工复用。
+            unparsed_path = self._write_unparsed_reviewer_report(report)
+            return ToolResult(json.dumps({
+                "error": "research reviewer did not return a valid Research Strategy JSON",
+                "report_path": unparsed_path,
+                "report": report[-4000:],
+            }, ensure_ascii=False), is_error=True)
         plan_id = f"plan-{uuid.uuid4().hex[:12]}"
         plan = {
             "plan_id": plan_id,
@@ -1256,39 +1331,141 @@ class Orchestrator:
             "reviewer_report": report[-4000:],
         }, ensure_ascii=False))
 
+    def _write_unparsed_reviewer_report(self, report: str) -> str:
+        """Persist a reviewer report whose strategy JSON could not be parsed."""
+        try:
+            directory = self.layout.workspace_dir / "curation_records" / "research_plans"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"unparsed-{uuid.uuid4().hex[:12]}.md"
+            path.write_text(report, encoding="utf-8")
+            return path.relative_to(self.layout.workspace_dir).as_posix()
+        except (OSError, ValueError):
+            return ""
+
     def _execute_research_plan_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        """Compile reviewer tracks into orchestrator-owned bounded dispatches.
+
+        The plan identifies mathematical directions only. The supplied task entries are
+        the orchestrator's execution decisions: they choose which tracks consume the
+        currently free slots and turn each research goal into one auditable artifact.
+        """
         plan_id = str(args.get("plan_id") or "").strip()
         plan = self._research_plans.get(plan_id)
         if not plan:
-            return ToolResult(json.dumps({"error": "unknown planning recommendation"}), is_error=True)
+            return ToolResult(json.dumps({"error": "unknown research plan"}), is_error=True)
+        if plan.get("execution_status") in {"claimed", "executed"}:
+            return ToolResult(json.dumps({
+                "error": "research plan has already been executed",
+                "plan_id": plan_id,
+                "execution_status": plan.get("execution_status"),
+                "spawned_worker_ids": plan.get("spawned_worker_ids") or [],
+            }, ensure_ascii=True), is_error=True)
+
+        revision = self._reviewer_plan_gateway.validate_frontier_revision(
+            frontier_revision=str(plan.get("frontier_revision") or ""),
+        )
+        if not revision.get("allowed"):
+            return ToolResult(json.dumps({
+                "plan_id": plan_id,
+                "executed": False,
+                "reason": revision.get("reason"),
+                "message": revision.get("message"),
+            }, ensure_ascii=False))
+
         recommendation = plan["recommendation"]
-        research_strategy = recommendation["research_strategy"]
-        next_step = recommendation["next_step"]
-        kind = next_step["kind"]
-        if kind in {"TARGET_NODE", "NEW_DIRECTION"}:
+        research_plan = recommendation["research_plan"]
+        tracks = {
+            str(track.get("track_id") or ""): track
+            for track in research_plan.get("tracks") or []
+            if isinstance(track, dict)
+        }
+        task_specs = args.get("tasks")
+        if not isinstance(task_specs, list) or not task_specs:
+            return ToolResult(json.dumps({"error": "at least one bounded plan task is required"}), is_error=True)
+        if not tracks:
+            return ToolResult(json.dumps({
+                "plan_id": plan_id,
+                "executed": True,
+                "reason": "research_plan_hold",
+                "hold_reason": research_plan.get("hold_reason") or "",
+                "spawned": [],
+            }, ensure_ascii=False))
+
+        selected: list[tuple[dict[str, str], dict[str, str]]] = []
+        seen_track_ids: set[str] = set()
+        for raw_task in task_specs[:4]:
+            if not isinstance(raw_task, dict):
+                return ToolResult(json.dumps({"error": "each plan task must be an object"}), is_error=True)
+            track_id = str(raw_task.get("track_id") or "").strip()
+            task = str(raw_task.get("task") or "").strip()
+            rubric = str(raw_task.get("rubric") or "").strip()
+            track = tracks.get(track_id)
+            if track is None:
+                return ToolResult(json.dumps({"error": "task references a track not present in the research plan", "track_id": track_id}), is_error=True)
+            if track_id in seen_track_ids:
+                return ToolResult(json.dumps({"error": "a research track may be dispatched once per plan", "track_id": track_id}), is_error=True)
+            if not task or not rubric:
+                return ToolResult(json.dumps({"error": "each selected track needs a bounded task and acceptance rubric", "track_id": track_id}), is_error=True)
+            seen_track_ids.add(track_id)
+            selected.append((track, {"task": task, "rubric": rubric}))
+
+        # Waiting for a free worker is not execution. Keep the plan retryable until a
+        # slot exists; otherwise a busy pool would silently consume reviewer advice.
+        if not bool(getattr(manager, "has_available_worker_slot", lambda: False)()):
+            return ToolResult(json.dumps({
+                "plan_id": plan_id,
+                "executed": False,
+                "reason": "no_available_worker_slot",
+                "research_plan": research_plan,
+                "spawned": [],
+            }, ensure_ascii=False))
+
+        # A reviewer plan is consumed atomically at the policy level: a retry of the tool
+        # cannot silently launch the same tracks again. Individual spawn failures are
+        # returned as evidence for a subsequent fresh reviewer plan.
+        plan["execution_status"] = "claimed"
+        plan["claimed_at"] = time.time()
+        plan["selected_track_ids"] = [track["track_id"] for track, _ in selected]
+        spawned: list[dict[str, Any]] = []
+        for track, task in selected:
+            if not manager.has_available_worker_slot():
+                spawned.append({
+                    "track_id": track["track_id"],
+                    "spawned": False,
+                    "reason": "no_available_worker_slot",
+                })
+                continue
             result = self._spawn_difficulty_leaf(
                 manager,
                 {
-                    "difficulty_id": next_step["difficulty_id"] or None,
-                    "method_id": next_step["method_id"] or "direct_proof",
-                    "hint": _strategy_worker_hint(research_strategy, next_step),
-                    "pinned_target": next_step["brief"],
-                    # 方向由 reviewer 给出，但"什么算交付"仍由 orchestrator 承诺。
-                    "rubric": str(args.get("rubric") or "").strip(),
+                    "difficulty_id": track["difficulty_id"] or None,
+                    "method_id": track["method_id"],
+                    "hint": _research_track_worker_hint(research_plan, track, task["task"]),
+                    "pinned_target": track["research_goal"],
+                    "rubric": task["rubric"],
+                    "route_label": track["route_label"],
+                    "reviewer_step_kind": track["kind"],
                 },
             )
-            payload = json.loads(result.content)
-            payload["plan_id"] = plan_id
-            payload["research_strategy"] = research_strategy
-            payload["reviewer_step_kind"] = kind
-            if payload.get("spawned"):
-                self._active_research_plan = plan
-            return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=result.is_error)
+            try:
+                payload = json.loads(result.content)
+            except json.JSONDecodeError:
+                payload = {"spawned": False, "reason": "invalid_spawn_response"}
+            payload["track_id"] = track["track_id"]
+            payload["track_priority"] = track["priority"]
+            spawned.append(payload)
+
+        worker_ids = [str(item.get("worker_id")) for item in spawned if item.get("spawned") and item.get("worker_id")]
+        plan["execution_status"] = "executed"
+        plan["executed_at"] = time.time()
+        plan["spawned_worker_ids"] = worker_ids
+        self._active_research_plan = plan if worker_ids else None
         return ToolResult(json.dumps({
-            "executed": True,
-            "next_step_kind": kind,
             "plan_id": plan_id,
-            "research_strategy": research_strategy,
+            "executed": True,
+            "research_plan": research_plan,
+            "spawned": spawned,
+            "spawned_worker_ids": worker_ids,
         }, ensure_ascii=False))
 
     def _spawn_difficulty_leaf(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
@@ -1430,6 +1607,8 @@ class Orchestrator:
             allow_weakening=not global_attack,
             pinned_target=pinned_target,
             rubric=rubric,
+            route_label=str(args.get("route_label") or "").strip(),
+            reviewer_step_kind=str(args.get("reviewer_step_kind") or "").strip(),
             on_spawn=global_on_spawn,
         )
         if payload.get("spawned"):
@@ -1616,9 +1795,10 @@ class Orchestrator:
         payload["planning_instruction"] = (
             "Two independent audits inform the next step. Each completed worker carries a `task_audit`: it says whether the "
             "task you assigned was actually delivered, and its residual obligation stays open even when the proposition was "
-            "verified. For a rejected worker the rubric score is uninformative — read `rejection_locus`, "
-            "`salvageable_content`, and `retry_assessment`, where `statement_false` means change the target and "
-            "`proof_repairable` means the same target deserves another pass. The periodic `process_audit_decisions` say "
+            "verified. Its `next_action` names the dispatch move that verdict supports. For a rejected worker the rubric "
+            "score is uninformative — read `rejection_locus`, `salvageable_content`, and `retry_assessment`, where "
+            "`statement_false` means change the target and `proof_repairable` means the same target deserves another pass. "
+            "The periodic `process_audit_decisions` say "
             "whether the portfolio advances problem.md; a STALLED or MISALIGNED verdict means do not repeat the old route "
             "without new evidence. Treat both, plus local difficulties, as evidence rather than commands."
         )
@@ -1631,7 +1811,7 @@ class Orchestrator:
             self._search_tree_sink.snapshot(self.search, label="task-output")
         self._refresh_research_frontier_state(manager)
         return ToolResult(
-            json.dumps(payload, ensure_ascii=False),
+            json.dumps(_decision_first_payload(payload), ensure_ascii=False),
             stop_agent=manager.solved_result is not None,
             stop_answer=_solution_final_answer(manager.solution_path) if manager.solved_result is not None else None,
         )
@@ -1742,13 +1922,61 @@ def _short_summary(summary: str, *, limit: int = 180) -> str:
     return clean[: limit - 3] + "..."
 
 
-def _strategy_worker_hint(research_strategy: str, next_step: dict[str, str]) -> str:
-    # Render the reviewer strategy as one bounded worker-facing assignment.
-    return (
-        "# Reviewer Research Strategy\n\n"
-        f"{research_strategy}\n\n"
-        f"## Bounded worker task\n{next_step['brief']}"
-    )
+# TaskOutput 的决策类字段：必须排在 completed 之前。
+_DECISION_FIRST_KEYS = (
+    "solved",
+    "message",
+    "solution_path",
+    "planning_instruction",
+    "task_audit_summary",
+    "strategic_reassessment_recommended",
+    "process_audit_decisions",
+    "timed_out",
+    "active_count",
+    "available_worker_slots",
+    "max_workers",
+)
+
+
+def _decision_first_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Reorder one TaskOutput payload so the decision surface precedes the bulk evidence.
+
+    ``completed`` carries full worker reports and routinely runs to tens of thousands of
+    characters. Serialized first, it pushes the audit summary and planning instruction to
+    the very end of the JSON, which is the easiest place for a reader to lose them. The
+    content is unchanged; only key order is, so nothing downstream that looks a field up
+    by name is affected.
+    """
+    ordered: dict[str, Any] = {}
+    for key in _DECISION_FIRST_KEYS:
+        if key in payload:
+            ordered[key] = payload[key]
+    for key, value in payload.items():
+        if key not in ordered:
+            ordered[key] = value
+    return ordered
+
+
+def _research_track_worker_hint(
+    research_plan: dict[str, Any],
+    track: dict[str, str],
+    bounded_task: str,
+) -> str:
+    """Render a reviewer-owned research track plus an orchestrator-owned task."""
+    parts = [
+        "# Reviewer Research Plan",
+        f"Objective: {research_plan.get('objective') or ''}",
+        f"Strategy: {research_plan.get('strategy') or ''}",
+        "",
+        "## Research track",
+        f"Track: {track.get('track_id') or ''} ({track.get('priority') or ''})",
+        f"Research goal: {track.get('research_goal') or ''}",
+        f"Rationale: {track.get('rationale') or ''}",
+    ]
+    if track.get("avoid"):
+        parts.append(f"Avoid: {track['avoid']}")
+    parts.extend(["", "## Bounded worker task", bounded_task])
+    return "\n".join(parts)
 
 
 def _format_worker_phase(phase: str) -> str:

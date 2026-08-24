@@ -128,8 +128,8 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "Only verified propositions are established" in reviewer_prompt
     assert "Adversarial Review" in reviewer_prompt
     assert "Research Strategy JSON" in reviewer_prompt
-    assert "research_strategy" in reviewer_prompt
-    assert "next_step" in reviewer_prompt
+    assert "research_plan" in reviewer_prompt
+    assert "tracks" in reviewer_prompt
     assert "read_state" not in reviewer_prompt
     assert "RequestResearchPlan" in orchestrator_prompt
     assert "ExecuteResearchPlan" in orchestrator_prompt

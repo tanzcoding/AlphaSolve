@@ -216,7 +216,7 @@ def test_malformed_graph_observation_does_not_discard_the_strategy():
 ```json
 {
   "research_strategy": "Attack the bridge lemma by construction.",
-  "next_step": {"kind": "NEW_DIRECTION", "difficulty_id": "", "method_id": "construction", "brief": "Construct the bridge."},
+  "next_step": {"kind": "NEW_DIRECTION", "difficulty_id": "", "method_id": "construction", "route_label": "bridge-construction", "brief": "Construct the bridge."},
   "graph_observations": [
     {"kind": "NOT_A_KIND", "target_ids": ["leaf"], "summary": "bad kind", "evidence_refs": ["a.md"], "recommended_graph_effect": "reconsider_edge"},
     {"kind": "EDGE_SUSPECT", "target_ids": ["leaf"], "summary": "no evidence cited", "evidence_refs": [], "recommended_graph_effect": "reconsider_edge"},

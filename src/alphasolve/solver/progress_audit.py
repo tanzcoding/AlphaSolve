@@ -470,6 +470,10 @@ class ProgressAuditQueue:
             "residual_obligation": str(task_audit.get("residual_obligation") or "")[:2000],
             "difficulty_id": payload.get("difficulty_id"),
             "method_id": payload.get("method_id"),
+            # 路线标签与推荐类型：前者是"同一条数学路线"的唯一可靠键（method_id 只是
+            # 证明体裁），后者区分图外探索与节点内尝试。两者都由调度侧提供。
+            "route_label": str(payload.get("route_label") or ""),
+            "reviewer_step_kind": str(payload.get("reviewer_step_kind") or ""),
             "pinned_target": str(payload.get("pinned_target") or "")[:2000],
             "worker_hint": str(payload.get("worker_hint") or "")[:2000],
             "orchestrator_session_id": payload.get("orchestrator_session_id"),

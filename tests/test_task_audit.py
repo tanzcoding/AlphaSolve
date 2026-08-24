@@ -148,7 +148,10 @@ def test_non_mathematical_failure_is_settled_without_calling_the_auditor(tmp_pat
     assert result["delivery"] == "not_delivered"
     assert result["rubric_total"] == 3
     assert result["rubric_passed"] == 0
-    assert [item["verdict"] for item in result["rubric_checks"]] == ["fail", "fail", "fail"]
+    # 全 0 分时每条 rubric_check 都是同一句"没有可验收的 Statement"，对编排决策没有
+    # 信息量，因此不进 orchestrator payload；完整逐条核对仍保留在落盘报告里。
+    assert "rubric_checks" not in result
+    assert "retry_or_drop" in result["next_action"]
     assert "no Statement exists" in result["assigned_versus_delivered"]
 
 

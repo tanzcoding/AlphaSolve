@@ -166,7 +166,7 @@ class SubagentService:
             if history:
                 prompt = (
                     "## Prior Reviewer Decisions\n\n"
-                    "These are your own recent strategies and next steps in this project. They are fallible and may be "
+                    "These are your own recent research plans and tracks in this project. They are fallible and may be "
                     "outdated; use them to avoid re-recommending a route you already rejected, and to state explicitly "
                     "what new evidence justifies reversing one.\n\n"
                     f"{history}\n\n---\n\n"

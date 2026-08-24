@@ -338,6 +338,16 @@ def register_orchestrator_worker_tools(
                         "create, edit, or validate canonical DAG structure."
                     ),
                 },
+                "route_label": {
+                    "type": "string",
+                    "maxLength": 80,
+                    "description": (
+                        "Optional short slug naming the mathematical route this dispatch pursues, for example "
+                        "'exact-variance-contrapositive'. Reuse the reviewer's label when executing its plan, and reuse an "
+                        "earlier label when re-attacking the same route so repeat attempts on one route stay visible. "
+                        "`method_id` records only the proof genre and cannot distinguish two routes that share it."
+                    ),
+                },
                 "followup_handoff_ids": {
                     "type": "array",
                     "items": {"type": "string"},
@@ -434,11 +444,13 @@ def register_orchestrator_worker_tools(
         description=(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
-            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
+            "Return content is JSON. Decision fields come first, then the bulk worker evidence in completed. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
             "Each completed worker carries a `task_audit`: an independent short-horizon verdict on whether the task you assigned "
-            "was delivered (`delivered`, `partial`, `off_target`, `not_delivered`), its rubric score, any scope drift, and the "
+            "was delivered (`delivered`, `partial`, `off_target`, `not_delivered`), a `next_action` naming the dispatch move that "
+            "verdict supports, its rubric score, any scope drift, and the "
             "residual obligation. A verified proposition with an unmet rubric means the obligation is still open. "
-            "`task_audit_summary` aggregates those verdicts for this batch. "
+            "`task_audit_summary` aggregates those verdicts for this batch, and its `open_obligations` lists each still-open "
+            "obligation with the residual to reassign, so you can act without re-reading every worker report. "
             "Completed workers may also include a worker-local difficulty_handoff plus direct proposition, review, and verification artifacts. "
             "When available, local_difficulties lists compact worker and reasoning-subagent obstacle handoffs. For one concrete "
             "follow-up, use SpawnWorker with followup_handoff_ids and evidence_refs; each handoff may be cited once per run. "

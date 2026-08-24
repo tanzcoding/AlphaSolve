@@ -11,6 +11,11 @@ AgentEventSink = Callable[[dict[str, Any]], None]
 _TRUNCATE_RESULT_BYTES = 8_000
 _TRUNCATE_THINKING_CHARS = 12_000
 _TRUNCATE_CONTENT_CHARS = 8_000
+# 调度类工具的结果就是编排决策的全部输入，动辄数万字节。按普通工具的上限截断会让
+# 日志里看不到它的决策字段（摘要、审计判定），从而把"字段没送到"和"日志没写下来"
+# 混为一谈。这些工具单独放宽。
+_LARGE_RESULT_TOOLS = frozenset({"TaskOutput", "RequestResearchPlan", "ExecuteResearchPlan"})
+_TRUNCATE_LARGE_RESULT_BYTES = 120_000
 
 
 def compose_event_sinks(*sinks: AgentEventSink | None) -> AgentEventSink | None:
@@ -139,7 +144,7 @@ class EventLogWriter:
         is_error = bool(event.get("is_error"))
         content = str(event.get("content") or "")
         tag = "error" if is_error else "result"
-        short = _truncate_result(content)
+        short = _truncate_result(content, tool_name=name)
         self._log.write(f"    {tag} ({elapsed}{len(content)} bytes): {short}\n\n")
         self._log.flush()
 
@@ -238,12 +243,13 @@ def _format_args(args: Any, raw: Any) -> str:
     return _compact(json.dumps(source, ensure_ascii=False))
 
 
-def _truncate_result(content: str) -> str:
+def _truncate_result(content: str, *, tool_name: str = "") -> str:
     """Return a short preview of a tool result."""
     text = " ".join(content.replace("\r", " ").split())
-    if len(text) <= _TRUNCATE_RESULT_BYTES:
+    limit = _TRUNCATE_LARGE_RESULT_BYTES if tool_name in _LARGE_RESULT_TOOLS else _TRUNCATE_RESULT_BYTES
+    if len(text) <= limit:
         return text
-    return text[:_TRUNCATE_RESULT_BYTES] + f" ... [{len(content)} total bytes]"
+    return text[:limit] + f" ... [{len(content)} total bytes]"
 
 
 def _compact(text: str) -> str:

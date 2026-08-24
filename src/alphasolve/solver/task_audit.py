@@ -68,12 +68,21 @@ class TaskAuditResult:
     retry_assessment: str = ""
 
     def payload(self) -> dict[str, Any]:
-        """Return the bounded surface the orchestrator sees on TaskOutput."""
+        """Return the bounded surface the orchestrator sees on TaskOutput.
+
+        This is the orchestrator's immediate feedback channel: it arrives on the very
+        ``TaskOutput`` that reports the worker, before the next dispatch decision. So the
+        fields are ordered and filtered for that decision — what was asked, what came
+        back, what is still owed, and what to do next — rather than as a full report.
+        The persisted markdown keeps the complete audit for later reading.
+        """
         result: dict[str, Any] = {
             "worker_id": self.worker_id,
             "status": self.status,
             "delivery": self.delivery,
             "delivered": self.delivery == "delivered",
+            # 下一步该做什么：放在交付判定紧邻处，避免被后面的长文字段挤出注意力。
+            "next_action": self.next_action(),
             "scope_drift": self.scope_drift,
             "residual_obligation": self.residual_obligation,
             "assigned_versus_delivered": self.assigned_versus_delivered,
@@ -83,7 +92,9 @@ class TaskAuditResult:
             result["rubric_score"] = f"{self.rubric_passed}/{self.rubric_total}"
             result["rubric_passed"] = self.rubric_passed
             result["rubric_total"] = self.rubric_total
-        if self.rubric_checks:
+        # 逐条核对只在"部分通过"时有决策价值：它指出是哪一条没达成。全 0 分时每条都是
+        # 同一句"没有可验收的 Statement"，纯属噪声，应由 delivery + next_action 承担。
+        if self.rubric_checks and self.rubric_passed:
             result["rubric_checks"] = self.rubric_checks
         # 拒绝诊断替代 rubric 成为 orchestrator 的决策依据：定理错 vs 证明错，
         # 决定了应当换目标还是修证明。
@@ -94,6 +105,39 @@ class TaskAuditResult:
         if self.retry_assessment:
             result["retry_assessment"] = self.retry_assessment
         return result
+
+    def next_action(self) -> str:
+        """Name the dispatch move this verdict supports, in the orchestrator's own terms.
+
+        The orchestrator has to turn a verdict into one of a few concrete moves. Deriving
+        that mapping is deterministic, so the runtime does it here instead of restating the
+        rules in prose and hoping they are re-applied correctly on every collection. This
+        names the move; it does not order it.
+        """
+        if self.delivery == "delivered":
+            return "obligation_closed: choose the next target from research evidence, not from this task."
+        if self.rejection_locus == "statement_false":
+            return "change_target: the assigned Statement cannot hold; do not reassign it."
+        if self.rejection_locus == "proof_repairable":
+            return (
+                "reassign_same_target: the Statement stands and the objection is localized; "
+                "quote the objection in the new rubric."
+            )
+        if self.rejection_locus == "proof_gap":
+            return "narrow_to_gap: dispatch a bounded follow-up on the named missing step only."
+        if self.rejection_locus == "statement_unproved":
+            return (
+                "change_route: the target may stand but nothing was established; reassign only with a "
+                "different route or more structure."
+            )
+        if self.delivery in {"off_target", "partial"}:
+            return (
+                "reassign_residual: a proposition was verified but the assigned obligation is still open; "
+                "reassign the residual obligation with a sharper rubric."
+            )
+        if self.delivery == "not_delivered":
+            return "retry_or_drop: nothing was delivered; either reassign with more structure or record why to stop."
+        return ""
 
 
 class TaskAuditor:
@@ -254,6 +298,7 @@ class TaskAuditor:
                     "recorded_at": _now_iso(),
                     "status": result.status,
                     "delivery": result.delivery,
+                    "next_action": result.next_action(),
                     "rubric_passed": result.rubric_passed,
                     "rubric_total": result.rubric_total,
                     "scope_drift": result.scope_drift,
@@ -294,6 +339,23 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
         "delivered": sum(1 for item in usable if str(item.get("delivery")) == "delivered"),
         "undelivered_worker_ids": [str(item.get("worker_id")) for item in undelivered],
     }
+    # 每个未交付 worker 的"下一步该做什么 + 还欠什么"，直接可读。只给 ID 会迫使
+    # orchestrator 回到 completed 数组里逐个翻找，而那正是最容易被跳过的一步。
+    if undelivered:
+        summary["open_obligations"] = [
+            {
+                "worker_id": str(item.get("worker_id")),
+                "delivery": str(item.get("delivery") or ""),
+                "next_action": str(item.get("next_action") or ""),
+                "residual_obligation": str(item.get("residual_obligation") or "")[:600],
+                **(
+                    {"salvageable_content": str(item.get("salvageable_content"))[:400]}
+                    if str(item.get("salvageable_content") or "").strip()
+                    else {}
+                ),
+            }
+            for item in undelivered
+        ]
     if drifted:
         summary["scope_drift_worker_ids"] = [str(item.get("worker_id")) for item in drifted]
     # 被拒绝的 worker 没有可读的 rubric 分数；把拒绝落点按类别聚合，
@@ -308,9 +370,10 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
         summary["instruction"] = (
             "A task audit compares the assigned rubric with the proven Statement. Where delivery is partial, "
             "off_target, or not_delivered, the residual obligation is still open even if a proposition was verified: "
-            "do not treat it as done. Either reassign the residual obligation with a sharper rubric, or record why "
-            "it is no longer worth pursuing. For a rejected worker the rubric score is uninformative; read its "
-            "rejection_locus, salvageable_content, and retry_assessment instead, and note that statement_false means "
+            "do not treat it as done. Each entry in `open_obligations` carries the `next_action` its verdict supports "
+            "and the residual obligation to reassign; act on one of them now or record why it is no longer worth "
+            "pursuing. For a rejected worker the rubric score is uninformative; read its rejection_locus, "
+            "salvageable_content, and retry_assessment instead, and note that statement_false means "
             "change the target while proof_repairable means the same target is worth another pass."
         )
     else:
@@ -448,6 +511,7 @@ def _render_report(result: TaskAuditResult, payload: dict[str, Any], *, audit_te
         "",
         "## Verdict",
         f"- Delivery: `{result.delivery}`",
+        f"- Next action: `{result.next_action()}`" if result.next_action() else "",
         f"- Rubric score: `{result.rubric_passed}/{result.rubric_total}`" if result.rubric_total else "- Rubric score: `n/a`",
         f"- Verifier status: `{payload.get('status') or 'unknown'}`",
         f"- Audit status: `{result.status}`",
@@ -496,6 +560,10 @@ def _parse_task_audit(text: str, *, expected_criteria: int) -> dict[str, Any]:
         passed = min(int(score_match.group(1)), total)
     drift_match = re.search(r"(?mi)^\s*SCOPE_DRIFT:\s*(.+?)\s*$", text or "")
     drift = drift_match.group(1).strip() if drift_match else ""
+    # 输出模板把两个可选值写在同一行（`<描述> | NONE`），模型常把分隔符和另一个
+    # 选项一起抄下来。不剥掉的话，这段模板残留会随 scope_drift 进入 orchestrator
+    # payload 和 canonical DAG。
+    drift = re.sub(r"\s*\|\s*NONE\s*$", "", drift, flags=re.IGNORECASE).strip()
     if drift.upper() == "NONE":
         drift = ""
     locus_match = re.search(
@@ -537,8 +605,15 @@ def _parse_rubric_checks(text: str) -> list[dict[str, str]]:
 
 
 def _section(text: str, heading: str, *, limit: int = 4000) -> str:
+    """Extract one required output section by heading.
+
+    Headings are matched at depth 3-6 because the auditor's rejection diagnosis nests
+    its subsections one level below `### Rejection Diagnosis`. A section ends at the
+    next heading of any of those depths, so a `####` subsection does not swallow the
+    one that follows it.
+    """
     match = re.search(
-        rf"(?ims)^###\s+{re.escape(heading)}\s*$\s*(.*?)(?=^###\s+|^```text|\Z)",
+        rf"(?ims)^#{{3,6}}\s+{re.escape(heading)}\s*$\s*(.*?)(?=^#{{3,6}}\s+|^```text|\Z)",
         text or "",
     )
     return match.group(1).strip()[:limit] if match else ""

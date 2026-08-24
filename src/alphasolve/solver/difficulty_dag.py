@@ -34,6 +34,9 @@ _METHOD_IDS = frozenset({
     "consolidation",
 })
 
+# 交付判定为这三种时，该次尝试没有完成它被分派的义务——即使它产出了某个已验证命题。
+_UNDELIVERED_DELIVERIES = frozenset({"off_target", "partial", "not_delivered"})
+
 # Backward-compatible exports for callers that rely on the built-in defaults.
 _DEFAULT_POLICY = DifficultyDagPolicy()
 MAX_PERSISTENT_DIFFICULTY_DEPTH = _DEFAULT_POLICY.max_persistent_depth
@@ -334,8 +337,11 @@ class DifficultyDagStore:
                     "delivery": str(item.get("delivery") or ""),
                     "failure_kind": str(item.get("failure_kind") or ""),
                     "rejection_locus": str(item.get("rejection_locus") or ""),
+                    "route_label": str(item.get("route_label") or ""),
+                    "reviewer_step_kind": str(item.get("reviewer_step_kind") or ""),
                     "obstacle_scope": str(item.get("obstacle_scope") or ""),
                     "obstacle_digest": str(item.get("obstacle_digest") or ""),
+                    "salvageable_digest": str(item.get("salvageable_digest") or ""),
                 }
                 for item in raw_attempts
             ][-8:]
@@ -370,14 +376,27 @@ class DifficultyDagStore:
         decides what matters.  Counting from a long attempt list is exactly the kind of
         bookkeeping an LLM gets wrong, so the runtime does it deterministically.
 
-        ``consecutive_no_progress`` counts trailing attempts that produced no verified
-        proposition reference, i.e. how many times in a row the node was attacked
-        without yielding established mathematics.
+        ``consecutive_no_progress`` counts trailing attempts that did not deliver the
+        obligation they were assigned. Delivery, not the mere existence of a verified
+        proposition, is the right test: a worker that proves "route X cannot work" has
+        produced a verified proposition while the node's own obligation stayed exactly
+        where it was. Counting those as progress drove this statistic to 0 on a node
+        that had gone many attempts without moving, which is the opposite of what the
+        reviewer needs to see. An attempt counts as progress only when it yielded a
+        verified proposition *and* was not judged ``off_target`` / ``partial`` /
+        ``not_delivered``; when no delivery verdict exists, the verified reference alone
+        is accepted so unaudited history is not retroactively penalised.
 
-        Beyond raw counts, this also splits each method's attempts into yielded /
-        barren and tallies why the barren ones failed.  A method with many attempts
+        The per-method breakdown keeps any verified output separate from delivered output:
+        a verified side result can be useful evidence, but it must not make the assigned
+        route look successful before a reviewer connects it to the residual obligation.
+        Beyond raw counts, this also tallies why barren attempts failed. A method with many attempts
         and no yield is a different situation from one whose single attempt died on a
         protocol error, and only the breakdown distinguishes them.
+
+        ``attempted_routes`` aggregates the same history by mathematical route rather
+        than by proof genre, because ``method_id`` has only six values and the same
+        route can be relabelled to look new.
         """
         ordered = sorted(
             attempts,
@@ -388,28 +407,50 @@ class DifficultyDagStore:
         attempted_methods: list[str] = []
         failure_kinds: dict[str, int] = {}
         rejection_loci: dict[str, int] = {}
+        route_stats: dict[str, dict[str, Any]] = {}
         last_verified_at = ""
+        last_delivered_at = ""
         consecutive_no_progress = 0
         for item in ordered:
             method_id = str(item.get("method_id") or "").strip() or "unspecified"
             method_counts[method_id] = method_counts.get(method_id, 0) + 1
-            stats = method_stats.setdefault(method_id, {"attempts": 0, "yielded": 0, "barren": 0})
+            stats = method_stats.setdefault(
+                method_id,
+                {"attempts": 0, "verified_yields": 0, "delivered_yields": 0, "off_target_verified": 0, "barren": 0},
+            )
             stats["attempts"] += 1
             if method_id not in attempted_methods:
                 attempted_methods.append(method_id)
-            if str(item.get("verified_proposition_ref") or "").strip():
-                stats["yielded"] += 1
+            verified_ref = str(item.get("verified_proposition_ref") or "").strip()
+            delivery = str(item.get("delivery") or "").strip()
+            delivered = bool(verified_ref) and delivery not in _UNDELIVERED_DELIVERIES
+            route_label = str(item.get("route_label") or "").strip()
+            if route_label:
+                route = route_stats.setdefault(
+                    route_label,
+                    {"attempts": 0, "delivered": 0, "last_delivery": "", "last_attempt_at": ""},
+                )
+                route["attempts"] += 1
+                route["delivered"] += 1 if delivered else 0
+                route["last_delivery"] = delivery or ("yielded" if verified_ref else "")
+                route["last_attempt_at"] = str(item.get("recorded_at") or "") or route["last_attempt_at"]
+            if verified_ref:
+                stats["verified_yields"] += 1
                 last_verified_at = str(item.get("recorded_at") or "") or last_verified_at
-                consecutive_no_progress = 0
+                if delivered:
+                    stats["delivered_yields"] += 1
+                    last_delivered_at = str(item.get("recorded_at") or "") or last_delivered_at
+                elif delivery in _UNDELIVERED_DELIVERIES:
+                    stats["off_target_verified"] += 1
             else:
                 stats["barren"] += 1
-                consecutive_no_progress += 1
                 kind = str(item.get("failure_kind") or "").strip()
                 if kind:
                     failure_kinds[kind] = failure_kinds.get(kind, 0) + 1
                 locus = str(item.get("rejection_locus") or "").strip()
                 if locus:
                     rejection_loci[locus] = rejection_loci.get(locus, 0) + 1
+            consecutive_no_progress = 0 if delivered else consecutive_no_progress + 1
         # 交付判定与 verifier 状态是两件事：verified 但 off_target 说明目标被悄悄换掉了。
         off_target = sum(1 for item in ordered if str(item.get("delivery") or "") in {"off_target", "partial"})
         global_scope = sum(1 for item in ordered if str(item.get("obstacle_scope") or "") == "global")
@@ -418,10 +459,12 @@ class DifficultyDagStore:
             "method_outcome_breakdown": {key: method_stats[key] for key in sorted(method_stats)},
             "barren_failure_kinds": dict(sorted(failure_kinds.items())),
             "barren_rejection_loci": dict(sorted(rejection_loci.items())),
+            "attempted_routes": {key: route_stats[key] for key in sorted(route_stats)},
             "undelivered_attempts": off_target,
             "global_scope_obstacle_reports": global_scope,
             "consecutive_no_progress": consecutive_no_progress,
             "last_verified_at": last_verified_at,
+            "last_delivered_at": last_delivered_at,
             "untried_methods": sorted(_METHOD_IDS - set(attempted_methods)),
         }
 
@@ -741,10 +784,10 @@ class DifficultyDagStore:
                 record = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if not isinstance(record, dict) or not record.get("difficulty_id"):
+            if not isinstance(record, dict):
                 continue
-            canonical = self._canonical_id(state, str(record["difficulty_id"]))
-            if canonical not in attempts:
+            canonical = self._attempt_canonical_id(state, record)
+            if canonical is None or canonical not in attempts:
                 continue
             verified = str(record.get("verified_file") or "").strip()
             try:
@@ -764,8 +807,15 @@ class DifficultyDagStore:
                 "delivery": str(record.get("delivery") or ""),
                 "failure_kind": str(record.get("failure_kind") or ""),
                 "rejection_locus": str(record.get("rejection_locus") or ""),
+                # 走的是哪条数学路线、是否图外探索：没有这两项，一个节点上的多次尝试
+                # 无法区分"同一条路撞了三次"与"三条独立的路都撞了"。
+                "route_label": str(record.get("route_label") or ""),
+                "reviewer_step_kind": str(record.get("reviewer_step_kind") or ""),
                 "obstacle_scope": _attempt_obstacle_field(record, "obstacle_scope"),
                 "obstacle_digest": _attempt_obstacle_field(record, "obstacle")[:400],
+                # 被拒绝的尝试往往留下若干可复用引理，只有一步是错的。不带上它，
+                # reviewer 只会看到"第 4 次尝试、off_target"，而看不到哪些部件还活着。
+                "salvageable_digest": str(record.get("salvageable_content") or "")[:400],
             })
         for difficulty_id, node_attempts in attempts.items():
             node_attempts.sort(key=lambda item: (item["sequence"], item["recorded_at"]))
@@ -777,6 +827,32 @@ class DifficultyDagStore:
                 "verified_proposition_refs": verified_refs[-80:],
                 "last_attempt_at": node_attempts[-1]["recorded_at"] if node_attempts else "",
             }
+
+    def _attempt_canonical_id(self, state: dict[str, Any], record: dict[str, Any]) -> str | None:
+        """Resolve which canonical node one recorded outcome is an attempt on.
+
+        The dispatch-time ``difficulty_id`` is the primary key, but it is absent whenever a
+        worker was dispatched outside the graph (a reviewer ``NEW_DIRECTION``, a free
+        exploration, a global attack). Those attempts are not untracked: once the curator
+        archives the resulting proposition it registers a ``prop-<worker_id>`` alias for the
+        node the work bore on. Consulting that alias is what keeps an attempt history from
+        silently omitting the very attempts aimed at the terminal gap, which would leave a
+        heavily attacked obligation looking untried to the reviewer.
+
+        Returns ``None`` when no canonical owner is established yet; such an outcome stays
+        unmapped rather than being attributed by guesswork.
+        """
+        declared = str(record.get("difficulty_id") or "").strip()
+        if declared:
+            return self._canonical_id(state, declared)
+        worker_id = str(record.get("worker_id") or "").strip()
+        if not worker_id:
+            return None
+        aliases = state.get("aliases") or {}
+        alias_key = f"prop-{worker_id}"
+        if alias_key not in aliases:
+            return None
+        return self._canonical_id(state, str(aliases[alias_key]))
 
     def _reconcile_existing_aliases(
         self,

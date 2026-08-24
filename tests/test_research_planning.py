@@ -37,6 +37,7 @@ def test_strategy_accepts_active_parent_target():
     "kind": "TARGET_NODE",
     "difficulty_id": "root",
     "method_id": "construction",
+    "route_label": "parent-decomposition",
     "brief": "Construct a decomposition for the parent obligation or produce a counterexample to its current formulation."
   },
   "graph_observations": [{
@@ -78,12 +79,185 @@ def test_strategy_requires_brief_for_dispatch_and_allows_hold_without_one():
     assert invalid is None
 
 
+def test_strategy_requires_route_label_for_every_dispatchable_step():
+    missing_route = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_strategy": "Retry the bridge by a different proof genre.",
+  "next_step": {"kind": "TARGET_NODE", "difficulty_id": "bridge", "method_id": "contradiction", "brief": "Prove the bridge."}
+}
+```""")
+
+    assert missing_route is None
+
+
 def test_reviewer_prompt_uses_attempt_statistics_and_parent_attack_guidance():
     prompt = reviewer_prompt(worker_results=[], frontier={"frontier_revision": "r", "dispatchable": [], "graph": {}, "sources": {}})
     assert "verified propositions" in prompt
     assert "knowledge is a navigation aid" in prompt
-    assert "(node, method)" in prompt
+    # Tabu is keyed on the mathematical route, not the proof genre: the same route
+    # relabelled under another method_id must not read as unexplored.
+    assert "`route_label`" in prompt
+    assert "changing only `method_id`" in prompt
     assert "parent or ancestor" in prompt
     assert "next mathematical direction freely" in prompt
-    assert "research_strategy" in prompt
-    assert "next_step" in prompt
+    assert "research_plan" in prompt
+    assert "tracks" in prompt
+    assert "challenger" in prompt
+
+
+def test_reviewer_prompt_does_not_require_a_step_smaller_than_the_obstacle():
+    """Choosing the direction is the reviewer's job; sizing the task is the orchestrator's.
+
+    A route that is as hard as the obstacle was being self-censored as "not a bounded
+    step", so the prompt has to say plainly that it is admissible and that a first
+    checkable artifact is an acceptable brief.
+    """
+    prompt = reviewer_prompt(worker_results=[], frontier={"frontier_revision": "r", "dispatchable": [], "graph": {}, "sources": {}})
+    assert "research tracks" in prompt
+    assert "not worker tasks" in prompt
+    assert "orchestrator selects" in prompt
+    # An unciteable literature result is usable evidence about where a route leads.
+    assert "literature" in prompt
+    assert "considered_but_deferred" in prompt
+
+
+def test_strategy_survives_any_heading_depth():
+    """Heading depth must not decide whether a plan survives.
+
+    A real reviewer call emitted `##` where the parser demanded `###` verbatim, and its
+    entire strategy — 542s and roughly 200k tokens of work — was discarded. The depth a
+    model happens to choose carries no meaning; the fenced JSON body is the contract.
+    """
+    body = """```json
+{
+  "research_strategy": "The gap sub-route is refuted by a verified corner witness, so pivot to the exact-variance contrapositive.",
+  "next_step": {
+    "kind": "TARGET_NODE",
+    "difficulty_id": "full-class-cubic-bound",
+    "method_id": "contradiction",
+    "route_label": "exact-variance-contrapositive",
+    "brief": "Assume the third moment exceeds two and exhibit an interval whose exact variance exceeds one."
+  }
+}
+```"""
+    for heading in ("## Research Strategy JSON", "### Research Strategy JSON", "#### Research Strategy JSON"):
+        parsed = parse_recommendation(f"{heading}\n{body}")
+        assert parsed is not None, heading
+        assert parsed["next_step"]["difficulty_id"] == "full-class-cubic-bound"
+        assert parsed["next_step"]["route_label"] == "exact-variance-contrapositive"
+
+
+def test_strategy_prefers_the_final_heading_when_the_template_is_quoted():
+    """Reviewer reasoning often restates the template before emitting the real block."""
+    parsed = parse_recommendation("""### Research Strategy JSON
+(I will fill this in below.)
+
+### Research Strategy JSON
+```json
+{
+  "research_strategy": "Pivot to the exact-variance contrapositive on the critical-path leaf.",
+  "next_step": {
+    "kind": "NEW_DIRECTION",
+    "difficulty_id": "",
+    "method_id": "direct_proof",
+    "route_label": "Sharp John-Nirenberg Reconstruction",
+    "brief": "Produce the closed form of the non-separable Bellman function and verify its boundary values."
+  }
+}
+```""")
+    assert parsed is not None
+    assert parsed["next_step"]["kind"] == "NEW_DIRECTION"
+    # Self-named labels are slugified so one route spells identically across calls.
+    assert parsed["next_step"]["route_label"] == "sharp-john-nirenberg-reconstruction"
+
+
+def test_research_plan_accepts_primary_and_independent_challenger_tracks():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Close the remaining cubic-bound gap.",
+    "strategy": "Exploit exact variance while preserving one independent falsification challenger.",
+    "tracks": [
+      {
+        "track_id": "exact-variance",
+        "priority": "primary",
+        "kind": "TARGET_NODE",
+        "difficulty_id": "cubic-leaf",
+        "method_id": "contradiction",
+        "route_label": "exact-variance-contrapositive",
+        "research_goal": "Determine whether full interval variance forces the cubic bound.",
+        "rationale": "The route uses information absent from the refuted gap relaxation.",
+        "avoid": "Do not reduce variance to a two-point gap."
+      },
+      {
+        "track_id": "counterexample",
+        "priority": "challenger",
+        "kind": "NEW_DIRECTION",
+        "difficulty_id": "",
+        "method_id": "falsification",
+        "route_label": "full-interval-counterexample",
+        "research_goal": "Test whether an admissible finite witness can violate the cubic bound.",
+        "rationale": "A witness would decisively invalidate the primary target.",
+        "avoid": "Do not reuse prefix-only or dyadic relaxations."
+      }
+    ]
+  }
+}
+```""")
+
+    assert parsed is not None
+    tracks = parsed["research_plan"]["tracks"]
+    assert [track["track_id"] for track in tracks] == ["exact-variance", "counterexample"]
+    assert "next_step" not in parsed
+    assert tracks[1]["priority"] == "challenger"
+
+
+def test_research_plan_rejects_track_without_route_identity():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Close the gap.",
+    "strategy": "Try an alternative.",
+    "tracks": [{
+      "track_id": "missing-route",
+      "priority": "primary",
+      "kind": "TARGET_NODE",
+      "difficulty_id": "leaf",
+      "method_id": "contradiction",
+      "research_goal": "Test the target.",
+      "rationale": "No route identifier was given."
+    }]
+  }
+}
+```""")
+
+    assert parsed is None
+
+
+def test_deferred_directions_are_retained_and_bounded():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_strategy": "Attack the leaf by the exact-variance contrapositive.",
+  "next_step": {
+    "kind": "TARGET_NODE",
+    "difficulty_id": "leaf",
+    "method_id": "contradiction",
+    "route_label": "exact-variance",
+    "brief": "Exhibit an interval whose exact variance exceeds one."
+  },
+  "considered_but_deferred": [
+    {"direction": "Full-class sharp John-Nirenberg exponential bound", "reason": "Equivalent difficulty to the obstacle; revisit once a partial certificate exists."},
+    {"direction": "", "reason": "dropped because it names no direction"},
+    {"direction": "names no reason", "reason": ""}
+  ]
+}
+```""")
+    assert parsed is not None
+    deferred = parsed["considered_but_deferred"]
+    assert len(deferred) == 1
+    assert "John-Nirenberg" in deferred[0]["direction"]
+    assert "Equivalent difficulty" in deferred[0]["reason"]

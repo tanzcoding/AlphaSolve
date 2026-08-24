@@ -225,6 +225,14 @@ def test_reviewer_projection_precomputes_attempt_statistics(tmp_path):
     # 最近两次 contradiction 均无 verified 产出 → 连续无进展为 2。
     assert progress["consecutive_no_progress"] == 2
     assert progress["last_verified_at"] == "2026-01-02T00:00:00Z"
+    assert progress["last_delivered_at"] == "2026-01-02T00:00:00Z"
+    assert progress["method_outcome_breakdown"]["direct_proof"] == {
+        "attempts": 2,
+        "verified_yields": 1,
+        "delivered_yields": 1,
+        "off_target_verified": 0,
+        "barren": 1,
+    }
     assert "construction" in progress["untried_methods"]
     assert "direct_proof" not in progress["untried_methods"]
 
@@ -257,3 +265,51 @@ def test_terminal_node_is_excluded_from_underexplored_pairs(tmp_path):
     projection = dag.reviewer_graph_projection()
 
     assert [item["difficulty_id"] for item in projection["underexplored_pairs"]] == []
+
+
+def test_off_target_verified_output_is_not_a_delivered_route_yield(tmp_path):
+    from alphasolve.solver.difficulty_dag import DifficultyDagStore
+
+    workspace = tmp_path / "workspace"
+    (workspace / "curation_records").mkdir(parents=True)
+    checkpoint = workspace / "progress_audits" / "checkpoint-0001"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "decision.json").write_text(
+        json.dumps({"checkpoint_id": "checkpoint-0001", "status": "completed"}), encoding="utf-8"
+    )
+    verified = workspace / "verified_propositions" / "side-result.md"
+    verified.parent.mkdir(parents=True)
+    verified.write_text("# Side result\n", encoding="utf-8")
+    (workspace / "progress_audit_outcomes.jsonl").write_text(json.dumps({
+        "sequence": 1,
+        "recorded_at": "2026-01-01T00:00:00Z",
+        "worker_id": "worker-side",
+        "difficulty_id": "leaf",
+        "method_id": "direct_proof",
+        "route_label": "main-route",
+        "status": "verified",
+        "delivery": "off_target",
+        "verified_file": str(verified),
+    }) + "\n", encoding="utf-8")
+
+    dag = DifficultyDagStore(workspace)
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[{
+            "difficulty_id": "leaf",
+            "statement": "Prove the assigned target.",
+            "source_handoff_ids": ["handoff-side"],
+        }],
+    )
+
+    node = next(item for item in dag.reviewer_graph_projection()["nodes"] if item["difficulty_id"] == "leaf")
+    progress = node["progress"]
+    assert progress["consecutive_no_progress"] == 1
+    assert progress["last_delivered_at"] == ""
+    assert progress["method_outcome_breakdown"]["direct_proof"] == {
+        "attempts": 1,
+        "verified_yields": 1,
+        "delivered_yields": 0,
+        "off_target_verified": 1,
+        "barren": 0,
+    }

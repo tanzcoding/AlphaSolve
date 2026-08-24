@@ -75,7 +75,7 @@ def test_orchestrator_allows_repeated_research_plans_when_new_evidence_requires_
             calls.append(description)
             return (
                 "### Research Strategy JSON\n```json\n"
-                '{"research_strategy":"Try one bounded bridge.","next_step":{"kind":"NEW_DIRECTION","difficulty_id":"","method_id":"direct_proof","brief":"Prove the bridge."},"graph_observations":[]}\n'
+                '{"research_plan":{"objective":"Test the bridge direction.","strategy":"Keep one bridge route live.","tracks":[{"track_id":"bounded-bridge","priority":"primary","kind":"NEW_DIRECTION","difficulty_id":"","method_id":"direct_proof","route_label":"bounded-bridge","research_goal":"Determine whether the bridge route can close the target.","rationale":"It is the only currently supported direction.","avoid":"Do not repeat refuted routes."}]},"graph_observations":[]}\n'
                 "```"
             )
 
@@ -96,6 +96,53 @@ def test_orchestrator_allows_repeated_research_plans_when_new_evidence_requires_
     assert not first.is_error
     assert not second.is_error
     assert len(calls) == 2
+
+
+def test_reviewer_projection_keeps_realtime_task_audit_and_route_attribution():
+    orchestrator = object.__new__(Orchestrator)
+
+    class Manager:
+        completed_evidence = [{
+            "worker_id": "worker-a",
+            "status": "verified",
+            "difficulty_id": "leaf",
+            "method_id": "direct_proof",
+            "route_label": "exact-variance",
+            "reviewer_step_kind": "TARGET_NODE",
+            "summary": "Proved an auxiliary estimate.",
+            "verified_file": "verified_propositions/auxiliary.md",
+            "task_audit": {
+                "delivery": "off_target",
+                "scope_drift": "The sharp bound was weakened.",
+                "residual_obligation": "Prove the sharp bound.",
+                "rejection_locus": "",
+                "salvageable_content": "The auxiliary estimate.",
+                "retry_assessment": "Bridge the auxiliary estimate to the sharp case.",
+            },
+        }]
+        results = []
+
+    projection = orchestrator._planning_worker_projection(Manager())
+
+    assert projection == [{
+        "worker_id": "worker-a",
+        "status": "verified",
+        "assigned_difficulty_id": "leaf",
+        "method_id": "direct_proof",
+        "route_label": "exact-variance",
+        "reviewer_step_kind": "TARGET_NODE",
+        "failure_kind": "",
+        "delivery": "off_target",
+        "scope_drift": "The sharp bound was weakened.",
+        "residual_obligation": "Prove the sharp bound.",
+        "rejection_locus": "",
+        "salvageable_content": "The auxiliary estimate.",
+        "retry_assessment": "Bridge the auxiliary estimate to the sharp case.",
+        "pinned_target": "",
+        "verified_file": "verified_propositions/auxiliary.md",
+        "summary": "Proved an auxiliary estimate.",
+        "difficulty_handoff": None,
+    }]
 
 
 def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestration(tmp_path):
