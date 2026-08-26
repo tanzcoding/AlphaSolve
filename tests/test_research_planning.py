@@ -120,6 +120,8 @@ def test_reviewer_prompt_does_not_require_a_step_smaller_than_the_obstacle():
     # An unciteable literature result is usable evidence about where a route leads.
     assert "literature" in prompt
     assert "considered_but_deferred" in prompt
+    assert "portfolio retrospective" in prompt
+    assert "all plan/track executions" in prompt
 
 
 def test_strategy_survives_any_heading_depth():
@@ -229,6 +231,31 @@ def test_research_plan_rejects_track_without_route_identity():
       "method_id": "contradiction",
       "research_goal": "Test the target.",
       "rationale": "No route identifier was given."
+    }]
+  }
+}
+```""")
+
+    assert parsed is None
+
+
+def test_research_plan_rejects_new_direction_bound_to_a_canonical_node():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Test an independent route.",
+    "strategy": "A graph-external challenger must not silently reuse the old node.",
+    "tracks": [{
+      "track_id": "mislabelled-new-route",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "difficulty_id": "old-leaf",
+      "method_id": "construction",
+      "route_label": "new-name-old-node",
+      "research_goal": "Test an independent construction.",
+      "rationale": "It is allegedly independent.",
+      "avoid": "Avoid the old proof."
     }]
   }
 }

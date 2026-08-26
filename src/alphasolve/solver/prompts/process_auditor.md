@@ -8,6 +8,9 @@ A separate per-worker task auditor already judged whether each individual dispat
 - Summaries, reviews, difficulty declarations, and knowledge are process evidence, not proof.
 - A correct local result is `direct_advance` only when its verified statement materially closes, narrows, or makes the terminal gap tractable.
 - Repeated weak outputs, verification failures, or avoidance of an obligation indicate stagnation, not mathematical refutation.
+- Read the runtime-generated `Global Research Plan Execution History` in the evidence snapshot. It covers all persisted plans, tracks, settled outcomes, verified proposition paths, task audits, and local difficulty references; use it to compare intended routes with actual execution, not merely the most recent plan.
+- A verified proposition path is the stable evidence reference. Cite `verified_propositions/...` paths when classifying progress; worker IDs, plan IDs, task audits, and local difficulties explain provenance but do not establish mathematics.
+- Do not decide the next proof mechanism. State the evidence-backed remaining mathematical obligation and the repeated route/blocker pattern for the research reviewer to use.
 
 ## Required output
 Use these sections in order:

@@ -474,6 +474,11 @@ class ProgressAuditQueue:
             # 证明体裁），后者区分图外探索与节点内尝试。两者都由调度侧提供。
             "route_label": str(payload.get("route_label") or ""),
             "reviewer_step_kind": str(payload.get("reviewer_step_kind") or ""),
+            # 计划归因把 reviewer 的战略选择与 worker 实际产出连起来；它是审计事实，
+            # 不赋予 process auditor 或 curator 任何调度/图写入权。
+            "research_plan_id": str(payload.get("research_plan_id") or ""),
+            "research_track_id": str(payload.get("research_track_id") or ""),
+            "track_priority": str(payload.get("track_priority") or ""),
             "pinned_target": str(payload.get("pinned_target") or "")[:2000],
             "worker_hint": str(payload.get("worker_hint") or "")[:2000],
             "orchestrator_session_id": payload.get("orchestrator_session_id"),
@@ -541,11 +546,156 @@ def _render_evidence(
         "## Current Curated Difficulty Frontier",
         _read_text(layout.workspace_dir / "curation_records" / "difficulty_dag.json", limit=12000) or "(difficulty DAG unavailable)",
         "",
+        "## Global Research Plan Execution History",
+        "This runtime-generated section joins every persisted research plan to immutable settled outcomes. "
+        "It is execution evidence: the process auditor judges progress, while the research reviewer chooses the next route.",
+        *_render_research_plan_execution_history(layout.workspace_dir, visible),
+        "",
         "## Newly Settled Outcomes",
     ]
     lines.extend(_render_outcomes(delta, layout.workspace_dir))
     lines.extend(["", "## Cumulative Outcome Ledger (Index)", *_render_ledger_summary(visible, layout.workspace_dir)])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def research_plan_execution_summary(
+    workspace_dir: Path,
+    outcomes: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Return a complete, evidence-only view of every persisted research plan.
+
+    Plans name intended tracks; immutable outcomes name actual worker results. Joining them
+    here gives the process auditor and later reviewer a project-wide strategy history
+    without treating plan prose as mathematical proof.
+    """
+    if outcomes is None:
+        outcomes = _read_jsonl(workspace_dir / "progress_audit_outcomes.jsonl")
+    plans_dir = workspace_dir / "curation_records" / "research_plans"
+    try:
+        # 计划历史是 reviewer 的长期策略记忆，不能只保留最近窗口；原始 outcome
+        # 已在不可变 ledger 中按路径可核查，这里保留所有 plan 的压缩执行事实。
+        plan_paths = sorted(
+            (path for path in plans_dir.glob("plan-*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+        )
+    except OSError:
+        plan_paths = []
+    plans: dict[str, dict[str, Any]] = {}
+    for path in plan_paths:
+        value = _read_json_object(path)
+        plan_id = str((value or {}).get("plan_id") or path.stem).strip()
+        if not plan_id:
+            continue
+        plans[plan_id] = {
+            "plan_id": plan_id,
+            "plan_path": _relative_to_workspace(path, workspace_dir),
+            "execution_status": str((value or {}).get("execution_status") or "planned"),
+            "selected_track_ids": [str(item) for item in (value or {}).get("selected_track_ids") or [] if str(item).strip()],
+            "spawned_worker_ids": [str(item) for item in (value or {}).get("spawned_worker_ids") or [] if str(item).strip()],
+            "pending_track_ids": [str(item) for item in (value or {}).get("pending_track_ids") or [] if str(item).strip()],
+            "hold_reason": str((value or {}).get("hold_reason") or "")[:2000],
+            "objective": "",
+            "strategy": "",
+            "tracks": {},
+        }
+        recommendation = (value or {}).get("recommendation")
+        research_plan = recommendation.get("research_plan") if isinstance(recommendation, dict) else None
+        if not isinstance(research_plan, dict):
+            continue
+        plans[plan_id]["objective"] = str(research_plan.get("objective") or "")[:2000]
+        plans[plan_id]["strategy"] = str(research_plan.get("strategy") or "")[:3000]
+        for track in research_plan.get("tracks") or []:
+            if not isinstance(track, dict):
+                continue
+            track_id = str(track.get("track_id") or "").strip()
+            if not track_id:
+                continue
+            plans[plan_id]["tracks"][track_id] = {
+                "track_id": track_id,
+                "priority": str(track.get("priority") or ""),
+                "kind": str(track.get("kind") or ""),
+                "route_label": str(track.get("route_label") or ""),
+                "research_goal": str(track.get("research_goal") or "")[:2000],
+                "avoid": str(track.get("avoid") or "")[:2000],
+                "outcomes": [],
+            }
+    for item in outcomes:
+        plan_id = str(item.get("research_plan_id") or "").strip()
+        track_id = str(item.get("research_track_id") or "").strip()
+        if not plan_id or plan_id not in plans:
+            continue
+        track = plans[plan_id]["tracks"].get(track_id)
+        if track is None:
+            track = plans[plan_id]["tracks"].setdefault(track_id or "unmapped", {
+                "track_id": track_id or "unmapped",
+                "priority": str(item.get("track_priority") or ""),
+                "kind": str(item.get("reviewer_step_kind") or ""),
+                "route_label": str(item.get("route_label") or ""),
+                "research_goal": str(item.get("pinned_target") or "")[:2000],
+                "avoid": "",
+                "outcomes": [],
+            })
+        track["outcomes"].append({
+            "sequence": int(item.get("sequence") or 0),
+            "worker_id": str(item.get("worker_id") or ""),
+            "status": str(item.get("status") or "unknown"),
+            "delivery": str(item.get("delivery") or "unknown"),
+            "failure_kind": str(item.get("failure_kind") or ""),
+            "residual_obligation": str(item.get("residual_obligation") or "")[:1200],
+            "verified_proposition_ref": _display_path(str(item.get("verified_file") or ""), workspace_dir),
+            "task_audit_ref": f"task_audits/{str(item.get('worker_id') or '')}.json" if str(item.get("worker_id") or "") else "",
+            "local_difficulty_ref": _display_path(str(item.get("difficulty_handoff_file") or ""), workspace_dir),
+        })
+    rendered: list[dict[str, Any]] = []
+    for plan in plans.values():
+        tracks = []
+        for track in plan["tracks"].values():
+            track["outcomes"].sort(key=lambda item: item["sequence"])
+            tracks.append({
+                **{key: value for key, value in track.items() if key != "outcomes"},
+                # 每条 route 的全部 settled outcome 都是下一次策略反思的事实；不要按
+                # 最近窗口丢弃早期的反例、verified bridge 或重复 blocker。
+                "outcomes": track["outcomes"],
+            })
+        rendered.append({**{key: value for key, value in plan.items() if key != "tracks"}, "tracks": tracks})
+    return rendered
+
+
+def _render_research_plan_execution_history(workspace_dir: Path, outcomes: list[dict[str, Any]]) -> list[str]:
+    plans = research_plan_execution_summary(workspace_dir, outcomes)
+    if not plans:
+        return ["- No persisted research plans are available yet."]
+    lines: list[str] = []
+    for plan in plans:
+        lines.extend([
+            f"### Plan `{plan['plan_id']}`",
+            f"- Plan record: `{plan['plan_path']}`",
+            f"- Execution status: `{plan['execution_status']}`; selected tracks: {', '.join(plan['selected_track_ids']) or 'none'}; spawned workers: {', '.join(plan['spawned_worker_ids']) or 'none'}",
+            f"- Pending tracks: {', '.join(plan['pending_track_ids']) or 'none'}",
+            f"- HOLD reason: {plan['hold_reason'] or 'none'}",
+            f"- Objective: {plan['objective'] or 'not recorded'}",
+            f"- Strategy: {plan['strategy'] or 'not recorded'}",
+        ])
+        for track in plan["tracks"]:
+            lines.extend([
+                f"#### Track `{track['track_id']}` ({track['priority'] or 'unspecified'})",
+                f"- Route: `{track['route_label'] or 'unspecified'}`; kind: `{track['kind'] or 'unspecified'}`",
+                f"- Research goal: {track['research_goal'] or 'not recorded'}",
+                f"- Avoid: {track['avoid'] or 'none recorded'}",
+            ])
+            if not track["outcomes"]:
+                lines.append("- Settled outcomes: none yet; do not treat this route as failed.")
+                continue
+            for outcome in track["outcomes"]:
+                refs = [ref for ref in (outcome["verified_proposition_ref"], outcome["task_audit_ref"], outcome["local_difficulty_ref"]) if ref]
+                lines.append(
+                    f"- Outcome #{outcome['sequence']} worker `{outcome['worker_id']}`: status=`{outcome['status']}`, delivery=`{outcome['delivery']}`, "
+                    f"failure=`{outcome['failure_kind'] or '-'}`; refs: {', '.join(f'`{ref}`' for ref in refs) or 'none'}"
+                )
+                if outcome["residual_obligation"]:
+                    lines.append(f"  - Residual obligation: {outcome['residual_obligation']}")
+        lines.append("")
+    return lines
 
 
 def _render_outcomes(
@@ -560,6 +710,9 @@ def _render_outcomes(
             f"### Outcome {item.get('sequence', '?')}: {item.get('status', 'unknown')}",
             f"- Difficulty / method: `{item.get('difficulty_id') or '(root candidate)'} / {item.get('method_id') or '-'}`",
             f"- Orchestrator session: `{item.get('orchestrator_session_id') or '-'}`",
+            f"- Research plan / track: `{item.get('research_plan_id') or '-'}` / `{item.get('research_track_id') or '-'}` ({item.get('track_priority') or 'unspecified'})",
+            f"- Route / step kind: `{item.get('route_label') or '-'}` / `{item.get('reviewer_step_kind') or '-'}`",
+            f"- Delivery: `{item.get('delivery') or 'unknown'}`; task audit: `task_audits/{item.get('worker_id') or '-'}.json`",
             f"- Failure kind: `{item.get('failure_kind') or '-'}`",
             f"- Solves original problem: `{bool(item.get('solved_problem'))}`",
         ])

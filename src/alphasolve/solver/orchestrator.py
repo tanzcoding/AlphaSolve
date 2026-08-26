@@ -28,7 +28,7 @@ from .difficulty_portfolio import (
     load_recent_candidate_handoffs,
     merge_candidate_handoffs,
 )
-from .progress_audit import ProgressAuditQueue
+from .progress_audit import ProgressAuditQueue, research_plan_execution_summary
 from .solution import write_solution
 from .task_audit import TaskAuditor, summarize_task_audits
 from .client_factory import ClientFactory
@@ -277,6 +277,10 @@ class WorkerManager:
         # 与"是否图外探索"在结算时可被归档。
         route_label: str | None = None,
         reviewer_step_kind: str | None = None,
+        # research plan 归因只服务于后续 process audit / reviewer 复盘；不改变 worker 的数学任务。
+        research_plan_id: str | None = None,
+        research_track_id: str | None = None,
+        track_priority: str | None = None,
         on_spawn: Callable[[Worker], None] | None = None,
     ) -> dict[str, Any]:
         self._collect_done()
@@ -357,6 +361,9 @@ class WorkerManager:
                 "pinned_target": pinned_target,
                 "route_label": route_label or "",
                 "reviewer_step_kind": reviewer_step_kind or "",
+                "research_plan_id": research_plan_id or "",
+                "research_track_id": research_track_id or "",
+                "track_priority": track_priority or "",
                 "orchestrator_session_id": self.orchestrator_session_id,
                 "started_at": time.time(),
                 "phase": "spawned",
@@ -377,6 +384,9 @@ class WorkerManager:
             "difficulty_id": difficulty_id,
             "difficulty_statement": difficulty_statement,
             "method_id": method_id,
+            "research_plan_id": research_plan_id or "",
+            "research_track_id": research_track_id or "",
+            "track_priority": track_priority or "",
             **self._pool_status(),
         }
         return payload
@@ -588,6 +598,9 @@ class WorkerManager:
                 "pinned_target": finished_info.get("pinned_target"),
                 "route_label": str(finished_info.get("route_label") or ""),
                 "reviewer_step_kind": str(finished_info.get("reviewer_step_kind") or ""),
+                "research_plan_id": str(finished_info.get("research_plan_id") or ""),
+                "research_track_id": str(finished_info.get("research_track_id") or ""),
+                "track_priority": str(finished_info.get("track_priority") or ""),
                 }
                 task_audit = self._run_task_audit(payload)
                 if task_audit is not None:
@@ -627,8 +640,9 @@ class WorkerManager:
             payload["orchestrator_session_id"] = (
                 finished_info.get("orchestrator_session_id") or self.orchestrator_session_id
             )
-            # 同理，"这次走的是哪条数学路线"和"是否来自图外探索"只有调度侧知道。
-            for key in ("route_label", "reviewer_step_kind"):
+            # 同理，路线、图外探索与 research plan/track 都是调度侧归因；它们必须进入
+            # immutable outcome，供 process auditor 比较“原计划”与“实际执行结果”。
+            for key in ("route_label", "reviewer_step_kind", "research_plan_id", "research_track_id", "track_priority"):
                 value = str(finished_info.get(key) or "").strip()
                 if value:
                     payload[key] = value
@@ -1253,9 +1267,8 @@ class Orchestrator:
                     "plan_id": {"type": "string"},
                     "tasks": {
                         "type": "array",
-                        "minItems": 1,
                         "maxItems": 4,
-                        "description": "Bounded executions selected from this plan; each track may appear once.",
+                        "description": "Bounded executions selected from this plan; each track may appear once. Use an empty list only to acknowledge a reviewer HOLD plan.",
                         "items": {
                             "type": "object",
                             "properties": {
@@ -1289,6 +1302,12 @@ class Orchestrator:
         worker_results = self._planning_worker_projection(manager)
         reviewer_frontier = self._reviewer_plan_gateway.reviewer_frontier()
         audit_status = self._progress_audit_queue.status_payload() if self._progress_audit_queue is not None else {}
+        # 全局计划执行史是事实投影：它将 plan/track 与 immutable outcomes、verified
+        # proposition、task audit、local difficulty 引用串起来，策略取舍仍完全由 reviewer 做。
+        try:
+            audit_status["research_plan_execution_history"] = research_plan_execution_summary(self.layout.workspace_dir)
+        except OSError:
+            audit_status["research_plan_execution_history"] = []
         try:
             report = service.call(
                 "research_reviewer",
@@ -1321,15 +1340,30 @@ class Orchestrator:
         }
         self._research_plans[plan_id] = plan
         self._research_plan_created = True
-        plan_dir = self.layout.workspace_dir / "curation_records" / "research_plans"
-        plan_dir.mkdir(parents=True, exist_ok=True)
-        (plan_dir / f"{plan_id}.json").write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self._persist_research_plan(plan)
         return ToolResult(json.dumps({
             "plan_id": plan_id,
             "frontier_revision": plan["frontier_revision"],
             "recommendation": recommendation,
             "reviewer_report": report[-4000:],
         }, ensure_ascii=False))
+
+    def _persist_research_plan(self, plan: dict[str, Any]) -> None:
+        """Persist plan creation and execution facts for later independent process audits."""
+        layout = getattr(self, "layout", None)
+        plan_id = str(plan.get("plan_id") or "").strip()
+        if layout is None or not plan_id:
+            return
+        try:
+            directory = layout.workspace_dir / "curation_records" / "research_plans"
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / f"{plan_id}.json"
+            temporary = path.with_suffix(".json.tmp")
+            temporary.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(path)
+        except OSError:
+            # Plan persistence is audit evidence; dispatch must remain available if the disk is transiently unavailable.
+            return
 
     def _write_unparsed_reviewer_report(self, report: str) -> str:
         """Persist a reviewer report whose strategy JSON could not be parsed."""
@@ -1353,7 +1387,7 @@ class Orchestrator:
         plan = self._research_plans.get(plan_id)
         if not plan:
             return ToolResult(json.dumps({"error": "unknown research plan"}), is_error=True)
-        if plan.get("execution_status") in {"claimed", "executed"}:
+        if plan.get("execution_status") in {"claimed", "executed", "held"}:
             return ToolResult(json.dumps({
                 "error": "research plan has already been executed",
                 "plan_id": plan_id,
@@ -1380,17 +1414,33 @@ class Orchestrator:
             if isinstance(track, dict)
         }
         task_specs = args.get("tasks")
-        if not isinstance(task_specs, list) or not task_specs:
-            return ToolResult(json.dumps({"error": "at least one bounded plan task is required"}), is_error=True)
+        if not isinstance(task_specs, list):
+            return ToolResult(json.dumps({"error": "tasks must be an array"}), is_error=True)
         if not tracks:
+            if task_specs:
+                return ToolResult(json.dumps({"error": "a HOLD plan accepts no worker tasks"}), is_error=True)
+            plan["execution_status"] = "held"
+            plan["held_at"] = time.time()
+            plan["hold_reason"] = research_plan.get("hold_reason") or ""
+            plan["selected_track_ids"] = []
+            plan["spawned_worker_ids"] = []
+            plan["spawned_tracks"] = []
+            self._persist_research_plan(plan)
             return ToolResult(json.dumps({
                 "plan_id": plan_id,
                 "executed": True,
                 "reason": "research_plan_hold",
-                "hold_reason": research_plan.get("hold_reason") or "",
+                "hold_reason": plan["hold_reason"],
                 "spawned": [],
             }, ensure_ascii=False))
+        if not task_specs:
+            return ToolResult(json.dumps({"error": "at least one bounded plan task is required unless the plan is HOLD"}), is_error=True)
 
+        previously_spawned = {
+            str(item.get("track_id") or "")
+            for item in plan.get("spawned_tracks") or []
+            if isinstance(item, dict) and item.get("spawned")
+        }
         selected: list[tuple[dict[str, str], dict[str, str]]] = []
         seen_track_ids: set[str] = set()
         for raw_task in task_specs[:4]:
@@ -1404,6 +1454,8 @@ class Orchestrator:
                 return ToolResult(json.dumps({"error": "task references a track not present in the research plan", "track_id": track_id}), is_error=True)
             if track_id in seen_track_ids:
                 return ToolResult(json.dumps({"error": "a research track may be dispatched once per plan", "track_id": track_id}), is_error=True)
+            if track_id in previously_spawned:
+                return ToolResult(json.dumps({"error": "research track was already spawned by this plan", "track_id": track_id}), is_error=True)
             if not task or not rubric:
                 return ToolResult(json.dumps({"error": "each selected track needs a bounded task and acceptance rubric", "track_id": track_id}), is_error=True)
             seen_track_ids.add(track_id)
@@ -1425,7 +1477,11 @@ class Orchestrator:
         # returned as evidence for a subsequent fresh reviewer plan.
         plan["execution_status"] = "claimed"
         plan["claimed_at"] = time.time()
-        plan["selected_track_ids"] = [track["track_id"] for track, _ in selected]
+        plan["selected_track_ids"] = list(dict.fromkeys(
+            [str(item) for item in plan.get("selected_track_ids") or [] if str(item).strip()]
+            + [track["track_id"] for track, _ in selected]
+        ))
+        self._persist_research_plan(plan)
         spawned: list[dict[str, Any]] = []
         for track, task in selected:
             if not manager.has_available_worker_slot():
@@ -1445,6 +1501,9 @@ class Orchestrator:
                     "rubric": task["rubric"],
                     "route_label": track["route_label"],
                     "reviewer_step_kind": track["kind"],
+                    "research_plan_id": plan_id,
+                    "research_track_id": track["track_id"],
+                    "track_priority": track["priority"],
                 },
             )
             try:
@@ -1456,13 +1515,30 @@ class Orchestrator:
             spawned.append(payload)
 
         worker_ids = [str(item.get("worker_id")) for item in spawned if item.get("spawned") and item.get("worker_id")]
-        plan["execution_status"] = "executed"
+        prior_workers = [str(item) for item in plan.get("spawned_worker_ids") or [] if str(item).strip()]
+        prior_tracks = [item for item in plan.get("spawned_tracks") or [] if isinstance(item, dict)]
+        all_spawned_tracks = [*prior_tracks, *spawned]
+        spawned_track_ids = {
+            str(item.get("track_id") or "")
+            for item in all_spawned_tracks
+            if item.get("spawned") and str(item.get("track_id") or "")
+        }
+        pending_track_ids = [
+            track_id for track_id in plan["selected_track_ids"]
+            if track_id not in spawned_track_ids
+        ]
+        plan["execution_status"] = "partially_executed" if pending_track_ids else "executed"
         plan["executed_at"] = time.time()
-        plan["spawned_worker_ids"] = worker_ids
+        plan["spawned_worker_ids"] = list(dict.fromkeys([*prior_workers, *worker_ids]))
+        plan["spawned_tracks"] = all_spawned_tracks
+        plan["pending_track_ids"] = list(dict.fromkeys(pending_track_ids))
+        self._persist_research_plan(plan)
         self._active_research_plan = plan if worker_ids else None
         return ToolResult(json.dumps({
             "plan_id": plan_id,
             "executed": True,
+            "execution_status": plan["execution_status"],
+            "pending_track_ids": plan["pending_track_ids"],
             "research_plan": research_plan,
             "spawned": spawned,
             "spawned_worker_ids": worker_ids,
@@ -1609,6 +1685,9 @@ class Orchestrator:
             rubric=rubric,
             route_label=str(args.get("route_label") or "").strip(),
             reviewer_step_kind=str(args.get("reviewer_step_kind") or "").strip(),
+            research_plan_id=str(args.get("research_plan_id") or "").strip(),
+            research_track_id=str(args.get("research_track_id") or "").strip(),
+            track_priority=str(args.get("track_priority") or "").strip(),
             on_spawn=global_on_spawn,
         )
         if payload.get("spawned"):

@@ -822,9 +822,11 @@ class DifficultyDagStore:
             verified_refs = sorted({item["verified_proposition_ref"] for item in node_attempts if item["verified_proposition_ref"]})
             node = state["nodes"][difficulty_id]
             node["progress"] = {
+                # 不裁剪 canonical attempt history：reviewer 的长期策略反思需要完整事实。
+                # 展示层仍可只显示 recent attempts，但统计必须覆盖不可变 ledger 的全部映射记录。
                 "attempt_count": len(node_attempts),
-                "attempts": node_attempts[-80:],
-                "verified_proposition_refs": verified_refs[-80:],
+                "attempts": node_attempts,
+                "verified_proposition_refs": verified_refs,
                 "last_attempt_at": node_attempts[-1]["recorded_at"] if node_attempts else "",
             }
 

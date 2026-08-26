@@ -313,3 +313,43 @@ def test_off_target_verified_output_is_not_a_delivered_route_yield(tmp_path):
         "off_target_verified": 1,
         "barren": 0,
     }
+
+
+def test_canonical_node_keeps_full_attempt_history_for_long_term_strategy(tmp_path):
+    layout = _layout(tmp_path)
+    outcomes = [
+        {
+            "sequence": index,
+            "recorded_at": f"2026-01-{(index % 28) + 1:02d}T00:00:00Z",
+            "worker_id": f"worker-{index}",
+            "difficulty_id": "long-lived",
+            "method_id": "direct_proof",
+            "route_label": "shared-route",
+            "status": "rejected",
+            "failure_kind": "verification_rejected",
+        }
+        for index in range(1, 82)
+    ]
+    layout.progress_audit_outcomes_path.write_text(
+        "\n".join(json.dumps(item) for item in outcomes) + "\n",
+        encoding="utf-8",
+    )
+    dag = DifficultyDagStore(layout.workspace_dir)
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[{
+            "difficulty_id": "long-lived",
+            "statement": "Prove the long-lived target.",
+            "source_handoff_ids": ["handoff-long-lived"],
+        }],
+    )
+
+    stored = dag.load()["nodes"]["long-lived"]["progress"]
+    projection = next(
+        item for item in dag.reviewer_graph_projection()["nodes"]
+        if item["difficulty_id"] == "long-lived"
+    )
+
+    assert stored["attempt_count"] == 81
+    assert len(stored["attempts"]) == 81
+    assert projection["progress"]["method_attempt_counts"]["direct_proof"] == 81

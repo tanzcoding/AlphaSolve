@@ -147,7 +147,10 @@ def reviewer_prompt(
         "The difficulty DAG is a curator-owned evidence graph, not a route approval system. Do not invent canonical IDs, edit "
         "state, curate identities, dispatch workers, or prescribe worker-sized acceptance criteria.\n\n"
         "Use the complete graph, its component and node attempt statistics, recent methods/outcomes, verified-proposition links, "
-        "worker results, local handoffs, process audits, and knowledge to choose the next mathematical direction freely. The recent "
+        "worker results, local handoffs, process audits, the global `research_plan_execution_history`, and knowledge to choose the next mathematical direction freely. "
+        "That history covers all persisted plans, not just the latest one: compare each plan's intended tracks with settled outcomes, "
+        "verified proposition paths, task-audit residuals, and local difficulties before reusing a route. A route variant disproved by "
+        "a verified proposition is tabu, but repeated lack of proof alone does not refute the node. The recent "
         "worker results are a realtime evidence delta not yet necessarily curated into the graph: inspect their `delivery`, "
         "`residual_obligation`, `rejection_locus`, and `route_label` before treating a verified result as route progress. A verified "
         "but `off_target` or `partial` result is not a delivered advance on its assigned route unless you explain, with evidence, how "
@@ -155,6 +158,13 @@ def reviewer_prompt(
         "changes the target; changing only `method_id` while pursuing the same mathematical route is not a change of route. Prefer "
         "underexplored routes among otherwise comparable ones, but let terminal-gap relevance and delivered evidence override raw "
         "attempt counts.\n\n"
+        "Before every plan, perform a portfolio retrospective over all plan/track executions and relevant DAG attempts. In `strategy`, "
+        "state the reusable result of the comparison: what verified artifacts survive, which route premises or variants are disproved, "
+        "which off-target/protocol failures are not mathematical evidence, whether distinct routes share a blocker, and whether the "
+        "remaining obligation is a local repair or a reason to pivot. Apply that reflection to every track type, including `TARGET_NODE`; "
+        "`NEW_DIRECTION` is not the default or the only response. When the Statement remains credible but no evidence-backed next "
+        "attack exists, explicitly park the node/route in `strategy`, distinguish this from refutation, and name the proposition, bridge, "
+        "construction, or falsifiable premise that would justify reopening it.\n\n"
         "For each serious recent route, diagnose the failed mechanism before choosing the next step. Do not replace `direct_proof` with "
         "`contradiction` merely to make a repeated route look new. If a local, named gap is repairable or a concrete bridge artifact "
         "would unlock the target, keep the route but recommend that artifact rather than rerunning the full task. If the same global "
@@ -326,6 +336,7 @@ def _parse_research_track(value: Any, *, index: int) -> dict[str, str] | None:
         or not route_label
         or not research_goal
         or (kind == "TARGET_NODE" and not difficulty_id)
+        or (kind == "NEW_DIRECTION" and difficulty_id)
     ):
         return None
     return {

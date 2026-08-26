@@ -99,6 +99,9 @@ def test_execute_research_plan_dispatches_multiple_orchestrator_sized_tasks():
     assert not result.is_error
     assert payload["spawned_worker_ids"] == ["worker-1", "worker-2"]
     assert [item["route_label"] for item in spawned] == ["exact-variance", "full-interval-counterexample"]
+    assert [item["research_plan_id"] for item in spawned] == ["plan-test", "plan-test"]
+    assert [item["research_track_id"] for item in spawned] == ["primary-route", "challenger-route"]
+    assert [item["track_priority"] for item in spawned] == ["primary", "challenger"]
     assert [item["pinned_target"] for item in spawned] == [
         "Use full interval variance to settle the cubic bound.",
         "Test the cubic bound by searching for an admissible witness.",
@@ -156,6 +159,65 @@ def test_busy_worker_pool_keeps_research_plan_retryable():
     assert payload["reason"] == "no_available_worker_slot"
     assert payload["executed"] is False
     assert "execution_status" not in orchestrator._research_plans["plan-test"]
+
+
+def test_execute_research_plan_persists_hold_without_fake_worker_task():
+    orchestrator, _spawned = _orchestrator()
+    plan = _plan()
+    plan["recommendation"]["research_plan"]["tracks"] = []
+    plan["recommendation"]["research_plan"]["hold_reason"] = "No route has an evidence-backed next attack."
+    orchestrator._research_plans = {"plan-test": plan}
+
+    class Manager:
+        def has_available_worker_slot(self) -> bool:
+            return True
+
+    result = orchestrator._execute_research_plan_tool(Manager(), {"plan_id": "plan-test", "tasks": []})
+    payload = json.loads(result.content)
+
+    assert not result.is_error
+    assert payload["reason"] == "research_plan_hold"
+    assert orchestrator._research_plans["plan-test"]["execution_status"] == "held"
+    assert orchestrator._research_plans["plan-test"]["hold_reason"].startswith("No route")
+
+
+def test_partially_executed_plan_keeps_unspawned_track_retryable():
+    orchestrator, spawned = _orchestrator()
+
+    class Manager:
+        def __init__(self) -> None:
+            self.active = 0
+
+        def has_available_worker_slot(self) -> bool:
+            return self.active < 1
+
+    manager = Manager()
+    first = orchestrator._execute_research_plan_tool(
+        manager,
+        {
+            "plan_id": "plan-test",
+            "tasks": [
+                {"track_id": "primary-route", "task": "Primary artifact.", "rubric": "- Primary."},
+                {"track_id": "challenger-route", "task": "Challenger artifact.", "rubric": "- Challenger."},
+            ],
+        },
+    )
+    first_payload = json.loads(first.content)
+
+    assert first_payload["execution_status"] == "partially_executed"
+    assert first_payload["pending_track_ids"] == ["challenger-route"]
+    assert orchestrator._research_plans["plan-test"]["execution_status"] == "partially_executed"
+
+    manager.active = 0
+    second = orchestrator._execute_research_plan_tool(
+        manager,
+        {"plan_id": "plan-test", "tasks": [{"track_id": "challenger-route", "task": "Challenger artifact.", "rubric": "- Challenger."}]},
+    )
+    second_payload = json.loads(second.content)
+
+    assert second_payload["execution_status"] == "executed"
+    assert second_payload["pending_track_ids"] == []
+    assert [item["research_track_id"] for item in spawned] == ["primary-route", "challenger-route"]
 
 
 def test_execute_research_plan_rejects_stale_or_reused_plan():

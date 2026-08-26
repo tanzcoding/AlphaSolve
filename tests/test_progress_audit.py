@@ -5,7 +5,9 @@ import json
 from alphasolve.solver.progress_audit import (
     ProgressAuditQueue,
     ProgressAuditTask,
+    _render_evidence,
     _write_curation_input,
+    research_plan_execution_summary,
 )
 from alphasolve.solver.project import ProjectLayout
 
@@ -32,10 +34,15 @@ def test_periodic_audit_records_immutable_worker_outcome(tmp_path):
         "status": "verified",
         "summary": "Verified a local bridge.",
         "verified_file": str(layout.verified_dir / "bridge.md"),
+        "research_plan_id": "plan-bridge",
+        "research_track_id": "bridge-track",
+        "track_priority": "primary",
     })
     record = json.loads(layout.progress_audit_outcomes_path.read_text(encoding="utf-8").splitlines()[0])
     assert record["difficulty_id"] == "leaf"
     assert record["status"] == "verified"
+    assert record["research_plan_id"] == "plan-bridge"
+    assert record["research_track_id"] == "bridge-track"
     assert queue.status_payload()["pending_checkpoints"] == ["checkpoint-0001"]
 
 
@@ -196,3 +203,93 @@ BLOCKER_STATEMENT: Prove the missing bridge lemma.
         "evidence_path": "progress_audits/checkpoint-0001/evidence.md",
         "audit_path": "progress_audits/checkpoint-0001/audit.md",
     }]
+
+
+def test_process_audit_evidence_joins_global_plan_tracks_to_proposition_refs(tmp_path):
+    layout = _layout(tmp_path)
+    plans_dir = layout.workspace_dir / "curation_records" / "research_plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    (plans_dir / "plan-route.json").write_text(json.dumps({
+        "plan_id": "plan-route",
+        "execution_status": "executed",
+        "selected_track_ids": ["primary"],
+        "spawned_worker_ids": ["worker-1"],
+        "recommendation": {
+            "research_plan": {
+                "objective": "Close the bridge.",
+                "strategy": "Use exact variance and avoid the refuted gap relaxation.",
+                "tracks": [{
+                    "track_id": "primary",
+                    "priority": "primary",
+                    "kind": "TARGET_NODE",
+                    "route_label": "exact-variance",
+                    "research_goal": "Prove the remaining bridge.",
+                    "avoid": "Do not use the gap relaxation.",
+                }],
+            },
+        },
+    }), encoding="utf-8")
+    verified = layout.verified_dir / "bridge.md"
+    verified.write_text("## Statement\nA bridge.\n", encoding="utf-8")
+    outcomes = [{
+        "sequence": 1,
+        "worker_id": "worker-1",
+        "status": "verified",
+        "delivery": "off_target",
+        "research_plan_id": "plan-route",
+        "research_track_id": "primary",
+        "track_priority": "primary",
+        "route_label": "exact-variance",
+        "verified_file": str(verified),
+        "residual_obligation": "Prove the exact local transfer.",
+        "difficulty_handoff_file": "unverified_propositions/prop-worker-1/difficulty_handoff.json",
+    }]
+
+    summary = research_plan_execution_summary(layout.workspace_dir, outcomes)
+    evidence = _render_evidence(
+        layout=layout,
+        checkpoint_id="checkpoint-0001",
+        watermark=1,
+        previous_watermark=0,
+        outcomes=outcomes,
+    )
+
+    assert summary[0]["plan_id"] == "plan-route"
+    track = summary[0]["tracks"][0]
+    assert track["outcomes"][0]["verified_proposition_ref"] == "verified_propositions/bridge.md"
+    assert "## Global Research Plan Execution History" in evidence
+    assert "Plan `plan-route`" in evidence
+    assert "`verified_propositions/bridge.md`" in evidence
+    assert "Residual obligation: Prove the exact local transfer." in evidence
+
+
+def test_global_plan_history_keeps_all_plans_and_track_outcomes(tmp_path):
+    layout = _layout(tmp_path)
+    plans_dir = layout.workspace_dir / "curation_records" / "research_plans"
+    plans_dir.mkdir(parents=True, exist_ok=True)
+    for index in range(41):
+        (plans_dir / f"plan-{index:02d}.json").write_text(json.dumps({
+            "plan_id": f"plan-{index:02d}",
+            "recommendation": {"research_plan": {
+                "objective": "Objective",
+                "strategy": "Strategy",
+                "tracks": [{"track_id": "route", "route_label": "shared-route"}],
+            }},
+        }), encoding="utf-8")
+    outcomes = [
+        {
+            "sequence": index + 1,
+            "worker_id": f"worker-{index}",
+            "research_plan_id": "plan-00",
+            "research_track_id": "route",
+            "status": "verified",
+            "verified_file": f"verified_propositions/result-{index}.md",
+        }
+        for index in range(17)
+    ]
+
+    summary = research_plan_execution_summary(layout.workspace_dir, outcomes)
+    first = next(plan for plan in summary if plan["plan_id"] == "plan-00")
+
+    assert len(summary) == 41
+    assert len(first["tracks"][0]["outcomes"]) == 17
