@@ -296,7 +296,7 @@ class ProgressAuditQueue:
         try:
             prompt = _audit_prompt(task, self.layout.workspace_dir)
             audit_text = self.audit_runner(task.evidence_path, prompt) if self.audit_runner else self._run_auditor(prompt)
-            verdict, terminal_gap, repeated_blocker, recommendation = _parse_audit(audit_text)
+            verdict, terminal_gap, repeated_blocker, _recommendation = _parse_audit(audit_text)
             if verdict is None:
                 status = "invalid_audit"
             decision = {
@@ -306,7 +306,7 @@ class ProgressAuditQueue:
                 "verdict": verdict,
                 "terminal_gap": terminal_gap,
                 "repeated_avoided_obligation": repeated_blocker,
-                "recommended_next_action": recommendation,
+                "recommended_next_action": "",
                 "evidence_path": _relative_to_workspace(task.evidence_path, self.layout.workspace_dir),
                 "audit_path": _relative_to_workspace(task.checkpoint_dir / "audit.md", self.layout.workspace_dir),
                 "created_at": _now_iso(),
@@ -479,6 +479,8 @@ class ProgressAuditQueue:
             "research_plan_id": str(payload.get("research_plan_id") or ""),
             "research_track_id": str(payload.get("research_track_id") or ""),
             "track_priority": str(payload.get("track_priority") or ""),
+            "selection_scope": str(payload.get("selection_scope") or ""),
+            "tabu_rule_ids": [str(item) for item in payload.get("tabu_rule_ids") or [] if str(item).strip()],
             "pinned_target": str(payload.get("pinned_target") or "")[:2000],
             "worker_hint": str(payload.get("worker_hint") or "")[:2000],
             "orchestrator_session_id": payload.get("orchestrator_session_id"),
@@ -614,7 +616,9 @@ def research_plan_execution_summary(
                 "track_id": track_id,
                 "priority": str(track.get("priority") or ""),
                 "kind": str(track.get("kind") or ""),
+                "selection_scope": str(track.get("selection_scope") or ""),
                 "route_label": str(track.get("route_label") or ""),
+                "tabu_rule_ids": [str(item) for item in track.get("tabu_rule_ids") or [] if str(item).strip()],
                 "research_goal": str(track.get("research_goal") or "")[:2000],
                 "avoid": str(track.get("avoid") or "")[:2000],
                 "outcomes": [],
@@ -641,6 +645,8 @@ def research_plan_execution_summary(
             "status": str(item.get("status") or "unknown"),
             "delivery": str(item.get("delivery") or "unknown"),
             "failure_kind": str(item.get("failure_kind") or ""),
+            "selection_scope": str(item.get("selection_scope") or ""),
+            "tabu_rule_ids": [str(value) for value in item.get("tabu_rule_ids") or [] if str(value).strip()],
             "residual_obligation": str(item.get("residual_obligation") or "")[:1200],
             "verified_proposition_ref": _display_path(str(item.get("verified_file") or ""), workspace_dir),
             "task_audit_ref": f"task_audits/{str(item.get('worker_id') or '')}.json" if str(item.get("worker_id") or "") else "",
@@ -924,7 +930,6 @@ def _write_curator_brief(
         "## Current Process Decision",
         f"- Verdict: `{decision.get('verdict') or 'unknown'}`",
         f"- Terminal gap: {decision.get('terminal_gap') or 'not stated'}",
-        f"- Recommended next action: {decision.get('recommended_next_action') or 'not stated'}",
         "",
         "## Repeated Avoided Obligation",
         _render_blocker_brief(decision.get("repeated_avoided_obligation")),
@@ -936,7 +941,6 @@ def _write_curator_brief(
             f"- Previous checkpoint: `{previous.get('checkpoint_id')}`",
             f"- Previous verdict: `{previous.get('verdict') or 'unknown'}`",
             f"- Previous terminal gap: {previous.get('terminal_gap') or 'not stated'}",
-            f"- Previous recommended action: {previous.get('recommended_next_action') or 'not stated'}",
             "- Compare whether the terminal gap, outcome classifications, and avoided obligations changed substantively rather than cosmetically.",
         ])
     else:
@@ -1038,13 +1042,12 @@ def _audit_prompt(task: ProgressAuditTask, workspace_dir: Path) -> str:
         "### Terminal Gap\n"
         "### Outcome Classification\n"
         "### Repeated Avoided Obligation\n"
-        "### Recommended Next Action\n"
         "### Cited Evidence\n\n"
         "Classify every new outcome as direct_advance, supporting, incidental, duplicate, or failed. "
         "A mathematically correct result is incidental unless you can cite how it closes a named terminal gap. "
         "A separate per-worker task audit already judged whether each dispatch was delivered; do not re-check acceptance "
-        "criteria here. Your question is whether the portfolio advances `problem.md`. "
-        "State one precise next target, but do not prescribe a method family.\n\n"
+        "criteria here. Your question is whether the portfolio advances `problem.md`. Report only the evidence, terminal gap, "
+        "and repeated failure mechanisms; the research reviewer chooses every next target and method family.\n\n"
         "If the repeated avoided obligation is concrete enough to give the curator a lead, append these exact candidate lines "
         "after the cited evidence (otherwise write NONE for both):\n"
         "BLOCKER_SOURCE_DIFFICULTY_ID: worker-local-source-id | NONE\n"

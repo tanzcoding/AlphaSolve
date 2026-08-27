@@ -246,3 +246,13 @@ def test_execute_research_plan_rejects_stale_or_reused_plan():
     )
     assert duplicate.is_error
     assert json.loads(duplicate.content)["error"] == "research plan has already been executed"
+
+
+def test_raw_spawn_remains_a_compatible_evidence_collection_path():
+    orchestrator, spawned = _orchestrator()
+    manager = type("Manager", (), {"active": 0})()
+    result = orchestrator._spawn_tool(manager, {"hint": "Check one bounded premise.", "rubric": "- State one checkable claim."})
+    payload = json.loads(result.content)
+
+    assert payload["spawned"] is True
+    assert spawned[0]["hint"] == "Check one bounded premise."

@@ -288,3 +288,53 @@ def test_deferred_directions_are_retained_and_bounded():
     assert len(deferred) == 1
     assert "John-Nirenberg" in deferred[0]["direction"]
     assert "Equivalent difficulty" in deferred[0]["reason"]
+
+
+def test_reviewer_plan_records_selection_level_and_hard_technique_tabu():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Leave a refuted separable certificate and reconstruct the full Bellman geometry.",
+    "strategy": "The verified split counterexample is a hard tabu for the separable candidate; use a technique-level geometric route with an explicit reopen condition.",
+    "tabu_rules": [{
+      "tabu_id": "separable-bellman",
+      "level": "hard",
+      "route_label": "separable-bellman-v-only",
+      "mechanism": "A verified realizable split contradicts the one-variable separable certificate.",
+      "applies_to": "ALL",
+      "evidence_refs": ["verified_propositions/counterexample.md"],
+      "reopen_condition": "A new candidate must change the state space or splitting premise."
+    }],
+    "tracks": [{
+      "track_id": "ma-foliation",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "selection_scope": "TECHNIQUE_EXPLORATION",
+      "difficulty_id": "",
+      "terminal_obligation": "Prove the sharp full-class cubic bound.",
+      "method_id": "direct_proof",
+      "route_label": "nonseparable-ma-foliation",
+      "tabu_rule_ids": ["separable-bellman"],
+      "reopen_condition": "Park if no candidate characteristic family survives a finite split check.",
+      "research_goal": "Construct or falsify a nonseparable developable Bellman foliation.",
+      "rationale": "It changes the state geometry rather than renaming the refuted ansatz.",
+      "avoid": "Do not use a v-only separable certificate."
+    }]
+  }
+}
+```""")
+
+    assert parsed is not None
+    plan = parsed["research_plan"]
+    assert plan["tabu_rules"][0]["level"] == "hard"
+    assert plan["tracks"][0]["selection_scope"] == "TECHNIQUE_EXPLORATION"
+    assert plan["tracks"][0]["tabu_rule_ids"] == ["separable-bellman"]
+
+
+def test_global_synthesis_requires_explicit_consolidation_contract():
+    invalid = parse_recommendation("""### Research Strategy JSON
+```json
+{"research_plan":{"objective":"Synthesize.","strategy":"Combine evidence.","tracks":[{"track_id":"bad","priority":"primary","kind":"NEW_DIRECTION","selection_scope":"GLOBAL_SYNTHESIS","difficulty_id":"","terminal_obligation":"Resolve the original problem.","method_id":"direct_proof","route_label":"global-synthesis","research_goal":"Combine the evidence.","rationale":"It is time.","avoid":"None."}]}}
+```""")
+    assert invalid is None

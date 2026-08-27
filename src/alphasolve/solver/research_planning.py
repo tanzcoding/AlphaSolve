@@ -15,6 +15,20 @@ _NEXT_STEP_KINDS = {"TARGET_NODE", "NEW_DIRECTION", "HOLD"}
 _GRAPH_OBSERVATION_KINDS = {"EDGE_SUSPECT", "NODE_SCOPE_SUSPECT", "COMPONENT_STAGNANT", "STATUS_SUSPECT", "DUPLICATE_NODE"}
 _GRAPH_EFFECTS = {"reconsider_edge", "supersede_node", "merge_candidate", "keep_independent"}
 
+# ``kind`` preserves compatibility with older persisted plans.  ``selection_scope`` is
+# the reviewer-owned policy layer: it tells the orchestrator whether this is a local
+# repair, a route pivot within one node, an across-graph portfolio move, a genuine
+# technique-level departure, or an original-problem synthesis.  Neither the curator
+# nor the orchestrator is allowed to infer this classification from outcome counts.
+_SELECTION_SCOPES = {
+    "LOCAL_REPAIR",
+    "NODE_ROUTE",
+    "GRAPH_PORTFOLIO",
+    "TECHNIQUE_EXPLORATION",
+    "GLOBAL_SYNTHESIS",
+}
+_TABU_LEVELS = {"hard", "soft", "hint"}
+
 
 class ReviewerPlanGateway:
     """Opaque runtime boundary between reviewer plans and the curator-owned DAG.
@@ -172,6 +186,16 @@ def reviewer_prompt(
         "mechanism, attacks a parent or ancestor, or is independent. If verified evidence can falsify the statement or a route's key "
         "assumption, prioritize a bounded counterexample or incompatibility check; do not call mere lack of proof a refutation. Continue "
         "to focus only when delivered evidence or a concrete repair path connects the route to the terminal gap.\n\n"
+        "You are the sole policy owner for route reflection and search-level choice. Classify every track with `selection_scope`: "
+        "LOCAL_REPAIR (same node and named bridge), NODE_ROUTE (same obligation, different mechanism), GRAPH_PORTFOLIO "
+        "(cross-node/ancestor move), TECHNIQUE_EXPLORATION (leave the current graph and change mathematical framework), or "
+        "GLOBAL_SYNTHESIS (attack problem.md by combining all evidence; method_id must be consolidation). For GRAPH_PORTFOLIO "
+        "supply target_difficulty_ids; for TECHNIQUE_EXPLORATION and GLOBAL_SYNTHESIS supply terminal_obligation. Do not let "
+        "the orchestrator, curator, task auditor, attempt counts, or an untried method make this choice for you.\n\n"
+        "Maintain `tabu_rules` in the plan as your durable mathematical route memory. A hard tabu is a route premise refuted by "
+        "verified evidence and needs evidence_refs plus a reopen_condition; a soft tabu is an exhausted mechanism with no local "
+        "repair; a hint is a reusable failure explanation that later tracks must inherit. Link each track to the tabu_rule_ids it "
+        "uses. A new method_id or new node name never escapes a tabu by itself.\n\n"
         "Your job is to choose research tracks, not worker tasks. A track may be as hard as the current obstacle or span several "
         "worker turns. For every track, state the mathematical question, the route identity, why it is live now, and the routes or "
         "mechanisms it must avoid. Do not turn the track into a worker-sized lemma, construction, or rubric: the orchestrator selects "
@@ -202,13 +226,19 @@ def reviewer_prompt(
         "      \"track_id\": \"stable short identifier unique within this plan\",\n"
         "      \"priority\": \"primary | challenger | supporting\",\n"
         "      \"kind\": \"TARGET_NODE | NEW_DIRECTION\",\n"
-        "      \"difficulty_id\": \"active canonical graph ID for TARGET_NODE, otherwise empty\",\n"
+        "      \"selection_scope\": \"LOCAL_REPAIR | NODE_ROUTE | GRAPH_PORTFOLIO | TECHNIQUE_EXPLORATION | GLOBAL_SYNTHESIS\",\n"
+        "      \"difficulty_id\": \"active canonical ID for LOCAL_REPAIR/NODE_ROUTE, otherwise empty\",\n"
+        "      \"target_difficulty_ids\": [\"required for GRAPH_PORTFOLIO\"],\n"
+        "      \"terminal_obligation\": \"required for TECHNIQUE_EXPLORATION/GLOBAL_SYNTHESIS\",\n"
         "      \"method_id\": \"direct_proof | contradiction | construction | computation | falsification | consolidation\",\n"
         "      \"route_label\": \"stable mathematical-route slug, e.g. exact-variance-contrapositive\",\n"
+        "      \"tabu_rule_ids\": [\"reviewer tabu rules applied by this track\"],\n"
+        "      \"reopen_condition\": \"what new evidence would make a parked/tabu route worth reconsidering\",\n"
         "      \"research_goal\": \"the mathematical question this track should resolve; not a worker-sized task\",\n"
         "      \"rationale\": \"why this route is live now and how it relates to the terminal gap\",\n"
         "      \"avoid\": \"known tabu routes, failed mechanisms, or conditions for changing this track\"\n"
         "    }],\n"
+        "    \"tabu_rules\": [{\"tabu_id\": \"stable slug\", \"level\": \"hard | soft | hint\", \"route_label\": \"route slug\", \"mechanism\": \"failed mathematical mechanism\", \"applies_to\": \"NODE | IN_GRAPH | OUT_OF_GRAPH | GLOBAL | ALL\", \"evidence_refs\": [\"verified evidence for hard tabu\"], \"reopen_condition\": \"required for hard tabu\"}],\n"
         "    \"hold_reason\": \"required only when tracks is empty\"\n"
         "  },\n"
         "  \"graph_observations\": [{\"kind\": \"EDGE_SUSPECT | NODE_SCOPE_SUSPECT | COMPONENT_STAGNANT | STATUS_SUSPECT | DUPLICATE_NODE\", \"target_ids\": [\"canonical IDs\"], \"summary\": \"bounded graph concern\", \"evidence_refs\": [\"verified proposition, audit, or handoff path\"], \"recommended_graph_effect\": \"reconsider_edge | supersede_node | merge_candidate | keep_independent\"}],\n"
@@ -296,7 +326,7 @@ def _parse_research_plan(value: dict[str, Any]) -> dict[str, Any] | None:
 
     if not objective or not strategy or not isinstance(raw_tracks, list) or len(raw_tracks) > 4:
         return None
-    tracks: list[dict[str, str]] = []
+    tracks: list[dict[str, Any]] = []
     track_ids: set[str] = set()
     for index, raw_track in enumerate(raw_tracks):
         track = _parse_research_track(raw_track, index=index)
@@ -304,17 +334,22 @@ def _parse_research_plan(value: dict[str, Any]) -> dict[str, Any] | None:
             return None
         track_ids.add(track["track_id"])
         tracks.append(track)
+    tabu_rules = _parse_tabu_rules(raw_plan.get("tabu_rules") if isinstance(raw_plan, dict) else None)
+    tabu_ids = {rule["tabu_id"] for rule in tabu_rules}
+    if any(not set(track["tabu_rule_ids"]).issubset(tabu_ids) for track in tracks):
+        return None
     if not tracks and not hold_reason:
         return None
     return {
         "objective": objective,
         "strategy": strategy,
         "tracks": tracks,
+        "tabu_rules": tabu_rules,
         "hold_reason": hold_reason,
     }
 
 
-def _parse_research_track(value: Any, *, index: int) -> dict[str, str] | None:
+def _parse_research_track(value: Any, *, index: int) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
     kind = _clean_text(value.get("kind"), limit=80).upper()
@@ -323,33 +358,146 @@ def _parse_research_track(value: Any, *, index: int) -> dict[str, str] | None:
         return None
     difficulty_id = _clean_text(value.get("difficulty_id"), limit=80)
     route_label = _slug(value.get("route_label"), limit=80)
-    # ``brief`` is accepted only for legacy history. New plans use ``research_goal`` to
-    # make clear that the reviewer is naming a track, not a worker-sized assignment.
     research_goal = _clean_text(value.get("research_goal") or value.get("brief"), limit=4000)
     rationale = _clean_text(value.get("rationale") or value.get("why_now") or "", limit=3000)
     avoid = _clean_text(value.get("avoid"), limit=3000)
     priority = _clean_text(value.get("priority") or ("primary" if index == 0 else "challenger"), limit=40).lower()
     track_id = _slug(value.get("track_id") or route_label, limit=80)
+    # Old persisted plans had only node-targeted and graph-external labels. Keep them
+    # readable while requiring new reviewer plans to expose their actual decision level.
+    default_scope = "NODE_ROUTE" if kind == "TARGET_NODE" else "TECHNIQUE_EXPLORATION"
+    scope_explicit = bool(_clean_text(value.get("selection_scope"), limit=80))
+    selection_scope = _clean_text(value.get("selection_scope") or default_scope, limit=80).upper()
+    target_difficulty_ids = [
+        _clean_text(item, limit=80)
+        for item in value.get("target_difficulty_ids") or []
+        if _clean_text(item, limit=80)
+    ] if isinstance(value.get("target_difficulty_ids"), list) else []
+    terminal_obligation = _clean_text(value.get("terminal_obligation"), limit=3000)
+    tabu_rule_ids = [
+        _slug(item, limit=80) for item in value.get("tabu_rule_ids") or []
+        if _slug(item, limit=80)
+    ] if isinstance(value.get("tabu_rule_ids"), list) else []
+    reopen_condition = _clean_text(value.get("reopen_condition"), limit=2000)
     if (
         priority not in {"primary", "challenger", "supporting"}
+        or selection_scope not in _SELECTION_SCOPES
         or not track_id
         or not route_label
         or not research_goal
         or (kind == "TARGET_NODE" and not difficulty_id)
         or (kind == "NEW_DIRECTION" and difficulty_id)
+        or (selection_scope in {"LOCAL_REPAIR", "NODE_ROUTE"} and not difficulty_id)
+        or (selection_scope in {"GRAPH_PORTFOLIO", "TECHNIQUE_EXPLORATION", "GLOBAL_SYNTHESIS"} and difficulty_id)
+        or (scope_explicit and selection_scope == "GRAPH_PORTFOLIO" and not target_difficulty_ids)
+        or (scope_explicit and selection_scope in {"TECHNIQUE_EXPLORATION", "GLOBAL_SYNTHESIS"} and not terminal_obligation)
+        or (scope_explicit and selection_scope == "GLOBAL_SYNTHESIS" and method_id != "consolidation")
     ):
         return None
     return {
         "track_id": track_id,
         "priority": priority,
         "kind": kind,
+        "selection_scope": selection_scope,
         "difficulty_id": difficulty_id,
+        "target_difficulty_ids": target_difficulty_ids,
+        "terminal_obligation": terminal_obligation,
         "method_id": method_id,
         "route_label": route_label,
+        "tabu_rule_ids": list(dict.fromkeys(tabu_rule_ids)),
+        "reopen_condition": reopen_condition,
         "research_goal": research_goal,
         "rationale": rationale,
         "avoid": avoid,
     }
+
+
+def _parse_tabu_rules(value: Any) -> list[dict[str, Any]]:
+    """Validate reviewer-owned route memory without converting it into DAG policy."""
+    if value is None:
+        return []
+    if not isinstance(value, list) or len(value) > 24:
+        return []
+    rules: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            return []
+        tabu_id = _slug(raw.get("tabu_id") or raw.get("route_label"), limit=80)
+        level = _clean_text(raw.get("level"), limit=40).lower()
+        route_label = _slug(raw.get("route_label"), limit=80)
+        mechanism = _clean_text(raw.get("mechanism"), limit=2000)
+        evidence_refs = [
+            _clean_text(item, limit=2000)
+            for item in raw.get("evidence_refs") or []
+            if _clean_text(item, limit=2000)
+        ] if isinstance(raw.get("evidence_refs"), list) else []
+        applies_to = _clean_text(raw.get("applies_to") or "ALL", limit=80).upper()
+        reopen_condition = _clean_text(raw.get("reopen_condition"), limit=2000)
+        if (
+            not tabu_id or tabu_id in seen or level not in _TABU_LEVELS or not route_label
+            or not mechanism or applies_to not in {"NODE", "IN_GRAPH", "OUT_OF_GRAPH", "GLOBAL", "ALL"}
+            or (level == "hard" and (not evidence_refs or not reopen_condition))
+        ):
+            return []
+        seen.add(tabu_id)
+        rules.append({
+            "tabu_id": tabu_id,
+            "level": level,
+            "route_label": route_label,
+            "mechanism": mechanism,
+            "applies_to": applies_to,
+            "evidence_refs": list(dict.fromkeys(evidence_refs)),
+            "reopen_condition": reopen_condition,
+        })
+    return rules
+
+
+def reviewer_strategy_memory(workspace_dir: Path) -> list[dict[str, Any]]:
+    """Return durable reviewer decisions as read-only planning context.
+
+    This is deliberately a projection of persisted reviewer plans, not a second policy
+    store.  Worker outcomes remain immutable facts in the outcome ledger; the reviewer
+    alone decides whether a prior tabu is still applicable or whether its documented
+    reopen condition has been met.
+    """
+    plans_dir = Path(workspace_dir) / "curation_records" / "research_plans"
+    try:
+        paths = sorted(
+            (path for path in plans_dir.glob("plan-*.json") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+        )[-24:]
+    except OSError:
+        return []
+    memory: list[dict[str, Any]] = []
+    for path in paths:
+        try:
+            plan = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        recommendation = plan.get("recommendation") if isinstance(plan, dict) else None
+        research_plan = recommendation.get("research_plan") if isinstance(recommendation, dict) else None
+        if not isinstance(research_plan, dict):
+            continue
+        tracks = [
+            {
+                "track_id": str(track.get("track_id") or ""),
+                "selection_scope": str(track.get("selection_scope") or ""),
+                "route_label": str(track.get("route_label") or ""),
+                "research_goal": str(track.get("research_goal") or "")[:1000],
+                "reopen_condition": str(track.get("reopen_condition") or "")[:1000],
+            }
+            for track in research_plan.get("tracks") or []
+            if isinstance(track, dict)
+        ]
+        memory.append({
+            "plan_id": str(plan.get("plan_id") or path.stem),
+            "execution_status": str(plan.get("execution_status") or "planned"),
+            "strategy": str(research_plan.get("strategy") or "")[:2000],
+            "tabu_rules": [rule for rule in research_plan.get("tabu_rules") or [] if isinstance(rule, dict)],
+            "tracks": tracks,
+        })
+    return memory
 
 
 def _parse_deferred_directions(value: Any) -> list[dict[str, str]]:

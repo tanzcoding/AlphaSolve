@@ -194,6 +194,26 @@ def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestra
     assert non_cold_manager.calls == []
 
 
+def test_reviewer_reasoning_delegate_receives_multilevel_strategy_contract():
+    service = SubagentService(
+        suite=SimpleNamespace(subagents={}),
+        client_factory=lambda _config: None,
+    )
+    service._reviewer_delegate_budget.value = dict(service.REVIEWER_LIMITED_DELEGATE_LIMITS)
+
+    assert service._is_reviewer_policy_delegate("reasoning_subagent")
+    assert not service._is_reviewer_policy_delegate("compute_subagent")
+    prompt = service._reviewer_policy_delegate_prompt(
+        "Candidate: TECHNIQUE_EXPLORATION with hard tabu separable-bellman."
+    )
+
+    assert "LOCAL_REPAIR" in prompt
+    assert "GLOBAL_SYNTHESIS" in prompt
+    assert "hard tabu" in prompt
+    assert "not you, owns final route selection" in prompt
+    assert prompt.endswith("Candidate: TECHNIQUE_EXPLORATION with hard tabu separable-bellman.")
+
+
 def test_reviewer_can_repeat_compute_and_reasoning_checks_but_limits_numerical_experiments():
     service = SubagentService(
         suite=SimpleNamespace(subagents={}),

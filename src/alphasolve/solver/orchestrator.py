@@ -19,7 +19,7 @@ from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_orchestrator_event_sink
 from .worker import Worker, WorkerRunResult
 from .project import ProjectLayout
-from .research_planning import ReviewerPlanGateway, parse_recommendation, reviewer_prompt
+from .research_planning import ReviewerPlanGateway, parse_recommendation, reviewer_prompt, reviewer_strategy_memory
 from .curation_records import append_event as append_curation_event
 from .cold_start import ColdStartRuntime
 from .policy import SolverPolicy
@@ -281,6 +281,8 @@ class WorkerManager:
         research_plan_id: str | None = None,
         research_track_id: str | None = None,
         track_priority: str | None = None,
+        selection_scope: str | None = None,
+        tabu_rule_ids: list[str] | None = None,
         on_spawn: Callable[[Worker], None] | None = None,
     ) -> dict[str, Any]:
         self._collect_done()
@@ -364,6 +366,8 @@ class WorkerManager:
                 "research_plan_id": research_plan_id or "",
                 "research_track_id": research_track_id or "",
                 "track_priority": track_priority or "",
+                "selection_scope": selection_scope or "",
+                "tabu_rule_ids": list(tabu_rule_ids or []),
                 "orchestrator_session_id": self.orchestrator_session_id,
                 "started_at": time.time(),
                 "phase": "spawned",
@@ -387,6 +391,8 @@ class WorkerManager:
             "research_plan_id": research_plan_id or "",
             "research_track_id": research_track_id or "",
             "track_priority": track_priority or "",
+            "selection_scope": selection_scope or "",
+            "tabu_rule_ids": list(tabu_rule_ids or []),
             **self._pool_status(),
         }
         return payload
@@ -601,6 +607,8 @@ class WorkerManager:
                 "research_plan_id": str(finished_info.get("research_plan_id") or ""),
                 "research_track_id": str(finished_info.get("research_track_id") or ""),
                 "track_priority": str(finished_info.get("track_priority") or ""),
+                "selection_scope": str(finished_info.get("selection_scope") or ""),
+                "tabu_rule_ids": list(finished_info.get("tabu_rule_ids") or []),
                 }
                 task_audit = self._run_task_audit(payload)
                 if task_audit is not None:
@@ -642,10 +650,13 @@ class WorkerManager:
             )
             # 同理，路线、图外探索与 research plan/track 都是调度侧归因；它们必须进入
             # immutable outcome，供 process auditor 比较“原计划”与“实际执行结果”。
-            for key in ("route_label", "reviewer_step_kind", "research_plan_id", "research_track_id", "track_priority"):
+            for key in ("route_label", "reviewer_step_kind", "research_plan_id", "research_track_id", "track_priority", "selection_scope"):
                 value = str(finished_info.get(key) or "").strip()
                 if value:
                     payload[key] = value
+            if isinstance(finished_info.get("tabu_rule_ids"), list):
+                payload["tabu_rule_ids"] = [str(item) for item in finished_info["tabu_rule_ids"] if str(item).strip()]
+
             payload.update(completion_feedback)
             # 短程任务验收在收割路径内同步执行：它的唯一读者是 orchestrator，且必须在
             # 同一次 TaskOutput 里回答"我刚下发的那个任务被完成了吗"。若异步执行，结论
@@ -956,6 +967,9 @@ class Orchestrator:
                 policy=self.policy,
                 attempt_observer=self.search,
             )
+            # Bootstrap has no prior portfolio for the reviewer to compare. Preserve the
+            # bounded runtime evidence batch, then hand its outcomes to the reviewer for
+            # every subsequent route-level reflection or pivot.
             self._startup_evidence = self.cold_start_runtime.prepare(manager)
             self._refresh_research_frontier_state(manager)
             result = None
@@ -1098,23 +1112,12 @@ class Orchestrator:
         return build_solver_tool_registry(access, extra_registrars=extra_registrars)
 
     def _register_free_exploration_tool(self, registry: ToolRegistry, manager: WorkerManager) -> None:
-        """注册显式的自由探索工具（不再由代码自动 gate/派发）。
-
-        要不要花一个 worker 槽做无指向的自由探索，完全交给 orchestrator 的 LLM 自己判断
-        （见 prompts/orchestrator.md）。这个工具只是把 runtime 已有的「挑一个通用探索 hint、
-        可选地从欠探索的知识主题里带一个发散火种」的便利逻辑暴露出来，避免 LLM 手写等价的
-        SpawnWorker 调用。
-        """
+        """保留旧工具名以兼容配置，但图外探索只能由 reviewer 计划触发。"""
         registry.register(
             name="SpawnFreeExploration",
             description=(
-                "Start one worker for open-ended, non-targeted exploration and return immediately "
-                "(does not wait). Supply a concrete reason why an orthogonal route is worth a worker slot. "
-                "The runtime records the deviation and the worker's eventual outcome.\n\n"
-                "The worker receives an optional "
-                "under-explored verified seed. It must choose a distinct bounded claim or record why no such "
-                "claim is available. Returns the same shape as SpawnWorker; if no slot is available it returns "
-                "spawned=false."
+                "Start one bounded orthogonal exploration and return immediately. Supply a concrete reason and treat the "
+                "result as evidence for the research reviewer; it does not itself establish a technique-level policy or alter the DAG."
             ),
             parameters={
                 "type": "object",
@@ -1150,6 +1153,7 @@ class Orchestrator:
         }
 
     def _spawn_free_exploration_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        """Run a compatible ad-hoc exploration and record it as reviewer input evidence."""
         reason = str(args.get("reason") or "").strip()
         if not reason:
             return ToolResult(
@@ -1306,8 +1310,10 @@ class Orchestrator:
         # proposition、task audit、local difficulty 引用串起来，策略取舍仍完全由 reviewer 做。
         try:
             audit_status["research_plan_execution_history"] = research_plan_execution_summary(self.layout.workspace_dir)
+            audit_status["reviewer_strategy_memory"] = reviewer_strategy_memory(self.layout.workspace_dir)
         except OSError:
             audit_status["research_plan_execution_history"] = []
+            audit_status["reviewer_strategy_memory"] = []
         try:
             report = service.call(
                 "research_reviewer",
@@ -1501,9 +1507,12 @@ class Orchestrator:
                     "rubric": task["rubric"],
                     "route_label": track["route_label"],
                     "reviewer_step_kind": track["kind"],
+                    "selection_scope": str(track.get("selection_scope") or ("NODE_ROUTE" if track["kind"] == "TARGET_NODE" else "TECHNIQUE_EXPLORATION")),
+                    "tabu_rule_ids": [str(item) for item in track.get("tabu_rule_ids") or [] if str(item).strip()],
                     "research_plan_id": plan_id,
                     "research_track_id": track["track_id"],
                     "track_priority": track["priority"],
+                    "global_attack": str(track.get("selection_scope") or "") == "GLOBAL_SYNTHESIS",
                 },
             )
             try:
@@ -1685,6 +1694,8 @@ class Orchestrator:
             rubric=rubric,
             route_label=str(args.get("route_label") or "").strip(),
             reviewer_step_kind=str(args.get("reviewer_step_kind") or "").strip(),
+            selection_scope=str(args.get("selection_scope") or "").strip(),
+            tabu_rule_ids=[str(item) for item in args.get("tabu_rule_ids") or [] if str(item).strip()],
             research_plan_id=str(args.get("research_plan_id") or "").strip(),
             research_track_id=str(args.get("research_track_id") or "").strip(),
             track_priority=str(args.get("track_priority") or "").strip(),
@@ -1715,6 +1726,12 @@ class Orchestrator:
         )
 
     def _spawn_tool(self, manager: WorkerManager, args: dict[str, Any]) -> ToolResult:
+        """Keep direct dispatch compatible while preserving its provenance as evidence.
+
+        Direct dispatch is useful at bootstrap and for explicitly requested human-led
+        checks. Its outcome is not a reviewer decision: later route reflection, tabu,
+        parking, graph departure, and synthesis remain reviewer-owned.
+        """
         return self._spawn_difficulty_leaf(manager, args)
 
     def _handle_worker_completion(self, result: WorkerRunResult) -> dict[str, Any] | None:
@@ -1872,14 +1889,10 @@ class Orchestrator:
         if any(str(item.get("verdict") or "").upper() in {"STALLED", "MISALIGNED"} for item in audit_decisions):
             payload["strategic_reassessment_recommended"] = True
         payload["planning_instruction"] = (
-            "Two independent audits inform the next step. Each completed worker carries a `task_audit`: it says whether the "
-            "task you assigned was actually delivered, and its residual obligation stays open even when the proposition was "
-            "verified. Its `next_action` names the dispatch move that verdict supports. For a rejected worker the rubric "
-            "score is uninformative — read `rejection_locus`, `salvageable_content`, and `retry_assessment`, where "
-            "`statement_false` means change the target and `proof_repairable` means the same target deserves another pass. "
-            "The periodic `process_audit_decisions` say "
-            "whether the portfolio advances problem.md; a STALLED or MISALIGNED verdict means do not repeat the old route "
-            "without new evidence. Treat both, plus local difficulties, as evidence rather than commands."
+            "Task audits and periodic process audits are evidence only. Read delivery, residual_obligation, rejection_locus, "
+            "salvageable_content, retry_assessment, terminal_gap, and local difficulties through RequestResearchPlan. The research "
+            "reviewer alone decides whether these facts justify a repair, pivot, graph-level exploration, technique-level departure, "
+            "parking, or synthesis; execute only its approved tracks."
         )
         if self._search_tree_sink is not None:
             # 推进 selection cycle 并落一次 attempt 谱系快照（纯观测，不参与决策）。
@@ -2038,10 +2051,20 @@ def _decision_first_payload(payload: dict[str, Any]) -> dict[str, Any]:
 
 def _research_track_worker_hint(
     research_plan: dict[str, Any],
-    track: dict[str, str],
+    track: dict[str, Any],
     bounded_task: str,
 ) -> str:
     """Render a reviewer-owned research track plus an orchestrator-owned task."""
+    tabu_by_id = {
+        str(rule.get("tabu_id") or ""): rule
+        for rule in research_plan.get("tabu_rules") or []
+        if isinstance(rule, dict)
+    }
+    applicable_tabu = [
+        tabu_by_id[rule_id]
+        for rule_id in track.get("tabu_rule_ids") or []
+        if rule_id in tabu_by_id
+    ]
     parts = [
         "# Reviewer Research Plan",
         f"Objective: {research_plan.get('objective') or ''}",
@@ -2049,11 +2072,23 @@ def _research_track_worker_hint(
         "",
         "## Research track",
         f"Track: {track.get('track_id') or ''} ({track.get('priority') or ''})",
+        f"Selection scope: {track.get('selection_scope') or ''}",
         f"Research goal: {track.get('research_goal') or ''}",
         f"Rationale: {track.get('rationale') or ''}",
     ]
+    if track.get("terminal_obligation"):
+        parts.append(f"Terminal obligation: {track['terminal_obligation']}")
+    if track.get("reopen_condition"):
+        parts.append(f"Reopen condition: {track['reopen_condition']}")
     if track.get("avoid"):
         parts.append(f"Avoid: {track['avoid']}")
+    if applicable_tabu:
+        parts.append("Reviewer tabu context:")
+        for rule in applicable_tabu:
+            parts.append(
+                f"- [{rule.get('level')}] {rule.get('route_label')}: {rule.get('mechanism')} "
+                f"Reopen only if: {rule.get('reopen_condition') or 'reviewer supplies new evidence.'}"
+            )
     parts.extend(["", "## Bounded worker task", bounded_task])
     return "\n".join(parts)
 

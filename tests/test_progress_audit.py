@@ -199,7 +199,7 @@ BLOCKER_STATEMENT: Prove the missing bridge lemma.
             "source_difficulty_id": "worker-1-difficulty",
             "statement": "Prove the missing bridge lemma.",
         },
-        "recommended_next_action": "Prove the bridge lemma under the current boundary.",
+        "recommended_next_action": "",
         "evidence_path": "progress_audits/checkpoint-0001/evidence.md",
         "audit_path": "progress_audits/checkpoint-0001/audit.md",
     }]

@@ -58,6 +58,10 @@ class SubagentService:
     REVIEWER_LIMITED_DELEGATE_LIMITS = {
         "numerical_experiment_subagent": 1,
     }
+    # A reviewer may delegate mathematical checking, but delegates never become a
+    # second strategy owner.  The reasoning delegate receives this policy contract so
+    # it can adversarially test all five search levels and the proposed tabu boundary.
+    _REVIEWER_POLICY_DELEGATE_TYPES = {"reasoning_subagent"}
 
     def __init__(
         self,
@@ -157,6 +161,8 @@ class SubagentService:
         self._reserve_reviewer_delegate(agent_type)
         if self.call_guard is not None:
             self.call_guard(agent_type, depth)
+        if self._is_reviewer_policy_delegate(agent_type):
+            prompt = self._reviewer_policy_delegate_prompt(prompt)
         if (
             agent_type == "research_reviewer"
             and self.reviewer_history_path is not None
@@ -209,6 +215,39 @@ class SubagentService:
             agent_type=agent_type,
             session_id=session_id,
             text=_last_plain_assistant_content(result),
+        )
+
+    def _is_reviewer_policy_delegate(self, agent_type: str) -> bool:
+        return (
+            agent_type in self._REVIEWER_POLICY_DELEGATE_TYPES
+            and getattr(self._reviewer_delegate_budget, "value", None) is not None
+        )
+
+    @staticmethod
+    def _reviewer_policy_delegate_prompt(prompt: str) -> str:
+        """Scope a reasoning delegate as an adversarial reviewer aide, not a strategist.
+
+        The reviewer must include the concrete candidate track or strategy in its
+        delegated prompt.  This wrapper makes the five-level protocol and the taboo
+        semantics explicit without manufacturing a plan from incomplete context.
+        """
+        return (
+            "# Reviewer Delegation Contract\n\n"
+            "You are an adversarial reasoning delegate of the research reviewer. The reviewer, not you, owns final "
+            "route selection, tabu, parking, graph departure, and synthesis decisions. Audit only the candidate strategy, "
+            "track, or premise supplied below; do not invent a replacement plan when that material is absent.\n\n"
+            "Check whether the supplied classification is justified: LOCAL_REPAIR requires a named local bridge; NODE_ROUTE "
+            "must change mechanism while retaining one obligation; GRAPH_PORTFOLIO must genuinely compare/attack the named "
+            "nodes or ancestor; TECHNIQUE_EXPLORATION must change framework and state the terminal obligation; GLOBAL_SYNTHESIS "
+            "must combine evidence against the original problem rather than rename a local route.\n\n"
+            "Check tabu claims separately: hard tabu needs verified evidence that refutes its premise and a reopen condition; "
+            "soft tabu must not be mistaken for refutation; hint is reusable context only. Flag a proposed route that merely "
+            "renames a tabu mechanism, omits a known counterexample scope, lacks a discriminating first artifact, or treats "
+            "unchanged attempts as proof that a statement is false. Report evidence for or against the candidate, uncovered "
+            "assumptions, counterexamples to seek, and any missing reopen condition. End with VERDICT: CLEAR or VERDICT: "
+            "BLOCKING_FOUND.\n\n"
+            "# Delegated Reviewer Check\n\n"
+            + prompt
         )
 
     REVIEWER_HISTORY_ENTRIES = 3

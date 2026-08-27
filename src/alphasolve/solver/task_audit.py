@@ -70,19 +70,17 @@ class TaskAuditResult:
     def payload(self) -> dict[str, Any]:
         """Return the bounded surface the orchestrator sees on TaskOutput.
 
-        This is the orchestrator's immediate feedback channel: it arrives on the very
-        ``TaskOutput`` that reports the worker, before the next dispatch decision. So the
-        fields are ordered and filtered for that decision — what was asked, what came
-        back, what is still owed, and what to do next — rather than as a full report.
-        The persisted markdown keeps the complete audit for later reading.
+        This arrives on the same ``TaskOutput`` as the completed worker. It records only
+        what was assigned, what was delivered, and what remains owed; the research
+        reviewer later chooses the next route from these facts. The persisted markdown
+        keeps the complete audit for later reading.
         """
         result: dict[str, Any] = {
             "worker_id": self.worker_id,
             "status": self.status,
             "delivery": self.delivery,
             "delivered": self.delivery == "delivered",
-            # 下一步该做什么：放在交付判定紧邻处，避免被后面的长文字段挤出注意力。
-            "next_action": self.next_action(),
+            # 审计只陈述交付与残余事实；下一步路线由 research reviewer 决定。
             "scope_drift": self.scope_drift,
             "residual_obligation": self.residual_obligation,
             "assigned_versus_delivered": self.assigned_versus_delivered,
@@ -93,11 +91,10 @@ class TaskAuditResult:
             result["rubric_passed"] = self.rubric_passed
             result["rubric_total"] = self.rubric_total
         # 逐条核对只在"部分通过"时有决策价值：它指出是哪一条没达成。全 0 分时每条都是
-        # 同一句"没有可验收的 Statement"，纯属噪声，应由 delivery + next_action 承担。
+        # 同一句"没有可验收的 Statement"，纯属噪声，保留 delivery 即可。
         if self.rubric_checks and self.rubric_passed:
             result["rubric_checks"] = self.rubric_checks
-        # 拒绝诊断替代 rubric 成为 orchestrator 的决策依据：定理错 vs 证明错，
-        # 决定了应当换目标还是修证明。
+        # 拒绝诊断是 reviewer 的输入事实：区分定理命题与证明过程的不同失败落点。
         if self.rejection_locus:
             result["rejection_locus"] = self.rejection_locus
         if self.salvageable_content:
@@ -105,40 +102,6 @@ class TaskAuditResult:
         if self.retry_assessment:
             result["retry_assessment"] = self.retry_assessment
         return result
-
-    def next_action(self) -> str:
-        """Name the dispatch move this verdict supports, in the orchestrator's own terms.
-
-        The orchestrator has to turn a verdict into one of a few concrete moves. Deriving
-        that mapping is deterministic, so the runtime does it here instead of restating the
-        rules in prose and hoping they are re-applied correctly on every collection. This
-        names the move; it does not order it.
-        """
-        if self.delivery == "delivered":
-            return "obligation_closed: choose the next target from research evidence, not from this task."
-        if self.rejection_locus == "statement_false":
-            return "change_target: the assigned Statement cannot hold; do not reassign it."
-        if self.rejection_locus == "proof_repairable":
-            return (
-                "reassign_same_target: the Statement stands and the objection is localized; "
-                "quote the objection in the new rubric."
-            )
-        if self.rejection_locus == "proof_gap":
-            return "narrow_to_gap: dispatch a bounded follow-up on the named missing step only."
-        if self.rejection_locus == "statement_unproved":
-            return (
-                "change_route: the target may stand but nothing was established; reassign only with a "
-                "different route or more structure."
-            )
-        if self.delivery in {"off_target", "partial"}:
-            return (
-                "reassign_residual: a proposition was verified but the assigned obligation is still open; "
-                "reassign the residual obligation with a sharper rubric."
-            )
-        if self.delivery == "not_delivered":
-            return "retry_or_drop: nothing was delivered; either reassign with more structure or record why to stop."
-        return ""
-
 
 class TaskAuditor:
     """Runs one delivery audit per finished worker, synchronously."""
@@ -298,7 +261,6 @@ class TaskAuditor:
                     "recorded_at": _now_iso(),
                     "status": result.status,
                     "delivery": result.delivery,
-                    "next_action": result.next_action(),
                     "rubric_passed": result.rubric_passed,
                     "rubric_total": result.rubric_total,
                     "scope_drift": result.scope_drift,
@@ -346,7 +308,6 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
             {
                 "worker_id": str(item.get("worker_id")),
                 "delivery": str(item.get("delivery") or ""),
-                "next_action": str(item.get("next_action") or ""),
                 "residual_obligation": str(item.get("residual_obligation") or "")[:600],
                 **(
                     {"salvageable_content": str(item.get("salvageable_content"))[:400]}
@@ -369,12 +330,9 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
     if undelivered:
         summary["instruction"] = (
             "A task audit compares the assigned rubric with the proven Statement. Where delivery is partial, "
-            "off_target, or not_delivered, the residual obligation is still open even if a proposition was verified: "
-            "do not treat it as done. Each entry in `open_obligations` carries the `next_action` its verdict supports "
-            "and the residual obligation to reassign; act on one of them now or record why it is no longer worth "
-            "pursuing. For a rejected worker the rubric score is uninformative; read its rejection_locus, "
-            "salvageable_content, and retry_assessment instead, and note that statement_false means "
-            "change the target while proof_repairable means the same target is worth another pass."
+            "off_target, or not_delivered, the residual obligation is still open even if a proposition was verified. "
+            "Pass the delivery, rejection_locus, salvageable_content, retry_assessment, and residual obligation to "
+            "the research reviewer; it alone decides whether to repair, pivot, park, explore outside the graph, or synthesize."
         )
     else:
         summary["instruction"] = (
@@ -511,7 +469,6 @@ def _render_report(result: TaskAuditResult, payload: dict[str, Any], *, audit_te
         "",
         "## Verdict",
         f"- Delivery: `{result.delivery}`",
-        f"- Next action: `{result.next_action()}`" if result.next_action() else "",
         f"- Rubric score: `{result.rubric_passed}/{result.rubric_total}`" if result.rubric_total else "- Rubric score: `n/a`",
         f"- Verifier status: `{payload.get('status') or 'unknown'}`",
         f"- Audit status: `{result.status}`",
