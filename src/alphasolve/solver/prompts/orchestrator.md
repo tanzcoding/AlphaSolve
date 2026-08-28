@@ -30,7 +30,7 @@ When you judge that only the full target is acceptable, say so in the `hint` so 
   - `proof_gap` — a named step is missing with no visible repair. Consider a bounded follow-up on exactly that step.
   - `proof_repairable` — the target stands and the objection is localized. Reassigning the same target with the objection quoted is usually the cheapest next move.
   Reuse whatever `salvageable_content` names instead of re-deriving it, and treat `retry_assessment` as evidence about feasibility, not as an instruction.
-- **Periodic (long horizon).** `process_audit_decisions` judge whether the accumulated portfolio advances `problem.md`. A `STALLED` or `MISALIGNED` verdict means stop repeating the old route and incorporate the cited evidence.
+- **Periodic (long horizon).** `process_audit_decisions` judge whether the accumulated portfolio advances `problem.md`. The startup research reviewer plan performs the higher-level orthogonal challenge; later audits remain evidence for the reviewer rather than automatically creating a plan. Do not infer a route from an audit.
 
 Neither audit is a command. A short-horizon failure says an instruction was not carried out; a long-horizon failure says the accumulated portfolio is not paying off. Both are reviewer inputs, not route decisions.
 

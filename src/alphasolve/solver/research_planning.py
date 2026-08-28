@@ -192,6 +192,12 @@ def reviewer_prompt(
         "GLOBAL_SYNTHESIS (attack problem.md by combining all evidence; method_id must be consolidation). For GRAPH_PORTFOLIO "
         "supply target_difficulty_ids; for TECHNIQUE_EXPLORATION and GLOBAL_SYNTHESIS supply terminal_obligation. Do not let "
         "the orchestrator, curator, task auditor, attempt counts, or an untried method make this choice for you.\n\n"
+        "Every reviewer invocation is a portfolio review cycle. Periodically force a higher-order challenge by comparing the complete "
+        "execution history and reviewer memory: alongside any local or portfolio primary, include an independent `challenger` at "
+        "`TECHNIQUE_EXPLORATION` or `GLOBAL_SYNTHESIS` when you can state an evidence-backed mathematical question for it. It must avoid "
+        "the dominant route/mechanism and reuse verified facts where helpful. Do not fabricate a high-level track merely to satisfy "
+        "cadence: if none is live, explain the specific evidence-based reason in `strategy` or `considered_but_deferred`. You alone "
+        "choose when this higher-order challenge is due, its scope, taboo, and reopen conditions.\n\n"
         "Maintain `tabu_rules` in the plan as your durable mathematical route memory. A hard tabu is a route premise refuted by "
         "verified evidence and needs evidence_refs plus a reopen_condition; a soft tabu is an exhausted mechanism with no local "
         "repair; a hint is a reusable failure explanation that later tracks must inherit. Link each track to the tabu_rule_ids it "
@@ -337,6 +343,9 @@ def _parse_research_plan(value: dict[str, Any]) -> dict[str, Any] | None:
     tabu_rules = _parse_tabu_rules(raw_plan.get("tabu_rules") if isinstance(raw_plan, dict) else None)
     tabu_ids = {rule["tabu_id"] for rule in tabu_rules}
     if any(not set(track["tabu_rule_ids"]).issubset(tabu_ids) for track in tracks):
+        return None
+    hard_tabu_routes = {rule["route_label"] for rule in tabu_rules if rule["level"] == "hard"}
+    if any(track["route_label"] in hard_tabu_routes for track in tracks):
         return None
     if not tracks and not hold_reason:
         return None

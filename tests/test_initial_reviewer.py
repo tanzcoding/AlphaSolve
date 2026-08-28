@@ -19,7 +19,7 @@ def _response(content: str) -> CompletionResponse:
     return CompletionResponse(message=Message(role="assistant", content=content), finish_reason="stop")
 
 
-def test_orchestrator_does_not_force_reviewer_for_simple_startup(tmp_path):
+def test_orchestrator_requests_reviewer_plan_at_startup(tmp_path):
     (tmp_path / "problem.md").write_text("# Problem\n\nProve the target.\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()
@@ -40,7 +40,13 @@ def test_orchestrator_does_not_force_reviewer_for_simple_startup(tmp_path):
             if self.role == "orchestrator":
                 assert any(tool.name == "RequestResearchPlan" for tool in tools)
                 assert not any(tool.name == "Agent" for tool in tools)
-                return _response("This simple problem needs no research plan.")
+                return _response("Use the startup reviewer plan.")
+            if self.role == "research_reviewer":
+                return _response(
+                    "### Research Strategy JSON\n```json\n"
+                    '{"research_plan":{"objective":"Review the initial portfolio.","strategy":"Start with an independent framework-level direction.","tracks":[{"track_id":"startup-framework","priority":"primary","kind":"NEW_DIRECTION","selection_scope":"TECHNIQUE_EXPLORATION","difficulty_id":"","terminal_obligation":"Resolve the target problem.","method_id":"direct_proof","route_label":"startup-framework","research_goal":"Test a framework independent of the current evidence.","rationale":"Startup review must establish a live initial direction.","avoid":"Do not assume an unverified local route."}]}}\n'
+                    "```"
+                )
             raise AssertionError(f"unexpected role: {self.role}")
 
     orchestrator = Orchestrator(
@@ -56,8 +62,11 @@ def test_orchestrator_does_not_force_reviewer_for_simple_startup(tmp_path):
     result = orchestrator.run()
 
     assert result.worker_results == []
-    assert calls["research_reviewer"] == []
+    assert len(calls["research_reviewer"]) == 1
     assert len(calls["orchestrator"]) == 1
+    assert "initial portfolio plan at startup" in calls["orchestrator"][0][-1].content
+    assert orchestrator._startup_reviewer_plan["requested"] is True
+    assert orchestrator._startup_reviewer_plan["plan_id"].startswith("plan-")
 
 
 def test_orchestrator_allows_repeated_research_plans_when_new_evidence_requires_review(tmp_path):

@@ -122,6 +122,8 @@ def test_reviewer_prompt_does_not_require_a_step_smaller_than_the_obstacle():
     assert "considered_but_deferred" in prompt
     assert "portfolio retrospective" in prompt
     assert "all plan/track executions" in prompt
+    assert "Every reviewer invocation is a portfolio review cycle" in prompt
+    assert "TECHNIQUE_EXPLORATION" in prompt
 
 
 def test_strategy_survives_any_heading_depth():
@@ -330,6 +332,16 @@ def test_reviewer_plan_records_selection_level_and_hard_technique_tabu():
     assert plan["tabu_rules"][0]["level"] == "hard"
     assert plan["tracks"][0]["selection_scope"] == "TECHNIQUE_EXPLORATION"
     assert plan["tracks"][0]["tabu_rule_ids"] == ["separable-bellman"]
+
+
+def test_reviewer_plan_rejects_reselecting_its_own_hard_tabu_route():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{"research_plan":{"objective":"Do not repeat a refuted route.","strategy":"The refuted premise remains hard tabu.","tabu_rules":[{"tabu_id":"refuted-route","level":"hard","route_label":"refuted-route","mechanism":"A verified witness refutes its premise.","applies_to":"ALL","evidence_refs":["verified_propositions/witness.md"],"reopen_condition":"New evidence changes the premise."}],"tracks":[{"track_id":"retry","priority":"primary","kind":"NEW_DIRECTION","selection_scope":"TECHNIQUE_EXPLORATION","difficulty_id":"","terminal_obligation":"Resolve the original problem.","method_id":"direct_proof","route_label":"refuted-route","tabu_rule_ids":["refuted-route"],"research_goal":"Retry the refuted route.","rationale":"This is deliberately inconsistent.","avoid":"None."}]}}
+```
+""")
+
+    assert parsed is None
 
 
 def test_global_synthesis_requires_explicit_consolidation_contract():

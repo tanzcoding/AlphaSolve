@@ -48,12 +48,13 @@ if TYPE_CHECKING:
 GLOBAL_ATTACK_HINT = (
     "GLOBAL CONSOLIDATION: Attack the original problem directly. "
     "You are free to use ANY mathematical method — do not constrain yourself to "
-    "any single framework (e.g., anchor graph, Greene decomposition, or incompatible-cell "
-    "counting) that may have dominated prior attempts. Consider alternative approaches: "
-    "induction on n, RSK / Young-tableau combinatorics, topological / planar-graph methods, "
-    "LP duality, information-theoretic or double-counting arguments, or algebraic methods. "
-    "The verified propositions in the workspace are available as building blocks, but you "
-    "are encouraged to find a fresh path rather than extending the existing mainstream line. "
+    "any single framework that may have dominated prior attempts. Consider genuinely "
+    "different families of argument: induction, combinatorial or algebraic "
+    "reformulation, duality, extremal or counting arguments, topological methods, "
+    "or explicit constructions — and choose the one the structure of the problem "
+    "actually supports. The verified propositions in the workspace are available as "
+    "building blocks, but you are encouraged to find a fresh path rather than "
+    "extending the existing mainstream line. "
     "Either prove the target exactly, or provide an explicit refuting witness."
 )
 
@@ -892,6 +893,7 @@ class Orchestrator:
         self._planning_subagents: SubagentService | None = None
         self._research_plans: dict[str, dict[str, Any]] = {}
         self._research_plan_created = False
+        self._startup_reviewer_plan: dict[str, Any] = {}
         self._active_research_plan: dict[str, Any] | None = None
         self._worker_difficulties: dict[str, str] = {}
         self._local_followup_handoff_ids: set[str] = set()
@@ -997,6 +999,8 @@ class Orchestrator:
                 reviewer_history_path=self.layout.curation_records_dir / "reviewer_history.md",
             )
             self._planning_subagents = subagents
+            if not (self.stop_event is not None and self.stop_event.is_set()):
+                self._startup_reviewer_plan = self._request_startup_reviewer_plan(manager)
             try:
                 agent = self.build_agent(
                     manager,
@@ -1353,6 +1357,27 @@ class Orchestrator:
             "recommendation": recommendation,
             "reviewer_report": report[-4000:],
         }, ensure_ascii=False))
+
+    def _request_startup_reviewer_plan(self, manager: WorkerManager) -> dict[str, Any]:
+        """Request the initial reviewer-owned strategy once per orchestrator start."""
+        response = self._request_research_plan_tool(manager, {})
+        try:
+            result = json.loads(response.content)
+        except json.JSONDecodeError:
+            result = {"error": "invalid_startup_reviewer_response"}
+        if not isinstance(result, dict):
+            result = {"error": "invalid_startup_reviewer_response"}
+        if response.is_error:
+            return {
+                "requested": False,
+                "error": str(result.get("error") or "research reviewer failed"),
+                "report_path": str(result.get("report_path") or ""),
+            }
+        return {
+            "requested": bool(result.get("plan_id")),
+            "plan_id": str(result.get("plan_id") or ""),
+            "recommendation": result.get("recommendation") if isinstance(result.get("recommendation"), dict) else {},
+        }
 
     def _persist_research_plan(self, plan: dict[str, Any]) -> None:
         """Persist plan creation and execution facts for later independent process audits."""
@@ -1917,6 +1942,14 @@ class Orchestrator:
         startup_context = self.cold_start_runtime.context_for_orchestrator()
         if startup_context:
             parts.append(startup_context)
+        startup_plan = getattr(self, "_startup_reviewer_plan", {})
+        if startup_plan.get("plan_id"):
+            parts.append(
+                "The research reviewer produced an initial portfolio plan at startup. "
+                f"Inspect and execute it through ExecuteResearchPlan: `{startup_plan['plan_id']}`."
+            )
+        elif startup_plan.get("error"):
+            parts.append("The startup reviewer plan was unavailable; use RequestResearchPlan before choosing a research route.")
         if hint:
             parts.append("A human expert hint is available in `hint.md`; read it before deciding the next action.")
         return "\n\n".join(parts)
