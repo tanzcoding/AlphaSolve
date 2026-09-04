@@ -7,6 +7,7 @@ from alphasolve.solver.progress_audit import (
     ProgressAuditTask,
     _render_evidence,
     _write_curation_input,
+    plan_outcome_assessments,
     research_plan_execution_summary,
 )
 from alphasolve.solver.project import ProjectLayout
@@ -150,6 +151,127 @@ def test_duplicate_worker_outcome_is_ignored(tmp_path):
     assert not queue.record_outcome(payload)
 
 
+def test_task_output_batch_respects_the_outcome_sampling_interval(tmp_path):
+    """Process audit is long-horizon: a TaskOutput batch must not force a checkpoint.
+
+    Regression: gating every batch fired the composite "is there real progress, is the
+    plan complete, is the plan itself wrong" audit once per dispatch round, which both
+    destroyed the `outcomes_per_audit` window and reduced a long-horizon reviewer to a
+    per-batch rubber stamp. Short-horizon delivery is the task auditor's job.
+    """
+    layout = _layout(tmp_path)
+    audited_checkpoints: list[str] = []
+
+    def audit_runner(evidence_path, _prompt):
+        audited_checkpoints.append(evidence_path.parent.name)
+        return """### Progress Verdict
+VERDICT: INSUFFICIENT_EVIDENCE
+### Current Best Verified Position
+None.
+### Terminal Gap
+Establish the first bridge.
+### Outcome Classification
+- failed
+### Repeated Avoided Obligation
+None.
+### Route Contract Signals
+None.
+### Cited Evidence
+- progress_audits/checkpoint-0005/evidence.md
+BLOCKER_SOURCE_DIFFICULTY_ID: NONE
+BLOCKER_STATEMENT: NONE
+"""
+
+    queue = ProgressAuditQueue(
+        layout=layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        outcomes_per_audit=5,
+        audit_runner=audit_runner,
+    )
+    queue.start()
+    try:
+        # Four batches inside one interval settle 4 outcomes and must not create a gate.
+        early = [
+            queue.record_outcomes([
+                {"worker_id": f"worker-{index}", "status": "rejected", "summary": "No bridge."},
+            ])
+            for index in range(4)
+        ]
+        assert early == [[], [], [], []]
+
+        # The fifth settled outcome completes the interval and triggers exactly one audit.
+        checkpoint_ids = queue.record_outcomes([
+            {"worker_id": "worker-4", "status": "rejected", "summary": "No bridge."},
+        ])
+        assert checkpoint_ids == ["checkpoint-0005"]
+        decisions = queue.wait_for_decisions(checkpoint_ids, timeout_seconds=2.0)
+    finally:
+        queue.stop()
+
+    assert audited_checkpoints == ["checkpoint-0005"]
+    assert decisions[0]["verdict"] == "INSUFFICIENT_EVIDENCE"
+
+
+def test_outcome_audit_is_derived_for_the_executed_proposal_without_rewriting_it(tmp_path):
+    layout = _layout(tmp_path)
+    plans_dir = layout.workspace_dir / "curation_records" / "research_plans"
+    plans_dir.mkdir(parents=True)
+    plan_path = plans_dir / "plan-history.json"
+    plan_body = json.dumps({
+        "plan_id": "plan-history",
+        "recommendation": {"research_plan": {"objective": "Close the bridge.", "strategy": "Test the bridge.", "tracks": []}},
+    })
+    plan_path.write_text(plan_body, encoding="utf-8")
+
+    def audit_runner(_evidence_path, _prompt):
+        return """### Progress Verdict
+VERDICT: STALLED
+### Current Best Verified Position
+None.
+### Terminal Gap
+Prove the bridge.
+### Outcome Classification
+- failed
+### Repeated Avoided Obligation
+The bridge.
+### Route Contract Signals
+- `plan-history` / `route` / `first`: inconclusive.
+### Cited Evidence
+- progress_audits/checkpoint-0001/evidence.md
+BLOCKER_SOURCE_DIFFICULTY_ID: NONE
+BLOCKER_STATEMENT: NONE
+"""
+
+    queue = ProgressAuditQueue(
+        layout=layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        outcomes_per_audit=1,
+        audit_runner=audit_runner,
+    )
+    queue.start()
+    try:
+        checkpoint_ids = queue.record_outcomes([
+            {"worker_id": "worker-history", "status": "rejected", "research_plan_id": "plan-history"},
+        ])
+        queue.wait_for_decisions(checkpoint_ids, timeout_seconds=2.0)
+    finally:
+        queue.stop()
+
+    # The audit thread must never write research-plan files: the orchestrator is their
+    # single writer, so a concurrent plan update cannot lose an audit verdict.
+    assert plan_path.read_text(encoding="utf-8") == plan_body
+
+    derived = plan_outcome_assessments(layout.workspace_dir)
+    assert derived["plan-history"][0]["verdict"] == "STALLED"
+    assert derived["plan-history"][0]["terminal_gap"] == "Prove the bridge."
+
+    summary = research_plan_execution_summary(layout.workspace_dir)
+    plan = next(item for item in summary if item["plan_id"] == "plan-history")
+    assert plan["outcome_assessments"][0]["verdict"] == "STALLED"
+
+
 def test_task_output_batch_waits_for_compact_checkpoint_decision(tmp_path):
     layout = _layout(tmp_path)
 
@@ -199,10 +321,58 @@ BLOCKER_STATEMENT: Prove the missing bridge lemma.
             "source_difficulty_id": "worker-1-difficulty",
             "statement": "Prove the missing bridge lemma.",
         },
-        "recommended_next_action": "",
+        "route_contract_signals": "",
+        "stagnation_streak": 1,
+        "stagnation_level": "NONE",
         "evidence_path": "progress_audits/checkpoint-0001/evidence.md",
         "audit_path": "progress_audits/checkpoint-0001/audit.md",
     }]
+
+
+def test_progress_audit_preserves_route_contract_signals_without_route_selection(tmp_path):
+    layout = _layout(tmp_path)
+
+    def audit_runner(_evidence_path, _prompt):
+        return """### Progress Verdict
+VERDICT: MISALIGNED
+### Current Best Verified Position
+A local counterexample is verified.
+### Terminal Gap
+Find a route compatible with the counterexample.
+### Outcome Classification
+- supporting
+### Repeated Avoided Obligation
+None.
+### Route Contract Signals
+- `plan-a` / `route-a` / `test-assumption`: contradicts — `verified_propositions/counterexample.md` refutes the current milestone premise; no replacement route is selected.
+### Recommended Next Action
+State the remaining mathematical obligation.
+### Cited Evidence
+- `verified_propositions/counterexample.md`
+BLOCKER_SOURCE_DIFFICULTY_ID: NONE
+BLOCKER_STATEMENT: NONE
+"""
+
+    queue = ProgressAuditQueue(
+        layout=layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        outcomes_per_audit=1,
+        audit_runner=audit_runner,
+    )
+    queue.start()
+    try:
+        checkpoint_ids = queue.record_outcomes([
+            {"worker_id": "worker-1", "status": "verified", "summary": "Counterexample."},
+        ])
+        decisions = queue.wait_for_decisions(checkpoint_ids, timeout_seconds=2.0)
+    finally:
+        queue.stop()
+
+    assert decisions[0]["verdict"] == "MISALIGNED"
+    assert "route-a" in decisions[0]["route_contract_signals"]
+    assert "contradicts" in decisions[0]["route_contract_signals"]
+    assert "replacement route" in decisions[0]["route_contract_signals"]
 
 
 def test_process_audit_evidence_joins_global_plan_tracks_to_proposition_refs(tmp_path):
@@ -293,3 +463,173 @@ def test_global_plan_history_keeps_all_plans_and_track_outcomes(tmp_path):
 
     assert len(summary) == 41
     assert len(first["tracks"][0]["outcomes"]) == 17
+
+
+def test_stagnation_streak_accumulates_across_checkpoints_with_the_same_blocker(tmp_path):
+    """Runtime bookkeeping, not LLM self-report: repeated STALLED + same blocker escalates.
+
+    With `stagnation_force_pivot_streak=3` (configurable policy), WATCH fires at streak 1,
+    ESCALATE at streak 2, and FORCE_PIVOT once the streak reaches the configured threshold.
+    """
+    layout = _layout(tmp_path)
+
+    def make_audit_runner(blocker_statement: str):
+        def audit_runner(_evidence_path, _prompt):
+            return f"""### Progress Verdict
+VERDICT: STALLED
+### Current Best Verified Position
+None.
+### Terminal Gap
+{blocker_statement}
+### Outcome Classification
+- failed
+### Repeated Avoided Obligation
+{blocker_statement}
+### Route Contract Signals
+None.
+### Cited Evidence
+- progress_audits/checkpoint/evidence.md
+BLOCKER_SOURCE_DIFFICULTY_ID: shared-blocker
+BLOCKER_STATEMENT: {blocker_statement}
+"""
+        return audit_runner
+
+    queue = ProgressAuditQueue(
+        layout=layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        outcomes_per_audit=1,
+        stagnation_force_pivot_streak=3,
+        audit_runner=make_audit_runner("Prove the m>=3 composition gate."),
+    )
+    queue.start()
+    try:
+        levels = []
+        for index in range(3):
+            checkpoint_ids = queue.record_outcomes([
+                {"worker_id": f"worker-{index}", "status": "rejected", "summary": "No bridge."},
+            ])
+            decisions = queue.wait_for_decisions(checkpoint_ids, timeout_seconds=2.0)
+            levels.append((decisions[0]["stagnation_streak"], decisions[0]["stagnation_level"]))
+    finally:
+        queue.stop()
+
+    assert levels == [(1, "WATCH"), (2, "ESCALATE"), (3, "FORCE_PIVOT")]
+
+
+def test_stagnation_streak_resets_when_the_blocker_changes(tmp_path):
+    """A genuinely different obligation must not inherit the old streak."""
+    layout = _layout(tmp_path)
+    statements = iter([
+        "Prove the m>=3 composition gate.",
+        "Prove the m>=3 composition gate.",
+        "Prove a completely different obligation.",
+    ])
+
+    def audit_runner(_evidence_path, _prompt):
+        statement = next(statements)
+        return f"""### Progress Verdict
+VERDICT: STALLED
+### Current Best Verified Position
+None.
+### Terminal Gap
+{statement}
+### Outcome Classification
+- failed
+### Repeated Avoided Obligation
+{statement}
+### Route Contract Signals
+None.
+### Cited Evidence
+- progress_audits/checkpoint/evidence.md
+BLOCKER_SOURCE_DIFFICULTY_ID: shared-blocker
+BLOCKER_STATEMENT: {statement}
+"""
+
+    queue = ProgressAuditQueue(
+        layout=layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        outcomes_per_audit=1,
+        stagnation_force_pivot_streak=3,
+        audit_runner=audit_runner,
+    )
+    queue.start()
+    try:
+        streaks = []
+        for index in range(3):
+            checkpoint_ids = queue.record_outcomes([
+                {"worker_id": f"worker-{index}", "status": "rejected", "summary": "No bridge."},
+            ])
+            decisions = queue.wait_for_decisions(checkpoint_ids, timeout_seconds=2.0)
+            streaks.append(decisions[0]["stagnation_streak"])
+    finally:
+        queue.stop()
+
+    assert streaks == [1, 2, 1]
+
+
+def test_stagnation_streak_resets_on_advancing_verdict(tmp_path):
+    """A verdict outside STALLED/MISALIGNED (e.g. ADVANCING) must reset the streak to 0."""
+    layout = _layout(tmp_path)
+    reports = iter([
+        """### Progress Verdict
+VERDICT: STALLED
+### Current Best Verified Position
+None.
+### Terminal Gap
+Prove the gate.
+### Outcome Classification
+- failed
+### Repeated Avoided Obligation
+Prove the gate.
+### Route Contract Signals
+None.
+### Cited Evidence
+- progress_audits/checkpoint/evidence.md
+BLOCKER_SOURCE_DIFFICULTY_ID: shared-blocker
+BLOCKER_STATEMENT: Prove the gate.
+""",
+        """### Progress Verdict
+VERDICT: ADVANCING
+### Current Best Verified Position
+A new bridge is verified.
+### Terminal Gap
+Prove the gate.
+### Outcome Classification
+- direct_advance
+### Repeated Avoided Obligation
+None.
+### Route Contract Signals
+None.
+### Cited Evidence
+- verified_propositions/bridge.md
+BLOCKER_SOURCE_DIFFICULTY_ID: NONE
+BLOCKER_STATEMENT: NONE
+""",
+    ])
+
+    def audit_runner(_evidence_path, _prompt):
+        return next(reports)
+
+    queue = ProgressAuditQueue(
+        layout=layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        outcomes_per_audit=1,
+        stagnation_force_pivot_streak=3,
+        audit_runner=audit_runner,
+    )
+    queue.start()
+    try:
+        streaks = []
+        for index in range(2):
+            checkpoint_ids = queue.record_outcomes([
+                {"worker_id": f"worker-{index}", "status": "rejected", "summary": "No bridge."},
+            ])
+            decisions = queue.wait_for_decisions(checkpoint_ids, timeout_seconds=2.0)
+            streaks.append((decisions[0]["stagnation_streak"], decisions[0]["stagnation_level"]))
+    finally:
+        queue.stop()
+
+    assert streaks == [(1, "WATCH"), (0, "NONE")]

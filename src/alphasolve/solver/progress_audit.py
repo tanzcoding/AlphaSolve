@@ -1,4 +1,4 @@
-"""Asynchronous, persisted strategic progress audits for AlphaSolve workers."""
+"""Persisted, blocking strategic audits for AlphaSolve research proposals and outcomes."""
 from __future__ import annotations
 
 import json
@@ -38,14 +38,20 @@ class ProgressAuditTask:
 
 
 class ProgressAuditQueue:
-    """Builds immutable outcome snapshots and audits them off the worker path.
+    """Build immutable audit evidence and expose long-horizon outcome-audit decisions.
 
-    Worker execution only appends a small outcome record and enqueues work. The review
-    itself runs in this queue's background thread, so a slow review never pauses worker
-    execution or the orchestrator's dispatch loop.
+    Worker execution records outcomes first. The worker threads remain independent, but
+    every ``outcomes_per_audit`` settled outcomes trigger one composite portfolio audit
+    that judges whether the accumulated evidence is actually advancing `problem.md`.
+    This is the only audit this queue performs: it never gates an individual reviewer
+    proposal before execution, only the executed portfolio afterward.
     """
 
     DEFAULT_OUTCOMES_PER_AUDIT = 5
+    # Consecutive STALLED/MISALIGNED outcome-audit checkpoints citing the same
+    # `repeated_avoided_obligation` before the runtime marks the next proposal
+    # `stagnation_level=FORCE_PIVOT` (configurable via `stagnation_force_pivot_streak`).
+    DEFAULT_STAGNATION_FORCE_PIVOT_STREAK = 4
 
     def __init__(
         self,
@@ -58,6 +64,7 @@ class ProgressAuditQueue:
         log_session: "LogSession | None" = None,
         stop_event: threading.Event | None = None,
         outcomes_per_audit: int | None = None,
+        stagnation_force_pivot_streak: int | None = None,
         audit_runner: ProgressAuditRunner | None = None,
     ) -> None:
         self.layout = layout
@@ -68,6 +75,9 @@ class ProgressAuditQueue:
         self.log_session = log_session
         self.stop_event = stop_event
         self.outcomes_per_audit = max(1, int(outcomes_per_audit or self.DEFAULT_OUTCOMES_PER_AUDIT))
+        self.stagnation_force_pivot_streak = max(
+            2, int(stagnation_force_pivot_streak or self.DEFAULT_STAGNATION_FORCE_PIVOT_STREAK)
+        )
         self.audit_runner = audit_runner
         self._queue: queue.Queue[ProgressAuditTask | None] = queue.Queue()
         self._thread = threading.Thread(target=self._worker, daemon=True, name="progress-audit")
@@ -171,7 +181,19 @@ class ProgressAuditQueue:
         return recorded
 
     def record_outcomes(self, payloads: list[dict[str, Any]]) -> list[str]:
-        """Persist a TaskOutput batch and return any checkpoint IDs it created."""
+        """Persist a TaskOutput batch and return any checkpoint IDs it created.
+
+        Process audit is a long-horizon composite judgement: whether the portfolio has
+        made real progress, whether the research plan is complete, and whether the plan
+        itself is wrong. That question is only answerable over an accumulated window, so
+        it stays on the ``outcomes_per_audit`` cadence owned by ``_record_outcome``.
+
+        A ``TaskOutput`` batch is *not* such a window. Gating every batch made the audit
+        fire per dispatch round, which both destroyed the sampling interval and turned a
+        long-horizon reviewer into a per-batch rubber stamp. Short-horizon "was the task
+        I just dispatched delivered?" is already answered by the per-worker task audit
+        that the orchestrator runs inside the same harvest.
+        """
         checkpoint_ids: list[str] = []
         for payload in payloads:
             _recorded, checkpoint_id = self._record_outcome(payload)
@@ -296,7 +318,7 @@ class ProgressAuditQueue:
         try:
             prompt = _audit_prompt(task, self.layout.workspace_dir)
             audit_text = self.audit_runner(task.evidence_path, prompt) if self.audit_runner else self._run_auditor(prompt)
-            verdict, terminal_gap, repeated_blocker, _recommendation = _parse_audit(audit_text)
+            verdict, terminal_gap, repeated_blocker, route_contract_signals = _parse_audit(audit_text)
             if verdict is None:
                 status = "invalid_audit"
             decision = {
@@ -306,7 +328,7 @@ class ProgressAuditQueue:
                 "verdict": verdict,
                 "terminal_gap": terminal_gap,
                 "repeated_avoided_obligation": repeated_blocker,
-                "recommended_next_action": "",
+                "route_contract_signals": route_contract_signals,
                 "evidence_path": _relative_to_workspace(task.evidence_path, self.layout.workspace_dir),
                 "audit_path": _relative_to_workspace(task.checkpoint_dir / "audit.md", self.layout.workspace_dir),
                 "created_at": _now_iso(),
@@ -321,7 +343,7 @@ class ProgressAuditQueue:
                 "verdict": None,
                 "terminal_gap": "",
                 "repeated_avoided_obligation": {},
-                "recommended_next_action": "",
+                "route_contract_signals": "",
                 "error": str(exc),
                 "evidence_path": _relative_to_workspace(task.evidence_path, self.layout.workspace_dir),
                 "audit_path": _relative_to_workspace(task.checkpoint_dir / "audit.md", self.layout.workspace_dir),
@@ -371,6 +393,10 @@ class ProgressAuditQueue:
                 item for item in self._state.get("pending_checkpoints") or []
                 if item != task.checkpoint_id
             ]
+            previous_latest = dict(self._state.get("latest") or {})
+            streak = _compute_stagnation_streak(previous_latest, decision)
+            decision["stagnation_streak"] = streak
+            decision["stagnation_level"] = _stagnation_level(streak, self.stagnation_force_pivot_streak)
             self._state["latest"] = decision
             self._state["updated_at"] = _now_iso()
             _write_json(task.checkpoint_dir / "decision.json", decision)
@@ -464,6 +490,10 @@ class ProgressAuditQueue:
             "status": str(payload.get("status") or "unknown"),
             "failure_kind": str(payload.get("failure_kind") or ""),
             "delivery": str(task_audit.get("delivery") or ""),
+            # task auditor 对本条交付相对其分派 milestone 的事实判定（achieved / contradicted /
+            # inconclusive / not_reached）。它是"打回" plan 的运行时依据，必须随不可变 outcome
+            # 一起留存，否则事后无法追溯某次冻结究竟因为哪个具体判定触发。
+            "milestone_disposition": str(task_audit.get("milestone_disposition") or ""),
             "rejection_locus": str(task_audit.get("rejection_locus") or ""),
             "retry_assessment": str(task_audit.get("retry_assessment") or "")[:2000],
             "salvageable_content": str(task_audit.get("salvageable_content") or "")[:2000],
@@ -478,6 +508,7 @@ class ProgressAuditQueue:
             # 不赋予 process auditor 或 curator 任何调度/图写入权。
             "research_plan_id": str(payload.get("research_plan_id") or ""),
             "research_track_id": str(payload.get("research_track_id") or ""),
+            "research_milestone_id": str(payload.get("research_milestone_id") or ""),
             "track_priority": str(payload.get("track_priority") or ""),
             "selection_scope": str(payload.get("selection_scope") or ""),
             "tabu_rule_ids": [str(item) for item in payload.get("tabu_rule_ids") or [] if str(item).strip()],
@@ -515,6 +546,58 @@ class ProgressAuditQueue:
 
     def _save_state_locked(self) -> None:
         _write_json(self.layout.progress_audit_state_path, self._state)
+
+
+def plan_outcome_assessments(
+    workspace_dir: Path,
+    outcomes: list[dict[str, Any]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Derive each proposal's post-execution audit verdicts from immutable records.
+
+    The outcome ledger and the per-checkpoint ``decision.json`` files are already the
+    authoritative records. Deriving this mapping on read keeps the research-plan files
+    single-writer: only the orchestrator writes them, so a background audit can never
+    race with a plan update or lose one.
+    """
+    if outcomes is None:
+        outcomes = _read_jsonl(workspace_dir / "progress_audit_outcomes.jsonl")
+    checkpoints: list[tuple[int, int, dict[str, Any]]] = []
+    audits_dir = workspace_dir / "progress_audits"
+    try:
+        directories = sorted(path for path in audits_dir.glob("checkpoint-*") if path.is_dir())
+    except OSError:
+        directories = []
+    for directory in directories:
+        decision = _read_json_object(directory / "decision.json")
+        if decision is None:
+            continue
+        watermark = int(decision.get("watermark") or 0)
+        manifest = _read_json_object(directory / "manifest.json") or {}
+        previous = int(manifest.get("previous_watermark") or 0)
+        checkpoints.append((watermark, previous, decision))
+    checkpoints.sort(key=lambda item: item[0])
+
+    plan_sequences: dict[str, list[int]] = {}
+    for item in outcomes:
+        plan_id = str(item.get("research_plan_id") or "").strip()
+        if plan_id:
+            plan_sequences.setdefault(plan_id, []).append(int(item.get("sequence") or 0))
+
+    assessments: dict[str, list[dict[str, Any]]] = {}
+    for watermark, previous, decision in checkpoints:
+        compact = {
+            "checkpoint_id": str(decision.get("checkpoint_id") or ""),
+            "watermark": watermark,
+            "verdict": decision.get("verdict"),
+            "terminal_gap": str(decision.get("terminal_gap") or "")[:1200],
+            "route_contract_signals": str(decision.get("route_contract_signals") or "")[:1200],
+            "audit_path": str(decision.get("audit_path") or ""),
+            "created_at": str(decision.get("created_at") or ""),
+        }
+        for plan_id, sequences in plan_sequences.items():
+            if any(previous < sequence <= watermark for sequence in sequences):
+                assessments.setdefault(plan_id, []).append(compact)
+    return assessments
 
 
 def _render_evidence(
@@ -572,6 +655,7 @@ def research_plan_execution_summary(
     """
     if outcomes is None:
         outcomes = _read_jsonl(workspace_dir / "progress_audit_outcomes.jsonl")
+    derived_assessments = plan_outcome_assessments(workspace_dir, outcomes)
     plans_dir = workspace_dir / "curation_records" / "research_plans"
     try:
         # 计划历史是 reviewer 的长期策略记忆，不能只保留最近窗口；原始 outcome
@@ -596,6 +680,9 @@ def research_plan_execution_summary(
             "spawned_worker_ids": [str(item) for item in (value or {}).get("spawned_worker_ids") or [] if str(item).strip()],
             "pending_track_ids": [str(item) for item in (value or {}).get("pending_track_ids") or [] if str(item).strip()],
             "hold_reason": str((value or {}).get("hold_reason") or "")[:2000],
+            "parent_proposal_id": str((value or {}).get("parent_proposal_id") or ""),
+            "evidence_watermark": int((value or {}).get("evidence_watermark") or 0),
+            "outcome_assessments": derived_assessments.get(plan_id, []),
             "objective": "",
             "strategy": "",
             "tracks": {},
@@ -620,6 +707,8 @@ def research_plan_execution_summary(
                 "route_label": str(track.get("route_label") or ""),
                 "tabu_rule_ids": [str(item) for item in track.get("tabu_rule_ids") or [] if str(item).strip()],
                 "research_goal": str(track.get("research_goal") or "")[:2000],
+                "route_contract": dict(track.get("route_contract") or {}) if isinstance(track.get("route_contract"), dict) else {},
+                "milestones": [dict(item) for item in track.get("milestones") or [] if isinstance(item, dict)][:4],
                 "avoid": str(track.get("avoid") or "")[:2000],
                 "outcomes": [],
             }
@@ -636,6 +725,8 @@ def research_plan_execution_summary(
                 "kind": str(item.get("reviewer_step_kind") or ""),
                 "route_label": str(item.get("route_label") or ""),
                 "research_goal": str(item.get("pinned_target") or "")[:2000],
+                "route_contract": {},
+                "milestones": [],
                 "avoid": "",
                 "outcomes": [],
             })
@@ -644,8 +735,10 @@ def research_plan_execution_summary(
             "worker_id": str(item.get("worker_id") or ""),
             "status": str(item.get("status") or "unknown"),
             "delivery": str(item.get("delivery") or "unknown"),
+            "milestone_disposition": str(item.get("milestone_disposition") or ""),
             "failure_kind": str(item.get("failure_kind") or ""),
             "selection_scope": str(item.get("selection_scope") or ""),
+            "research_milestone_id": str(item.get("research_milestone_id") or ""),
             "tabu_rule_ids": [str(value) for value in item.get("tabu_rule_ids") or [] if str(value).strip()],
             "residual_obligation": str(item.get("residual_obligation") or "")[:1200],
             "verified_proposition_ref": _display_path(str(item.get("verified_file") or ""), workspace_dir),
@@ -679,6 +772,8 @@ def _render_research_plan_execution_history(workspace_dir: Path, outcomes: list[
             f"- Execution status: `{plan['execution_status']}`; selected tracks: {', '.join(plan['selected_track_ids']) or 'none'}; spawned workers: {', '.join(plan['spawned_worker_ids']) or 'none'}",
             f"- Pending tracks: {', '.join(plan['pending_track_ids']) or 'none'}",
             f"- HOLD reason: {plan['hold_reason'] or 'none'}",
+            f"- Parent proposal: `{plan['parent_proposal_id'] or 'none'}`; evidence watermark: `{plan['evidence_watermark'] or '-'}`",
+            f"- Outcome audits: {', '.join(str(item.get('verdict') or 'unknown') for item in plan['outcome_assessments']) or 'none recorded'}",
             f"- Objective: {plan['objective'] or 'not recorded'}",
             f"- Strategy: {plan['strategy'] or 'not recorded'}",
         ])
@@ -687,6 +782,8 @@ def _render_research_plan_execution_history(workspace_dir: Path, outcomes: list[
                 f"#### Track `{track['track_id']}` ({track['priority'] or 'unspecified'})",
                 f"- Route: `{track['route_label'] or 'unspecified'}`; kind: `{track['kind'] or 'unspecified'}`",
                 f"- Research goal: {track['research_goal'] or 'not recorded'}",
+                f"- Route contract: hypothesis={str(track.get('route_contract', {}).get('hypothesis') or 'not recorded')[:1200]}; success={str(track.get('route_contract', {}).get('success_condition') or 'not recorded')[:1200]}; failure={str(track.get('route_contract', {}).get('failure_condition') or 'not recorded')[:1200]}; falsification={str(track.get('route_contract', {}).get('falsification_condition') or 'not recorded')[:1200]}",
+                f"- Milestones: {', '.join(str(item.get('milestone_id') or '') for item in track.get('milestones') or [] if isinstance(item, dict)) or 'not recorded'}",
                 f"- Avoid: {track['avoid'] or 'none recorded'}",
             ])
             if not track["outcomes"]:
@@ -695,7 +792,8 @@ def _render_research_plan_execution_history(workspace_dir: Path, outcomes: list[
             for outcome in track["outcomes"]:
                 refs = [ref for ref in (outcome["verified_proposition_ref"], outcome["task_audit_ref"], outcome["local_difficulty_ref"]) if ref]
                 lines.append(
-                    f"- Outcome #{outcome['sequence']} worker `{outcome['worker_id']}`: status=`{outcome['status']}`, delivery=`{outcome['delivery']}`, "
+                    f"- Outcome #{outcome['sequence']} worker `{outcome['worker_id']}` at milestone `{outcome.get('research_milestone_id') or '-'}`: status=`{outcome['status']}`, delivery=`{outcome['delivery']}`, "
+                    f"milestone_disposition=`{outcome.get('milestone_disposition') or 'unknown'}`, "
                     f"failure=`{outcome['failure_kind'] or '-'}`; refs: {', '.join(f'`{ref}`' for ref in refs) or 'none'}"
                 )
                 if outcome["residual_obligation"]:
@@ -716,9 +814,15 @@ def _render_outcomes(
             f"### Outcome {item.get('sequence', '?')}: {item.get('status', 'unknown')}",
             f"- Difficulty / method: `{item.get('difficulty_id') or '(root candidate)'} / {item.get('method_id') or '-'}`",
             f"- Orchestrator session: `{item.get('orchestrator_session_id') or '-'}`",
-            f"- Research plan / track: `{item.get('research_plan_id') or '-'}` / `{item.get('research_track_id') or '-'}` ({item.get('track_priority') or 'unspecified'})",
+            f"- Research plan / track / milestone: `{item.get('research_plan_id') or '-'}` / `{item.get('research_track_id') or '-'}` / `{item.get('research_milestone_id') or '-'}` ({item.get('track_priority') or 'unspecified'})",
             f"- Route / step kind: `{item.get('route_label') or '-'}` / `{item.get('reviewer_step_kind') or '-'}`",
             f"- Delivery: `{item.get('delivery') or 'unknown'}`; task audit: `task_audits/{item.get('worker_id') or '-'}.json`",
+            f"- Milestone disposition: `{item.get('milestone_disposition') or 'unknown'}`"
+            + (
+                f" — rejection locus: `{item.get('rejection_locus')}`"
+                if item.get("milestone_disposition") == "contradicted" and item.get("rejection_locus")
+                else ""
+            ),
             f"- Failure kind: `{item.get('failure_kind') or '-'}`",
             f"- Solves original problem: `{bool(item.get('solved_problem'))}`",
         ])
@@ -771,18 +875,19 @@ def _render_ledger_summary(outcomes: list[dict[str, Any]], workspace_dir: Path) 
     lines = [
         "One row per settled outcome. Read a cited artifact only when the audit needs its exact content.",
         "",
-        "| # | Status | Difficulty | Method | Session | Failure | Verified artifact |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| # | Status | Difficulty | Method | Session | Failure | Milestone disposition | Verified artifact |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in outcomes:
         verified = str(item.get("verified_file") or "").strip()
         verified_cell = f"`{_display_path(verified, workspace_dir)}`" if verified else "-"
         lines.append(
-            "| {sequence} | {status} | `{difficulty}` | `{method}` | `{session}` | `{failure}` | {verified} |".format(
+            "| {sequence} | {status} | `{difficulty}` | `{method}` | `{session}` | `{failure}` | `{disposition}` | {verified} |".format(
                 sequence=item.get("sequence", "?"),
                 status=item.get("status", "unknown"),
                 difficulty=item.get("difficulty_id") or "(root candidate)",
                 method=item.get("method_id") or "-",
+                disposition=item.get("milestone_disposition") or "-",
                 session=item.get("orchestrator_session_id") or "-",
                 failure=item.get("failure_kind") or "-",
                 verified=verified_cell,
@@ -823,6 +928,9 @@ def _write_curation_input(*, layout: "ProjectLayout", task: ProgressAuditTask) -
                 "assigned_target": str(handoff.get("assigned_target") or item.get("pinned_target") or "")[:4000],
                 "method_id": str(item.get("method_id") or ""),
                 "execution_status": str(item.get("status") or ""),
+                # task auditor 的事实判定：一个 contradicted milestone 是 curator 判断
+                # status_updates 时的直接引用依据（见 curator.md 规则3），不是仅由 obstacle 报告推断。
+                "milestone_disposition": str(item.get("milestone_disposition") or ""),
                 "obstacle": str(handoff.get("obstacle") or "")[:4000],
                 "delivered_instead": str(handoff.get("delivered_instead") or "")[:4000],
                 "obstacle_scope": str(handoff.get("obstacle_scope") or "unclear"),
@@ -930,6 +1038,12 @@ def _write_curator_brief(
         "## Current Process Decision",
         f"- Verdict: `{decision.get('verdict') or 'unknown'}`",
         f"- Terminal gap: {decision.get('terminal_gap') or 'not stated'}",
+        "",
+        "## Route Contract Signals (per-milestone factual judgments)",
+        "These are factual `supports`/`contradicts`/`inconclusive`/`off_scope` signals about specific plan milestones, "
+        "not a route selection. Use them only as cited evidence for archiving attempts or, where a signal directly "
+        "supports or contradicts an existing canonical node, for a cited `status_updates` entry.",
+        decision.get("route_contract_signals") or "- None recorded for this checkpoint.",
         "",
         "## Repeated Avoided Obligation",
         _render_blocker_brief(decision.get("repeated_avoided_obligation")),
@@ -1042,12 +1156,14 @@ def _audit_prompt(task: ProgressAuditTask, workspace_dir: Path) -> str:
         "### Terminal Gap\n"
         "### Outcome Classification\n"
         "### Repeated Avoided Obligation\n"
+        "### Route Contract Signals\n"
         "### Cited Evidence\n\n"
         "Classify every new outcome as direct_advance, supporting, incidental, duplicate, or failed. "
         "A mathematically correct result is incidental unless you can cite how it closes a named terminal gap. "
         "A separate per-worker task audit already judged whether each dispatch was delivered; do not re-check acceptance "
-        "criteria here. Your question is whether the portfolio advances `problem.md`. Report only the evidence, terminal gap, "
-        "and repeated failure mechanisms; the research reviewer chooses every next target and method family.\n\n"
+        "criteria here. Your question is whether the portfolio advances `problem.md`. For every newly evidenced plan milestone, record a "
+        "factual `supports`, `contradicts`, `inconclusive`, or `off_scope` route-contract signal with evidence; do not select a replacement "
+        "route. Report only the evidence, terminal gap, and repeated failure mechanisms; the research reviewer chooses every next target and method family.\n\n"
         "If the repeated avoided obligation is concrete enough to give the curator a lead, append these exact candidate lines "
         "after the cited evidence (otherwise write NONE for both):\n"
         "BLOCKER_SOURCE_DIFFICULTY_ID: worker-local-source-id | NONE\n"
@@ -1055,6 +1171,62 @@ def _audit_prompt(task: ProgressAuditTask, workspace_dir: Path) -> str:
         "The auditor does not assign canonical identity, parent edges, or dispatch work. The curator reconciles evidence "
         "into the persistent difficulty DAG at the checkpoint."
     )
+
+
+_STAGNATION_VERDICTS = {"STALLED", "MISALIGNED"}
+
+
+def _normalize_blocker(value: Any) -> str:
+    """Return a comparable key for a repeated_avoided_obligation payload.
+
+    Comparison is deliberately coarse (lower-cased statement text, whitespace
+    collapsed) rather than requiring a stable canonical ID: the auditor writes free
+    text, and small rewordings of the same obligation must still count as the same
+    streak. An empty/missing statement never matches another empty statement, so the
+    absence of a blocker never silently counts as "same blocker across cycles".
+    """
+    if not isinstance(value, dict):
+        return ""
+    statement = " ".join(str(value.get("statement") or "").lower().split())
+    return statement
+
+
+def _compute_stagnation_streak(previous: dict[str, Any], decision: dict[str, Any]) -> int:
+    """Count consecutive checkpoints citing the same blocker under a stalled verdict.
+
+    This is pure runtime bookkeeping over immutable checkpoint decisions -- it does not
+    ask an LLM to remember or self-report a streak. Any verdict outside
+    ``_STAGNATION_VERDICTS`` resets the streak to 0; a matching blocker under a stalled
+    verdict increments the previous streak; a stalled verdict with a new or absent
+    blocker restarts the streak at 1 so an unlabeled-but-real stall still accumulates.
+    """
+    if str(decision.get("verdict") or "").upper() not in _STAGNATION_VERDICTS:
+        return 0
+    current_blocker = _normalize_blocker(decision.get("repeated_avoided_obligation"))
+    previous_blocker = _normalize_blocker(previous.get("repeated_avoided_obligation"))
+    previous_streak = int(previous.get("stagnation_streak") or 0)
+    if current_blocker and current_blocker == previous_blocker:
+        return previous_streak + 1
+    return 1
+
+
+def _stagnation_level(streak: int, force_pivot_streak: int) -> str:
+    """Map a consecutive-stall streak to a coarse escalation level.
+
+    Thresholds are relative to the configured ``force_pivot_streak`` so operators can
+    tune sensitivity (``stagnation_force_pivot_streak`` policy) without touching code:
+    ``WATCH`` at half the threshold, ``ESCALATE`` one short of it, ``FORCE_PIVOT`` once
+    the threshold is reached or exceeded.
+    """
+    if streak <= 0:
+        return "NONE"
+    if streak >= force_pivot_streak:
+        return "FORCE_PIVOT"
+    if streak >= max(2, force_pivot_streak - 1):
+        return "ESCALATE"
+    if streak >= max(1, force_pivot_streak // 2):
+        return "WATCH"
+    return "NONE"
 
 
 def _compact_decision(decision: dict[str, Any]) -> dict[str, Any]:
@@ -1067,7 +1239,9 @@ def _compact_decision(decision: dict[str, Any]) -> dict[str, Any]:
         "terminal_gap": str(decision.get("terminal_gap") or "")[:4000],
         "repeated_avoided_obligation": decision.get("repeated_avoided_obligation")
         if isinstance(decision.get("repeated_avoided_obligation"), dict) else {},
-        "recommended_next_action": str(decision.get("recommended_next_action") or "")[:4000],
+        "route_contract_signals": str(decision.get("route_contract_signals") or "")[:4000],
+        "stagnation_streak": int(decision.get("stagnation_streak") or 0),
+        "stagnation_level": str(decision.get("stagnation_level") or "NONE"),
         "evidence_path": str(decision.get("evidence_path") or ""),
         "audit_path": str(decision.get("audit_path") or ""),
     }
@@ -1082,7 +1256,7 @@ def _parse_audit(text: str) -> tuple[str | None, str, dict[str, Any], str]:
         verdict,
         _extract_section(text, "Terminal Gap"),
         _extract_repeated_blocker(text),
-        _extract_section(text, "Recommended Next Action"),
+        _extract_section(text, "Route Contract Signals"),
     )
 
 

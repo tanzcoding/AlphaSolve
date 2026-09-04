@@ -102,6 +102,52 @@ def test_curator_reads_portfolio_evidence_but_writes_only_knowledge(ws):
     assert access.destructive_protected_file_names == ("index.md", "common-errors.md")
 
 
+def test_curator_can_read_machine_curation_evidence(ws, tmp_path):
+    """curator 的 prompt 要求它先读 canonical DAG 与 curation_input，这些都是 JSON。
+
+    回归自一次真实运行：默认 ``allowed_extensions`` 只含 .md/.py/.lean，导致每个
+    checkpoint 都以 "file extension is not allowed" 拒绝 curator 自己被指派要读的证据，
+    curator 只能靠 knowledge/ 里的 Markdown 镜像推测 DAG。
+    """
+    dag_dir = tmp_path / "curation_records"
+    dag_dir.mkdir(parents=True)
+    (dag_dir / "difficulty_dag.json").write_text('{"nodes": []}', encoding="utf-8")
+    checkpoint = tmp_path / "progress_audits" / "checkpoint-execution-gate-0024"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "curation_input.json").write_text('{"handoffs": []}', encoding="utf-8")
+    (checkpoint / "decision.json").write_text('{"status": "completed"}', encoding="utf-8")
+    (tmp_path / "progress_audit_outcomes.jsonl").write_text('{"sequence": 1}\n', encoding="utf-8")
+
+    access = RoleWorkspaceAccess.curator(ws)
+
+    assert '"nodes": []' in access.read_text_page("curation_records/difficulty_dag.json").output
+    assert '"handoffs": []' in access.read_text_page(
+        "progress_audits/checkpoint-execution-gate-0024/curation_input.json"
+    ).output
+    assert '"status": "completed"' in access.read_text_page(
+        "progress_audits/checkpoint-execution-gate-0024/decision.json"
+    ).output
+    # outcome ledger 位于 workspace 根，不在任何 read root 之下，需要精确开洞。
+    assert '"sequence": 1' in access.read_text_page("progress_audit_outcomes.jsonl").output
+
+
+def test_curator_read_access_to_json_does_not_grant_json_writes(ws, tmp_path):
+    """读机器状态文件是必要的，但 DAG 只能经 CurateDifficultyDag 变更，不能被直接写。"""
+    (tmp_path / "knowledge").mkdir(parents=True)
+    access = RoleWorkspaceAccess.curator(ws)
+
+    assert access.write_allowed_extensions == (".md",)
+    with pytest.raises(ValueError, match="file extension is not allowed"):
+        access.write_text("knowledge/state.json", "{}")
+    assert access.write_text("knowledge/note.md", "# Note\n") == "knowledge/note.md"
+
+
+def test_curator_read_root_violation_names_the_extra_readable_files(ws, tmp_path):
+    access = RoleWorkspaceAccess.curator(ws)
+    with pytest.raises(ValueError, match="progress_audit_outcomes.jsonl"):
+        access.read_text_page("unverified_propositions/prop-abc/proposition.md")
+
+
 def test_curator_reference_text_guardrails(ws, tmp_path):
     references = tmp_path / "knowledge" / "references"
     references.mkdir(parents=True)
@@ -129,10 +175,15 @@ def test_curator_reference_text_guardrails(ws, tmp_path):
         access.delete_path("knowledge/references/source.md")
 
 
-def test_curator_subagent_is_portfolio_read_only(ws):
+def test_curator_subagent_is_portfolio_read_only(ws, tmp_path):
     access = RoleWorkspaceAccess.curator_subagent(ws)
     assert access.read_root_rels == ("knowledge", "progress_audits", "curation_records", "verified_propositions")
     assert access.write_root_rel is None
+
+    dag_dir = tmp_path / "curation_records"
+    dag_dir.mkdir(parents=True)
+    (dag_dir / "difficulty_dag.json").write_text('{"nodes": []}', encoding="utf-8")
+    assert '"nodes": []' in access.read_text_page("curation_records/difficulty_dag.json").output
 
 
 def test_policy_semantics_smoke_write(ws, tmp_path):
@@ -169,3 +220,19 @@ def test_policy_semantics_smoke_read_only(ws, tmp_path):
             "unverified_propositions/prop-abc/anything.md",
             "x",
         )
+
+
+def test_process_auditor_can_read_machine_audit_artifacts(ws, tmp_path):
+    audit_dir = tmp_path / "progress_audits" / "checkpoint-execution-gate-0024"
+    audit_dir.mkdir(parents=True)
+    (audit_dir / "decision.json").write_text('{"status": "completed"}', encoding="utf-8")
+    (audit_dir / "outcomes.jsonl").write_text('{"status": "verified"}\n', encoding="utf-8")
+
+    access = RoleWorkspaceAccess.process_auditor(ws)
+
+    decision = access.read_text_page(
+        "progress_audits/checkpoint-execution-gate-0024/decision.json"
+    )
+    outcomes = access.read_text_page("progress_audits/checkpoint-execution-gate-0024/outcomes.jsonl")
+    assert '"status": "completed"' in decision.output
+    assert '"status": "verified"' in outcomes.output

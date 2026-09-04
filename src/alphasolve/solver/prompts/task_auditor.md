@@ -40,6 +40,9 @@ State the assigned obligation and the proven Statement in one sentence each, the
 ### Residual Obligation
 The precise part of the assigned task that remains open, or `none`. State mathematics, not advice.
 
+### Milestone Disposition
+Classify only the current reviewer milestone's factual status: `achieved` (the required evidence was supplied), `contradicted` (the worker supplied a verified counterexample or structural obstruction to it), `inconclusive` (evidence does not decide it), or `not_reached` (no auditable evidence reached it). This is not a route decision: do not choose a replacement route or infer anything about later milestones.
+
 ### Rejection Diagnosis
 Include this section only when the verifier status is `rejected` or `failed`; otherwise omit it entirely.
 
@@ -65,6 +68,7 @@ Then append exactly these lines:
 ```text
 RUBRIC_SCORE: <passed>/<total>
 SCOPE_DRIFT: <one-sentence drift description>
+MILESTONE_DISPOSITION: achieved | contradicted | inconclusive | not_reached
 ```
 
 On the `SCOPE_DRIFT` line write either the drift description alone or the single word `NONE`. Do not write both and do not carry the `|` separator over from this template: the whole line is parsed verbatim into the orchestrator's decision payload.

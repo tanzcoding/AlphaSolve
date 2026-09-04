@@ -22,6 +22,17 @@ def _plan() -> dict[str, object]:
                         "method_id": "contradiction",
                         "route_label": "exact-variance",
                         "research_goal": "Use full interval variance to settle the cubic bound.",
+                        "route_contract": {
+                            "hypothesis": "Full interval variance carries information absent from the gap relaxation.",
+                            "required_invariants": ["Preserve the full interval constraint."],
+                            "success_condition": "A proof or refutation of the cubic bound through full interval variance.",
+                            "failure_condition": "A witness showing the full interval mechanism cannot control the bound."
+                        },
+                        "milestones": [{
+                            "milestone_id": "three-valued-case",
+                            "objective": "Settle the finite three-valued exact-variance case.",
+                            "evidence_needed": "A proof or a fully checked counterexample for that finite class."
+                        }],
                         "rationale": "It avoids the refuted gap relaxation.",
                         "avoid": "Do not use the two-point gap relaxation.",
                     },
@@ -33,6 +44,17 @@ def _plan() -> dict[str, object]:
                         "method_id": "falsification",
                         "route_label": "full-interval-counterexample",
                         "research_goal": "Test the cubic bound by searching for an admissible witness.",
+                        "route_contract": {
+                            "hypothesis": "A finite admissible witness can falsify the target independently of the primary route.",
+                            "required_invariants": ["The witness must satisfy all original constraints."],
+                            "success_condition": "A valid witness or an exhaustive negative result for the stated finite class.",
+                            "failure_condition": "The finite search space is insufficient to discriminate the route."
+                        },
+                        "milestones": [{
+                            "milestone_id": "finite-witness-search",
+                            "objective": "Search the stated finite admissible class for a counterexample.",
+                            "evidence_needed": "An exact witness or an exhaustive certified negative scan."
+                        }],
                         "rationale": "A witness would decide the primary target.",
                         "avoid": "Do not use prefix-only relaxations.",
                     },
@@ -83,11 +105,13 @@ def test_execute_research_plan_dispatches_multiple_orchestrator_sized_tasks():
             "tasks": [
                 {
                     "track_id": "primary-route",
+                    "milestone_id": "three-valued-case",
                     "task": "Prove the finite three-valued exact-variance case.",
                     "rubric": "- The Statement covers every three-valued step function.\n- The Statement produces an interval with variance above one.",
                 },
                 {
                     "track_id": "challenger-route",
+                    "milestone_id": "finite-witness-search",
                     "task": "Construct and exactly verify a finite admissible counterexample, if one exists.",
                     "rubric": "- The Statement specifies the witness.\n- The Statement proves its moments, interval variance bound, and cubic violation.",
                 },
@@ -101,6 +125,7 @@ def test_execute_research_plan_dispatches_multiple_orchestrator_sized_tasks():
     assert [item["route_label"] for item in spawned] == ["exact-variance", "full-interval-counterexample"]
     assert [item["research_plan_id"] for item in spawned] == ["plan-test", "plan-test"]
     assert [item["research_track_id"] for item in spawned] == ["primary-route", "challenger-route"]
+    assert [item["research_milestone_id"] for item in spawned] == ["three-valued-case", "finite-witness-search"]
     assert [item["track_priority"] for item in spawned] == ["primary", "challenger"]
     assert [item["pinned_target"] for item in spawned] == [
         "Use full interval variance to settle the cubic bound.",
@@ -109,6 +134,32 @@ def test_execute_research_plan_dispatches_multiple_orchestrator_sized_tasks():
     assert "Prove the finite three-valued exact-variance case." in spawned[0]["hint"]
     assert "Research track" in spawned[0]["hint"]
     assert orchestrator._research_plans["plan-test"]["execution_status"] == "executed"
+
+
+def test_execute_research_plan_rejects_noncurrent_milestone():
+    orchestrator, _spawned = _orchestrator()
+
+    class Manager:
+        def has_available_worker_slot(self) -> bool:
+            return True
+
+    result = orchestrator._execute_research_plan_tool(
+        Manager(),
+        {
+            "plan_id": "plan-test",
+            "tasks": [{
+                "track_id": "primary-route",
+                "milestone_id": "skipped-stage",
+                "task": "Skip to a later route stage.",
+                "rubric": "- The Statement proves the skipped stage.",
+            }],
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.content)
+    assert payload["error"] == "task must target the track's current reviewer milestone"
+    assert payload["expected_milestone_id"] == "three-valued-case"
 
 
 def test_execute_research_plan_rejects_duplicate_or_unknown_track():
@@ -123,8 +174,8 @@ def test_execute_research_plan_rejects_duplicate_or_unknown_track():
         {
             "plan_id": "plan-test",
             "tasks": [
-                {"track_id": "primary-route", "task": "First artifact.", "rubric": "- First."},
-                {"track_id": "primary-route", "task": "Second artifact.", "rubric": "- Second."},
+                {"track_id": "primary-route", "milestone_id": "three-valued-case", "task": "First artifact.", "rubric": "- First."},
+                {"track_id": "primary-route", "milestone_id": "three-valued-case", "task": "Second artifact.", "rubric": "- Second."},
             ],
         },
     )
@@ -135,7 +186,7 @@ def test_execute_research_plan_rejects_duplicate_or_unknown_track():
         Manager(),
         {
             "plan_id": "plan-test",
-            "tasks": [{"track_id": "not-in-plan", "task": "Task.", "rubric": "- Criterion."}],
+            "tasks": [{"track_id": "not-in-plan", "milestone_id": "unknown", "task": "Task.", "rubric": "- Criterion."}],
         },
     )
     assert unknown.is_error
@@ -151,7 +202,7 @@ def test_busy_worker_pool_keeps_research_plan_retryable():
 
     result = orchestrator._execute_research_plan_tool(
         BusyManager(),
-        {"plan_id": "plan-test", "tasks": [{"track_id": "primary-route", "task": "Task.", "rubric": "- Criterion."}]},
+        {"plan_id": "plan-test", "tasks": [{"track_id": "primary-route", "milestone_id": "three-valued-case", "task": "Task.", "rubric": "- Criterion."}]},
     )
     payload = json.loads(result.content)
 
@@ -197,8 +248,8 @@ def test_partially_executed_plan_keeps_unspawned_track_retryable():
         {
             "plan_id": "plan-test",
             "tasks": [
-                {"track_id": "primary-route", "task": "Primary artifact.", "rubric": "- Primary."},
-                {"track_id": "challenger-route", "task": "Challenger artifact.", "rubric": "- Challenger."},
+                {"track_id": "primary-route", "milestone_id": "three-valued-case", "task": "Primary artifact.", "rubric": "- Primary."},
+                {"track_id": "challenger-route", "milestone_id": "finite-witness-search", "task": "Challenger artifact.", "rubric": "- Challenger."},
             ],
         },
     )
@@ -211,13 +262,82 @@ def test_partially_executed_plan_keeps_unspawned_track_retryable():
     manager.active = 0
     second = orchestrator._execute_research_plan_tool(
         manager,
-        {"plan_id": "plan-test", "tasks": [{"track_id": "challenger-route", "task": "Challenger artifact.", "rubric": "- Challenger."}]},
+        {"plan_id": "plan-test", "tasks": [{"track_id": "challenger-route", "milestone_id": "finite-witness-search", "task": "Challenger artifact.", "rubric": "- Challenger."}]},
     )
     second_payload = json.loads(second.content)
 
     assert second_payload["execution_status"] == "executed"
     assert second_payload["pending_track_ids"] == []
     assert [item["research_track_id"] for item in spawned] == ["primary-route", "challenger-route"]
+
+
+def test_execute_research_plan_requires_fresh_review_after_milestone_contradiction():
+    orchestrator, _spawned = _orchestrator()
+    orchestrator._research_plans["plan-test"]["reassessment_required"] = True
+    orchestrator._research_plans["plan-test"]["reassessment_reason"] = "Worker refuted the current coupling premise."
+
+    class Manager:
+        def has_available_worker_slot(self) -> bool:
+            return True
+
+    result = orchestrator._execute_research_plan_tool(
+        Manager(),
+        {
+            "plan_id": "plan-test",
+            "tasks": [{
+                "track_id": "primary-route",
+                "milestone_id": "three-valued-case",
+                "task": "Continue the old route.",
+                "rubric": "- The Statement completes the route.",
+            }],
+        },
+    )
+
+    assert result.is_error
+    payload = json.loads(result.content)
+    assert payload["error"] == "research plan requires fresh reviewer review"
+    assert "refuted" in payload["reason"]
+
+
+def test_execute_research_plan_rebases_after_unrelated_frontier_update():
+    orchestrator, spawned = _orchestrator()
+
+    class RebaseGateway:
+        def revalidate_plan_targets(self, *, frontier_revision, target_snapshot, selected_tracks):
+            assert frontier_revision == "frontier-r1"
+            assert target_snapshot is None  # Legacy plan fixture remains safe for this mock.
+            assert [track["track_id"] for track in selected_tracks] == ["primary-route"]
+            return {
+                "allowed": True,
+                "revalidation": "rebased_unaffected",
+                "frontier_revision": "frontier-r2",
+            }
+
+    class Manager:
+        def __init__(self) -> None:
+            self.active = 0
+
+        def has_available_worker_slot(self) -> bool:
+            return self.active < 1
+
+    orchestrator._reviewer_plan_gateway = RebaseGateway()
+    result = orchestrator._execute_research_plan_tool(
+        Manager(),
+        {"plan_id": "plan-test", "tasks": [{
+            "track_id": "primary-route",
+            "milestone_id": "three-valued-case",
+            "task": "Produce the primary artifact.",
+            "rubric": "- The Statement settles the finite case.",
+        }]},
+    )
+    payload = json.loads(result.content)
+
+    assert not result.is_error
+    assert payload["executed"] is True
+    assert len(spawned) == 1
+    plan = orchestrator._research_plans["plan-test"]
+    assert plan["frontier_revision"] == "frontier-r2"
+    assert plan["frontier_revalidations"][0]["result"] == "rebased_unaffected"
 
 
 def test_execute_research_plan_rejects_stale_or_reused_plan():
@@ -234,7 +354,7 @@ def test_execute_research_plan_rejects_stale_or_reused_plan():
     orchestrator._reviewer_plan_gateway = StaleGateway()
     stale = orchestrator._execute_research_plan_tool(
         Manager(),
-        {"plan_id": "plan-test", "tasks": [{"track_id": "primary-route", "task": "Task.", "rubric": "- Criterion."}]},
+        {"plan_id": "plan-test", "tasks": [{"track_id": "primary-route", "milestone_id": "three-valued-case", "task": "Task.", "rubric": "- Criterion."}]},
     )
     stale_payload = json.loads(stale.content)
     assert stale_payload["reason"] == "reviewer_plan_stale"
@@ -242,7 +362,7 @@ def test_execute_research_plan_rejects_stale_or_reused_plan():
     orchestrator._research_plans["plan-test"]["execution_status"] = "executed"
     duplicate = orchestrator._execute_research_plan_tool(
         Manager(),
-        {"plan_id": "plan-test", "tasks": [{"track_id": "primary-route", "task": "Task.", "rubric": "- Criterion."}]},
+        {"plan_id": "plan-test", "tasks": [{"track_id": "primary-route", "milestone_id": "three-valued-case", "task": "Task.", "rubric": "- Criterion."}]},
     )
     assert duplicate.is_error
     assert json.loads(duplicate.content)["error"] == "research plan has already been executed"

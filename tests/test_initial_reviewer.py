@@ -19,7 +19,7 @@ def _response(content: str) -> CompletionResponse:
     return CompletionResponse(message=Message(role="assistant", content=content), finish_reason="stop")
 
 
-def test_orchestrator_requests_reviewer_plan_at_startup(tmp_path):
+def test_orchestrator_exposes_reviewer_as_tool_without_startup_call(tmp_path):
     (tmp_path / "problem.md").write_text("# Problem\n\nProve the target.\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()
@@ -40,7 +40,7 @@ def test_orchestrator_requests_reviewer_plan_at_startup(tmp_path):
             if self.role == "orchestrator":
                 assert any(tool.name == "RequestResearchPlan" for tool in tools)
                 assert not any(tool.name == "Agent" for tool in tools)
-                return _response("Use the startup reviewer plan.")
+                return _response("Use RequestResearchPlan before choosing a route.")
             if self.role == "research_reviewer":
                 return _response(
                     "### Research Strategy JSON\n```json\n"
@@ -62,29 +62,31 @@ def test_orchestrator_requests_reviewer_plan_at_startup(tmp_path):
     result = orchestrator.run()
 
     assert result.worker_results == []
-    assert len(calls["research_reviewer"]) == 1
+    assert len(calls["research_reviewer"]) == 0
     assert len(calls["orchestrator"]) == 1
-    assert "initial portfolio plan at startup" in calls["orchestrator"][0][-1].content
-    assert orchestrator._startup_reviewer_plan["requested"] is True
-    assert orchestrator._startup_reviewer_plan["plan_id"].startswith("plan-")
+    assert "No research reviewer plan is precomputed" in calls["orchestrator"][0][-1].content
+    assert "RequestResearchPlan" in calls["orchestrator"][0][-1].content
 
 
-def test_orchestrator_allows_repeated_research_plans_when_new_evidence_requires_review(tmp_path):
+def test_repeated_research_plan_requires_reflection_on_the_prior_proposal(tmp_path):
     (tmp_path / "problem.md").write_text("# Problem\n\nProve the target.\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()
     suite = load_agent_suite(Path(solver_pkg.__file__).parent / "config")
     orchestrator = Orchestrator(layout=layout, suite=suite, client_factory=lambda _config: None)
-    calls: list[str] = []
+    prompts: list[str] = []
+    reflection = {"value": ""}
 
     class PlanningService:
         def call(self, agent_type, description, prompt):
             assert agent_type == "research_reviewer"
             assert "process_audit" in prompt
-            calls.append(description)
+            prompts.append(prompt)
             return (
                 "### Research Strategy JSON\n```json\n"
-                '{"research_plan":{"objective":"Test the bridge direction.","strategy":"Keep one bridge route live.","tracks":[{"track_id":"bounded-bridge","priority":"primary","kind":"NEW_DIRECTION","difficulty_id":"","method_id":"direct_proof","route_label":"bounded-bridge","research_goal":"Determine whether the bridge route can close the target.","rationale":"It is the only currently supported direction.","avoid":"Do not repeat refuted routes."}]},"graph_observations":[]}\n'
+                '{"research_plan":{"objective":"Test the bridge direction.","strategy":"Keep one bridge route live.",'
+                + reflection["value"]
+                + '"tracks":[{"track_id":"bounded-bridge","priority":"primary","kind":"NEW_DIRECTION","difficulty_id":"","method_id":"direct_proof","route_label":"bounded-bridge","research_goal":"Determine whether the bridge route can close the target.","rationale":"It is the only currently supported direction.","avoid":"Do not repeat refuted routes."}]},"graph_observations":[]}\n'
                 "```"
             )
 
@@ -100,11 +102,49 @@ def test_orchestrator_allows_repeated_research_plans_when_new_evidence_requires_
     orchestrator._progress_audit_queue = None
 
     first = orchestrator._request_research_plan_tool(Manager(), {})
-    second = orchestrator._request_research_plan_tool(Manager(), {})
-
     assert not first.is_error
-    assert not second.is_error
-    assert len(calls) == 2
+    assert "this retrospective is optional" in prompts[0]
+    plan_id = json.loads(first.content)["plan_id"]
+
+    # Only a settled, executed-portfolio outcome audit forces reflection -- never the
+    # proposal itself, which now goes straight to the orchestrator without a pre-execution
+    # gate. Simulate the periodic process auditor having settled one outcome against it.
+    layout.progress_audit_outcomes_path.write_text(json.dumps({
+        "sequence": 1,
+        "worker_id": "worker-1",
+        "research_plan_id": plan_id,
+        "status": "rejected",
+    }) + "\n", encoding="utf-8")
+    checkpoint_dir = layout.progress_audits_dir / "checkpoint-0001"
+    checkpoint_dir.mkdir(parents=True)
+    (checkpoint_dir / "manifest.json").write_text(json.dumps({"previous_watermark": 0}), encoding="utf-8")
+    (checkpoint_dir / "decision.json").write_text(json.dumps({
+        "checkpoint_id": "checkpoint-0001",
+        "watermark": 1,
+        "verdict": "STALLED",
+        "terminal_gap": "Prove the bridge.",
+    }), encoding="utf-8")
+
+    # The first proposal now has settled outcome-audit evidence, so a fresh plan that
+    # ignores it is rejected.
+    without_reflection = orchestrator._request_research_plan_tool(Manager(), {})
+    assert without_reflection.is_error
+    payload = json.loads(without_reflection.content)
+    assert payload["reflection_required"] is True
+    assert "prior_proposal_review" in payload["message"]
+    assert "This retrospective is mandatory" in prompts[1]
+
+    reflection["value"] = (
+        '"prior_proposal_review":{"proposal_id":"plan-earlier","claimed_hypothesis":"The bridge route closes the target.",'
+        '"what_evidence_showed":"The periodic outcome audit reported STALLED with no discriminating first milestone.",'
+        '"decision":"LOCAL_REPAIR","reason":"The mechanism survives but its first artifact must be narrowed."},'
+    )
+    with_reflection = orchestrator._request_research_plan_tool(Manager(), {})
+
+    assert not with_reflection.is_error
+    plan = json.loads(with_reflection.content)["recommendation"]["research_plan"]
+    assert plan["prior_proposal_review"]["decision"] == "LOCAL_REPAIR"
+    assert len(prompts) == 3
 
 
 def test_reviewer_projection_keeps_realtime_task_audit_and_route_attribution():
@@ -140,8 +180,12 @@ def test_reviewer_projection_keeps_realtime_task_audit_and_route_attribution():
         "method_id": "direct_proof",
         "route_label": "exact-variance",
         "reviewer_step_kind": "TARGET_NODE",
+        "research_plan_id": "",
+        "research_track_id": "",
+        "research_milestone_id": "",
         "failure_kind": "",
         "delivery": "off_target",
+        "milestone_disposition": "inconclusive",
         "scope_drift": "The sharp bound was weakened.",
         "residual_obligation": "Prove the sharp bound.",
         "rejection_locus": "",

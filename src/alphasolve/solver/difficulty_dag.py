@@ -81,6 +81,40 @@ def _text(value: Any, *, field: str, limit: int = 4000) -> str:
     return text
 
 
+# A Statement states only the mathematical claim that is open or established. It must not
+# accumulate a chronological narrative of archived routes (per-attempt prose, inline "(#NN, ...)"
+# citation chains, or a baked-in proof-architecture assumption): that history belongs in
+# evidence_refs, or — once a route is a genuinely distinct, seriously-attempted proof architecture —
+# in its own `alternative` child node. This budget is intentionally tighter than the historical 4000
+# character default so a Statement that has drifted into narrative is rejected at the next curation
+# call that touches it, rather than growing unboundedly across checkpoints.
+_STATEMENT_MAX_CHARS = 800
+
+
+def _statement_text(value: Any, *, field: str, grandfathered_len: int = 0) -> str:
+    """Enforce the Statement budget without breaking pre-existing over-budget nodes.
+
+    Data curated before this budget existed (notably the current root difficulty) already
+    exceeds ``_STATEMENT_MAX_CHARS``. Hard-failing every future touch of such a node — even a
+    routine merge that only appends evidence_refs and leaves the wording unchanged — would
+    freeze curation on exactly the nodes this budget most needs to reach. So the effective
+    limit is a one-way ratchet: never looser than ``_STATEMENT_MAX_CHARS``, but grandfathered up
+    to the node's current stored length so it can still be touched; growing it further, or any
+    brand-new node, is held to the tight budget.
+    """
+    effective_limit = max(_STATEMENT_MAX_CHARS, grandfathered_len)
+    try:
+        return _text(value, field=field, limit=effective_limit)
+    except ValueError as exc:
+        raise ValueError(
+            f"{exc}. A Statement holds only the open/established claim, not archived-route history: "
+            "move per-attempt narrative and citations into evidence_refs, and if a route is a "
+            "genuinely distinct, seriously-attempted proof architecture, extract it as its own child "
+            "node (relation_to_parent=alternative, with resolution_policy=any_of on the parent) "
+            "instead of folding it into this node's prose."
+        ) from exc
+
+
 def _string_list(value: Any, *, field: str, limit: int = 32) -> list[str]:
     if value is None:
         return []
@@ -95,6 +129,33 @@ def _attempt_obstacle_field(record: dict[str, Any], key: str) -> str:
     if not isinstance(handoff, dict):
         return ""
     return " ".join(str(handoff.get(key) or "").split())
+
+
+# Category priority for truncating a node's accumulated `evidence_refs`. A node's evidence
+# only ever grows (curation never prunes it), and plain alphabetical truncation silently
+# favors `knowledge/*` over `verified_propositions/*` purely because 'k' < 'v' — exactly
+# inverting the evidentiary hierarchy the reviewer is told to use ("only verified
+# propositions are established mathematical facts... knowledge is a navigation aid only",
+# research_reviewer.md). Selecting by this priority first, alphabetically within each
+# category, keeps the highest-value evidence visible regardless of how large a
+# long-lived node's full evidence list grows.
+_EVIDENCE_REF_CATEGORY_ORDER = (
+    "verified_propositions/",
+    "progress_audits/",
+    "task_audits/",
+    "unverified_propositions/",
+    "knowledge/",
+)
+_EVIDENCE_REFS_PROJECTION_LIMIT = 64
+
+
+def _prioritized_evidence_refs(refs: list[str], *, limit: int = _EVIDENCE_REFS_PROJECTION_LIMIT) -> list[str]:
+    def _category(ref: str) -> int:
+        for index, prefix in enumerate(_EVIDENCE_REF_CATEGORY_ORDER):
+            if ref.startswith(prefix):
+                return index
+        return len(_EVIDENCE_REF_CATEGORY_ORDER)
+    return sorted(refs, key=lambda ref: (_category(ref), ref))[:limit]
 
 
 class DifficultyDagStore:
@@ -339,6 +400,12 @@ class DifficultyDagStore:
                     "rejection_locus": str(item.get("rejection_locus") or ""),
                     "route_label": str(item.get("route_label") or ""),
                     "reviewer_step_kind": str(item.get("reviewer_step_kind") or ""),
+                    # Provenance: which research plan/track/milestone dispatched this attempt.
+                    # Empty for legacy outcomes recorded before this attribution existed, and for
+                    # attempts dispatched outside any research plan (e.g. a direct global attack).
+                    "research_plan_id": str(item.get("research_plan_id") or ""),
+                    "research_track_id": str(item.get("research_track_id") or ""),
+                    "research_milestone_id": str(item.get("research_milestone_id") or ""),
                     "obstacle_scope": str(item.get("obstacle_scope") or ""),
                     "obstacle_digest": str(item.get("obstacle_digest") or ""),
                     "salvageable_digest": str(item.get("salvageable_digest") or ""),
@@ -347,17 +414,25 @@ class DifficultyDagStore:
             ][-8:]
             public_nodes.append({
                 "difficulty_id": difficulty_id,
-                "statement": str(node.get("statement") or "")[:1600],
+                # A generous fixed ceiling, not the enforcement budget: _statement_text's one-way
+                # ratchet already bounds how long any node's stored Statement can be edited to, but
+                # a node curated before that budget existed may still be grandfathered above it.
+                # This ceiling only exists as a payload safety net and must stay comfortably above
+                # any such grandfathered length so this display step never cuts one off mid-sentence.
+                "statement": str(node.get("statement") or "")[:4000],
                 "status": str(node.get("status") or "open"),
+                "created_at": str(node.get("created_at") or ""),
                 "parent_ids": sorted(str(item) for item in node.get("parent_ids") or []),
                 "child_ids": children.get(difficulty_id, []),
                 "relation_to_parent": str(node.get("relation_to_parent") or "prerequisite"),
                 "resolution_policy": str(node.get("resolution_policy") or "manual"),
-                "evidence_refs": [str(item) for item in node.get("evidence_refs") or []][:16],
+                "evidence_refs": _prioritized_evidence_refs([str(item) for item in node.get("evidence_refs") or []]),
                 "progress": {
                     "attempt_count": int(progress.get("attempt_count") or 0),
                     "last_attempt_at": str(progress.get("last_attempt_at") or ""),
-                    "verified_proposition_refs": [str(item) for item in progress.get("verified_proposition_refs") or []][:16],
+                    "verified_proposition_refs": sorted(
+                        str(item) for item in progress.get("verified_proposition_refs") or []
+                    )[:32],
                     "recent_attempts": attempts,
                     **self._attempt_statistics(raw_attempts),
                 },
@@ -720,7 +795,7 @@ class DifficultyDagStore:
             # checkpoint may add evidence, but cannot silently reinterpret a
             # source under a different canonical difficulty.
             normalized = self._reconcile_existing_aliases(
-                state, self._normalize_difficulties(difficulties)
+                state, self._normalize_difficulties(difficulties, state=state)
             )
             nodes = state["nodes"]
             incoming_ids = {item["difficulty_id"] for item in normalized}
@@ -811,6 +886,12 @@ class DifficultyDagStore:
                 # 无法区分"同一条路撞了三次"与"三条独立的路都撞了"。
                 "route_label": str(record.get("route_label") or ""),
                 "reviewer_step_kind": str(record.get("reviewer_step_kind") or ""),
+                # 这次尝试是哪个 research plan/track/milestone 派发的：没有它，"这个 difficulty
+                # 是哪个 plan 产生的"只能靠翻 progress_audit_outcomes.jsonl 按 worker_id 反查——
+                # 现在直接把 dispatch 时已经打上的归因字段投影到节点自己的尝试历史上。
+                "research_plan_id": str(record.get("research_plan_id") or ""),
+                "research_track_id": str(record.get("research_track_id") or ""),
+                "research_milestone_id": str(record.get("research_milestone_id") or ""),
                 "obstacle_scope": _attempt_obstacle_field(record, "obstacle_scope"),
                 "obstacle_digest": _attempt_obstacle_field(record, "obstacle")[:400],
                 # 被拒绝的尝试往往留下若干可复用引理，只有一步是错的。不带上它，
@@ -911,7 +992,7 @@ class DifficultyDagStore:
                 current["status"] = rewritten["status"]
         return list(merged.values())
 
-    def _normalize_difficulties(self, value: Any) -> list[dict[str, Any]]:
+    def _normalize_difficulties(self, value: Any, *, state: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(value, list) or len(value) > 64:
             raise ValueError("difficulties must be an array with at most 64 items")
         items: list[dict[str, Any]] = []
@@ -923,6 +1004,12 @@ class DifficultyDagStore:
             if difficulty_id in seen:
                 raise ValueError("difficulties must not contain duplicate difficulty_id values")
             seen.add(difficulty_id)
+            # Grandfather pre-existing over-budget statements (see _statement_text): resolve the
+            # alias to whatever canonical node already owns this ID, if any, and let its current
+            # stored length set the floor for this touch, instead of hard-blocking every future
+            # curation of a node that predates the tighter budget.
+            existing_node = state.get("nodes", {}).get(self._canonical_id(state, difficulty_id))
+            grandfathered_len = len(str(existing_node.get("statement") or "")) if isinstance(existing_node, dict) else 0
             policy = str(raw.get("resolution_policy") or "manual").strip()
             if policy not in _RESOLUTION_POLICIES:
                 raise ValueError(f"difficulties[{index}].resolution_policy must be one of {sorted(_RESOLUTION_POLICIES)}")
@@ -945,7 +1032,11 @@ class DifficultyDagStore:
                 raise ValueError("each curated difficulty requires source_handoff_ids from checkpoint handoffs")
             items.append({
                 "difficulty_id": difficulty_id,
-                "statement": _text(raw.get("statement"), field=f"difficulties[{index}].statement"),
+                "statement": _statement_text(
+                    raw.get("statement"),
+                    field=f"difficulties[{index}].statement",
+                    grandfathered_len=grandfathered_len,
+                ),
                 "parent_ids": parents,
                 "resolution_policy": policy,
                 "relation_to_parent": relation,
@@ -1353,7 +1444,19 @@ def register_curated_difficulty_dag_tool(
         "type": "object",
         "properties": {
             "difficulty_id": {"type": "string"},
-            "statement": {"type": "string"},
+            "statement": {
+                "type": "string",
+                "description": (
+                    f"The open/established mathematical claim only (max {_STATEMENT_MAX_CHARS} characters for a "
+                    "new node). Do not bake in a specific construction/gadget/proof architecture as if it were "
+                    "required, and do not accumulate archived-route narrative or inline attempt citations here — "
+                    "put those in evidence_refs, or extract a distinct, seriously-attempted architecture as its "
+                    "own child node with relation_to_parent=alternative and resolution_policy=any_of on the "
+                    "parent. An existing node whose stored statement already exceeds this budget is grandfathered "
+                    "so a routine touch is not blocked, but it is a one-way ratchet: you may resubmit it unchanged "
+                    "or shorten it, never lengthen it further, and once shortened the tighter budget applies again."
+                ),
+            },
             "parent_difficulty_ids": {"type": "array", "items": {"type": "string"}},
             "relation_to_parent": {"type": "string", "enum": sorted(_RELATIONS)},
             "resolution_policy": {"type": "string", "enum": sorted(_RESOLUTION_POLICIES)},

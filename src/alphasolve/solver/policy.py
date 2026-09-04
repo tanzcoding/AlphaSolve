@@ -46,6 +46,10 @@ class SolverPolicy:
     subagent_max_depth: int = 1
     max_orchestrator_restarts: int = 50
     progress_audit_every_n_outcomes: int = 5
+    # Consecutive outcome-audit checkpoints citing the same repeated_avoided_obligation
+    # before the runtime force-pivots the next proposal's primary track scope away from
+    # LOCAL_REPAIR/NODE_ROUTE (and away from GLOBAL_SYNTHESIS as an escape hatch).
+    stagnation_force_pivot_streak: int = 4
     cold_start_verified_proposition_threshold: int = 3
     worker_wait_timeout_seconds: float = 3600.0
     verified_propositions_organization_threshold: int = 20
@@ -66,6 +70,7 @@ class SolverPolicy:
         _require_int("subagent_max_depth", self.subagent_max_depth, minimum=0)
         _require_int("max_orchestrator_restarts", self.max_orchestrator_restarts, minimum=1)
         _require_int("progress_audit_every_n_outcomes", self.progress_audit_every_n_outcomes, minimum=1)
+        _require_int("stagnation_force_pivot_streak", self.stagnation_force_pivot_streak, minimum=1)
         _require_int("cold_start_verified_proposition_threshold", self.cold_start_verified_proposition_threshold, minimum=0)
         _require_float("worker_wait_timeout_seconds", self.worker_wait_timeout_seconds, minimum=1200.0)
         _require_int(
@@ -95,6 +100,7 @@ class SolverPolicy:
             "subagent_max_depth",
             "max_orchestrator_restarts",
             "progress_audit_every_n_outcomes",
+            "stagnation_force_pivot_streak",
             "cold_start_verified_proposition_threshold",
             "worker_wait_timeout_seconds",
             "verified_propositions_organization_threshold",

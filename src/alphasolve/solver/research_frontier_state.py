@@ -235,8 +235,6 @@ def _render_audit(latest: dict[str, Any]) -> list[str]:
     ]
     if latest.get("terminal_gap"):
         lines.append(f"- Terminal gap: {_compact(latest['terminal_gap'], _MAX_STATEMENT_CHARS)}")
-    if latest.get("recommended_next_action"):
-        lines.append(f"- Recommended next action: {_compact(latest['recommended_next_action'], _MAX_STATEMENT_CHARS)}")
     if latest.get("audit_path"):
         lines.append(f"- Audit: `{latest['audit_path']}`")
     return lines

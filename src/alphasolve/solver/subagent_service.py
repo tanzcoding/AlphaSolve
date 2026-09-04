@@ -244,8 +244,9 @@ class SubagentService:
             "soft tabu must not be mistaken for refutation; hint is reusable context only. Flag a proposed route that merely "
             "renames a tabu mechanism, omits a known counterexample scope, lacks a discriminating first artifact, or treats "
             "unchanged attempts as proof that a statement is false. Report evidence for or against the candidate, uncovered "
-            "assumptions, counterexamples to seek, and any missing reopen condition. End with VERDICT: CLEAR or VERDICT: "
-            "BLOCKING_FOUND.\n\n"
+            "assumptions, counterexamples to seek, and any missing reopen condition. You do not have a worker-local "
+            "difficulty declaration target in this role: report obstacles in prose and do not call RecordDifficulty. End with "
+            "VERDICT: CLEAR or VERDICT: BLOCKING_FOUND.\n\n"
             "# Delegated Reviewer Check\n\n"
             + prompt
         )
@@ -375,6 +376,10 @@ class SubagentService:
             delegated_task=prompt,
         )
         enabled_tools = list(config.tools)
+        # research reviewer 的 reasoning delegate 没有 worker-local difficulty 目标，
+        # 只返回对抗性证据，不写入 worker 的 difficulty_declaration。
+        if self._is_reviewer_policy_delegate(agent_type):
+            enabled_tools = [name for name in enabled_tools if name != "RecordDifficulty"]
         # TODO(B-phase): 这段在 Python 里硬过滤 subagent 能用的文件/Agent 工具，
         # 是 A 阶段 Task 8 之后第三层仅剩的运行时工具白名单逻辑。B 阶段会让
         # extension API 用更通用的方式表达"按 file_access_factory / 递归 depth

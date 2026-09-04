@@ -1,6 +1,212 @@
 from __future__ import annotations
 
-from alphasolve.solver.research_planning import frontier_projection, parse_recommendation, reviewer_prompt
+import json
+
+from alphasolve.solver.research_planning import (
+    ReviewerPlanGateway,
+    frontier_projection,
+    parse_recommendation,
+    reviewer_prompt,
+    reviewer_strategy_memory,
+)
+
+
+def test_gateway_rebases_unrelated_frontier_update_but_blocks_changed_target():
+    gateway = object.__new__(ReviewerPlanGateway)
+    original = {
+        "frontier_revision": "old",
+        "dispatchable": [{
+            "difficulty_id": "target",
+            "statement": "Prove the bridge.",
+            "status": "open",
+            "dispatch_mode": "direct",
+        }],
+    }
+    target_snapshot = gateway.plan_target_snapshot(
+        frontier=original,
+        recommendation={"research_plan": {"tracks": [{"difficulty_id": "target"}]}}
+    )
+    selected = [{"difficulty_id": "target", "method_id": "construction"}]
+
+    # An unrelated graph/progress change altered the broad revision but not the selected target.
+    gateway.reviewer_frontier = lambda: {
+        "frontier_revision": "new-unrelated",
+        "dispatchable": [{
+            "difficulty_id": "target",
+            "statement": "Prove the bridge.",
+            "status": "open",
+            "dispatch_mode": "direct",
+        }],
+    }
+    gateway.dispatch_preflight = lambda **_kwargs: {"allowed": True}
+    rebased = gateway.revalidate_plan_targets(
+        frontier_revision="old",
+        target_snapshot=target_snapshot,
+        selected_tracks=selected,
+    )
+    assert rebased == {
+        "allowed": True,
+        "revalidation": "rebased_unaffected",
+        "frontier_revision": "new-unrelated",
+    }
+
+    # A changed target statement is relevant evidence and must return to reviewer planning.
+    gateway.reviewer_frontier = lambda: {
+        "frontier_revision": "new-relevant",
+        "dispatchable": [{
+            "difficulty_id": "target",
+            "statement": "Prove the strengthened bridge.",
+            "status": "open",
+            "dispatch_mode": "direct",
+        }],
+    }
+    stale = gateway.revalidate_plan_targets(
+        frontier_revision="old",
+        target_snapshot=target_snapshot,
+        selected_tracks=selected,
+    )
+    assert not stale["allowed"]
+    assert stale["reason"] == "reviewer_plan_target_stale"
+    assert stale["affected_targets"] == [{"difficulty_id": "target", "reason": "target_semantics_changed"}]
+
+
+def test_strategy_memory_layers_older_proposals_into_compact_conclusions(tmp_path):
+    plans_dir = tmp_path / "curation_records" / "research_plans"
+    plans_dir.mkdir(parents=True)
+    for index in range(5):
+        (plans_dir / f"plan-{index:02d}.json").write_text(json.dumps({
+            "plan_id": f"plan-{index:02d}",
+            "created_at": f"2026-01-0{index + 1}T00:00:00+00:00",
+            "execution_status": "executed",
+            "recommendation": {"research_plan": {
+                "objective": "Close the target.",
+                "strategy": f"Strategy {index}.",
+                "prior_proposal_review": {
+                    "proposal_id": f"plan-{index - 1:02d}",
+                    "decision": "PIVOT",
+                    "what_evidence_showed": f"Route {index} hit the shared blocker.",
+                },
+                "tabu_rules": [{
+                    "tabu_id": f"tabu-{index}",
+                    "level": "hard",
+                    "route_label": f"route-{index}",
+                    "mechanism": "Refuted premise.",
+                }],
+                "tracks": [{"track_id": "t", "route_label": f"route-{index}", "research_goal": "Goal."}],
+            }},
+        }), encoding="utf-8")
+
+    memory = reviewer_strategy_memory(
+        tmp_path,
+        outcome_assessments={"plan-00": [{"verdict": "STALLED"}]},
+        detailed_limit=2,
+    )
+
+    assert [item["plan_id"] for item in memory] == [f"plan-{index:02d}" for index in range(5)]
+    assert [item["detail"] for item in memory] == ["compact", "compact", "compact", "full", "full"]
+
+    oldest = memory[0]
+    assert oldest["outcome_verdicts"] == ["STALLED"]
+    assert oldest["retrospective_decision"] == "PIVOT"
+    assert oldest["hard_tabu_route_labels"] == ["route-0"]
+    # A compact record drops the expensive detail but keeps the reusable conclusion.
+    assert "tracks" not in oldest
+    assert "route_contract" not in json.dumps(oldest)
+
+    newest = memory[-1]
+    assert newest["strategy"] == "Strategy 4."
+    assert newest["tracks"][0]["route_label"] == "route-4"
+    assert newest["prior_proposal_review"]["decision"] == "PIVOT"
+
+
+def test_reflection_is_required_once_a_prior_proposal_has_audit_evidence():
+    body = """### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Close the remaining bridge.",
+    "strategy": "Keep the surviving mechanism and narrow its first artifact.",
+    %s
+    "tracks": [{
+      "track_id": "bridge",
+      "priority": "primary",
+      "kind": "TARGET_NODE",
+      "selection_scope": "LOCAL_REPAIR",
+      "difficulty_id": "leaf",
+      "method_id": "direct_proof",
+      "route_label": "exact-variance",
+      "research_goal": "Close the residual transfer step.",
+      "route_contract": {
+        "hypothesis": "The exact-variance mechanism survives the failed attempt.",
+        "required_invariants": ["Keep the full interval constraint."],
+        "success_condition": "The residual transfer step is proved.",
+        "failure_condition": "A witness shows the mechanism cannot transfer."
+      },
+      "milestones": [{
+        "milestone_id": "residual-transfer",
+        "objective": "Decide the residual transfer step.",
+        "evidence_needed": "A proof or a checked counterexample."
+      }],
+      "rationale": "The audit located a single missing bridge.",
+      "avoid": "Do not rerun the full target."
+    }]
+  }
+}
+```"""
+    review = (
+        '"prior_proposal_review": {"proposal_id": "plan-prev", '
+        '"claimed_hypothesis": "Exact variance alone closes the target.", '
+        '"what_evidence_showed": "The worker delivered an off-target estimate and the process audit reported STALLED.", '
+        '"decision": "LOCAL_REPAIR", "reason": "The mechanism survives; only the transfer step is missing."},'
+    )
+
+    assert parse_recommendation(body % "", reflection_required=True) is None
+    assert parse_recommendation(body % "", reflection_required=False) is not None
+
+    parsed = parse_recommendation(body % review, reflection_required=True)
+    assert parsed is not None
+    assert parsed["research_plan"]["prior_proposal_review"] == {
+        "proposal_id": "plan-prev",
+        "claimed_hypothesis": "Exact variance alone closes the target.",
+        "what_evidence_showed": "The worker delivered an off-target estimate and the process audit reported STALLED.",
+        "decision": "LOCAL_REPAIR",
+        "reason": "The mechanism survives; only the transfer step is missing.",
+        "evidence_refs": [],
+    }
+
+    # Retiring a route asserts a refuted premise, so it must cite verified evidence.
+    retire_without_evidence = review.replace('"decision": "LOCAL_REPAIR"', '"decision": "RETIRE"')
+    assert parse_recommendation(body % retire_without_evidence, reflection_required=True) is None
+
+    retire_with_evidence = retire_without_evidence.replace(
+        '"reason": "The mechanism survives; only the transfer step is missing."},',
+        '"reason": "A verified witness refutes the premise.", "evidence_refs": ["verified_propositions/witness.md"]},',
+    )
+    retired = parse_recommendation(body % retire_with_evidence, reflection_required=True)
+    assert retired is not None
+    assert retired["research_plan"]["prior_proposal_review"]["evidence_refs"] == ["verified_propositions/witness.md"]
+
+
+def test_reviewer_prompt_surfaces_prior_proposal_audits_and_reflection_contract():
+    prompt = reviewer_prompt(
+        worker_results=[],
+        frontier={"frontier_revision": "r", "dispatchable": [], "graph": {}, "sources": {}},
+        process_audit={"latest": {"verdict": "STALLED"}},
+        prior_proposal={"plan_id": "plan-prev", "outcome_assessments": [{"verdict": "STALLED"}]},
+        reflection_required=True,
+    )
+
+    assert "prior_proposal_review" in prompt
+    assert "STALLED" in prompt
+    assert "This retrospective is mandatory" in prompt
+    assert "RETIRE" in prompt
+    assert '"plan_id": "plan-prev"' in prompt
+
+    optional = reviewer_prompt(
+        worker_results=[],
+        frontier={"frontier_revision": "r", "dispatchable": [], "graph": {}, "sources": {}},
+    )
+    assert "this retrospective is optional" in optional
 
 
 def test_frontier_projection_includes_full_graph_and_source_indexes():
@@ -218,6 +424,152 @@ def test_research_plan_accepts_primary_and_independent_challenger_tracks():
     assert tracks[1]["priority"] == "challenger"
 
 
+def test_research_plan_preserves_route_contract_and_milestones():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Resolve the terminal obligation.",
+    "strategy": "Use a route contract so planning intent remains distinct from worker execution.",
+    "tracks": [{
+      "track_id": "composition",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "selection_scope": "TECHNIQUE_EXPLORATION",
+      "difficulty_id": "",
+      "terminal_obligation": "Resolve the terminal problem.",
+      "method_id": "construction",
+      "route_label": "cross-cell-composition",
+      "research_goal": "Determine whether a non-separable composition can encode the target predicate.",
+      "route_contract": {
+        "hypothesis": "A cross-cell coupling can preserve selection while making the objective non-separable.",
+        "required_invariants": ["Selection remains clean.", "The parameter bound is preserved."],
+        "success_condition": "A threshold-preserving composition is constructed.",
+        "failure_condition": "A structural obstruction rules out this coupling family."
+      },
+      "milestones": [{
+        "milestone_id": "coupling-census",
+        "objective": "Decide whether the smallest coupled geometry preserves clean selection.",
+        "evidence_needed": "An exhaustive classification or a structural proof."
+      }],
+      "rationale": "This tests the route's first discriminating condition.",
+      "avoid": "Do not treat a local coupling as a completed composition."
+    }]
+  }
+}
+```""")
+
+    assert parsed is not None
+    track = parsed["research_plan"]["tracks"][0]
+    assert track["route_contract"]["hypothesis"].startswith("A cross-cell")
+    assert track["route_contract"]["required_invariants"] == ["Selection remains clean.", "The parameter bound is preserved."]
+    assert track["milestones"] == [{
+        "milestone_id": "coupling-census",
+        "objective": "Decide whether the smallest coupled geometry preserves clean selection.",
+        "evidence_needed": "An exhaustive classification or a structural proof.",
+    }]
+    # The reviewer omitted the terminal-sufficiency comparison. That is a real defect, but
+    # discarding the whole plan here would burn an entire reviewer cycle and hide the
+    # reason; the omission must stay visible for the next reviewer cycle's retrospective instead.
+    assert track["route_contract"]["terminal_sufficiency_stated"] is False
+
+
+def test_route_contract_marks_a_stated_terminal_sufficiency_comparison():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Resolve the terminal obligation.",
+    "strategy": "Record whether the route's best case actually entails the terminal claim.",
+    "tracks": [{
+      "track_id": "composition",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "selection_scope": "TECHNIQUE_EXPLORATION",
+      "difficulty_id": "",
+      "terminal_obligation": "Resolve the terminal problem.",
+      "method_id": "construction",
+      "route_label": "cross-cell-composition",
+      "research_goal": "Determine whether a non-separable composition can encode the target predicate.",
+      "route_contract": {
+        "hypothesis": "A cross-cell coupling preserves selection while making the objective non-separable.",
+        "required_invariants": ["Selection remains clean."],
+        "success_condition": "A threshold-preserving composition is constructed.",
+        "failure_condition": "A structural obstruction rules out this coupling family.",
+        "terminal_sufficiency": "This route's best case gives hardness only for the restricted family, which is strictly weaker than the terminal claim."
+      },
+      "milestones": [{
+        "milestone_id": "coupling-census",
+        "objective": "Decide whether the smallest coupled geometry preserves clean selection.",
+        "evidence_needed": "An exhaustive classification or a structural proof."
+      }],
+      "rationale": "This tests the route's first discriminating condition.",
+      "avoid": "Do not treat a local coupling as a completed composition."
+    }]
+  }
+}
+```""")
+
+    assert parsed is not None
+    contract = parsed["research_plan"]["tracks"][0]["route_contract"]
+    assert contract["terminal_sufficiency_stated"] is True
+    assert contract["terminal_sufficiency"].startswith("This route's best case")
+    # This plan predates falsification_condition; the omission must stay visible rather
+    # than silently defaulting to "already tested".
+    assert contract["falsification_condition_stated"] is False
+
+
+def test_route_contract_marks_a_stated_falsification_condition():
+    parsed = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Resolve the terminal obligation.",
+    "strategy": "Record the converse/soundness-facing test that would falsify the route.",
+    "tracks": [{
+      "track_id": "composition",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "selection_scope": "TECHNIQUE_EXPLORATION",
+      "difficulty_id": "",
+      "terminal_obligation": "Resolve the terminal problem.",
+      "method_id": "construction",
+      "route_label": "cross-cell-composition",
+      "research_goal": "Determine whether a non-separable composition can encode the target predicate.",
+      "route_contract": {
+        "hypothesis": "A cross-cell coupling preserves selection while making the objective non-separable.",
+        "required_invariants": ["Selection remains clean."],
+        "success_condition": "A threshold-preserving composition is constructed.",
+        "failure_condition": "A structural obstruction rules out this coupling family.",
+        "terminal_sufficiency": "This route's best case entails the terminal claim if soundness holds.",
+        "falsification_condition": "An arbitrary final matching that achieves threshold score without corresponding to a clique would falsify the mechanism."
+      },
+      "milestones": [{
+        "milestone_id": "coupling-census",
+        "objective": "Decide whether the smallest coupled geometry preserves clean selection.",
+        "evidence_needed": "An exhaustive classification or a structural proof."
+      }],
+      "rationale": "This tests the route's first discriminating condition.",
+      "avoid": "Do not treat a local coupling as a completed composition."
+    }]
+  }
+}
+```""")
+
+    assert parsed is not None
+    contract = parsed["research_plan"]["tracks"][0]["route_contract"]
+    assert contract["falsification_condition_stated"] is True
+    assert contract["falsification_condition"].startswith("An arbitrary final matching")
+
+
+def test_reviewer_prompt_requires_top_down_obligation_decomposition():
+    prompt = reviewer_prompt(worker_results=[], frontier={"frontier_revision": "r", "dispatchable": [], "graph": {}, "sources": {}})
+    assert "Decompose the terminal obligation top-down" in prompt
+    assert "converse/soundness direction" in prompt
+    assert "falsification_condition" in prompt
+    assert "SCAFFOLDING_ASSUMPTION_UNVERIFIED" in prompt
+
+
 def test_research_plan_rejects_track_without_route_identity():
     parsed = parse_recommendation("""### Research Strategy JSON
 ```json
@@ -350,3 +702,112 @@ def test_global_synthesis_requires_explicit_consolidation_contract():
 {"research_plan":{"objective":"Synthesize.","strategy":"Combine evidence.","tracks":[{"track_id":"bad","priority":"primary","kind":"NEW_DIRECTION","selection_scope":"GLOBAL_SYNTHESIS","difficulty_id":"","terminal_obligation":"Resolve the original problem.","method_id":"direct_proof","route_label":"global-synthesis","research_goal":"Combine the evidence.","rationale":"It is time.","avoid":"None."}]}}
 ```""")
     assert invalid is None
+
+
+def _plan_body(*, priority: str, kind: str, selection_scope: str, difficulty_id: str = "leaf") -> str:
+    terminal_obligation = (
+        '"terminal_obligation":"Resolve the original problem.",' if selection_scope != "NODE_ROUTE" else ""
+    )
+    return (
+        '{"research_plan":{"objective":"Continue.","strategy":"Keep going.","tracks":[{'
+        f'"track_id":"t","priority":"{priority}","kind":"{kind}","selection_scope":"{selection_scope}",'
+        f'"difficulty_id":"{difficulty_id if selection_scope in {"LOCAL_REPAIR", "NODE_ROUTE"} else ""}",'
+        f'{terminal_obligation}'
+        '"method_id":"direct_proof","route_label":"route-x","research_goal":"Continue the route.",'
+        '"rationale":"Keep going.","avoid":"None."}]}}'
+    )
+
+
+def test_force_pivot_rejects_local_repair_primary_track():
+    body = _plan_body(priority="primary", kind="TARGET_NODE", selection_scope="LOCAL_REPAIR")
+    rejected = parse_recommendation(
+        f"### Research Strategy JSON\n```json\n{body}\n```",
+        stagnation_level="FORCE_PIVOT",
+    )
+    assert rejected is None
+    # The same plan is admissible without the escalation.
+    accepted = parse_recommendation(f"### Research Strategy JSON\n```json\n{body}\n```")
+    assert accepted is not None
+
+
+def test_force_pivot_rejects_node_route_primary_track():
+    body = _plan_body(priority="primary", kind="TARGET_NODE", selection_scope="NODE_ROUTE")
+    rejected = parse_recommendation(
+        f"### Research Strategy JSON\n```json\n{body}\n```",
+        stagnation_level="FORCE_PIVOT",
+    )
+    assert rejected is None
+
+
+def test_force_pivot_rejects_global_synthesis_as_the_escape_hatch():
+    body = (
+        '{"research_plan":{"objective":"Attack directly.","strategy":"Combine everything.",'
+        '"tracks":[{"track_id":"t","priority":"primary","kind":"NEW_DIRECTION",'
+        '"selection_scope":"GLOBAL_SYNTHESIS","difficulty_id":"",'
+        '"terminal_obligation":"Resolve the original problem.","method_id":"consolidation",'
+        '"route_label":"global-synthesis","research_goal":"Combine the evidence.",'
+        '"rationale":"It is time.","avoid":"None."}]}}'
+    )
+    rejected = parse_recommendation(
+        f"### Research Strategy JSON\n```json\n{body}\n```",
+        stagnation_level="FORCE_PIVOT",
+    )
+    assert rejected is None
+
+
+def test_force_pivot_accepts_graph_portfolio_primary_track():
+    body = (
+        '{"research_plan":{"objective":"Pivot.","strategy":"Move across the graph.",'
+        '"tracks":[{"track_id":"t","priority":"primary","kind":"NEW_DIRECTION",'
+        '"selection_scope":"GRAPH_PORTFOLIO","difficulty_id":"",'
+        '"target_difficulty_ids":["ancestor-node"],"method_id":"direct_proof",'
+        '"route_label":"route-x","research_goal":"Attack the ancestor.",'
+        '"rationale":"Diagnose the recurring blocker.","avoid":"None."}]}}'
+    )
+    accepted = parse_recommendation(
+        f"### Research Strategy JSON\n```json\n{body}\n```",
+        stagnation_level="FORCE_PIVOT",
+    )
+    assert accepted is not None
+    assert accepted["research_plan"]["tracks"][0]["selection_scope"] == "GRAPH_PORTFOLIO"
+
+
+def test_force_pivot_does_not_block_a_challenger_still_at_local_repair():
+    """FORCE_PIVOT only constrains the primary track's scope, not supporting/challenger tracks."""
+    body = (
+        '{"research_plan":{"objective":"Pivot the primary, keep probing locally.",'
+        '"strategy":"Move the primary across the graph while a challenger keeps testing the local repair.",'
+        '"tracks":['
+        '{"track_id":"primary-pivot","priority":"primary","kind":"NEW_DIRECTION",'
+        '"selection_scope":"TECHNIQUE_EXPLORATION","difficulty_id":"",'
+        '"terminal_obligation":"Resolve the original problem.","method_id":"direct_proof",'
+        '"route_label":"route-new","research_goal":"Try a new framework.",'
+        '"rationale":"Diagnose the recurring blocker.","avoid":"None."},'
+        '{"track_id":"challenger-local","priority":"challenger","kind":"TARGET_NODE",'
+        '"selection_scope":"LOCAL_REPAIR","difficulty_id":"leaf",'
+        '"method_id":"direct_proof","route_label":"route-x","research_goal":"One more bounded probe.",'
+        '"rationale":"Cheap to test.","avoid":"None."}'
+        ']}}'
+    )
+    accepted = parse_recommendation(
+        f"### Research Strategy JSON\n```json\n{body}\n```",
+        stagnation_level="FORCE_PIVOT",
+    )
+    assert accepted is not None
+
+
+def test_force_pivot_allows_a_hold_plan():
+    """A HOLD (no tracks) is a legitimate response to a forced pivot, not a bypass."""
+    held = parse_recommendation("""### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Pause and re-plan.",
+    "strategy": "No evidence-backed route leaves the stalled mechanism yet.",
+    "tracks": [],
+    "hold_reason": "Diagnosing the repeated blocker before proposing a portfolio move."
+  }
+}
+```""", stagnation_level="FORCE_PIVOT")
+    assert held is not None
+    assert held["research_plan"]["tracks"] == []

@@ -310,7 +310,10 @@ def register_orchestrator_worker_tools(
     registry.register(
         name="SpawnWorker",
         description=(
-            "Deprecated direct-dispatch surface. Research routing must be approved through RequestResearchPlan and executed with ExecuteResearchPlan; direct calls are rejected.\n\n"
+            "Direct-dispatch surface for bounded bootstrap or explicit human-directed checks. Use RequestResearchPlan "
+            "to obtain an advisory research-state assessment before route-level decisions or evidence-driven dispatches; "
+            "execute any adopted reviewer plan with ExecuteResearchPlan. Direct dispatches provide evidence for later "
+            "reviewer reflection, not a substitute for research routing.\n\n"
             "Every dispatch must state both what to do (`hint`) and what would count as done (`rubric`). "
             "When the worker finishes, an independent task auditor checks the proven Statement against that rubric and "
             "TaskOutput reports whether the task was delivered, plus any scope drift.\n\n"

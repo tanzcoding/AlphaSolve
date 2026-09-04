@@ -96,6 +96,7 @@ def test_task_audit_detects_scope_drift_on_a_verified_worker(tmp_path):
     assert result["rubric_passed"] == 1 and result["rubric_total"] == 3
     assert "weakened" in result["scope_drift"]
     assert result["residual_obligation"].startswith("Establish the explicit constant 2")
+    assert result["milestone_disposition"] == "inconclusive"
     assert [item["verdict"] for item in result["rubric_checks"]] == ["pass", "fail", "unclear"]
 
     # 审计提示必须同时含"要求什么"与"交付了什么"，否则无法比对。
@@ -127,6 +128,33 @@ def test_task_audit_accepts_a_delivered_worker(tmp_path):
     assert result["delivery"] == "delivered"
     assert result["delivered"] is True
     assert result["scope_drift"] == ""
+
+
+def test_task_audit_reports_a_contradicted_milestone_without_choosing_a_route(tmp_path):
+    layout = _layout(tmp_path)
+    audit_text = (
+        "### Task Delivery\nDELIVERY: delivered\n\n"
+        "### Rubric Check\n- [pass] A counterexample is stated — the Statement gives the required witness.\n\n"
+        "### Residual Obligation\nnone\n\n"
+        "```text\nRUBRIC_SCORE: 1/1\nSCOPE_DRIFT: NONE\n"
+        "MILESTONE_DISPOSITION: contradicted\n```\n"
+    )
+
+    result = _auditor(layout, lambda _prompt: audit_text).audit(
+        _payload(
+            layout,
+            worker_hint="Refute the current milestone with a verified counterexample if it is false.",
+            rubric="- The Statement gives a verified counterexample.",
+            research_plan_id="plan-a",
+            research_track_id="route-a",
+            research_milestone_id="test-assumption",
+        )
+    )
+
+    assert result["delivery"] == "delivered"
+    assert result["milestone_disposition"] == "contradicted"
+    summary = summarize_task_audits([result])
+    assert summary["contradicted_milestone_worker_ids"] == ["worker-a"]
 
 
 def test_non_mathematical_failure_is_settled_without_calling_the_auditor(tmp_path):

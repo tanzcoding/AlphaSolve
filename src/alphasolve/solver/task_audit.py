@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 TaskAuditRunner = Callable[[str], str]
 
 DELIVERY_VERDICTS = ("delivered", "partial", "off_target", "not_delivered")
+MILESTONE_DISPOSITIONS = ("achieved", "contradicted", "inconclusive", "not_reached")
 # 只有 delivered 算交付完成；其余三种都意味着分派的义务仍然悬空。
 _UNDELIVERED = {"partial", "off_target", "not_delivered"}
 # 非数学性失败（协议错误、执行异常）没有可验收的交付物，跑一次 LLM 只会得到
@@ -58,6 +59,7 @@ class TaskAuditResult:
     rubric_total: int
     scope_drift: str
     residual_obligation: str
+    milestone_disposition: str
     assigned_versus_delivered: str
     rubric_checks: list[dict[str, str]]
     audit_path: str
@@ -83,6 +85,7 @@ class TaskAuditResult:
             # 审计只陈述交付与残余事实；下一步路线由 research reviewer 决定。
             "scope_drift": self.scope_drift,
             "residual_obligation": self.residual_obligation,
+            "milestone_disposition": self.milestone_disposition,
             "assigned_versus_delivered": self.assigned_versus_delivered,
             "audit_path": self.audit_path,
         }
@@ -165,6 +168,7 @@ class TaskAuditor:
                 rubric_total=len(criteria),
                 scope_drift="",
                 residual_obligation="",
+                milestone_disposition="inconclusive",
                 assigned_versus_delivered="",
                 rubric_checks=[],
                 audit_path="",
@@ -181,6 +185,7 @@ class TaskAuditor:
             rubric_total=parsed["rubric_total"] or len(criteria),
             scope_drift=parsed["scope_drift"],
             residual_obligation=parsed["residual_obligation"],
+            milestone_disposition=parsed["milestone_disposition"],
             assigned_versus_delivered=parsed["assigned_versus_delivered"],
             rubric_checks=parsed["rubric_checks"],
             audit_path="",
@@ -210,6 +215,7 @@ class TaskAuditor:
             rubric_total=len(criteria),
             scope_drift="",
             residual_obligation=str(payload.get("blocking_obligation") or "").strip(),
+            milestone_disposition="not_reached",
             assigned_versus_delivered=reason,
             rubric_checks=[
                 {"criterion": criterion, "verdict": "fail", "note": "No proven Statement exists."}
@@ -265,6 +271,7 @@ class TaskAuditor:
                     "rubric_total": result.rubric_total,
                     "scope_drift": result.scope_drift,
                     "residual_obligation": result.residual_obligation,
+                    "milestone_disposition": result.milestone_disposition,
                     "audit_path": relative,
                 }
                 temporary = decision_path.with_suffix(".json.tmp")
@@ -279,6 +286,7 @@ class TaskAuditor:
             rubric_total=result.rubric_total,
             scope_drift=result.scope_drift,
             residual_obligation=result.residual_obligation,
+            milestone_disposition=result.milestone_disposition,
             assigned_versus_delivered=result.assigned_versus_delivered,
             rubric_checks=result.rubric_checks,
             audit_path=relative,
@@ -308,6 +316,7 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
             {
                 "worker_id": str(item.get("worker_id")),
                 "delivery": str(item.get("delivery") or ""),
+                "milestone_disposition": str(item.get("milestone_disposition") or "inconclusive"),
                 "residual_obligation": str(item.get("residual_obligation") or "")[:600],
                 **(
                     {"salvageable_content": str(item.get("salvageable_content"))[:400]}
@@ -319,6 +328,9 @@ def summarize_task_audits(audits: list[dict[str, Any]]) -> dict[str, Any] | None
         ]
     if drifted:
         summary["scope_drift_worker_ids"] = [str(item.get("worker_id")) for item in drifted]
+    contradicted = [item for item in usable if str(item.get("milestone_disposition") or "") == "contradicted"]
+    if contradicted:
+        summary["contradicted_milestone_worker_ids"] = [str(item.get("worker_id")) for item in contradicted]
     # 被拒绝的 worker 没有可读的 rubric 分数；把拒绝落点按类别聚合，
     # 让 orchestrator 直接看到"该换目标"还是"该修证明"。
     rejected = [item for item in usable if str(item.get("rejection_locus") or "").strip()]
@@ -401,6 +413,10 @@ def _audit_prompt(payload: dict[str, Any], layout: "ProjectLayout", *, criteria:
             "## Assigned Task",
             str(payload.get("worker_hint") or "(no hint was given)"),
             "",
+            "## Reviewer Milestone",
+            f"- Plan / track / milestone: `{payload.get('research_plan_id') or '-'}` / `{payload.get('research_track_id') or '-'}` / `{payload.get('research_milestone_id') or '-'}`",
+            "Classify only whether the worker evidence reaches, contradicts, or leaves this milestone inconclusive; do not decide the route.",
+            "",
             "### Pinned Target" if str(payload.get("pinned_target") or "").strip() else "",
             str(payload.get("pinned_target") or "").strip(),
             "",
@@ -479,6 +495,9 @@ def _render_report(result: TaskAuditResult, payload: dict[str, Any], *, audit_te
         "## Residual Obligation",
         result.residual_obligation or "None reported.",
         "",
+        "## Milestone Disposition",
+        result.milestone_disposition or "inconclusive",
+        "",
     ]
     if result.rejection_locus or result.salvageable_content or result.retry_assessment:
         lines.extend([
@@ -530,6 +549,11 @@ def _parse_task_audit(text: str, *, expected_criteria: int) -> dict[str, Any]:
     locus = locus_match.group(1).lower() if locus_match else ""
     if locus == "not_applicable":
         locus = ""
+    disposition_match = re.search(
+        r"(?mi)^\s*MILESTONE_DISPOSITION:\s*(achieved|contradicted|inconclusive|not_reached)\s*$",
+        text or "",
+    )
+    disposition = disposition_match.group(1).lower() if disposition_match else "inconclusive"
     return {
         "delivery": delivery,
         "rubric_passed": passed,
@@ -537,6 +561,7 @@ def _parse_task_audit(text: str, *, expected_criteria: int) -> dict[str, Any]:
         "rubric_checks": checks,
         "scope_drift": drift[:2000],
         "residual_obligation": _section(text, "Residual Obligation"),
+        "milestone_disposition": disposition,
         "assigned_versus_delivered": _section(text, "Assigned Versus Delivered"),
         "rejection_locus": locus,
         "salvageable_content": _section(text, "Salvageable Content"),

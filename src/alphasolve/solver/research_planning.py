@@ -5,15 +5,21 @@ import hashlib
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .difficulty_dag import _METHOD_IDS, DifficultyDagStore
 from .policy import DifficultyDagPolicy
 
 
 _NEXT_STEP_KINDS = {"TARGET_NODE", "NEW_DIRECTION", "HOLD"}
-_GRAPH_OBSERVATION_KINDS = {"EDGE_SUSPECT", "NODE_SCOPE_SUSPECT", "COMPONENT_STAGNANT", "STATUS_SUSPECT", "DUPLICATE_NODE"}
-_GRAPH_EFFECTS = {"reconsider_edge", "supersede_node", "merge_candidate", "keep_independent"}
+_GRAPH_OBSERVATION_KINDS = {
+    "EDGE_SUSPECT", "NODE_SCOPE_SUSPECT", "COMPONENT_STAGNANT", "STATUS_SUSPECT", "DUPLICATE_NODE",
+    # A Statement, tabu, or route framing baked a specific proof architecture (gadget,
+    # construction shape) into what should be a bare open/established mathematical claim,
+    # without a verified proposition establishing that architecture is necessary.
+    "SCAFFOLDING_ASSUMPTION_UNVERIFIED",
+}
+_GRAPH_EFFECTS = {"reconsider_edge", "supersede_node", "merge_candidate", "keep_independent", "restate_without_assumption"}
 
 # ``kind`` preserves compatibility with older persisted plans.  ``selection_scope`` is
 # the reviewer-owned policy layer: it tells the orchestrator whether this is a local
@@ -28,6 +34,36 @@ _SELECTION_SCOPES = {
     "GLOBAL_SYNTHESIS",
 }
 _TABU_LEVELS = {"hard", "soft", "hint"}
+# 反思结论只描述"上一版 proposal 与其证据的关系"，不描述新路线本身。
+_REFLECTION_DECISIONS = {"CONTINUE", "LOCAL_REPAIR", "PIVOT", "PARK", "RETIRE"}
+
+# 一条 `soft` tabu 本应表示"机制被真正尝试过、构造受阻"；但 reviewer 有时把"没有构造出来、
+# 类比判断会被挡住"这种未经检验的主观预判也写成 soft，之后就被当作既定事实反复继承。这里
+# 用纯字符串匹配（无需 LLM 推理）识别这类措辞，配合缺失 evidence_refs，把它自动降级为最弱的
+# `hint`，防止"没试过"和"试过但受阻"在证据强度上被混为一谈。这是运行时的事实性归档，不是
+# curator/reviewer 的策略推理。
+_UNVERIFIED_MECHANISM_MARKERS = (
+    "no construction produced",
+    "no construction was produced",
+    "not attempted",
+    "never attempted",
+    "no attempt was made",
+    "not actually tried",
+    "without an explicit attempt",
+    "is expected to",
+    "expected to be blocked",
+    "expected to fail",
+    "likely blocked",
+    "likely fails",
+    "presumably",
+    "by analogy",
+    "should be blocked",
+    "assumed to",
+    "we believe",
+)
+# `soft`/`hint` tabu 在没有新 verified evidence 的情况下持续存在的最大周期数；超过后在
+# `stale_tabu_routes()` 中被标记，提醒下一轮 reviewer 必须显式回应是否重新打开。
+_STALE_TABU_MIN_CYCLES = 5
 
 
 class ReviewerPlanGateway:
@@ -68,8 +104,94 @@ class ReviewerPlanGateway:
                 "difficulty_id": difficulty_id,
             }
 
+    def plan_target_snapshot(
+        self,
+        *,
+        frontier: dict[str, Any],
+        recommendation: dict[str, Any],
+    ) -> dict[str, dict[str, str]]:
+        """Capture only the canonical semantics a proposal actually depends on.
+
+        ``frontier_revision`` is intentionally broad: it changes for unrelated graph
+        curation and for progress counters. Dispatch safety instead depends on a selected
+        canonical target's identity, statement, status, and dispatch mode. Persisting
+        this narrow snapshot lets a proposal survive irrelevant/supportive updates while
+        still rejecting an altered or terminal target.
+        """
+        dispatchable = {
+            str(item.get("difficulty_id") or ""): item
+            for item in frontier.get("dispatchable") or []
+            if isinstance(item, dict) and str(item.get("difficulty_id") or "")
+        }
+        research_plan = recommendation.get("research_plan") if isinstance(recommendation, dict) else {}
+        snapshots: dict[str, dict[str, str]] = {}
+        for track in research_plan.get("tracks") or [] if isinstance(research_plan, dict) else []:
+            if not isinstance(track, dict):
+                continue
+            difficulty_id = str(track.get("difficulty_id") or "").strip()
+            target = dispatchable.get(difficulty_id)
+            if not difficulty_id or not isinstance(target, dict):
+                continue
+            snapshots[difficulty_id] = _target_semantics(target)
+        return snapshots
+
+    def revalidate_plan_targets(
+        self,
+        *,
+        frontier_revision: str,
+        target_snapshot: dict[str, Any] | None,
+        selected_tracks: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Rebase a proposal unless a selected canonical target changed semantically.
+
+        A global revision mismatch alone is not a research contradiction. For each
+        selected in-graph track, compare the captured target semantics against the
+        current projection and run normal dispatch preflight. Out-of-graph exploration
+        has no canonical target to invalidate here; its executed worker outcomes remain
+        its evidence gate.
+        """
+        current = self.reviewer_frontier()
+        current_revision = str(current.get("frontier_revision") or "")
+        if str(frontier_revision or "") == current_revision:
+            return {"allowed": True, "revalidation": "exact", "frontier_revision": current_revision}
+        dispatchable = {
+            str(item.get("difficulty_id") or ""): item
+            for item in current.get("dispatchable") or []
+            if isinstance(item, dict) and str(item.get("difficulty_id") or "")
+        }
+        snapshots = target_snapshot if isinstance(target_snapshot, dict) else {}
+        affected: list[dict[str, Any]] = []
+        for track in selected_tracks:
+            difficulty_id = str(track.get("difficulty_id") or "").strip()
+            if not difficulty_id:
+                continue
+            expected = snapshots.get(difficulty_id)
+            current_target = dispatchable.get(difficulty_id)
+            preflight = self.dispatch_preflight(
+                difficulty_id=difficulty_id,
+                method_id=str(track.get("method_id") or "") or None,
+            )
+            if not preflight.get("allowed") or not isinstance(current_target, dict):
+                affected.append({"difficulty_id": difficulty_id, "reason": preflight.get("reason") or "target_not_dispatchable"})
+                continue
+            if not isinstance(expected, dict) or _target_semantics(current_target) != expected:
+                affected.append({"difficulty_id": difficulty_id, "reason": "target_semantics_changed"})
+        if affected:
+            return {
+                "allowed": False,
+                "reason": "reviewer_plan_target_stale",
+                "message": "A selected canonical target changed or is no longer actionable; request a fresh reviewer plan.",
+                "affected_targets": affected,
+                "frontier_revision": current_revision,
+            }
+        return {
+            "allowed": True,
+            "revalidation": "rebased_unaffected",
+            "frontier_revision": current_revision,
+        }
+
     def validate_frontier_revision(self, *, frontier_revision: str) -> dict[str, Any]:
-        """Reject a research plan whose canonical evidence view has changed."""
+        """Legacy strict check retained for integrations that do not provide plan targets."""
         current = self.reviewer_frontier()
         if str(frontier_revision or "") != str(current.get("frontier_revision") or ""):
             return {
@@ -77,7 +199,7 @@ class ReviewerPlanGateway:
                 "reason": "reviewer_plan_stale",
                 "message": "The canonical frontier changed after reviewer planning; request a fresh reviewer plan.",
             }
-        return {"allowed": True}
+        return {"allowed": True, "revalidation": "exact", "frontier_revision": str(current.get("frontier_revision") or "")}
 
     def validate_target(
         self,
@@ -114,6 +236,16 @@ class ReviewerPlanGateway:
         return self._dag.complete_global_attack(**kwargs)
 
 
+def _target_semantics(target: dict[str, Any]) -> dict[str, str]:
+    """The target fields whose change can invalidate an already-audited proposal."""
+    return {
+        "difficulty_id": str(target.get("difficulty_id") or ""),
+        "statement": str(target.get("statement") or ""),
+        "status": str(target.get("status") or ""),
+        "dispatch_mode": str(target.get("dispatch_mode") or ""),
+    }
+
+
 def frontier_projection(snapshot: dict[str, Any]) -> dict[str, Any]:
     """Expose the full semantic graph and source indexes, never storage aliases."""
     dispatchable = [
@@ -146,32 +278,132 @@ def reviewer_prompt(
     worker_results: list[dict[str, Any]],
     frontier: dict[str, Any],
     process_audit: dict[str, Any] | None = None,
+    prior_proposal: dict[str, Any] | None = None,
+    reflection_required: bool = False,
+    stagnation_level: str = "NONE",
 ) -> str:
+    stagnation_level = (stagnation_level or "NONE").upper()
     payload = json.dumps(
         {
             "worker_results": worker_results,
             "process_audit": process_audit or None,
+            "prior_proposal": prior_proposal or None,
+            "reflection_required": bool(reflection_required),
+            "stagnation_level": stagnation_level,
             "frontier": frontier,
         },
         ensure_ascii=False,
         indent=2,
     )
+    reflection_block = (
+        "## Reflect on your previous proposal before proposing again\n"
+        "`prior_proposal` names your most recent proposal and every `outcome_assessments` entry the process auditor produced "
+        "after its execution. `process_audit.latest` carries the most recent portfolio verdict, terminal gap, repeated avoided "
+        "obligation, and route-contract signals.\n"
+        "Read them first and answer, in `research_plan.prior_proposal_review`: which hypothesis the previous proposal actually "
+        "claimed, what the settled evidence showed, and which single retrospective decision that comparison supports — `CONTINUE`, "
+        "`LOCAL_REPAIR`, `PIVOT`, `PARK`, or `RETIRE`. `RETIRE` asserts a refuted premise and requires cited verified evidence; "
+        "repeated failure without a refutation is stagnation and supports `LOCAL_REPAIR`, `PIVOT`, or `PARK` instead.\n"
+        "If the previous proposal's outcome audit was `STALLED` or `MISALIGNED`, state in `strategy` what you changed in "
+        "response. Re-emitting the same route with the same first milestone, or renaming it, does not answer the audit.\n"
+        + (
+            "This retrospective is mandatory for this cycle: a plan without a valid `prior_proposal_review` is rejected.\n\n"
+            if reflection_required
+            else "There is no settled prior proposal yet, so this retrospective is optional for this cycle.\n\n"
+        )
+    )
+    stagnation_block = ""
+    if stagnation_level != "NONE":
+        streak = int(((process_audit or {}).get("latest") or {}).get("stagnation_streak") or 0)
+        stagnation_block = (
+            "## Runtime stagnation escalation (fact, not a suggestion)\n"
+            f"The runtime has counted {streak} consecutive outcome-audit checkpoints citing the same "
+            f"`repeated_avoided_obligation` under a STALLED/MISALIGNED verdict. Current level: `{stagnation_level}`.\n"
+            "This count is computed from immutable checkpoint decisions, not from an LLM's self-report of progress.\n"
+            + (
+                "At `FORCE_PIVOT`, this plan will be rejected at parse time unless its primary track's "
+                "`selection_scope` is `GRAPH_PORTFOLIO` or `TECHNIQUE_EXPLORATION`. `LOCAL_REPAIR` and `NODE_ROUTE` "
+                "are rejected as primary because they cannot by construction leave the mechanism that has already "
+                "stalled this many times in a row. `GLOBAL_SYNTHESIS` is also rejected as primary here: attacking "
+                "`problem.md` directly is not a substitute for diagnosing why the current architecture keeps hitting "
+                "the same obligation, and consolidation on an un-repaired stalled route does not answer the audit.\n\n"
+                if stagnation_level == "FORCE_PIVOT"
+                else "This is advance warning: at `WATCH`/`ESCALATE` you are not yet blocked, but continuing to propose "
+                "the same `LOCAL_REPAIR`/`NODE_ROUTE` primary on the same obligation without new evidence is exactly "
+                "the pattern that will trigger `FORCE_PIVOT`. Consider whether a `GRAPH_PORTFOLIO` or "
+                "`TECHNIQUE_EXPLORATION` challenger should be promoted to primary now, before it becomes mandatory.\n\n"
+            )
+        )
+    top_down_block = (
+        "## Decompose the terminal obligation top-down before selecting any route\n"
+        "Before comparing local evidence, restate `problem.md`'s terminal obligation as an explicit set of necessary "
+        "conditions that any successful route must eventually close — for example (adapt to the actual obligation, do not "
+        "force this exact list): a precise target statement, any required construction/reduction and how its size/parameter "
+        "scales, the forward/completeness direction, the converse/soundness direction that must hold for *every* admissible "
+        "final object or counterexample candidate (not just the one the construction intends), and any threshold, bound, or "
+        "equivalence step tying the construction back to the terminal claim. Name, for this cycle, which necessary condition "
+        "is still open, which are already closed by cited verified propositions, and which one the primary track actually "
+        "attacks. A route that only produces evidence for an already-closed condition, or that never engages the "
+        "converse/soundness direction, is not closing the terminal gap regardless of local evidence volume.\n"
+        "This decomposition is top-down: it fixes what must be proven before any worker asks whether one local construction "
+        "is achievable. Do not let an unproven proof-architecture choice masquerade as an answered top-down obligation. "
+        "Watch for language that quietly assumes a hard local step is achievable — \"a suitable gadget/construction can "
+        "realize this\", \"a large enough penalty suffices\", \"independent components' contributions simply add\", \"the "
+        "optimal solution can be assumed to fix/ignore X without loss of generality\", \"a standard construction should work "
+        "here\". Treat such claims in a hypothesis, rationale, Statement, or tabu as a falsifiable scaffolding assumption "
+        "(`SCAFFOLDING_ASSUMPTION_UNVERIFIED`), never as a settled step, unless a verified proposition already establishes "
+        "it.\n\n"
+    )
     return (
         "Review completed worker evidence and return one research plan, potentially with several independent research tracks. "
         "The difficulty DAG is a curator-owned evidence graph, not a route approval system. Do not invent canonical IDs, edit "
         "state, curate identities, dispatch workers, or prescribe worker-sized acceptance criteria.\n\n"
+        + top_down_block
+        + reflection_block
+        + stagnation_block
+        + "Your plan is directly executable: the orchestrator dispatches it through `ExecuteResearchPlan` without any "
+        "pre-execution audit gate. State terminal-gap relevance, verified counterevidence, repeated blockers, and whether the "
+        "current milestone is genuinely discriminating explicitly, because only a periodic, long-horizon process audit reviews "
+        "the executed portfolio afterward — it never blocks this proposal.\n\n"
         "Use the complete graph, its component and node attempt statistics, recent methods/outcomes, verified-proposition links, "
         "worker results, local handoffs, process audits, the global `research_plan_execution_history`, and knowledge to choose the next mathematical direction freely. "
         "That history covers all persisted plans, not just the latest one: compare each plan's intended tracks with settled outcomes, "
         "verified proposition paths, task-audit residuals, and local difficulties before reusing a route. A route variant disproved by "
         "a verified proposition is tabu, but repeated lack of proof alone does not refute the node. The recent "
         "worker results are a realtime evidence delta not yet necessarily curated into the graph: inspect their `delivery`, "
-        "`residual_obligation`, `rejection_locus`, and `route_label` before treating a verified result as route progress. A verified "
+        "`milestone_disposition`, `residual_obligation`, `rejection_locus`, and `route_label` before treating a verified result as route progress. "
+        "Read periodic `route_contract_signals` as evidence about the reviewed milestone, never as an approved replacement route. A verified "
         "but `off_target` or `partial` result is not a delivered advance on its assigned route unless you explain, with evidence, how "
         "it supports the residual obligation. Treat a recently attempted `route_label` on the same node as tabu unless new evidence "
         "changes the target; changing only `method_id` while pursuing the same mathematical route is not a change of route. Prefer "
         "underexplored routes among otherwise comparable ones, but let terminal-gap relevance and delivered evidence override raw "
         "attempt counts.\n\n"
+        "Evidence density is not the same as terminal relevance. Before continuing any route, state its best-case conclusion — the "
+        "strongest claim it could establish if every remaining milestone succeeded — and check whether that claim actually entails "
+        "the terminal obligation, or only a strictly weaker or distinct statement. A growing count of verified propositions on a "
+        "route whose own best case is weaker than or distinct from the terminal claim is not evidence that it is closing the "
+        "terminal gap, and does not by itself justify continuing to invest it as primary over a zero-evidence route whose best "
+        "case does entail the terminal claim. Record this check in every track's `route_contract.terminal_sufficiency`, and "
+        "separately record in `route_contract.falsification_condition` the specific test that would show the route's key "
+        "mechanism does not work — this must engage the converse/soundness direction (arbitrary final object or "
+        "counterexample class), not merely restate that the forward/completeness direction succeeded.\n\n"
+        "Distinguish the mathematical fact from the proof-architecture assumption. A node's Statement should say only what claim "
+        "is open or established; it must not silently bake in a specific construction or gadget as though that shape were itself "
+        "required. If a Statement, tabu, or prior route framing fixes a particular proof architecture without a verified "
+        "proposition establishing it is necessary, name that fixation explicitly as a graph observation of kind "
+        "`SCAFFOLDING_ASSUMPTION_UNVERIFIED` rather than treating it as settled, and either propose a track that tests whether it "
+        "is actually necessary or record it in `considered_but_deferred` with the reason it is not yet worth testing. A `soft` "
+        "tabu (exhausted mechanism, not refuted) must never harden into an implicit requirement of the terminal obligation merely "
+        "because every recent track has been shaped around it.\n\n"
+        "Two runtime facts about tabu memory are precomputed for you and are not policy: `auto_downgraded_unverified=true` on a "
+        "tabu rule means the runtime already found wording admitting the mechanism was predicted rather than actually attempted "
+        "(no construction produced, likely/expected to fail, by analogy) with no evidence_refs, and downgraded it from `soft` to "
+        "`hint` because it cannot be distinguished from an unverified scaffolding assumption; treat it as unproven, not exhausted. "
+        "`stale=true` (with `cycles_since_created`) means this `soft`/`hint` route has persisted across many cycles with no plan "
+        "ever attaching evidence_refs to it. A stale rule is not evidence it is wrong or right; it is a prompt that you must "
+        "explicitly decide, in this plan, whether to reopen it (propose a track that actually tests it), re-affirm it with newly "
+        "cited evidence, or explicitly re-park it with a reason in `strategy`. Silently continuing to avoid a stale route without "
+        "addressing it is not acceptable.\n\n"
         "Before every plan, perform a portfolio retrospective over all plan/track executions and relevant DAG attempts. In `strategy`, "
         "state the reusable result of the comparison: what verified artifacts survive, which route premises or variants are disproved, "
         "which off-target/protocol failures are not mathematical evidence, whether distinct routes share a blocker, and whether the "
@@ -202,10 +434,13 @@ def reviewer_prompt(
         "verified evidence and needs evidence_refs plus a reopen_condition; a soft tabu is an exhausted mechanism with no local "
         "repair; a hint is a reusable failure explanation that later tracks must inherit. Link each track to the tabu_rule_ids it "
         "uses. A new method_id or new node name never escapes a tabu by itself.\n\n"
-        "Your job is to choose research tracks, not worker tasks. A track may be as hard as the current obstacle or span several "
-        "worker turns. For every track, state the mathematical question, the route identity, why it is live now, and the routes or "
-        "mechanisms it must avoid. Do not turn the track into a worker-sized lemma, construction, or rubric: the orchestrator selects "
-        "the first bounded artifact, assigns available worker slots across tracks, and commits acceptance criteria. A primary track "
+        "Your job is to choose route-level research contracts, not worker tasks. A track may be as hard as the current obstacle or span several "
+        "worker turns. For every track, state the mathematical question, route identity, route hypothesis, required invariants, route-level "
+        "success and failure conditions, a `terminal_sufficiency` statement of whether the route's best case entails the terminal obligation "
+        "or only a weaker/distinct claim, and one to four ordered milestones. A milestone states a route-stage objective and evidence "
+        "needed; it is not a worker-sized task or rubric. The first milestone is current; later milestones are conditional roadmap context "
+        "and require a fresh reviewer cycle before execution. The orchestrator selects the current milestone, assigns available worker slots across "
+        "tracks, turns that milestone into one bounded artifact, and commits acceptance criteria. A primary track "
         "may be accompanied by a genuinely independent challenger when the evidence justifies breadth; do not manufacture a second "
         "track by merely changing `method_id` on the same route.\n\n"
         "An external result you believe is already proved in the literature is usable evidence about where a route leads, even when "
@@ -228,6 +463,7 @@ def reviewer_prompt(
         "  \"research_plan\": {\n"
         "    \"objective\": \"the portfolio-level mathematical objective for this review cycle\",\n"
         "    \"strategy\": \"evidence-based explanation of focus, decomposition, reopen, or refutation; include routes not to repeat\",\n"
+        "    \"prior_proposal_review\": {\"proposal_id\": \"the previous plan id\", \"claimed_hypothesis\": \"what that plan claimed\", \"what_evidence_showed\": \"what settled evidence and audits established\", \"decision\": \"CONTINUE | LOCAL_REPAIR | PIVOT | PARK | RETIRE\", \"reason\": \"why that decision follows from the evidence\", \"evidence_refs\": [\"required for RETIRE\"]},\n"
         "    \"tracks\": [{\n"
         "      \"track_id\": \"stable short identifier unique within this plan\",\n"
         "      \"priority\": \"primary | challenger | supporting\",\n"
@@ -240,21 +476,25 @@ def reviewer_prompt(
         "      \"route_label\": \"stable mathematical-route slug, e.g. exact-variance-contrapositive\",\n"
         "      \"tabu_rule_ids\": [\"reviewer tabu rules applied by this track\"],\n"
         "      \"reopen_condition\": \"what new evidence would make a parked/tabu route worth reconsidering\",\n"
-        "      \"research_goal\": \"the mathematical question this track should resolve; not a worker-sized task\",\n"
+        "      \"research_goal\": \"the mathematical question this route should resolve; not a worker-sized task\",\n"
+        "      \"route_contract\": {\"hypothesis\": \"route-level mechanism\", \"required_invariants\": [\"properties every viable approach must preserve\"], \"success_condition\": \"route-level evidence that closes or advances the route\", \"failure_condition\": \"route-level evidence that parks the route\", \"terminal_sufficiency\": \"whether this route's best-case conclusion entails the terminal obligation or only a weaker/distinct claim\", \"falsification_condition\": \"the converse/soundness-side test (arbitrary counterexample/final-object class) that would show this route's key mechanism does not actually work\"},\n"
+        "      \"milestones\": [{\"milestone_id\": \"stable-route-stage-id\", \"objective\": \"next route-stage question, not a worker task\", \"evidence_needed\": \"construction, theorem, counterexample, or finite check that distinguishes this stage\"}],\n"
         "      \"rationale\": \"why this route is live now and how it relates to the terminal gap\",\n"
         "      \"avoid\": \"known tabu routes, failed mechanisms, or conditions for changing this track\"\n"
         "    }],\n"
         "    \"tabu_rules\": [{\"tabu_id\": \"stable slug\", \"level\": \"hard | soft | hint\", \"route_label\": \"route slug\", \"mechanism\": \"failed mathematical mechanism\", \"applies_to\": \"NODE | IN_GRAPH | OUT_OF_GRAPH | GLOBAL | ALL\", \"evidence_refs\": [\"verified evidence for hard tabu\"], \"reopen_condition\": \"required for hard tabu\"}],\n"
         "    \"hold_reason\": \"required only when tracks is empty\"\n"
         "  },\n"
-        "  \"graph_observations\": [{\"kind\": \"EDGE_SUSPECT | NODE_SCOPE_SUSPECT | COMPONENT_STAGNANT | STATUS_SUSPECT | DUPLICATE_NODE\", \"target_ids\": [\"canonical IDs\"], \"summary\": \"bounded graph concern\", \"evidence_refs\": [\"verified proposition, audit, or handoff path\"], \"recommended_graph_effect\": \"reconsider_edge | supersede_node | merge_candidate | keep_independent\"}],\n"
+        "  \"graph_observations\": [{\"kind\": \"EDGE_SUSPECT | NODE_SCOPE_SUSPECT | COMPONENT_STAGNANT | STATUS_SUSPECT | DUPLICATE_NODE | SCAFFOLDING_ASSUMPTION_UNVERIFIED\", \"target_ids\": [\"canonical IDs\"], \"summary\": \"bounded graph concern; for SCAFFOLDING_ASSUMPTION_UNVERIFIED name the specific proof-architecture assumption baked into the Statement/tabu without a verified proposition establishing it is necessary\", \"evidence_refs\": [\"verified proposition, audit, or handoff path\"], \"recommended_graph_effect\": \"reconsider_edge | supersede_node | merge_candidate | keep_independent | restate_without_assumption\"}],\n"
         "  \"considered_but_deferred\": [{\"direction\": \"direction you evaluated and did not take\", \"reason\": \"why not now\"}]\n"
         "}\n```\n"
         "Return 1-4 tracks. A `primary` track is the main research investment; a `challenger` must be mathematically independent, "
         "not merely a new proof genre for the same route. `TARGET_NODE` requires an active canonical ID; `NEW_DIRECTION` may be "
         "outside the graph. `tracks: []` is allowed only with a concrete `hold_reason`, meaning no evidence-backed research track is "
-        "currently justified. The orchestrator selects which tracks fit current worker slots, decomposes each selected track into a "
-        "bounded worker task, and writes its rubric. `considered_but_deferred` is optional but valuable: record any direction you "
+        "currently justified. Use HOLD when the evidence cannot distinguish a live route: explain the unresolved decision, missing "
+        "discriminating evidence, and future result that would justify a route contract. The orchestrator selects which tracks fit current "
+        "worker slots, executes each selected track's current milestone through a bounded worker task, and writes its rubric. "
+        "`considered_but_deferred` is optional but valuable: record any direction you "
         "seriously weighed and set aside, so a later reviewer inherits the judgement instead of repeating it. graph_observations are "
         "optional, must cite evidence, and never directly edit the graph. The curator later reconciles worker attempts and verified "
         "propositions into canonical progress.\n\n## Planning Input\n\n```json\n"
@@ -265,14 +505,35 @@ def reviewer_prompt(
 
 _STRATEGY_MARKER = re.compile(r"(?m)^\s*#{2,6}\s+Research Strategy JSON\s*$")
 
+_STAGNATION_LEVELS = {"NONE", "WATCH", "ESCALATE", "FORCE_PIVOT"}
+# At FORCE_PIVOT the primary track must leave both the stalled local mechanism
+# (LOCAL_REPAIR/NODE_ROUTE) and the "attack problem.md directly" escape hatch
+# (GLOBAL_SYNTHESIS): only a genuine portfolio or technique-level move counts as
+# actually responding to the stall.
+_FORCE_PIVOT_ALLOWED_PRIMARY_SCOPES = {"GRAPH_PORTFOLIO", "TECHNIQUE_EXPLORATION"}
 
-def parse_recommendation(text: str) -> dict[str, Any] | None:
+
+def parse_recommendation(
+    text: str,
+    *,
+    reflection_required: bool = False,
+    stagnation_level: str = "NONE",
+) -> dict[str, Any] | None:
     """Extract a reviewer-owned research plan from its final answer.
 
     The heading depth is matched loosely on purpose. The fenced JSON body is the actual
     contract, and the final marker wins because the reviewer may quote the template while
     reasoning. Legacy single-``next_step`` reports are normalized to a one-track plan so
     already-persisted reviewer history remains usable during the protocol transition.
+
+    ``reflection_required`` is set by the runtime once a prior proposal has settled
+    evidence. It makes ``prior_proposal_review`` mandatory, so a new proposal cannot
+    silently bypass what the previous one already established or failed to established.
+
+    ``stagnation_level`` is runtime-computed from consecutive outcome-audit checkpoints
+    citing the same repeated blocker (see ``progress_audit._compute_stagnation_streak``).
+    At ``FORCE_PIVOT`` the primary track's ``selection_scope`` is hard-rejected here unless
+    it is ``GRAPH_PORTFOLIO`` or ``TECHNIQUE_EXPLORATION``.
     """
     markers = list(_STRATEGY_MARKER.finditer(text or ""))
     match = (
@@ -289,7 +550,9 @@ def parse_recommendation(text: str) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         return None
 
-    research_plan = _parse_research_plan(value)
+    research_plan = _parse_research_plan(
+        value, reflection_required=reflection_required, stagnation_level=stagnation_level
+    )
     observations = _parse_graph_observations(value.get("graph_observations"))
     deferred = _parse_deferred_directions(value.get("considered_but_deferred"))
     if research_plan is None:
@@ -309,7 +572,15 @@ def parse_recommendation(text: str) -> dict[str, Any] | None:
     return parsed
 
 
-def _parse_research_plan(value: dict[str, Any]) -> dict[str, Any] | None:
+def _parse_research_plan(
+    value: dict[str, Any],
+    *,
+    reflection_required: bool = False,
+    stagnation_level: str = "NONE",
+) -> dict[str, Any] | None:
+    stagnation_level = (stagnation_level or "NONE").upper()
+    if stagnation_level not in _STAGNATION_LEVELS:
+        stagnation_level = "NONE"
     raw_plan = value.get("research_plan")
     if isinstance(raw_plan, dict):
         objective = _clean_text(raw_plan.get("objective"), limit=4000)
@@ -332,6 +603,11 @@ def _parse_research_plan(value: dict[str, Any]) -> dict[str, Any] | None:
 
     if not objective or not strategy or not isinstance(raw_tracks, list) or len(raw_tracks) > 4:
         return None
+    prior_review = _parse_prior_proposal_review(
+        raw_plan.get("prior_proposal_review") if isinstance(raw_plan, dict) else value.get("prior_proposal_review")
+    )
+    if reflection_required and prior_review is None:
+        return None
     tracks: list[dict[str, Any]] = []
     track_ids: set[str] = set()
     for index, raw_track in enumerate(raw_tracks):
@@ -347,14 +623,64 @@ def _parse_research_plan(value: dict[str, Any]) -> dict[str, Any] | None:
     hard_tabu_routes = {rule["route_label"] for rule in tabu_rules if rule["level"] == "hard"}
     if any(track["route_label"] in hard_tabu_routes for track in tracks):
         return None
+    if stagnation_level == "FORCE_PIVOT":
+        # A HOLD plan (no tracks) is a legitimate response to a forced pivot -- it means
+        # the reviewer is explicitly pausing rather than re-issuing the stalled mechanism.
+        # Any plan that does propose tracks, though, must have its primary track actually
+        # leave the mechanism that has stalled repeatedly.
+        primary_tracks = [track for track in tracks if track["priority"] == "primary"]
+        if primary_tracks and any(
+            track["selection_scope"] not in _FORCE_PIVOT_ALLOWED_PRIMARY_SCOPES for track in primary_tracks
+        ):
+            return None
     if not tracks and not hold_reason:
         return None
     return {
         "objective": objective,
         "strategy": strategy,
+        "prior_proposal_review": prior_review or {},
         "tracks": tracks,
         "tabu_rules": tabu_rules,
         "hold_reason": hold_reason,
+    }
+
+
+def _parse_prior_proposal_review(value: Any) -> dict[str, Any] | None:
+    """Validate the reviewer's structured reflection on its previous proposal.
+
+    This is a factual retrospective, not a new route: it records what the previous
+    proposal claimed, what the evidence actually showed, and which of continue, local
+    repair, pivot, park, or retire that comparison supports. ``RETIRE`` asserts that a
+    route premise is refuted, so it must cite the verified evidence that refutes it;
+    repeated failure alone is stagnation, not refutation.
+    """
+    if not isinstance(value, dict):
+        return None
+    proposal_id = _clean_text(value.get("proposal_id"), limit=80)
+    claimed_hypothesis = _clean_text(value.get("claimed_hypothesis"), limit=3000)
+    what_evidence_showed = _clean_text(value.get("what_evidence_showed"), limit=3000)
+    decision = _clean_text(value.get("decision"), limit=40).upper()
+    reason = _clean_text(value.get("reason"), limit=3000)
+    evidence_refs = [
+        _clean_text(item, limit=2000)
+        for item in value.get("evidence_refs") or []
+        if _clean_text(item, limit=2000)
+    ] if isinstance(value.get("evidence_refs"), list) else []
+    if (
+        not proposal_id
+        or not claimed_hypothesis
+        or not what_evidence_showed
+        or decision not in _REFLECTION_DECISIONS
+        or (decision == "RETIRE" and not evidence_refs)
+    ):
+        return None
+    return {
+        "proposal_id": proposal_id,
+        "claimed_hypothesis": claimed_hypothesis,
+        "what_evidence_showed": what_evidence_showed,
+        "decision": decision,
+        "reason": reason,
+        "evidence_refs": list(dict.fromkeys(evidence_refs)),
     }
 
 
@@ -388,12 +714,20 @@ def _parse_research_track(value: Any, *, index: int) -> dict[str, Any] | None:
         if _slug(item, limit=80)
     ] if isinstance(value.get("tabu_rule_ids"), list) else []
     reopen_condition = _clean_text(value.get("reopen_condition"), limit=2000)
+    route_contract = _parse_route_contract(
+        value.get("route_contract"),
+        research_goal=research_goal,
+        reopen_condition=reopen_condition,
+    )
+    milestones = _parse_route_milestones(value.get("milestones"), research_goal=research_goal)
     if (
         priority not in {"primary", "challenger", "supporting"}
         or selection_scope not in _SELECTION_SCOPES
         or not track_id
         or not route_label
         or not research_goal
+        or route_contract is None
+        or not milestones
         or (kind == "TARGET_NODE" and not difficulty_id)
         or (kind == "NEW_DIRECTION" and difficulty_id)
         or (selection_scope in {"LOCAL_REPAIR", "NODE_ROUTE"} and not difficulty_id)
@@ -418,7 +752,102 @@ def _parse_research_track(value: Any, *, index: int) -> dict[str, Any] | None:
         "research_goal": research_goal,
         "rationale": rationale,
         "avoid": avoid,
+        "route_contract": route_contract,
+        "milestones": milestones,
     }
+
+
+def _parse_route_contract(
+    value: Any,
+    *,
+    research_goal: str,
+    reopen_condition: str,
+) -> dict[str, Any] | None:
+    """Normalize reviewer-owned route semantics without turning them into worker tasks."""
+    if value is None:
+        # Persisted plans predate the explicit contract. Preserve their history while
+        # making the missing semantics visible as conservative legacy defaults.
+        return {
+            "hypothesis": research_goal,
+            "required_invariants": [],
+            "success_condition": research_goal,
+            "failure_condition": reopen_condition or "No route-level failure condition was recorded.",
+            "terminal_sufficiency": "Not recorded: this plan predates the terminal-sufficiency check.",
+            "terminal_sufficiency_stated": False,
+            "falsification_condition": "Not recorded: this plan predates the falsification-condition check.",
+            "falsification_condition_stated": False,
+            "legacy_inferred": True,
+        }
+    if not isinstance(value, dict):
+        return None
+    hypothesis = _clean_text(value.get("hypothesis"), limit=3000)
+    success_condition = _clean_text(value.get("success_condition"), limit=3000)
+    failure_condition = _clean_text(value.get("failure_condition"), limit=3000)
+    # Evidence density (verified proposition count) is not terminal relevance: the reviewer
+    # must state, for every track, whether this route's own best case entails the terminal
+    # obligation or only a weaker/distinct claim. A missing statement is a real defect, but
+    # it must not silently void the whole plan: dropping the plan here costs an entire
+    # reviewer cycle and hides *why* it was dropped. Mark it instead so the omission stays
+    # visible to the reviewer's own next-cycle retrospective and to the periodic outcome audit.
+    terminal_sufficiency = _clean_text(value.get("terminal_sufficiency"), limit=3000)
+    # Mirrors terminal_sufficiency: an explicit, converse/soundness-facing falsification test.
+    # It is the guardrail against a route whose "evidence" only ever exercises the
+    # forward/completeness direction it was designed to satisfy. Missing it is a real
+    # defect but, like terminal_sufficiency, must stay visible rather than silently voiding
+    # an otherwise usable plan.
+    falsification_condition = _clean_text(value.get("falsification_condition"), limit=3000)
+    invariants = [
+        _clean_text(item, limit=1500)
+        for item in value.get("required_invariants") or []
+        if _clean_text(item, limit=1500)
+    ] if isinstance(value.get("required_invariants"), list) else []
+    if (
+        not hypothesis
+        or not success_condition
+        or not failure_condition
+        or len(invariants) > 8
+    ):
+        return None
+    return {
+        "hypothesis": hypothesis,
+        "required_invariants": list(dict.fromkeys(invariants)),
+        "success_condition": success_condition,
+        "failure_condition": failure_condition,
+        "terminal_sufficiency": terminal_sufficiency,
+        "terminal_sufficiency_stated": bool(terminal_sufficiency),
+        "falsification_condition": falsification_condition,
+        "falsification_condition_stated": bool(falsification_condition),
+        "legacy_inferred": False,
+    }
+
+
+def _parse_route_milestones(value: Any, *, research_goal: str) -> list[dict[str, str]]:
+    """Keep route-stage evidence distinct from orchestrator-authored worker tasks."""
+    if value is None:
+        return [{
+            "milestone_id": "first-discriminating-artifact",
+            "objective": research_goal,
+            "evidence_needed": "Produce or refute the route's first discriminating mathematical artifact.",
+        }]
+    if not isinstance(value, list) or not value or len(value) > 4:
+        return []
+    milestones: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            return []
+        milestone_id = _slug(raw.get("milestone_id"), limit=80)
+        objective = _clean_text(raw.get("objective"), limit=3000)
+        evidence_needed = _clean_text(raw.get("evidence_needed"), limit=3000)
+        if not milestone_id or milestone_id in seen or not objective or not evidence_needed:
+            return []
+        seen.add(milestone_id)
+        milestones.append({
+            "milestone_id": milestone_id,
+            "objective": objective,
+            "evidence_needed": evidence_needed,
+        })
+    return milestones
 
 
 def _parse_tabu_rules(value: Any) -> list[dict[str, Any]]:
@@ -449,6 +878,16 @@ def _parse_tabu_rules(value: Any) -> list[dict[str, Any]]:
             or (level == "hard" and (not evidence_refs or not reopen_condition))
         ):
             return []
+        # A `soft` tabu asserts the mechanism was actually tried and is exhausted, not merely
+        # predicted to fail. When its own wording admits no real attempt was made (or only an
+        # analogical/likely-blocked judgement) and it carries no evidence_refs, it is
+        # indistinguishable from an unverified scaffolding assumption. Downgrade it to `hint`
+        # (the weakest level) rather than rejecting the whole plan: this is a factual strength
+        # correction, not a policy judgement the runtime is not allowed to make.
+        downgraded = False
+        if level == "soft" and not evidence_refs and _looks_unverified(mechanism):
+            level = "hint"
+            downgraded = True
         seen.add(tabu_id)
         rules.append({
             "tabu_id": tabu_id,
@@ -458,27 +897,52 @@ def _parse_tabu_rules(value: Any) -> list[dict[str, Any]]:
             "applies_to": applies_to,
             "evidence_refs": list(dict.fromkeys(evidence_refs)),
             "reopen_condition": reopen_condition,
+            "auto_downgraded_unverified": downgraded,
+            # Cycle-count fields are filled in by ``reviewer_strategy_memory`` once the rule's
+            # full persisted history is known; a freshly parsed rule starts at 0.
+            "cycles_since_created": 0,
+            "stale": False,
         })
     return rules
 
 
-def reviewer_strategy_memory(workspace_dir: Path) -> list[dict[str, Any]]:
+def _looks_unverified(mechanism: str) -> bool:
+    """Detect wording that admits a mechanism was predicted, not actually tried."""
+    text = mechanism.lower()
+    return any(marker in text for marker in _UNVERIFIED_MECHANISM_MARKERS)
+
+
+def reviewer_strategy_memory(
+    workspace_dir: Path,
+    *,
+    outcome_assessments: Mapping[str, list[dict[str, Any]]] | None = None,
+    detailed_limit: int = 8,
+) -> list[dict[str, Any]]:
     """Return durable reviewer decisions as read-only planning context.
 
     This is deliberately a projection of persisted reviewer plans, not a second policy
     store.  Worker outcomes remain immutable facts in the outcome ledger; the reviewer
     alone decides whether a prior tabu is still applicable or whether its documented
     reopen condition has been met.
+
+    Memory is layered rather than truncated: the most recent ``detailed_limit`` proposals
+    keep their route contracts and audit verdicts, while older ones collapse to one
+    compact conclusion per proposal. A flat window would silently forget why an old route
+    was retired; a flat full history would grow the planning prompt without bound.
+
+    ``outcome_assessments`` is the post-execution audit mapping derived from the immutable
+    records by the audit layer. It is passed in so the research-plan files stay
+    single-writer.
     """
     plans_dir = Path(workspace_dir) / "curation_records" / "research_plans"
     try:
         paths = sorted(
             (path for path in plans_dir.glob("plan-*.json") if path.is_file()),
-            key=lambda path: path.stat().st_mtime,
-        )[-24:]
+            key=lambda path: path.name,
+        )
     except OSError:
         return []
-    memory: list[dict[str, Any]] = []
+    records: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
     for path in paths:
         try:
             plan = json.loads(path.read_text(encoding="utf-8"))
@@ -488,25 +952,115 @@ def reviewer_strategy_memory(workspace_dir: Path) -> list[dict[str, Any]]:
         research_plan = recommendation.get("research_plan") if isinstance(recommendation, dict) else None
         if not isinstance(research_plan, dict):
             continue
-        tracks = [
-            {
-                "track_id": str(track.get("track_id") or ""),
-                "selection_scope": str(track.get("selection_scope") or ""),
-                "route_label": str(track.get("route_label") or ""),
-                "research_goal": str(track.get("research_goal") or "")[:1000],
-                "reopen_condition": str(track.get("reopen_condition") or "")[:1000],
-            }
-            for track in research_plan.get("tracks") or []
-            if isinstance(track, dict)
+        records.append((str(plan.get("plan_id") or path.stem), plan, research_plan))
+    records.sort(key=lambda item: str(item[1].get("created_at") or ""))
+    # Track, per non-hard route label, the cycle index where it was first raised and
+    # whether any cycle ever attached evidence_refs to it. This is the recall/decay side
+    # of tabu memory: a `soft`/`hint` route that has gone many cycles unrefreshed and was
+    # never backed by evidence is flagged `stale` so the next reviewer must explicitly
+    # decide whether to reopen it, instead of it silently persisting as settled fact.
+    tabu_lifespan: dict[str, dict[str, Any]] = {}
+    for index, (_plan_id, _plan, plan_research) in enumerate(records):
+        for rule in plan_research.get("tabu_rules") or []:
+            if not isinstance(rule, dict):
+                continue
+            route_label = str(rule.get("route_label") or "")
+            level = str(rule.get("level") or "")
+            if not route_label or level not in {"soft", "hint"}:
+                continue
+            entry = tabu_lifespan.setdefault(route_label, {"first_index": index, "evidence_seen": False})
+            if rule.get("evidence_refs"):
+                entry["evidence_seen"] = True
+
+    def _annotate_tabu_rule(rule: dict[str, Any], *, current_index: int) -> dict[str, Any]:
+        annotated = dict(rule)
+        route_label = str(rule.get("route_label") or "")
+        level = str(rule.get("level") or "")
+        entry = tabu_lifespan.get(route_label)
+        if level in {"soft", "hint"} and entry is not None:
+            cycles = current_index - int(entry["first_index"])
+            annotated["cycles_since_created"] = cycles
+            annotated["stale"] = bool(cycles >= _STALE_TABU_MIN_CYCLES and not entry["evidence_seen"])
+        else:
+            annotated["cycles_since_created"] = 0
+            annotated["stale"] = False
+        return annotated
+
+    limit = max(1, int(detailed_limit))
+    detailed_from = max(0, len(records) - limit)
+    memory: list[dict[str, Any]] = []
+    for index, (plan_id, plan, research_plan) in enumerate(records):
+        assessments = [
+            dict(item)
+            for item in (outcome_assessments or {}).get(plan_id, [])
+            if isinstance(item, dict)
         ]
+        prior_review = (
+            dict(research_plan.get("prior_proposal_review") or {})
+            if isinstance(research_plan.get("prior_proposal_review"), dict)
+            else {}
+        )
+        if index < detailed_from:
+            memory.append(_compact_strategy_memory(plan_id, plan, research_plan, assessments, prior_review))
+            continue
         memory.append({
-            "plan_id": str(plan.get("plan_id") or path.stem),
+            "detail": "full",
+            "plan_id": plan_id,
+            "parent_proposal_id": str(plan.get("parent_proposal_id") or ""),
+            "evidence_watermark": int(plan.get("evidence_watermark") or 0),
             "execution_status": str(plan.get("execution_status") or "planned"),
+            "prior_proposal_review": prior_review,
+            "outcome_assessments": assessments[-4:],
             "strategy": str(research_plan.get("strategy") or "")[:2000],
-            "tabu_rules": [rule for rule in research_plan.get("tabu_rules") or [] if isinstance(rule, dict)],
-            "tracks": tracks,
+            "tabu_rules": [
+                _annotate_tabu_rule(rule, current_index=index)
+                for rule in research_plan.get("tabu_rules") or []
+                if isinstance(rule, dict)
+            ],
+            "tracks": [
+                {
+                    "track_id": str(track.get("track_id") or ""),
+                    "selection_scope": str(track.get("selection_scope") or ""),
+                    "route_label": str(track.get("route_label") or ""),
+                    "research_goal": str(track.get("research_goal") or "")[:1000],
+                    "route_contract": dict(track.get("route_contract") or {}) if isinstance(track.get("route_contract"), dict) else {},
+                    "milestones": [dict(item) for item in track.get("milestones") or [] if isinstance(item, dict)][:4],
+                    "reopen_condition": str(track.get("reopen_condition") or "")[:1000],
+                }
+                for track in research_plan.get("tracks") or []
+                if isinstance(track, dict)
+            ],
         })
     return memory
+
+
+def _compact_strategy_memory(
+    plan_id: str,
+    plan: dict[str, Any],
+    research_plan: dict[str, Any],
+    assessments: list[dict[str, Any]],
+    prior_review: dict[str, Any],
+) -> dict[str, Any]:
+    """Collapse an older proposal to the conclusions a later reviewer still needs."""
+    return {
+        "detail": "compact",
+        "plan_id": plan_id,
+        "execution_status": str(plan.get("execution_status") or "planned"),
+        "route_labels": [
+            str(track.get("route_label") or "")
+            for track in research_plan.get("tracks") or []
+            if isinstance(track, dict) and str(track.get("route_label") or "")
+        ],
+        "outcome_verdicts": [str(item.get("verdict") or "") for item in assessments],
+        "retrospective_decision": str(prior_review.get("decision") or ""),
+        "conclusion": str(prior_review.get("what_evidence_showed") or research_plan.get("strategy") or "")[:400],
+        # Hard tabu is the one durable constraint an old proposal still imposes.
+        "hard_tabu_route_labels": [
+            str(rule.get("route_label") or "")
+            for rule in research_plan.get("tabu_rules") or []
+            if isinstance(rule, dict) and str(rule.get("level") or "") == "hard"
+        ],
+    }
 
 
 def _parse_deferred_directions(value: Any) -> list[dict[str, str]]:
