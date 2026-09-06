@@ -1,6 +1,6 @@
 [
   {
-    "description": "Read text content from a file.\n\nTips:\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is typically worth using in parallel when you need to inspect multiple files.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.",
+    "description": "Read text content from a file.\n\nTips:\n- In AlphaSolve research workspaces, this is an exact file-inspection tool, not the primary way to survey progress across many propositions or notes.\n- For broad progress review over `problem.md`, `verified_propositions/`, and `knowledge/`, run ResearchProgressReview first; then use Read on the cited files that need line-level precision.\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is worth using in parallel only after a progress map or explicit citation has narrowed the files to inspect.\n- For Markdown proposition files with Statement and Proof sections, the default call with only `path` returns the Statement section plus the file tail; set `read_all=true` or pass `line_offset`/`n_lines` for exact proof inspection.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.",
     "name": "Read",
     "parameters": {
       "properties": {
@@ -19,7 +19,7 @@
         },
         "path": {
           "description": "The path to the file to read (must be absolute or workspace-relative).",
-          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$",
+          "pattern": "^(?:(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.(?:md|json)|progress_audit_outcomes\\.jsonl|curation_records/difficulty_dag\\.json)$",
           "type": "string"
         },
         "read_all": {
@@ -237,7 +237,7 @@
         "path": {
           "default": "knowledge",
           "description": "Directory to list. Defaults to this agent's configured read root.",
-          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
+          "pattern": "^(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
           "type": "string"
         }
       },
@@ -260,7 +260,7 @@
         "path": {
           "default": "knowledge",
           "description": "The directory to search in. Defaults to this agent's configured search root.",
-          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
+          "pattern": "^(?:knowledge|progress_audits|curation_records)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$",
           "type": "string"
         },
         "pattern": {
@@ -296,7 +296,7 @@
         "path": {
           "default": "knowledge",
           "description": "File or directory to search in. Defaults to this agent's configured search root.",
-          "pattern": "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$",
+          "pattern": "^(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.(?:md|json|jsonl))?/?$",
           "type": "string"
         },
         "pattern": {
@@ -328,6 +328,10 @@
           "description": "The task for the agent to perform.",
           "type": "string"
         },
+        "read_state": {
+          "description": "Optional; only meaningful for research_reviewer. If true, the reviewer may consult verified_propositions/**/state.md (prior strategic notes). If false or omitted, the reviewer forms an independent assessment and does not read state.md, avoiding being steered by a previous wrong route.",
+          "type": "boolean"
+        },
         "type": {
           "description": "The type of specialized agent to use for this task.",
           "enum": [
@@ -341,6 +345,160 @@
         "type",
         "description",
         "prompt"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "At this checkpoint, reconcile worker obstacle handoffs and verified evidence into the canonical recursive difficulty DAG. Read the current DAG before choosing placement. For each new obligation, use source_handoff_ids copied from runtime handoffs; merge only evidence-supported handoffs into an existing canonical node, and create a node only for a separately checkable obligation. Existing handoff aliases are authoritative: reuse their canonical difficulty instead of reinterpreting them. A child must be strictly smaller than its parent; add a parent edge only when cited mathematics establishes that dependency. Parentless nodes are valid independent components. status_updates changes an existing node only with cited evidence; use status=refuted when a verified proposition directly contradicts its statement. The curator also refreshes attempt counts and verified-proposition references from the immutable outcome ledger. graph_corrections may only remove one evidenced parent edge, supersede one node, or reopen one node; they are for verified corrections, never route planning. The runtime validates acyclicity and computes executable leaves; do not invent edges or statuses from obstacle wording alone.",
+    "name": "CurateDifficultyDag",
+    "parameters": {
+      "properties": {
+        "difficulties": {
+          "items": {
+            "properties": {
+              "difficulty_id": {
+                "type": "string"
+              },
+              "evidence_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "parent_difficulty_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "relation_to_parent": {
+                "enum": [
+                  "alternative",
+                  "method_blocked",
+                  "prerequisite",
+                  "refutes",
+                  "weakened_target"
+                ],
+                "type": "string"
+              },
+              "resolution_policy": {
+                "enum": [
+                  "all_of",
+                  "any_of",
+                  "manual"
+                ],
+                "type": "string"
+              },
+              "source_difficulty_ids": {
+                "description": "Legacy alias for source_handoff_ids.",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "source_handoff_ids": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "statement": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "open",
+                  "advanced",
+                  "resolved",
+                  "refuted"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "difficulty_id",
+              "statement"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "graph_corrections": {
+          "items": {
+            "properties": {
+              "difficulty_id": {
+                "type": "string"
+              },
+              "evidence_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "kind": {
+                "enum": [
+                  "remove_parent_edge",
+                  "reopen_node",
+                  "supersede_node"
+                ],
+                "type": "string"
+              },
+              "parent_difficulty_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "difficulty_id",
+              "evidence_refs"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        },
+        "resolved_difficulty_ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "status_updates": {
+          "items": {
+            "properties": {
+              "difficulty_id": {
+                "type": "string"
+              },
+              "evidence_refs": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "status": {
+                "enum": [
+                  "advanced",
+                  "open",
+                  "ready_for_synthesis",
+                  "refuted",
+                  "resolved",
+                  "superseded"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "difficulty_id",
+              "status",
+              "evidence_refs"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "difficulties"
       ],
       "type": "object"
     }

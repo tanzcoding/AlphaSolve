@@ -1,3 +1,4 @@
+import json
 import threading
 import time
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from alphasolve.solver import AlphaSolve
 from alphasolve.solver.orchestrator import Orchestrator, WorkerManager, FREE_EXPLORATION_WORKER_HINT
 from alphasolve.solver.project import ProjectLayout
 from alphasolve.solver.orchestrator import OrchestratorRunResult
-from alphasolve.solver.worker import WorkerRunResult
+from alphasolve.solver.worker import Worker, WorkerRunResult
 
 
 class _DummyWorker:
@@ -84,44 +85,21 @@ def test_spawn_reports_active_workers_and_enforces_limit(tmp_path, monkeypatch):
         manager.close(timeout=0)
 
 
-def test_spawn_warns_research_reviewer_after_each_five_new_verified_props(tmp_path, monkeypatch):
+def test_spawn_does_not_emit_legacy_periodic_research_reviewer_warning(tmp_path, monkeypatch):
     manager = _manager(tmp_path, monkeypatch, max_workers=1)
     try:
         topic_dir = manager.layout.verified_dir / "topic"
         topic_dir.mkdir()
-        for index in range(4):
+        for index in range(10):
             (topic_dir / f"lemma-{index:02d}.md").write_text(
                 f"# Lemma {index}\n",
                 encoding="utf-8",
             )
 
-        first = manager.spawn("first branch")
-        assert "research_reviewer_required_warning" not in first
+        payload = manager.spawn("first branch")
 
-        _drain_manager(manager, "w1")
-        (topic_dir / "lemma-04.md").write_text("# Lemma 4\n", encoding="utf-8")
-        second = manager.spawn("second branch")
-
-        warning = second["research_reviewer_required_warning"]
-        assert warning["verified_proposition_count"] == 5
-        assert warning["increment"] == 5
-        assert "STRICT WARNING" in warning["message"]
-        assert "research_reviewer" in warning["message"]
-        assert "ResearchProgressReview" in warning["message"]
-        assert "InspectMarkdown" in warning["message"]
-
-        _drain_manager(manager, "w2")
-        third = manager.spawn("third branch")
-        assert "research_reviewer_required_warning" not in third
-
-        _drain_manager(manager, "w3")
-        for index in range(5, 10):
-            (topic_dir / f"lemma-{index:02d}.md").write_text(
-                f"# Lemma {index}\n",
-                encoding="utf-8",
-            )
-        fourth = manager.spawn("fourth branch")
-        assert fourth["research_reviewer_required_warning"]["verified_proposition_count"] == 10
+        assert payload["spawned"] is True
+        assert "research_reviewer_required_warning" not in payload
     finally:
         manager.close(timeout=0)
 
@@ -300,47 +278,6 @@ def test_task_output_returns_completed_result_and_remaining_active_snapshot(tmp_
         assert "second branch" not in payload["active_workers"][0]["progress"]
     finally:
         manager.close(timeout=0)
-
-
-def test_task_output_tool_spawns_free_exploration_worker_when_slot_is_available():
-    class StubManager:
-        def __init__(self):
-            self.solved_result = None
-            self.solution_path = None
-            self.active = {}
-            self.max_workers = 2
-            self.spawned_hints = []
-
-        def spawn(self, hint):
-            self.spawned_hints.append(hint)
-            self.active[object()] = "w-free"
-            return {"spawned": True, "worker_id": "w-free"}
-
-        def has_available_worker_slot(self):
-            return self.solved_result is None and len(self.active) < self.max_workers
-
-        def spawn_free_exploration_if_available(self):
-            if not self.has_available_worker_slot():
-                return {"spawned": False, "reason": "no_available_worker_slot"}
-            return self.spawn(FREE_EXPLORATION_WORKER_HINT)
-
-        def wait(self, *, timeout_seconds=None):
-            return {
-                "completed": [],
-                "timeout_seconds": timeout_seconds,
-                "active_count": len(self.active),
-                "available_worker_slots": self.max_workers - len(self.active),
-            }
-
-    manager = StubManager()
-
-    result = Orchestrator._wait_tool(Orchestrator.__new__(Orchestrator), manager, {"seconds": 1200})
-
-    assert manager.spawned_hints == [FREE_EXPLORATION_WORKER_HINT]
-    assert "freely" in manager.spawned_hints[0]
-    assert "different angles" in manager.spawned_hints[0]
-    assert '"active_count": 1' in result.content
-    assert '"free_exploration_worker": {"spawned": true' in result.content
 
 
 def test_task_output_syncs_changed_root_hint_and_reports_update(tmp_path, monkeypatch):

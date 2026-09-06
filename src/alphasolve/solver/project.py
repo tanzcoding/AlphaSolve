@@ -53,9 +53,15 @@ class ProjectLayout:
             self.knowledge_dir,
             self.unverified_dir,
             self.verified_dir,
+            self.progress_audits_dir,
+            self.task_audits_dir,
+            self.curation_records_dir,
+            self.global_attack_results_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
         self.sync_workspace_inputs()
+        from .research_frontier_state import write_research_frontier_state
+        write_research_frontier_state(self.workspace_dir)
 
     def sync_workspace_inputs(self) -> dict[str, str | None]:
         problem_target = self.workspace_dir / "problem.md"
@@ -82,6 +88,47 @@ class ProjectLayout:
         if self.hint_path is None or not self.hint_path.is_file():
             return None
         return self.hint_path.read_text(encoding="utf-8")
+
+    @property
+    def scheduler_state_path(self) -> Path:
+        return self.workspace_dir / "scheduler_state.json"
+
+    @property
+    def research_frontier_state_path(self) -> Path:
+        return self.verified_dir / "state.md"
+
+    @property
+    def attempt_graph_path(self) -> Path:
+        return self.workspace_dir / "attempt_graph.jsonl"
+
+    @property
+    def progress_audits_dir(self) -> Path:
+        return self.workspace_dir / "progress_audits"
+
+    @property
+    def task_audits_dir(self) -> Path:
+        """短程任务验收报告目录（每个 worker 一份，与长程进度审计分开存放）。"""
+        return self.workspace_dir / "task_audits"
+
+    @property
+    def progress_audit_state_path(self) -> Path:
+        return self.workspace_dir / "progress_audit_state.json"
+
+    @property
+    def progress_audit_outcomes_path(self) -> Path:
+        return self.workspace_dir / "progress_audit_outcomes.jsonl"
+
+    @property
+    def curation_records_dir(self) -> Path:
+        return self.workspace_dir / "curation_records"
+
+    @property
+    def curation_events_path(self) -> Path:
+        return self.curation_records_dir / "events.jsonl"
+
+    @property
+    def global_attack_results_dir(self) -> Path:
+        return self.curation_records_dir / "global-attacks"
 
 
 def _resolve_under(root: Path, path: str | Path | None) -> Path:

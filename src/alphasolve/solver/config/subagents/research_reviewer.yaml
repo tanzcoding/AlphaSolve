@@ -3,16 +3,30 @@ agent:
   name: research_reviewer
   system_prompt_path: ../../prompts/research_reviewer.md
   tier: balanced
-  max_turns: 100
-  when_to_use: Survey verified_propositions/ and knowledge/ when there are many files, compare against problem.md, identify the current global blocker, and recommend research directions.
+  max_turns: 40
+  max_tokens: 8192
+  when_to_use: After a cold-start worker batch or later evidence collection, compare verified propositions, worker results, handoffs, and the canonical frontier; produce route-level primary/challenger/supporting contracts with ordered evidence milestones, adversarially review them once, and perform at most one decision-critical bounded numerical check.
   tools:
+    - Agent
     - ResearchProgressReview
     - InspectMarkdown
     - Read
     - ListDir
     - Glob
     - Grep
+  tool_parameters:
+    Agent:
+      type:
+        enum:
+          - compute_subagent
+          - reasoning_subagent
+          - numerical_experiment_subagent
   tool_descriptions:
+    Agent:
+      suffix: |-
+        - You may call `reasoning_subagent` and `compute_subagent` as often as needed for bounded strategic checks; synthesize their evidence rather than merely forwarding it.
+        - Use `numerical_experiment_subagent` at most once, and only for a decision-critical finite fact absent from available evidence.
+        - Do NOT call `research_reviewer` (yourself) — it is not in your allowed types.
     Read:
       suffix: |-
         - Results respect this agent's workspace access restrictions.

@@ -4,7 +4,7 @@ agent:
   prompt_path: ../../prompts/curator.md
   tier: cheap
   max_turns: 80
-  when_to_use: Incrementally update the knowledge wiki after each subagent trace.
+  when_to_use: Incrementally update the knowledge wiki from local traces and synthesize portfolio checkpoints by comparing worker outcomes and process audits.
   tools:
     - Read
     - Write
@@ -18,10 +18,11 @@ agent:
     - Glob
     - Grep
     - Agent
+    - CurateDifficultyDag
   tool_parameters:
     Read:
       path:
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.md$"
+        pattern: "^(?:(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)+\\.(?:md|json)|progress_audit_outcomes\\.jsonl|curation_records/difficulty_dag\\.json)$"
     Write:
       path:
         pattern: "^knowledge/(?!references(?:/|$))(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
@@ -58,7 +59,7 @@ agent:
     ListDir:
       path:
         default: knowledge
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+        pattern: "^(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       max_results:
         default: 100
         minimum: 1
@@ -66,7 +67,7 @@ agent:
     Glob:
       path:
         default: knowledge
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
+        pattern: "^(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       max_results:
         default: 100
         minimum: 1
@@ -74,7 +75,7 @@ agent:
     Grep:
       path:
         default: knowledge
-        pattern: "^knowledge(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.md)?/?$"
+        pattern: "^(?:knowledge|progress_audits|curation_records|verified_propositions)(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*(?:\\.(?:md|json|jsonl))?/?$"
       max_results:
         default: 20
         minimum: 1

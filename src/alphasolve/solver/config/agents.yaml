@@ -1,4 +1,6 @@
 settings:
+  max_workers: 2
+  tool_executor_size: 4
   max_verify_rounds: 6
   verifier_scaling_factor: 5
   verifier_agents:
@@ -9,6 +11,18 @@ settings:
     - verifier_premise_chain
   subagent_max_depth: 1
   max_orchestrator_restarts: 50
+  progress_audit_every_n_outcomes: 5
+  stagnation_force_pivot_streak: 4
+  cold_start_verified_proposition_threshold: 3
+  worker_wait_timeout_seconds: 3600
+  verified_propositions_organization_threshold: 20
+  free_seed_probability: 0.6
+  theorem_check_attempts: 5
+  curator_health_check_interval: 8
+  curator_oversized_entry_line_limit: 250
+  difficulty_dag:
+    max_persistent_depth: 5
+    global_attack_verified_proposition_interval: 20
 
 agents_dir: ./agents
 subagents_dir: ./subagents

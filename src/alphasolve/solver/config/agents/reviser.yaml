@@ -11,6 +11,7 @@ agent:
     - Grep
     - Write
     - Edit
+    - RecordDifficulty
     - Agent
     - GetCurrentTime
   tool_parameters:

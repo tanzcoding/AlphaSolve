@@ -612,3 +612,47 @@ def test_agent_handles_tool_call_parse_error_gracefully():
         assert len(tr_events) == 1
         assert tr_events[0]["is_error"] is True
         assert "could not be parsed" in tr_events[0]["content"]
+
+
+def test_agent_resets_context_at_safe_model_request_boundary():
+    seen_messages = []
+    reset_requests = iter([None, "fresh context from process audit"])
+
+    class ResetClient:
+        def __init__(self):
+            self.calls = 0
+
+        def complete(self, *, messages, tools, delta_sink=None):
+            del tools, delta_sink
+            self.calls += 1
+            seen_messages.append(list(messages))
+            if self.calls == 1:
+                return _resp(tool_calls=(ToolCall(id="continue", name="Continue", args={}),))
+            return _resp("reoriented")
+
+    registry = ToolRegistry()
+    registry.register(
+        name="Continue",
+        description="Continue to the next model turn.",
+        parameters={"type": "object", "properties": {}},
+        handler=lambda _args: ToolResult("continued"),
+    )
+    agent = Agent(
+        config=AgentConfig(
+            name="reset-test",
+            system_prompt="system prompt",
+            tools=("Continue",),
+            max_turns=2,
+        ),
+        client=ResetClient(),
+        tool_registry=registry,
+        context_reset_provider=lambda: next(reset_requests),
+    )
+
+    result = agent.run("original orchestration context")
+
+    assert result.final_answer == "reoriented"
+    assert seen_messages[0][-1].content == "original orchestration context"
+    assert [message.role for message in seen_messages[1]] == ["system", "user"]
+    assert seen_messages[1][-1].content == "fresh context from process audit"
+    assert any(event["type"] == "context_reset" for event in result.trace)

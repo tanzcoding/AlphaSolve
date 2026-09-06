@@ -14,14 +14,59 @@
 
 AlphaSolve is a multi-agent mathematical theorem-proving system. It organizes LLMs into a long-running research pipeline:
 
-- **Orchestrator** plans directions and dispatches parallel Workers
+- **Orchestrator** executes research plans, decomposes tracks into bounded tasks, and dispatches Workers into available slots
+- **Research Reviewer** reads a read-only DAG projection and worker evidence, returning a multi-track `research_plan` rather than a single worker task
 - **Generator** proposes conjectures and proofs; **Verifier** scrutinizes them from different angles; **Reviser** patches flaws
 - **TheoremChecker** decides whether verified propositions solve the original problem
-- **Curator** continuously organizes accumulated knowledge in the background
+- **Task Audit / Process Audit** assess local task delivery and long-horizon research progress separately
+- **Curator** is the sole writer of the canonical difficulty DAG and organizes evidence in the background
 
 Without human intervention, AlphaSolve runs autonomously for dozens of hours. It is especially suited to problems requiring repeated trial and error and accumulation of intermediate lemmas.
 
 You can intervene at any point: add propositions to `verified_propositions`, delete hallucinated content, or put papers and notes into `knowledge/references` — AlphaSolve reads these on resume and adjusts its exploration accordingly.
+
+---
+
+## Design Principles
+
+### 1. Separate the Research Tree from the Agent Loop
+
+Mathematical research is naturally tree-shaped: one problem branches into obligations, routes, counterexamples, and local lemmas. A conventional Agent Loop, however, is mostly linear: read context, call a tool, wait for a result, and choose the next action. Asking one loop to maintain the whole research tree makes recent local success look like global progress and encourages repeated attempts on the same route.
+
+AlphaSolve separates the two:
+
+- **Offline memory processing**: `Curator` processes worker events, verified propositions, failure diagnoses, and handoffs, then stores checkable evidence in the canonical difficulty DAG and `knowledge/`.
+- **Research-strategy subagent**: `research_reviewer` reads the DAG's read-only semantic projection and recent worker evidence, makes exploration/exploitation, decomposition, reopening, and refutation decisions, and returns a multi-track `research_plan`.
+- **Online execution loop**: `Orchestrator` does not maintain the mathematical tree or invent routes. It compiles the research plan into bounded worker tasks and schedules them according to available slots.
+
+This keeps long-term research structure from being trapped in one loop's local context, while leaving room for richer research strategies in the Reviewer.
+
+### 2. Every Action Must Produce Feedback
+
+The most dangerous failure in mathematical search is not a single failed attempt. It is mistaking a plausible proposition for evidence that the overall direction is working. AlphaSolve therefore uses independent auditors rather than allowing the Orchestrator to judge its own progress:
+
+- **Task Audit**: a short-horizon check of whether a Worker delivered the assigned obligation, recording `delivered`, `partial`, `off_target`, or `not_delivered`, together with residual obligations, rejection loci, and salvageable content.
+- **Process Audit**: a long-horizon check of whether the portfolio advances the original problem, producing evidence for `ADVANCING`, `STALLED`, or `MISALIGNED` strategy decisions.
+- **Worker rejection feedback**: a rejected Worker result is analyzed further: was the target false, the proof gap localized, the task repairable, the execution broken, or the route itself blocked?
+
+The core principle is: **every action — local, strategic, or rejected — must produce enough feedback for the next decision; success/failure as a single bit is not enough.** Auditors are read-only reporters. They do not dispatch Workers or mutate the canonical DAG.
+
+### 3. Subagents as Tools for Replacement and Integration
+
+`research_reviewer`, `compute_subagent`, `reasoning_subagent`, `numerical_experiment_subagent`, and `curator` are connected through tool boundaries instead of being tightly coupled to the Orchestrator. This makes it possible to:
+
+- limit permissions, budgets, recursion depth, and visible data independently;
+- replace models or execution backends without changing the core orchestration logic;
+- replace a subagent with a hook or plugin later;
+- integrate with existing research harnesses, experiment platforms, and evaluation frameworks.
+
+The tool boundary is also a role boundary: subagents return evidence or strategy, the Orchestrator executes, the Curator archives, and the Auditors evaluate.
+
+### 4. Self-Generated Knowledge Is Valuable but Expensive
+
+Worker and subagent traces contain useful route comparisons, discarded approaches, failure diagnoses, and local insights even when they do not become verified propositions. AlphaSolve experiments with extracting this self-generated knowledge, including selected CoT-derived research summaries, into `knowledge/` as navigation information for later Reviewers and Workers.
+
+This material is not a substitute for `verified_propositions`: it may be wrong, duplicated, or stale, and must be used with citations, audits, and subsequent verification. Knowledge extraction, compression, conflict resolution, and context injection also consume substantial tokens and time, so this remains an expensive experimental capability. Future work will optimize summary granularity, incremental updates, and retrieval.
 
 ---
 
@@ -99,6 +144,9 @@ After the run, the folder contains:
 | `solution.md` | The complete proof (appears when the problem is solved) |
 | `workspace/verified_propositions/` | All verified intermediate propositions |
 | `workspace/knowledge/` | Accumulated mathematical knowledge and insights |
+| `workspace/curation_records/difficulty_dag.json` | Curator-maintained canonical difficulty DAG |
+| `workspace/curation_records/research_plans/` | Reviewer research plans and execution records |
+| `workspace/progress_audits/` | Task/Process Audit checkpoints and evidence snapshots |
 
 Stopping and running `alphasolve` again in the same folder resumes automatically — verified propositions and the knowledge base are reused.
 
@@ -106,59 +154,101 @@ Stopping and running `alphasolve` again in the same folder resumes automatically
 
 ## What Happens During a Run
 
-AlphaSolve's research loop works like a constantly cycling laboratory:
+AlphaSolve's research loop works like a constantly cycling laboratory. The current architecture separates research strategy from execution scheduling:
 
-```
-problem.md
+- `research_reviewer` compares evidence and selects `primary`, `challenger`, and `supporting` tracks with route/tabu constraints; it does not dispatch Workers, write the DAG, or define acceptance rubrics.
+- `orchestrator` selects tracks that fit the available worker slots, decomposes them into bounded tasks, and writes auditable rubrics; it does not invent new mathematical routes.
+- `curator` maintains the canonical difficulty DAG from checkable evidence; worker handoffs, no-progress streaks, and reviewer observations do not automatically create children or change canonical status.
+
+```text
+worker results
       |
-      v
-+-- Orchestrator ----------------------------------------------------+
-|  Reads verified_propositions and knowledge                         |
-|  Plans directions, dispatches Workers                              |
-|  Waits for results, decides next step                              |
-+--------------------------------------------------------------------+
-      |  spawn_worker(hint)
-      v
-+-- Worker ----------------------------------------------------------+
-|                                                                    |
-|  Generator  -->  Writes proposition (conjecture + proof draft)     |
-|       |                                                            |
-|       v                                                            |
-|  Verifier x4  -->  Four strategies scrutinize independently        |
-|       |              citation | failure_modes                      |
-|       |              stepwise  | premise_chain                     |
-|       v                                                            |
-|  Review failed? --> Reviser patches, loops back to Verifier        |
-|       |             (up to 6 rounds)                               |
-|       v                                                            |
-|  Review passed --> TheoremChecker: does this solve the problem?    |
-|       |             (5 independent checks)                         |
-|       v                                                            |
-|  Solves problem --> solution.md  [OK]                              |
-|  Otherwise --> proposition enters verified_propositions for reuse  |
-|                                                                    |
-+--------------------------------------------------------------------+
-      |
-      v  (concurrently, in background)
-+-- Curator ---------------------------------------------------------+
-|  Extracts mathematical knowledge from Worker traces                |
-|  Organizes into knowledge/ for all agents to read                  |
-|  Handles conflicts and cross-checks                                |
-+--------------------------------------------------------------------+
+      +-- Task Audit: was the assigned obligation delivered?
+      +-- Process Audit: is the research portfolio advancing?
+               |
+               v
+       Research Reviewer
+               |  research_plan (1–4 tracks)
+               v
+        Orchestrator
+               |  select tracks, decompose bounded tasks, write rubrics
+               v
+        Worker pool (up to max_workers in parallel)
 ```
 
-Each Worker runs in an independent thread with a full generate → verify → revise pipeline. Multiple Workers can run in parallel — control concurrency with `--workers 4`.
+```text
+problem.md + verified_propositions + knowledge
+      |
+      v
++-- Orchestrator --------------------------------------------------------+
+|  Collects worker results and audit feedback                             |
+|  Calls research_reviewer when strategy is unclear                       |
+|  Compiles research_plan tracks into bounded tasks and rubrics           |
+|  Does not create or mutate the canonical DAG                            |
++-------------------------------------------------------------------------+
+      | RequestResearchPlan
+      v
++-- Research Reviewer ----------------------------------------------------+
+|  Reads the read-only semantic DAG projection and recent worker evidence  |
+|  Returns 1–4 tracks: primary / challenger / supporting                  |
+|  Records exploit/explore/refute reasoning and route tabu constraints     |
+|  Does not dispatch Workers, write the DAG, or define worker rubrics      |
++-------------------------------------------------------------------------+
+      | ExecuteResearchPlan
+      v
++-- Worker Pool (default max_workers=2) ----------------------------------+
+|  Each selected track becomes one bounded, auditable worker task          |
+|                                                                         |
+|  Generator --> Verifier x5 --> Reviser (up to 6 rounds)                |
+|                                  |                                      |
+|                                  v                                      |
+|                         TheoremChecker (up to 5 checks)                 |
+|                                                                         |
+|  Task Audit: local assigned-obligation verdict                           |
+|  Process Audit: long-horizon portfolio verdict                          |
++-------------------------------------------------------------------------+
+      | verified proposition / worker evidence / audit outcome
+      v
++-- Curator (background; sole canonical DAG writer) ----------------------+
+|  Archives immutable worker events and verified evidence                  |
+|  Maintains difficulty nodes, edges, aliases, and statuses                 |
+|  Organizes knowledge but does not choose research strategy                 |
++-------------------------------------------------------------------------+
+```
 
-### Four Verifier Strategies
+Each Worker runs the full **generate → verify → revise → theorem-check** pipeline. Multiple Workers can run in parallel, but the concurrency limit is only a resource ceiling: the actual number depends on the research plan, dependencies, and available slots.
+
+### Five Verifier Strategies
 
 | Strategy | Review Angle |
 |----------|-------------|
+| `verifier_format_references` | Checks Statement, reference, and proposition-file protocol |
 | `verifier_citation` | Checks whether cited propositions are correctly applied |
 | `verifier_failure_modes` | Identifies common reasoning failure patterns |
 | `verifier_stepwise` | Examines each step of the proof chain |
 | `verifier_premise_chain` | Traces premise chains for hidden unstated assumptions |
 
-These four strategies rotate across verification rounds. If any round finds a problem, Reviser fixes it and verification restarts. This is why a seemingly simple proposition may go through 6 verify-revise rounds — each round brings a different perspective.
+Verifier strategies run independently according to the configured strategy list and scaling factor. If any round finds a problem, Reviser fixes it and verification restarts, up to `max_verify_rounds`. This is why a seemingly simple proposition may go through multiple verify-revise rounds — each round brings a different perspective.
+
+### Research Plans and Tracks
+
+When local worker evidence does not determine the next direction, the Orchestrator calls `RequestResearchPlan`. The `research_reviewer` returns a `research_plan` containing one to four tracks:
+
+| Track | Meaning |
+|-------|---------|
+| `primary` | The best evidence-backed main route |
+| `challenger` | An independent route using a different mechanism, testing a key premise, or attacking a parent/ancestor |
+| `supporting` | A route that supplies a necessary bridge for the primary track |
+
+The Reviewer chooses research directions, route identities, rationales, and tabu constraints. It does not dispatch Workers or write acceptance rubrics. The Orchestrator uses `ExecuteResearchPlan` to select tracks that fit available slots, decompose them into bounded tasks, and write 3–6 rubric bullets that can be checked against the resulting Statement.
+
+Changing only `method_id` does not create a new mathematical route. A recently attempted `route_label` is tabu by default unless new evidence, a localized repair, or a substantive target change justifies reuse. A `verified` but `off_target` or `partial` result is not automatically progress on the assigned obligation.
+
+### Two Audits and the Canonical DAG
+
+- **Task Audit**: a short-horizon verdict on whether one Worker completed its assigned obligation; it distinguishes `delivered`, `partial`, `off_target`, and `not_delivered`.
+- **Process Audit**: a long-horizon verdict on whether the research portfolio advances the original problem; `STALLED` and `MISALIGNED` are strategy evidence, not automatic scheduling commands.
+- **Difficulty DAG**: `Curator` is the sole canonical DAG writer. Worker handoffs, no-progress streaks, reviewer observations, and failure records are archived as evidence first; they do not automatically create children, split difficulties, or change node status.
 
 ---
 
@@ -193,8 +283,8 @@ alphasolve
 # Specify problem and hint files
 alphasolve --problem ./problem.md --hint ./hint.md
 
-# Adjust concurrency and verification strength
-alphasolve --workers 4 --verifier_scaling_factor 3 --max_verify_rounds 4
+# Adjust concurrency and verification strength (default max_workers=2)
+alphasolve --workers 2 --verifier_scaling_factor 3 --max_verify_rounds 4
 
 # Custom agent configuration
 alphasolve --config ./my_config/
@@ -231,10 +321,10 @@ alphasolve --demo
 |--------|---------|-------------|
 | `--problem` | `problem.md` | Path to the problem file |
 | `--hint` | none | Path to hint file (ignored if missing) |
-| `--workers` | 4 | Number of concurrent workers |
+| `--workers` | 2 | Maximum concurrent workers; actual usage depends on the research plan, dependencies, and available slots |
 | `--config` | built-in config | Custom agents.yaml path or directory |
 | `--max_verify_rounds` | 6 | Max verify-revise rounds per proposition |
-| `--verifier_scaling_factor` | 4 | Independent verification attempts per round |
+| `--verifier_scaling_factor` | 5 | Independent verification attempts per round |
 | `--subagent_max_depth` | 1 | Max recursive depth for subagents |
 | `--max_orchestrator_restarts` | 50 | Max Orchestrator restarts |
 | `--debug` | false | Enable debug logs (detailed agent traces under `logs/`) |
@@ -331,11 +421,12 @@ src/alphasolve/solver/config/
         orchestrator.yaml
         generator.yaml
         verifier.yaml
+        verifier_format_references.yaml
         verifier_citation.yaml
         verifier_failure_modes.yaml
         verifier_stepwise.yaml
         verifier_premise_chain.yaml
-        verifier_adversarial.yaml
+        verifier_adversarial.yaml  # optional; not enabled in the default verifier_agents list
         reviser.yaml
         theorem_checker.yaml
     subagents/
@@ -353,8 +444,8 @@ Use `--config` to specify your own config directory (place same-named YAMLs to o
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `max_verify_rounds` | 6 | Max verify-revise rounds per proposition |
-| `verifier_scaling_factor` | 4 | Independent verification attempts per round (four strategies rotate) |
-| `verifier_agents` | `verifier_citation`, `verifier_failure_modes`, `verifier_stepwise`, `verifier_premise_chain` | Verifier strategies to use |
+| `verifier_scaling_factor` | 5 | Independent verification attempts per round |
+| `verifier_agents` | `verifier_format_references`, `verifier_citation`, `verifier_failure_modes`, `verifier_stepwise`, `verifier_premise_chain` | Verifier strategies to use |
 | `subagent_max_depth` | 1 | Max recursive depth for subagents |
 | `max_orchestrator_restarts` | 50 | Max Orchestrator restarts |
 
@@ -369,27 +460,33 @@ CLI (alphasolve)
     +-- AlphaSolve.run()                        [solver/app.py]
             +-- Wolfram kernel probe
             +-- ExecutionGateway (Python / Wolfram process pools)
-            +-- CuratorQueue (background knowledge-management agent)
+            +-- CuratorQueue (background evidence/DAG writer)
             +-- Orchestrator.run()              [solver/orchestrator.py]
+                    +-- Research Reviewer (via SubagentService)
+                    |       +-- read-only DAG projection
+                    |       +-- multi-track research_plan
                     +-- WorkerManager
                             +-- Worker x N (threads)  [solver/worker.py]
                                     +-- Generator
                                     +-- Verifier x verifier_scaling_factor
                                     +-- Reviser
                                     +-- TheoremChecker
+                            +-- Task Audit / Process Audit
 ```
 
 ### Core Components
 
 | Component | Tier | Role |
 |-----------|------|------|
-| **Orchestrator** | max | Plans directions, dispatches Workers, surveys workspace state; can call `research_reviewer` |
+| **Orchestrator** | max | Collects audit and Worker evidence, executes research plans, decomposes and dispatches bounded tasks |
+| **Research Reviewer** | balanced | Reads the DAG projection and evidence, returns a multi-track `research_plan`; does not dispatch or write the DAG |
 | **Generator** | balanced | Proposes conjectures and proof drafts |
-| **Verifier** (four strategies) | balanced | Scrutinizes proofs from different angles |
+| **Verifier** (five strategies) | balanced | Scrutinizes proofs from different angles |
 | **Reviser** | balanced | Patches propositions based on Verifier feedback |
 | **TheoremChecker** | balanced | Decides whether a verified proposition solves the original problem |
-| **Curator** | cheap | Background knowledge organizer; handles conflicts and cross-checks |
-| **research_reviewer** | balanced | Surveys `verified_propositions/` and `knowledge/`, suggests research directions |
+| **Task Audit** | balanced | Judges whether one Worker task was delivered |
+| **Process Audit** | balanced | Judges whether cumulative research advances the original problem |
+| **Curator** | cheap | Sole writer of the canonical difficulty DAG; organizes evidence and knowledge |
 | **compute subagent** | cheap | Equipped with `RunPython` / `RunWolfram` |
 | **reasoning subagent** | balanced | Pure mathematical reasoning (no computation tools) |
 | **numerical experiment subagent** | cheap | Bounded exploration and local numerical experiments |
@@ -414,18 +511,39 @@ pip install -e .
 
 ---
 
-## Debug Logs
+## Debug Logs and Research State
 
-Running with `--debug` records detailed agent behavior traces under `logs/`:
+Running with `--debug` records detailed agent behavior traces under `logs/`. Runtime research state and reproducible evidence are stored under the problem folder's `workspace/`:
 
 ```
 logs/{run_id}/
-    orchestrator.log        # Every Orchestrator LLM call and tool use
-    curator/                # One file per curator session
-        20260428_153045.log
-    workers/
-        worker_{hash}.log   # Each Worker's full generate -> verify -> revise pipeline
+    token_usage.jsonl       # Token and timing data for each agent/worker turn
+    search_tree.jsonl       # Read-only spawn/result attempt observations
+    workers/                # Each Worker's full generate -> verify -> revise pipeline
+    subagents/              # research_reviewer, compute, and other subagent sessions
+    curator/                # Curator sessions
+
+workspace/
+    curation_records/
+        difficulty_dag.json                 # Curator-owned canonical DAG
+        research_plans/plan-*.json          # Reviewer plans and execution status
+        events.jsonl                        # Immutable orchestration/curation events
+    progress_audits/
+        checkpoint-*/audit.md               # Long-horizon Process Audit decisions
+        checkpoint-*/evidence.md             # Evidence snapshots for each checkpoint
+    progress_audit_outcomes.jsonl           # Settled Worker outcome ledger
+    attempt_graph.jsonl                     # Worker attempt and parent provenance
+    verified_propositions/                   # Verified mathematical propositions
+    knowledge/                               # Navigation knowledge, lessons, and references
 ```
+
+When inspecting progress, distinguish among:
+
+1. `verified_propositions/`: established mathematical facts;
+2. `progress_audits/` and `progress_audit_outcomes.jsonl`: task-delivery and research-progress facts;
+3. `curation_records/difficulty_dag.json`: Curator's canonical nodes, edges, and statuses.
+
+Worker handoffs, no-progress streaks, `STALLED` decisions, and reviewer graph observations are evidence first; they do not automatically mutate the canonical DAG.
 
 ---
 

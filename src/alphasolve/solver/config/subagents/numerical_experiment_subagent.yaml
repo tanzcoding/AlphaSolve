@@ -4,7 +4,12 @@ agent:
   system_prompt_path: ../../prompts/numerical_experiment_subagent.md
   tier: cheap
   max_turns: 80
-  when_to_use: Bounded exploration, branch checks, and local numerical experiments.
+  when_to_use: >
+    Bounded exploration, branch checks, local numerical experiments, small-n exhaustive
+    search, counterexample mining, invariant discovery, and constraint-gap quantification.
+    Use when analytic progress is blocked and a numerical probe could reveal which unproven
+    lemma is most likely to close the gap. Can run exhaustive enumeration, LP formulations,
+    and structural invariant extraction on small-n analogues.
   tools:
     - RunPython
     - RunWolfram

@@ -11,6 +11,8 @@ from typing import Any, Callable
 from alphasolve.agent import AgentConfig, WorkspaceLike
 from alphasolve.agent.tools import ToolRegistry, ToolResult, build_default_tool_registry, register_agent_tool
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES
+from .difficulty_dag import DifficultyDagStore, register_curated_difficulty_dag_tool
+from .difficulty_declaration import register_difficulty_declaration_tool
 from .research_markdown import (
     _markdown_index_progress_audit_hint,
     _markdown_knowledge_index_hint,
@@ -270,7 +272,9 @@ def register_execution_tools(
             "Usage:\n"
             "- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n"
             "- The Python environment persists across calls within the same session.\n"
-            "- No filesystem access is permitted; use file tools separately if needed."
+            "- No filesystem access is permitted; use file tools separately if needed.\n"
+            '- For regexes or strings containing backslashes, use raw strings (for example `r"\\{"`) '
+            'or double escaping (for example `"\\\\{"`); never write `"\\{"`.'
         ),
         parameters={
             "type": "object",
@@ -306,7 +310,13 @@ def register_orchestrator_worker_tools(
     registry.register(
         name="SpawnWorker",
         description=(
-            "Start one worker and return immediately; this tool does not wait for the worker to finish.\n\n"
+            "Direct-dispatch surface for bounded bootstrap or explicit human-directed checks. Use RequestResearchPlan "
+            "to obtain an advisory research-state assessment before route-level decisions or evidence-driven dispatches; "
+            "execute any adopted reviewer plan with ExecuteResearchPlan. Direct dispatches provide evidence for later "
+            "reviewer reflection, not a substitute for research routing.\n\n"
+            "Every dispatch must state both what to do (`hint`) and what would count as done (`rubric`). "
+            "When the worker finishes, an independent task auditor checks the proven Statement against that rubric and "
+            "TaskOutput reports whether the task was delivered, plus any scope drift.\n\n"
             "Worker lifecycle:\n"
             "- The worker first runs generator to draft one candidate proposition.\n"
             "- It then runs verifier; if verification fails and rounds remain, it runs reviser and repeats verifier -> reviser.\n"
@@ -324,8 +334,111 @@ def register_orchestrator_worker_tools(
                         "branch, local target, or auxiliary assumption. This is different from the user's hint.md."
                     ),
                 },
+                "difficulty_id": {
+                    "type": "string",
+                    "description": (
+                        "Optional provenance label for a known difficulty. It is not a dispatch prerequisite and does not "
+                        "create, edit, or validate canonical DAG structure."
+                    ),
+                },
+                "route_label": {
+                    "type": "string",
+                    "maxLength": 80,
+                    "description": (
+                        "Optional short slug naming the mathematical route this dispatch pursues, for example "
+                        "'exact-variance-contrapositive'. Reuse the reviewer's label when executing its plan, and reuse an "
+                        "earlier label when re-attacking the same route so repeat attempts on one route stay visible. "
+                        "`method_id` records only the proof genre and cannot distinguish two routes that share it."
+                    ),
+                },
+                "followup_handoff_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional worker-local handoff IDs from TaskOutput.local_difficulties that justify this bounded follow-up. "
+                        "Each cited handoff may be followed up once per orchestrator run."
+                    ),
+                },
+                "evidence_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional workspace-relative evidence paths that the worker should inspect, such as a handoff, proposition, "
+                        "review, theorem check, or process audit. These are evidence references, not mathematical facts by themselves."
+                    ),
+                },
+                "method_id": {
+                    "type": "string",
+                    "enum": ["direct_proof", "contradiction", "construction", "computation", "falsification", "consolidation"],
+                    "description": "Optional proof/search method for the selected difficulty leaf.",
+                },
+                "frontier_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional. A curated list of verified-proposition references (paths relative to "
+                        "`verified_propositions` without the `.md` extension, subdirectories with backslashes, "
+                        "e.g. `structural\\anchor-graph\\anchor-graph-for-rectangle-partition`) that define the "
+                        "research frontier this worker should build on. The runtime injects each referenced "
+                        "proposition's Statement into the worker's task so the worker can focus on its assigned "
+                        "mathematical obligation instead of broad workspace exploration. Differentiate this per direction: give "
+                        "an exploit spawn its mainline frontier, give a new/orthogonal direction a small orthogonal "
+                        "set, and leave it empty for a free-exploration direction that should start from scratch."
+                    ),
+                },
+                "frontier_note": {
+                    "type": "string",
+                    "description": (
+                        "Optional. One short note telling the worker what the curated frontier means for this hint "
+                        "or what to avoid (e.g. 'avoid the anchor-graph mainline; try construction/number-theoretic "
+                        "structure such as 45^2'). Shown alongside frontier_refs."
+                    ),
+                },
+                "rubric": {
+                    "type": "string",
+                    "description": (
+                        "Required. The acceptance checklist for this task: 3-6 bullet points, each starting with '- ', "
+                        "each checkable against the proven Statement alone. Write it together with the hint — it is how you "
+                        "state what would count as delivering this task, not a formality.\n\n"
+                        "When the worker finishes, an independent task auditor checks each criterion against the proven "
+                        "Statement and returns a delivery verdict plus any scope drift on TaskOutput. A vague rubric yields "
+                        "a useless audit; a criterion the Statement cannot settle will come back as `unclear`.\n\n"
+                        "State the required quantifiers, bounds, constants, and conditions explicitly, so a correct but "
+                        "weakened or narrowed result is detected rather than accepted. Example: '- Statement holds for every "
+                        "integrable H with the stated normalization\n- Bound is exactly 2, not an unspecified constant\n"
+                        "- No extra smoothness or boundedness hypothesis is introduced'."
+                    ),
+                },
+                "consolidation": {
+                    "type": "boolean",
+                    "description": (
+                        "Reserved for global_attack=true. Local leaves, local assembly, and parent-direct attempts "
+                        "must leave this false so they can record a strict child, missing bridge, method block, or "
+                        "refutation. The runtime rejects consolidation=true without global_attack=true."
+                    ),
+                },
+                "pinned_target": {
+                    "type": "string",
+                    "description": (
+                        "Optional target context. global_attack uses it as the fixed original-problem target; local "
+                        "assembly or parent-direct work may retain it as the current focus but may still weaken into "
+                        "a strict child difficulty."
+                    ),
+                },
+                "global_attack": {
+                    "type": "boolean",
+                    "description": (
+                        "Optional (default false). Set true to launch a GLOBAL consolidation that attacks "
+                        "`problem.md` directly — not any canonical difficulty leaf. This implies "
+                        "consolidation=true (no weakening allowed). The runtime permits the first attack and each later "
+                        "attack only after the configured number "
+                        "of verified propositions has accumulated; a completed attack resets that count. Every completed global "
+                        "attack is reported to the curator for knowledge and later DAG curation. If pinned_target is omitted, the runtime "
+                        "reads problem.md into pinned_target automatically. Do NOT pass difficulty_id with global_attack."
+                    ),
+                },
             },
-            "required": [],
+            "required": ["rubric"],
         },
         handler=spawn_handler,
     )
@@ -334,10 +447,17 @@ def register_orchestrator_worker_tools(
         description=(
             "Wait until one active worker finishes, or until the timeout is reached.\n\n"
             "Use this tool to collect worker lifecycle results. If the maximum number of active workers has been reached, call TaskOutput before spawning more workers.\n\n"
-            "When you use this tool, if there is still an available worker slot, the orchestrator will start one worker for free exploration.\n\n"
-            "Return content is JSON. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, available_worker_slots, and free_exploration_worker. "
+            "Return content is JSON. Decision fields come first, then the bulk worker evidence in completed. It always includes completed, active_count, active_worker_ids, active_workers, max_workers, and available_worker_slots. "
+            "Each completed worker carries a `task_audit`: an independent short-horizon verdict on whether the task you assigned "
+            "was delivered (`delivered`, `partial`, `off_target`, `not_delivered`), its rubric score, any scope drift, and the "
+            "residual obligation. A verified proposition with an unmet rubric means the obligation is still open. "
+            "`task_audit_summary` aggregates those facts for this batch. Completed workers may also include a worker-local "
+            "difficulty_handoff plus direct proposition, review, and verification artifacts. Treat every audit and handoff as "
+            "evidence for RequestResearchPlan; only ExecuteResearchPlan may dispatch the reviewer's selected continuation. "
+            "Canonical parent/child structure remains curator-owned. "
             "It may include timed_out when no worker finishes before the timeout; solved and solution_path when the original problem is solved; "
-            "human_expert_updates when hint.md or knowledge/references changed during the run; and verified_propositions_organization when verified proposition directories should be organized before more spawning."
+            "human_expert_updates when hint.md or knowledge/references changed during the run; and progress_audit with the independent long-horizon process auditor's latest verdict and persisted checkpoint files. "
+            "When this collection triggers a checkpoint, it waits for that process-audit decision and returns a bounded process_audit_decisions summary; read its audit_path or evidence_path only when exact evidence is needed."
         ),
         parameters={
             "type": "object",
@@ -362,12 +482,38 @@ def build_solver_tool_registry(
     agent_config: AgentConfig | None = None,
     dispatcher: Any | None = None,
     extra_registrars: tuple[ToolRegistrar, ...] = (),
+    read_state_resolver: Callable[[str, Any], bool | None] | None = None,
+    difficulty_record_context: dict[str, Any] | None = None,
 ) -> ToolRegistry:
     """构造第三层最终 ToolRegistry。"""
     registry = build_default_tool_registry(workspace)
     register_research_markdown_tools(registry, workspace)
+    if agent_config is not None and agent_config.name == "curator":
+        workspace_root = getattr(getattr(workspace, "workspace", None), "root", None)
+        if workspace_root:
+            difficulty_dag = DifficultyDagStore(workspace_root)
+            register_curated_difficulty_dag_tool(
+                registry,
+                difficulty_dag=difficulty_dag,
+                checkpoint_id=None,
+            )
     for registrar in extra_registrars:
         registrar(registry)
+    if agent_config is not None and agent_config.name in {"generator", "reviser", "reasoning_subagent"}:
+        worker_rel = getattr(workspace, "worker_rel", None)
+        workspace_root = getattr(getattr(workspace, "workspace", None), "root", None)
+        if worker_rel and workspace_root:
+            register_difficulty_declaration_tool(
+                registry,
+                declaration_path=workspace_root / worker_rel / "difficulty_declaration.md",
+                role=agent_config.name,
+                record_context=difficulty_record_context,
+            )
     if agent_config is not None and dispatcher is not None:
-        register_agent_tool(registry, agent_config=agent_config, dispatcher=dispatcher)
+        register_agent_tool(
+            registry,
+            agent_config=agent_config,
+            dispatcher=dispatcher,
+            read_state_resolver=read_state_resolver,
+        )
     return registry

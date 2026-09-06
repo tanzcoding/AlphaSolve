@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import stat
@@ -18,6 +19,11 @@ from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
 from .client_factory import ClientFactory
+from .difficulty_declaration import (
+    difficulty_handoff_path,
+    difficulty_json_path,
+    materialize_difficulty_handoff,
+)
 from .role import Role, RoleContext
 from .tool_runtime import build_solver_tool_registry
 from .workspace_access import RoleWorkspaceAccess
@@ -41,6 +47,7 @@ Rules:
 - Return `pass` only if the review establishes that the proposition is correct, complete, and rigorous.
 - Do not judge whether the proposition solves the original problem; a separate theorem checker handles that.
 """
+
 
 
 _REMOVE_RETRY_DELAYS = (0.1, 0.3, 0.7)
@@ -165,8 +172,31 @@ class WorkerRunResult:
     verified_file: Path | None = None
     review_file: Path | None = None
     theorem_check_file: Path | None = None
+    difficulty_id: str | None = None
     solved_problem: bool = False
     trace: list[dict[str, Any]] = field(default_factory=list)
+    # --- global consolidation worker 的结构化反馈 ---
+    is_consolidation: bool = False
+    # 仅 global-problem-attack 使用：None = 未完成状态未知；True = 完成原题；False = 未完成。
+    target_achieved: bool | None = None
+    # 每轮 verifier 的 (verdict, review 摘要)，rejected 时供 orchestrator 判断失败模式
+    verify_history: list[dict[str, Any]] = field(default_factory=list)
+    # 回传 hint 和 pinned_target，便于 orchestrator 对比"要求什么" vs "拿到了什么"
+    worker_hint: str | None = None
+    pinned_target: str | None = None
+    # generator 产出的困难声明文件路径（difficulty_declaration.md）
+    # 记录 worker 回避了什么数学困难、为什么回避、尝试过但失败的路线
+    difficulty_declaration_file: Path | None = None
+    # worker 结束后根据最终修订/审查轨迹生成的结构化困难交接卡片。
+    # 它是组合比较候选，不是已确认的 persistent blocker。
+    difficulty_handoff_file: Path | None = None
+    difficulty_handoff: dict[str, Any] | None = None
+    # 结构化失败分类，避免把协议错误、无候选和数学验证失败混为一谈。
+    failure_kind: str | None = None
+    blocking_obligation: str | None = None
+    method_id: str | None = None
+    # orchestrator 下发的验收清单，回传供 orchestrator 做结构化反思
+    rubric: str | None = None
 
 
 @dataclass(frozen=True)
@@ -218,8 +248,19 @@ class Worker:
         suite,
         client_factory: ClientFactory,
         worker_hint: str | None = None,
+        difficulty_id: str | None = None,
+        difficulty_statement: str | None = None,
+        method_id: str | None = None,
+        frontier_refs: list[str] | None = None,
+        frontier_note: str | None = None,
+        is_free: bool = False,
+        allow_weakening: bool = True,
+        pinned_target: str | None = None,
+        rubric: str | None = None,
         max_verify_rounds: int = 2,
         verifier_scaling_factor: int = 1,
+        verifier_agents: tuple[str, ...] | None = None,
+        theorem_check_attempts: int = AlphaSolveConfig.CHECK_IS_THEOREM_TIMES,
         subagent_max_depth: int = 2,
         renderer: PropositionTeamRenderer | None = None,
         execution_gateway: ExecutionGateway | None = None,
@@ -234,8 +275,24 @@ class Worker:
         prop_hash = uuid.uuid4().hex[:8]
         self.worker_id = prop_hash
         self.worker_hint = worker_hint
+        self.difficulty_id = (difficulty_id or "").strip() or None
+        self.difficulty_statement = (difficulty_statement or "").strip() or None
+        self.method_id = (method_id or "direct_proof").strip() or "direct_proof"
+        self.frontier_refs = list(frontier_refs) if frontier_refs else []
+        self.frontier_note = frontier_note
+        self.is_free = bool(is_free)
+        # `allow_weakening=False` 的 no-weakening 契约仅属于 global-problem-attack。
+        # 局部 assembly 和 parent-direct 尝试始终允许产出 strict child、method block
+        # 或 refutation；忽略其调用方传入的 false，避免重新锁死 DAG。
+        self.pinned_target = (pinned_target or "").strip() or None
+        self.rubric = (rubric or "").strip() or None
+        self.is_global_attack = self.difficulty_id == "global-problem-attack"
+        self.allow_weakening = not self.is_global_attack
+        self.is_consolidation = self.is_global_attack
         self.max_verify_rounds = max(1, int(max_verify_rounds))
         self.verifier_scaling_factor = max(1, int(verifier_scaling_factor))
+        self.verifier_agents = tuple(verifier_agents) if verifier_agents is not None else None
+        self.theorem_check_attempts = max(1, int(theorem_check_attempts))
         self.subagent_max_depth = max(0, int(subagent_max_depth))
         self.workspace = Workspace(layout.workspace_dir)
         self.worker_dir = layout.unverified_dir / f"prop-{prop_hash}"
@@ -270,10 +327,33 @@ class Worker:
             return self._finish("cancelled", "worker cancelled because another worker solved the problem")
         if self.worker_hint:
             (self.worker_dir / "worker_hint.md").write_text(self.worker_hint, encoding="utf-8")
+        (self.worker_dir / "research_target.json").write_text(
+            json.dumps(
+                {
+                    "worker_id": self.worker_id,
+                    "difficulty_id": self.difficulty_id,
+                    "difficulty_statement": self.difficulty_statement,
+                    "method_id": self.method_id,
+                    "hint": self.worker_hint,
+                    "is_free_exploration": self.is_free,
+                    "allow_weakening": self.allow_weakening,
+                    "pinned_target": self.pinned_target,
+                    "rubric": self.rubric,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ) + "\n",
+            encoding="utf-8",
+        )
+        # 落盘 orchestrator 下发的精选前沿（或 free 探索指引+发散种子），便于日志观测。
+        frontier_text = self._render_frontier()
+        if frontier_text:
+            frontier_name = "free_exploration.md" if self.is_free else "curated_frontier.md"
+            (self.worker_dir / frontier_name).write_text(frontier_text, encoding="utf-8")
 
         try:
             try:
-                proposition_file = self._run_generator()
+                proposition_file = self._run_generator(frontier_text)
                 if self._should_stop():
                     return self._finish(
                         "cancelled",
@@ -281,25 +361,49 @@ class Worker:
                         proposition_file=proposition_file,
                     )
                 if proposition_file is None:
-                    return self._finish("rejected", "generator did not produce a proposition markdown file")
+                    return self._finish(
+                        "rejected", "generator did not produce the required proposition.md file",
+                        target_achieved=False if self.is_consolidation else None,
+                        failure_kind="generator_protocol_failure",
+                        blocking_obligation="Generator completed without a valid proposition.md output.",
+                    )
+                protocol_error = self._validate_proposition_file(proposition_file)
+                if protocol_error:
+                    return self._finish(
+                        "rejected",
+                        f"generator produced an invalid proposition.md: {protocol_error}",
+                        proposition_file=proposition_file,
+                        target_achieved=False if self.is_consolidation else None,
+                        failure_kind="generator_protocol_failure",
+                        blocking_obligation=protocol_error,
+                    )
+                self._snapshot_proposition(proposition_file, version=0)
 
                 final_review_file: Path | None = None
                 last_review_text = ""
+                verify_history: list[dict[str, Any]] = []
                 for workflow_index in range(1, self.max_verify_rounds + 1):
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
                             "worker cancelled because another worker solved the problem",
                             proposition_file=proposition_file,
+                            verify_history=verify_history,
                         )
                     workflow_result = self._run_verifier_workflow(proposition_file, workflow_index=workflow_index)
                     last_review_text = workflow_result.review_text
                     final_review_file = workflow_result.review_file
+                    verify_history.append({
+                        "round": workflow_index,
+                        "verdict": "pass" if workflow_result.passed else "fail",
+                        "review_excerpt": (workflow_result.review_text or "")[:1200],
+                    })
                     if self._should_stop():
                         return self._finish(
                             "cancelled",
                             "worker cancelled because another worker solved the problem",
                             proposition_file=proposition_file,
+                            verify_history=verify_history,
                         )
                     if workflow_result.passed:
                         if self._should_stop():
@@ -307,13 +411,17 @@ class Worker:
                                 "cancelled",
                                 "worker cancelled because another worker solved the problem",
                                 proposition_file=proposition_file,
+                                verify_history=verify_history,
                             )
                         verified = self._copy_to_verified(proposition_file)
                         solved_problem, theorem_check_text = self._run_theorem_checks(verified)
-                        theorem_check_file = None
-                        if solved_problem:
-                            theorem_check_file = self.worker_dir / "theorem_check.md"
-                            theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
+                        theorem_check_file = self.worker_dir / "theorem_check.md"
+                        theorem_check_file.write_text(theorem_check_text, encoding="utf-8")
+        # global consolidation: verifier 通过不等于完成原题。
+        # 代码不做 LLM 判断，只标记 verified；orchestrator 负责判断 target_achieved。
+
+                        target_achieved = None if self.is_consolidation else True
+                        difficulty_decl = self.worker_dir / "difficulty_declaration.md"
                         return self._finish(
                             "verified",
                             "Successfully produced a verified proposition. Statement: "
@@ -323,6 +431,9 @@ class Worker:
                             review_file=final_review_file,
                             theorem_check_file=theorem_check_file,
                             solved_problem=solved_problem,
+                            verify_history=verify_history,
+                            target_achieved=target_achieved,
+                            difficulty_declaration_file=difficulty_decl if difficulty_decl.exists() else None,
                         )
                     if workflow_index < self.max_verify_rounds:
                         self._run_reviser(proposition_file, workflow_result.review_text, workflow_index=workflow_index)
@@ -331,6 +442,7 @@ class Worker:
                                 "cancelled",
                                 "worker cancelled because another worker solved the problem",
                                 proposition_file=proposition_file,
+                                verify_history=verify_history,
                             )
 
                 summary = "Failed to produce a verified proposition."
@@ -340,14 +452,26 @@ class Worker:
                     final_review_file = self._write_final_review(last_review_text)
                 if final_review_file is not None and final_review_file.exists():
                     summary += "\n\nFinal review:\n" + final_review_file.read_text(encoding="utf-8")[:4000]
-                return self._finish("rejected", summary, proposition_file=proposition_file, review_file=final_review_file)
+                # global consolidation rejected = 明确未完成原题
+                target_achieved = False if self.is_consolidation else None
+                difficulty_decl = self.worker_dir / "difficulty_declaration.md"
+                return self._finish(
+                    "rejected", summary,
+                    proposition_file=proposition_file,
+                    review_file=final_review_file,
+                    verify_history=verify_history,
+                    target_achieved=target_achieved,
+                    difficulty_declaration_file=difficulty_decl if difficulty_decl.exists() else None,
+                    failure_kind="verification_rejected",
+                    blocking_obligation=(last_review_text or "Verifier rejected the candidate proposition.")[:2000],
+                )
             except Exception as exc:
-                return self._finish("failed", str(exc))
+                return self._finish("failed", str(exc), failure_kind="execution_failed")
         finally:
             if self._worker_log_sink is not None:
                 self._worker_log_sink.close()
 
-    def _run_generator(self) -> Path | None:
+    def _run_generator(self, frontier_text: str | None = None) -> Path | None:
         config = self.suite.agents["generator"]
         self._set_phase("generator", status="thinking", model=self._model_name(config))
         curator_context = GeneratorCuratorContext(worker_id=self.worker_id, worker_rel=self.worker_rel)
@@ -364,7 +488,7 @@ class Worker:
             curator_context_provider=curator_context.consume,
             event_sink_decorator=event_sink_decorator,
         )
-        role.run(self._generator_task())
+        role.run(self._generator_task(frontier_text))
         return self._find_proposition_file()
 
     def _run_verifier_workflow(self, proposition_file: Path, *, workflow_index: int) -> VerifierWorkflowResult:
@@ -384,6 +508,12 @@ class Worker:
                 config_name=config_name,
             )
             last_review_file = self._write_final_review(last_review_text)
+            self._snapshot_review(
+                last_review_text,
+                workflow=workflow_index,
+                attempt=attempt_index,
+                config=config_name,
+            )
             verdict = self._run_review_verdict_judge(
                 last_review_text,
                 workflow_index=workflow_index,
@@ -437,7 +567,7 @@ class Worker:
 
     def _run_theorem_checks(self, verified_file: Path) -> tuple[bool, str]:
         attempts: list[str] = []
-        for attempt_index in range(1, AlphaSolveConfig.CHECK_IS_THEOREM_TIMES + 1):
+        for attempt_index in range(1, self.theorem_check_attempts + 1):
             if self._should_stop():
                 return False, _format_theorem_check_attempts(attempts)
             check_text = self._run_theorem_checker(verified_file, attempt_index=attempt_index)
@@ -463,6 +593,8 @@ class Worker:
             workflow_index=workflow_index,
         )
         role.run(self._reviser_task(proposition_file, review_text, workflow_index=workflow_index))
+        if proposition_file.is_file():
+            self._snapshot_proposition(proposition_file, version=workflow_index)
 
     def _run_review_verdict_judge(self, review_text: str, *, workflow_index: int, attempt_index: int) -> str:
         role = f"review_verdict_judge w{workflow_index}.{attempt_index}"
@@ -496,15 +628,45 @@ class Worker:
         })
         return verdict
 
+
     def _find_proposition_file(self) -> Path | None:
-        candidates = [
-            path
-            for path in self.worker_dir.glob("*.md")
-            if path.name not in {"review.md", "theorem_check.md", "worker_hint.md"} and path.is_file()
-        ]
-        if not candidates:
-            return None
-        return sorted(candidates, key=lambda path: path.stat().st_mtime)[-1]
+        """严格兑现 generator 的固定输出协议，绝不把 frontier/guidance 当作命题。"""
+        candidate = self.worker_dir / "proposition.md"
+        return candidate if candidate.is_file() else None
+
+    @staticmethod
+    def _validate_proposition_file(path: Path) -> str | None:
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"cannot read proposition.md: {exc}"
+        if not text.strip():
+            return "proposition.md is empty"
+        headings = re.findall(r"(?m)^##\s+(.+?)\s*$", text)
+        if [item.strip().lower() for item in headings] != ["statement", "proof"]:
+            return "proposition.md must contain exactly ## Statement followed by ## Proof"
+        statement_match = re.search(r"(?ms)^##\s+Statement\s*$\s*(.*?)^##\s+Proof\s*$", text, flags=re.IGNORECASE)
+        proof_match = re.search(r"(?ms)^##\s+Proof\s*$\s*(.*)\Z", text, flags=re.IGNORECASE)
+        if statement_match is None or not statement_match.group(1).strip():
+            return "the Statement section is empty"
+        if proof_match is None or not proof_match.group(1).strip():
+            return "the Proof section is empty"
+        return None
+
+    def _snapshot_proposition(self, proposition_file: Path, *, version: int) -> Path:
+        history_dir = self.worker_dir / "revision_history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        target = history_dir / f"proposition.v{version}.md"
+        shutil.copy2(proposition_file, target)
+        return target
+
+    def _snapshot_review(self, review_text: str, *, workflow: int, attempt: int, config: str) -> Path:
+        """将单次 verifier attempt 的审查结果存入 revision_history，与 proposition 快照配对。"""
+        history_dir = self.worker_dir / "revision_history"
+        history_dir.mkdir(parents=True, exist_ok=True)
+        target = history_dir / f"review.w{workflow}_a{attempt}_{config}.md"
+        target.write_text(review_text, encoding="utf-8")
+        return target
 
     def _copy_to_verified(self, proposition_file: Path) -> Path:
         name = self._generate_proposition_name(proposition_file)
@@ -554,9 +716,18 @@ class Worker:
 
     def _reset_verifier_workflow_workspace(self, proposition_file: Path) -> None:
         self.worker_dir.mkdir(parents=True, exist_ok=True)
+        # 困难声明是跨 verify/revise 轮次累积的 worker 证据：.md 是可读日志，
+        # .json 是 curator 唯一可消费的结构化状态。两者必须一起保留，
+        # 否则 handoff 会在下一轮 reset 后静默丢失。
+        declaration_file = self.worker_dir / "difficulty_declaration.md"
         protected = {
             proposition_file.resolve(),
             (self.worker_dir / "worker_hint.md").resolve(),
+            (self.worker_dir / "research_target.json").resolve(),
+            declaration_file.resolve(),
+            difficulty_json_path(declaration_file).resolve(),
+            difficulty_handoff_path(declaration_file).resolve(),
+            (self.worker_dir / "revision_history").resolve(),
         }
         verifier_workspace = self.worker_dir / "verifier_workspace"
         for child in list(self.worker_dir.iterdir()):
@@ -573,16 +744,205 @@ class Worker:
         verifier_workspace = self.worker_dir / "verifier_workspace"
         _reset_directory(verifier_workspace)
 
-    def _generator_task(self) -> str:
+    def _pinned_target_block(self) -> str:
+        """仅为全局 consolidation 注入禁止弱化的 original-problem target。"""
+        if self.allow_weakening:
+            return ""
+        target = self.pinned_target or (self.worker_hint or "").strip()
+        parts = [
+            "# Pinned Target (no weakening allowed)",
+            (
+                "This is a CONSOLIDATION / DUAL attempt on a FIXED target. You must NOT weaken, "
+                "narrow, or add fresh hypotheses to make the statement 'barely provable', and you "
+                "must NOT isolate a smaller sub-claim and emit that instead. Only two outcomes count "
+                "as success:\n"
+                "  (1) Prove the pinned target EXACTLY as stated, using only already-verified "
+                "propositions (via \\ref{...}) plus rigorous reasoning; or\n"
+                "  (2) REFUTE it with an explicit, independently checkable witness (a concrete "
+                "permutation / construction / tiling) and prove the witness meets every stated "
+                "condition — emit that refuting statement as the proposition.\n"
+                "If you can do neither, keep the pinned Statement unchanged. In `## Proof`, present only "
+                "the honest partial derivation and explicitly name the single blocking obligation. Do NOT "
+                "replace the Statement with the largest fragment you proved: that would be weakening. The "
+                "verifier should reject the incomplete pinned proof, allowing the orchestrator to route the gap. "
+                "Introducing an unproven assumption to bridge the gap is a failure, not a success."
+            ),
+        ]
+        if self.is_global_attack:
+            parts.append(
+                "This is a GLOBAL ATTACK on the full problem itself (`problem.md`), not a sub-direction's "
+                "terminal goal. The pinned target below is the complete problem statement. You must aim to "
+                "resolve the entire problem — do not prove a sub-claim, a special case, or a necessary "
+                "condition and present it as the answer. Use the accumulated verified propositions as "
+                "building blocks; the orchestrator judged that enough material has accumulated to warrant a "
+                "head-on attempt on the full problem."
+            )
+        if target:
+            parts.append("The pinned target is:\n\n" + target)
+        return "\n\n".join(parts)
+
+    def _scan_failed_history(self, max_results: int = 3) -> str:
+        """扫描历史上失败的 worker，提取命题和失败原因，帮助当前 worker 避免踩坑。
+
+        在 generator 和 reviser 的 task prompt 中注入，让 worker 在开始干活前
+        就知道前人试过什么、卡在哪里。只扫描有 revision_history/ 的 worker，
+        按 hint 文本相似度排序取 top-N。
+        """
+        unverified = self.layout.unverified_dir
+        if not unverified.is_dir():
+            return ""
+        hint_words = set((self.worker_hint or "").lower().split())
+        if not hint_words:
+            return ""
+
+        scored: list[tuple[int, Path]] = []
+        for prop_dir in sorted(unverified.iterdir()):
+            if not prop_dir.is_dir() or not prop_dir.name.startswith("prop-"):
+                continue
+            history_dir = prop_dir / "revision_history"
+            if not history_dir.is_dir():
+                continue
+            # 只取有 proposition 快照的
+            versions = sorted(history_dir.glob("proposition.v*.md"))
+            if not versions:
+                continue
+            # 用 worker_hint.md 或 research_target.json 提取原始 hint
+            target_json = prop_dir / "research_target.json"
+            hint_text = ""
+            if target_json.is_file():
+                try:
+                    data = json.loads(target_json.read_text(encoding="utf-8"))
+                    hint_text = (data.get("hint") or data.get("pinned_target") or "")
+                except (json.JSONDecodeError, OSError):
+                    pass
+            if not hint_text:
+                hint_file = prop_dir / "worker_hint.md"
+                if hint_file.is_file():
+                    hint_text = hint_file.read_text(encoding="utf-8")
+            # 相似度：hint 关键词命中数
+            target_words = set(hint_text.lower().split())
+            score = len(hint_words & target_words)
+            if score > 0:
+                scored.append((score, prop_dir))
+
+        scored.sort(key=lambda x: -x[0])
+        if not scored:
+            return ""
+
+        parts: list[str] = [
+            "# Historical Failure Warnings",
+            (
+                "The following are past worker attempts on tasks similar to yours. "
+                "Each entry shows what they tried to prove, how many revision rounds they went through, "
+                "and what the verifier rejected them for. Read these BEFORE writing your own proposition "
+                "to avoid repeating known dead ends."
+            ),
+        ]
+        for _, prop_dir in scored[:max_results]:
+            history_dir = prop_dir / "revision_history"
+            versions = sorted(history_dir.glob("proposition.v*.md"))
+            # 提取每个版本的 Statement 首句
+            stmt_lines: list[str] = []
+            for vf in versions:
+                text = vf.read_text(encoding="utf-8")
+                # 找 "## Statement" 后的第一段非空文本
+                in_stmt = False
+                for line in text.split("\n"):
+                    if line.strip().startswith("## Statement"):
+                        in_stmt = True
+                        continue
+                    if in_stmt and line.strip().startswith("##"):
+                        break
+                    if in_stmt and line.strip():
+                        stmt_lines.append(f"  v{vf.stem.replace('proposition.v', '')}: {line.strip()[:200]}")
+                        break
+
+            # 提取 review 摘要
+            reviews = sorted(history_dir.glob("review.*.md"))
+            review_summary = ""
+            if reviews:
+                last_review = reviews[-1].read_text(encoding="utf-8")
+                # 找 "Verdict" 或 "fail" 相关行
+                for line in last_review.split("\n"):
+                    low = line.strip().lower()
+                    if "verdict" in low or "fail" in low or "gap" in low or "incomplete" in low:
+                        review_summary = line.strip()[:200]
+                        break
+                if not review_summary:
+                    review_summary = last_review.strip()[:200]
+
+            parts.append(
+                f"\n### Worker `{prop_dir.name}` — {len(versions)} revision rounds\n"
+                + "\n".join(stmt_lines)
+                + (f"\n  Last review: {review_summary}" if review_summary else "")
+            )
+
+        return "\n".join(parts)
+
+    def _common_error_patterns_block(self) -> str:
+        """注入 curator 维护的通用证明错误清单。
+
+        `knowledge/common-errors.md` 由 curator 在读到 verifier 终审后持续提炼并压缩到
+        至多 15 条可复用模式。它此前只被写入、从未被任何生产角色读取，导致离线学习无法
+        回流到在线生成。这里直接注入，避免依赖关键词扫描碰巧命中该文件。
+        """
+        path = self.workspace.root / "knowledge" / "common-errors.md"
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return ""
+        body = _strip_frontmatter(text).strip()
+        # 只保留条目行，去掉标题；无任何条目时不注入空标题段。
+        bullets = [line.rstrip() for line in body.splitlines() if line.lstrip().startswith(("-", "*"))]
+        if not bullets:
+            return ""
+        return (
+            "# Known Proof Error Patterns\n"
+            "These are recurring mistakes distilled from previous verifier rejections on this problem. "
+            "They are process lessons, not mathematical facts: do not cite them, and do not let them "
+            "narrow your approach. Check your draft against them before finishing.\n\n"
+            + "\n".join(bullets[:15])
+        )
+
+    def _assigned_difficulty_block(self) -> str:
+        """注入调度侧核对过的 canonical 义务陈述。
+
+        `difficulty_id` 本身只是溯源标签，对 worker 没有数学含义。当 orchestrator 引用了
+        一个 canonical 节点时，运行时会把该节点的 statement 一并带下来，避免 worker 只知道
+        标签、却要从 hint 里反推自己究竟被指派了哪条义务。
+        """
+        if not self.difficulty_statement:
+            return ""
+        return (
+            "# Assigned Canonical Difficulty\n"
+            "This is the curator-owned obligation this task was dispatched against. Treat it as the "
+            "obligation you must advance, refute, or precisely narrow; it is a statement of the open "
+            "problem, not an established fact you may cite.\n\n"
+            + self.difficulty_statement
+        )
+
+    def _generator_task(self, frontier: str | None = None) -> str:
+        if frontier is None:
+            frontier = self._render_frontier()
+        frontier_header = "# Free Exploration Guidance" if self.is_free else "# Curated Frontier"
+        pinned = self._pinned_target_block()
+        failed_history = self._scan_failed_history(max_results=3)
         return "\n\n".join(
             part
             for part in [
                 "# Problem",
                 self.layout.read_problem(),
-                "# General Hint",
+                "# General Hint" if self.layout.read_hint() else "",
                 self.layout.read_hint(),
-                "# Task Guidance",
+                "# Task Guidance" if self.worker_hint else "",
                 self.worker_hint,
+                self._assigned_difficulty_block(),
+                f"# Assigned Method\n{self.method_id}",
+                pinned,
+                frontier_header if frontier else "",
+                frontier,
+                failed_history,
+                self._common_error_patterns_block(),
                 "# Output",
                 (
                     "Create a file named `proposition.md` directly in your own directory "
@@ -596,6 +956,175 @@ class Worker:
             ]
             if part
         )
+
+    def _render_ref_statements(self, refs: list[str]) -> list[str]:
+        """把一组 verified prop 引用展开为「\\ref + Statement」行（无损，只取陈述）。"""
+        out: list[str] = []
+        for ref in refs:
+            rel = str(ref).replace("\\", "/").strip()
+            if rel.endswith(".md"):
+                rel = rel[:-3]
+            if not rel:
+                continue
+            cite = rel.replace("/", "\\")
+            path = self.layout.verified_dir / (rel + ".md")
+            if not path.is_file():
+                out.append(f"- \\ref{{{cite}}} (referenced file not found)")
+                continue
+            try:
+                statement = _extract_statement(path.read_text(encoding="utf-8")).strip()
+            except OSError:
+                statement = ""
+            out.append(f"- \\ref{{{cite}}}:\n{statement}" if statement else f"- \\ref{{{cite}}}")
+        return out
+
+    def _render_frontier(self) -> str:
+        """组装注入 generator 任务的前沿/自由探索段（无损，只取陈述）。
+
+        - free worker：始终注入“避开主流战略叙事”的指令；若有发散种子，则作为
+          可选正交火种附上（明确"不要求在其上构建"）。
+        - global consolidation worker：frontier 降级为可选参考上下文，
+          不要求 worker 限定于这些命题的方法框架。
+        - 非 free / 非 global consolidation worker：orchestrator 下发了 refs/note 才注入，
+          作为主上下文（curated frontier）。
+        - 两者皆缺省内容时返回空串，行为与改动前一致（向后兼容）。
+        """
+        refs = self.frontier_refs
+        note = (self.frontier_note or "").strip()
+        if self.is_free:
+            parts: list[str] = [
+                "This is a FREE exploration slot. The attached constraints are mandatory: do not reuse a listed "
+                "taboo method or active blocker under a new name. Choose one precise claim that is materially "
+                "orthogonal to those routes, or record the exact reason no such claim is currently available."
+            ]
+            if note:
+                parts.append(note)
+            seeds = self._render_ref_statements(refs)
+            if seeds:
+                parts.append(
+                    "Optional under-explored verified seed. Use it only if it remains consistent with the constraints; "
+                    "it is not a requirement and does not itself establish a new direction:"
+                )
+                parts.extend(seeds)
+            return "\n\n".join(parts)
+
+        if not refs and not note:
+            return ""
+        if self.is_consolidation:
+            parts = [
+                "The orchestrator provided the following verified propositions as OPTIONAL background "
+                "context for this CONSOLIDATION task. You are attacking a FIXED target with no weakening "
+                "allowed. You are free to use ANY mathematical method — do NOT confine yourself to the "
+                "methods or frameworks used in these refs. Read them for awareness, but choose your own "
+                "attack path independently."
+            ]
+        else:
+            parts = [
+                "The orchestrator selected the following verified propositions as your primary frontier "
+                "for this task. Prefer building on and citing these via \\ref{...}. Read additional verified "
+                "propositions or unverified knowledge only when this frontier is clearly insufficient for the "
+                "assigned mathematical task; do not turn that local reading into a workspace-wide strategy review."
+            ]
+        if note:
+            parts.append(f"Orchestrator note: {note}")
+        parts.extend(self._render_ref_statements(refs))
+
+        # 自动注入 knowledge 脚手架提示：扫描 knowledge/ 目录中与 hint 关键词相关的
+        # 半成品文件，提示 worker 可以参考但需独立验证。同时扫描已标注 INVALIDATED
+        # 的死路，防止 worker 重复踩坑。
+        scaffold_hint = self._scan_knowledge_scaffold()
+        if scaffold_hint:
+            parts.append(scaffold_hint)
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _knowledge_title(content: str) -> str:
+        """提取 Markdown 标题，跳过可选 YAML frontmatter。"""
+        lines = content.splitlines()
+        if lines and lines[0].strip() == "---":
+            for index, line in enumerate(lines[1:], start=1):
+                if line.strip() == "---":
+                    lines = lines[index + 1 :]
+                    break
+        for line in lines:
+            line = line.strip()
+            if line.startswith("#"):
+                title = line.lstrip("#").strip()
+                if title:
+                    return title[:80]
+        return ""
+
+    @staticmethod
+    def _knowledge_is_invalidated(content: str) -> bool:
+        """仅接受显式 frontmatter 状态，避免将含有历史反例的有效笔记整体禁用。"""
+        match = re.match(r"\A---\s*\n(?P<frontmatter>.*?)\n---(?:\s*\n|\Z)", content, re.DOTALL)
+        if match is None:
+            return False
+        return bool(
+            re.search(
+                r"(?mi)^(?:knowledge_)?status:\s*(?:invalidated|refuted|dead[_ -]?end)\s*$",
+                match.group("frontmatter"),
+            )
+        )
+
+    def _scan_knowledge_scaffold(self) -> str:
+        """为 worker 提供相关的知识脚手架和显式标记的失效路线。"""
+        knowledge_dir = self.workspace.root / "knowledge"
+        if not knowledge_dir.is_dir():
+            return ""
+
+        keywords = set(re.findall(r"[a-z]{5,}", (self.worker_hint or "").lower()))
+        if not keywords:
+            return ""
+
+        scaffolds: list[str] = []
+        dead_ends: list[str] = []
+        max_scaffolds = 5
+        max_dead_ends = 5
+
+        for root, dirs, files in os.walk(knowledge_dir):
+            dirs.sort()
+            for fname in sorted(files):
+                if not fname.endswith(".md"):
+                    continue
+                fpath = Path(root) / fname
+                try:
+                    content = fpath.read_text(encoding="utf-8")[:8192]
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+                content_lower = content.lower()
+                hits = sum(1 for keyword in sorted(keywords)[:20] if keyword in content_lower)
+                rel_path = fpath.relative_to(knowledge_dir).as_posix()
+                display_path = f"knowledge/{rel_path}"
+                title = self._knowledge_title(content)
+
+                if self._knowledge_is_invalidated(content):
+                    if hits > 0 and len(dead_ends) < max_dead_ends:
+                        dead_ends.append(f"  - `{display_path}`: {title}")
+                    continue
+
+                if hits >= 3 and len(scaffolds) < max_scaffolds:
+                    scaffolds.append(f"  - `{display_path}`: {title}")
+
+        parts: list[str] = []
+        if scaffolds:
+            parts.append(
+                "The following knowledge notes contain semi-finished results relevant to your task. "
+                "You may use them as proof scaffolding, but you MUST independently verify any claim "
+                "before relying on it — knowledge notes are NOT verified propositions:"
+            )
+            parts.extend(scaffolds)
+
+        if dead_ends:
+            parts.append(
+                "The following knowledge notes are explicitly marked invalidated or refuted for this "
+                "topic (do NOT repeat their invalidated claim):"
+            )
+            parts.extend(dead_ends)
+
+        return "\n".join(parts) if parts else ""
 
     def _verifier_task(
         self,
@@ -680,16 +1209,39 @@ class Worker:
 
     def _reviser_task(self, proposition_file: Path, review_text: str, *, workflow_index: int) -> str:
         rel = proposition_file.relative_to(self.layout.workspace_dir).as_posix()
+        failed_history = self._scan_failed_history(max_results=3)
+        common_errors = self._common_error_patterns_block()
+        no_weakening = ""
+        if not self.allow_weakening:
+            no_weakening = (
+                "\n\n# Revision Constraint (no weakening)\n"
+                "This revision runs under a PINNED target. Of the reviser's statement-change moves, "
+                "ONLY 'Negating' (replace by a refutation backed by an explicit, checkable witness) is "
+                "permitted. You must NOT 'Weaken' the statement and must NOT 'Isolate a sub-claim' to "
+                "salvage a verified-but-smaller proposition. Either repair the proof of the pinned "
+                "target as stated, or convert it into a witnessed refutation. If neither is possible, "
+                "keep the pinned Statement unchanged, retain only the honest partial derivation, and name "
+                "the single blocking obligation in the proof. Do not emit a weaker statement just to pass verification."
+            )
         return (
             "# Problem\n"
             + self.layout.read_problem()
+            + self._assigned_difficulty_block_suffix()
             + "\n\n# Candidate Proposition File\n"
             + rel
             + "\n\n# Review\n"
             + review_text
+            + "\n\n"
+            + failed_history
+            + ("\n\n" + common_errors if common_errors else "")
+            + no_weakening
             + "\n\nRewrite the same proposition markdown file in place, addressing every review issue."
             + f"\n\nRevision after verifier workflow: {workflow_index}"
         )
+
+    def _assigned_difficulty_block_suffix(self) -> str:
+        block = self._assigned_difficulty_block()
+        return f"\n\n{block}" if block else ""
 
     def _finish(
         self,
@@ -701,8 +1253,33 @@ class Worker:
         review_file: Path | None = None,
         theorem_check_file: Path | None = None,
         solved_problem: bool = False,
+        verify_history: list[dict[str, Any]] | None = None,
+        target_achieved: bool | None = None,
+        difficulty_declaration_file: Path | None = None,
+        failure_kind: str | None = None,
+        blocking_obligation: str | None = None,
     ) -> WorkerRunResult:
         self._set_phase("done", status=status)
+        declaration_file = difficulty_declaration_file
+        if declaration_file is None:
+            candidate = self.worker_dir / "difficulty_declaration.md"
+            declaration_file = candidate if candidate.is_file() else None
+        # 未交付/偏离目标时的残留义务：若无角色记录障碍，用它补一条可归因的占位记录，
+        # 使"应记未记"成为 curator 可见的证据，而不是静默消失。
+        unmet_obligation = blocking_obligation if status != "verified" else None
+        declaration_path = declaration_file or (self.worker_dir / "difficulty_declaration.md")
+        handoff_file, handoff = materialize_difficulty_handoff(
+            declaration_path=declaration_path,
+            worker_id=self.worker_id,
+            difficulty_id=self.difficulty_id,
+            method_id=self.method_id,
+            execution_status=status,
+            failure_kind=failure_kind,
+            review_file=review_file,
+            proposition_file=proposition_file,
+            verified_file=verified_file,
+            unmet_obligation=unmet_obligation,
+        )
         trace_path = self.worker_dir / "trace.json"
         trace_path.write_text(json.dumps(self.trace, ensure_ascii=False, indent=2), encoding="utf-8")
         return WorkerRunResult(
@@ -714,14 +1291,31 @@ class Worker:
             verified_file=verified_file,
             review_file=review_file,
             theorem_check_file=theorem_check_file,
+            difficulty_id=self.difficulty_id,
             solved_problem=solved_problem,
             trace=list(self.trace),
+            is_consolidation=self.is_consolidation,
+            target_achieved=target_achieved,
+            verify_history=verify_history or [],
+            worker_hint=self.worker_hint,
+            pinned_target=self.pinned_target,
+            difficulty_declaration_file=declaration_file,
+            difficulty_handoff_file=handoff_file,
+            difficulty_handoff=handoff,
+            failure_kind=failure_kind,
+            blocking_obligation=blocking_obligation,
+            method_id=self.method_id,
+            rubric=self.rubric,
         )
 
     def _event_sink(self, role: str):
         return compose_event_sinks(
             make_worker_event_sink(self.renderer, worker_id=self.worker_id, role=role),
             self._worker_log_sink,
+            self.log_session.token_usage_sink("worker") if self.log_session is not None else None,
+            # 统一运行日志按具体角色细分（generator / verifier / reviser 等），
+            # 便于逐 agent 观察 token 与 CoT。
+            self.log_session.run_log_sink(f"worker/{role}") if self.log_session is not None else None,
         )
 
     def _set_phase(self, phase: str, *, status: str, model: str = "") -> None:
@@ -737,11 +1331,14 @@ class Worker:
         return self.stop_event is not None and self.stop_event.is_set()
 
     def _verifier_config_names(self) -> list[str]:
-        raw = self.suite.settings.get("verifier_agents") or ["verifier"]
-        if isinstance(raw, str):
-            names = [item.strip() for item in raw.split(",") if item.strip()]
+        if self.verifier_agents is not None:
+            names = list(self.verifier_agents)
         else:
-            names = [str(item).strip() for item in raw if str(item).strip()]
+            raw = getattr(self.suite, "settings", {}).get("verifier_agents") or ["verifier"]
+            if isinstance(raw, str):
+                names = [item.strip() for item in raw.split(",") if item.strip()]
+            else:
+                names = [str(item).strip() for item in raw if str(item).strip()]
         if not names:
             names = ["verifier"]
         missing = [name for name in names if name not in self.suite.agents]
@@ -758,6 +1355,13 @@ class Worker:
 
     def _model_name(self, config: AgentConfig) -> str:
         return config.effective_tier()
+
+
+
+def _strip_frontmatter(text: str) -> str:
+    """去掉可选的 YAML frontmatter（curator 会写 modification_count）。"""
+    match = re.match(r"\A---\s*\n.*?\n---(?:\s*\n|\Z)", text, re.DOTALL)
+    return text[match.end():] if match else text
 
 
 def _parse_review_verdict(text: str) -> str:

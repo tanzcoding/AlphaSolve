@@ -1,6 +1,41 @@
 [
   {
-    "description": "Audit a Markdown research/proof workspace before deciding current progress or next propositions.\n\nUsage:\n- Use this early when a workspace has problem.md, knowledge notes, and verified propositions.\n- Prefer this over broad InspectMarkdown or many manual reads when starting from a workspace root.\n- If the result cites several major directories or competing evidence areas, use scoped Agent calls to inspect those areas separately, then compare the reports in the main agent.\n- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n- If it reports an underclaimed proof that affects an answer, best-known objective value or estimate, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder work.\n- This is a progress-navigation tool, not a verifier; it does not prove new claims.",
+    "description": "Launch a new specialized agent and return its final report.\n\nThe launched agent runs in a separate session. It does not see this conversation unless you include the needed context in `prompt`.\n\nAvailable agent types:\n- compute_subagent: Concrete symbolic or numeric computation and verification.\n- reasoning_subagent: Bounded proof and mathematical reasoning obligations.\n- numerical_experiment_subagent: Bounded exploration, branch checks, local numerical experiments, small-n exhaustive search, counterexample mining, invariant discovery, and constraint-gap quantification. Use when analytic progress is blocked and a numerical probe could reveal which unproven lemma is most likely to close the gap. Can run exhaustive enumeration, LP formulations, and structural invariant extraction on small-n analogues.\n\n\n## Writing the prompt\n\n- For broad workspace review, split by directory or file group: ask each subagent to inspect one scoped area and return a concise evidence report with file paths, line references when available, current status, open issues, and recommended next local step.\n- Use the main agent to compare subagent reports and decide the global next step; do not ask a subagent with a narrow scope to make the final workspace-wide decision.\n- State the exact claim, definitions, assumptions, and what needs to be proved or checked.\n- Include relevant context: what's already known, what approaches have been tried, which files to reference, and why this task matters.\n- Give enough context that the agent can make judgment calls rather than just following a narrow instruction.\n- Keep the task self-contained and limited to the agent's scope.\n- You may call `reasoning_subagent` and `compute_subagent` as often as needed for bounded strategic checks; synthesize their evidence rather than merely forwarding it.\n- Use `numerical_experiment_subagent` at most once, and only for a decision-critical finite fact absent from available evidence.\n- Do NOT call `research_reviewer` (yourself) — it is not in your allowed types.",
+    "name": "Agent",
+    "parameters": {
+      "properties": {
+        "description": {
+          "description": "A short (3-5 word) description of the task.",
+          "type": "string"
+        },
+        "prompt": {
+          "description": "The task for the agent to perform.",
+          "type": "string"
+        },
+        "read_state": {
+          "description": "Optional; only meaningful for research_reviewer. If true, the reviewer may consult verified_propositions/**/state.md (prior strategic notes). If false or omitted, the reviewer forms an independent assessment and does not read state.md, avoiding being steered by a previous wrong route.",
+          "type": "boolean"
+        },
+        "type": {
+          "description": "The type of specialized agent to use for this task.",
+          "enum": [
+            "compute_subagent",
+            "reasoning_subagent",
+            "numerical_experiment_subagent"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "description",
+        "prompt"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "description": "Audit a Markdown research/proof workspace before deciding current progress or next propositions.\n\nUsage:\n- Use this early when a workspace has problem.md, knowledge notes, and verified propositions.\n- Prefer this over broad InspectMarkdown or many manual reads when starting from a workspace root.\n- If the result cites several major directories or competing evidence areas, use scoped Agent calls to inspect those areas separately, then compare the reports in the main agent.\n- It scans Markdown proof files for a general failure mode: the proof tail establishes a stronger or more actionable conclusion than the Statement section records.\n- If it reports an underclaimed proof that affects an answer, best-known objective value or estimate, stopping condition, or planning premise, the next proposition should normally make that stronger conclusion explicit as a Statement before pursuing harder work.\n- Also use it to distinguish local cleanups from the current global blocker: theorem-level assembly gaps, unresolved restrictions, missing constant checks, and already-verified infrastructure that should not be reproved.\n- This is a progress-navigation tool, not a verifier; it does not prove new claims.",
     "name": "ResearchProgressReview",
     "parameters": {
       "properties": {
@@ -30,7 +65,7 @@
     }
   },
   {
-    "description": "Survey Markdown files and surface the parts most likely to summarize research progress.\n\nUsage:\n- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n- It lists headings, extracts statement/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n- Its progress audit highlights underclaimed proof tails; if one affects an answer, best-known objective value or estimate, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim.",
+    "description": "Survey Markdown files and surface the parts most likely to summarize research progress.\n\nUsage:\n- Use this when reviewing a notes/proofs workspace before deciding what is already known or what to do next.\n- It lists headings, extracts statement/progress sections, and always shows the file tail because conclusions are often buried near proof endings.\n- Its progress audit highlights underclaimed proof tails; if one affects an answer, best-known objective value or estimate, stopping condition, or planning premise, make that conclusion explicit as a proposition statement before harder new work.\n- Prefer inspecting cited blocker, obstruction, index, and synthesis files before choosing a local lemma as the next global step.\n- This is a navigation and review aid, not a verifier; use Read on the cited file/lines before relying on a claim.",
     "name": "InspectMarkdown",
     "parameters": {
       "properties": {
@@ -66,7 +101,7 @@
     }
   },
   {
-    "description": "Read text content from a file.\n\nTips:\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is typically worth using in parallel when you need to inspect multiple files.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.",
+    "description": "Read text content from a file.\n\nTips:\n- In AlphaSolve research workspaces, this is an exact file-inspection tool, not the primary way to survey progress across many propositions or notes.\n- For broad progress review over `problem.md`, `verified_propositions/`, and `knowledge/`, run ResearchProgressReview first; then use Read on the cited files that need line-level precision.\n- A `<system>` tag will be given before the read file content.\n- The system will notify you when there is anything wrong when reading the file.\n- This tool is worth using in parallel only after a progress map or explicit citation has narrowed the files to inspect.\n- For Markdown proposition files with Statement and Proof sections, the default call with only `path` returns the Statement section plus the file tail; set `read_all=true` or pass `line_offset`/`n_lines` for exact proof inspection.\n- If you want to search for a certain content or pattern, prefer Grep over Read.\n- Content will be returned with a line number before each line like `cat -n` format.\n- By default, Read returns 250 lines.\n- `line_offset` is the first line to return.\n- `n_lines` is how many lines to return in this call; default is 250.\n- Set `read_all=true` to ignore `n_lines` and read from `line_offset` to the end of the file.\n- Without `read_all`, the maximum `n_lines` value is 1000.\n- Results respect this agent's workspace access restrictions.\n- When reading a proof, compare its statement, proof tail, and any stated objective conversion. Important research conclusions are sometimes proved in the body but not exposed in the statement or index.",
     "name": "Read",
     "parameters": {
       "properties": {
@@ -146,7 +181,7 @@
     }
   },
   {
-    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches before reading many files.\n- Narrow `path` when you know the likely directory; broad searches can hit the result limit quickly.\n- Returns plain text in `path:line: text` format, optionally with context.\n- Use `context_lines` when the surrounding lines matter; keep it small for compact output.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.",
+    "description": "Searches readable text files under a specific file or directory.\n\nUsage:\n- Prefer Grep for exact symbol/string searches before reading many files.\n- Narrow `path` when you know the likely directory; broad searches can hit the result limit quickly.\n- Returns plain text in `path:line: text` format, optionally with context.\n- Use `context_lines` when the surrounding lines matter; keep it small for compact output.\n- `regex` defaults to true; set `regex=false` to force plain substring matching.\n- Results respect this agent's workspace access restrictions.\n- Use targeted Grep to check whether a suspected blocker is already resolved elsewhere before recommending work on it.",
     "name": "Grep",
     "parameters": {
       "properties": {

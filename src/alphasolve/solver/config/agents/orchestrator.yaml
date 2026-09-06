@@ -16,8 +16,10 @@ agent:
     - MakeDir
     - Rename
     - Move
+    - RequestResearchPlan
+    - ExecuteResearchPlan
     - SpawnWorker
-    - Agent
+    - SpawnFreeExploration
     - TaskOutput
     - GetCurrentTime
   tool_parameters:
@@ -37,18 +39,55 @@ agent:
       directory:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
       old_name:
-        pattern: "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+        pattern: "^(?!index\\.md$)(?!state\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
       new_name:
-        pattern: "^(?!index\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
+        pattern: "^(?!index\\.md$)(?!state\\.md$)[A-Za-z0-9][A-Za-z0-9._-]*$"
     Move:
       path:
-        pattern: "^verified_propositions/(?!index\\.md$)(?!.*\\/index\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
+        pattern: "^verified_propositions/(?!index\\.md$)(?!state\\.md$)(?!.*\\/index\\.md$)(?!.*\\/state\\.md$)(?:[A-Za-z0-9][A-Za-z0-9._-]*/)*[A-Za-z0-9][A-Za-z0-9._-]*\\.md$"
       destination_dir:
         pattern: "^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/?$"
     SpawnWorker:
       hint:
         type: string
         maxLength: 4000
+      difficulty_id:
+        type: string
+        maxLength: 80
+        pattern: "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+      followup_handoff_ids:
+        type: array
+        maxItems: 4
+        items:
+          type: string
+          maxLength: 120
+      evidence_refs:
+        type: array
+        maxItems: 16
+        items:
+          type: string
+          maxLength: 2000
+      method_id:
+        type: string
+        enum: [direct_proof, contradiction, construction, computation, falsification, consolidation]
+      frontier_refs:
+        type: array
+        maxItems: 20
+        items:
+          type: string
+          maxLength: 200
+      frontier_note:
+        type: string
+        maxLength: 2000
+      rubric:
+        type: string
+        minLength: 1
+        maxLength: 4000
+    SpawnFreeExploration:
+      reason:
+        type: string
+        minLength: 1
+        maxLength: 2000
     TaskOutput:
       seconds:
         type: number
@@ -77,7 +116,6 @@ agent:
         - Use `mode="overwrite"` to replace the whole file.
         - Use `mode="append"` to append content to the end of the file.
         - If this is an existing file, you MUST use the Read tool first to read the file's contents.
-        - Treat index writes as bookkeeping after the research target is clear. Updating an index or note does not create, revise, or verify a proposition; if the durable fix is a proposition Statement, choose that as a research target rather than treating an index edit as the mathematical step.
       parameters:
         mode:
           description: "Whether to overwrite the whole file or append to the end."
@@ -88,7 +126,6 @@ agent:
         Usage:
         - The edit will FAIL if old_string is not unique in the file.
         - Provide a larger string with more surrounding context to make it unique.
-        - Treat index edits as bookkeeping after the research target is clear. Updating an index or note does not create, revise, or verify a proposition; if the durable fix is a proposition Statement, choose that as a research target rather than treating an index edit as the mathematical step.
       parameters:
         new_str:
           description: "The text to replace it with (must be different from old_string)."
@@ -151,24 +188,6 @@ agent:
           description: "Treat pattern as a regex (default: true; set false for substring matching)."
         context_lines:
           description: "Number of context lines around each match."
-    Agent:
-      suffix: |-
-        - When using `research_reviewer`, delegate an independent progress audit rather than a proof attempt for the route you currently favor.
-        - Include any already-seen proposition-index gaps or underclaimed proof-tail evidence in the prompt, especially any `ResearchProgressReview` suggested next proposition and selected target, and ask the reviewer to rank that candidate against broader theorem work.
-        - If underclaimed proof-tail evidence only quantifies why one conditional route is obstructed, and the problem still asks for an existential choice among models, parameters, data, weights, or ansatzes, ask the reviewer to use that obstruction as a constraint on the choice-classification target rather than replacing the constructive scan.
-        - If underclaimed proof-tail evidence changes a numerical bound, objective value, threshold, stopping condition, or answer-facing inequality, do not demote explicit Statement consolidation below speculative research directions unless another verified Statement already records it.
-        - When the workspace has many verified local estimates for one shared energy, bootstrap, reduction, or interface system, ask whether the next proposition should assemble the exact system levels, constants, remainders, and restrictions before attacking another local lemma.
-        - If a local repair appears to be one component of a larger system interface, ask the reviewer whether the durable next proposition should be the exact interface with that repair listed as a premise, rather than the repair in isolation.
-        - If downstream propositions look ready to promote but rely on a support, domain, time-scale, interface, or parameter-choice prerequisite that is still conditional, slackened, or not Statement-visible, ask the reviewer to rank that prerequisite before the downstream promotion unless the prerequisite is already established in verified_propositions.
-        - If the problem asks for existence of a model, parameter regime, input family, weight, or ansatz, and the workspace already has a conditional theorem chain, ask the reviewer whether the next proposition should classify choices that make the existing chain's hypotheses hold before inventing stronger general estimates.
-        - A choice-classification target should cover the whole theorem interface, including support/domain conditions, lower-bound or positivity hypotheses, nonlinear remainder control, regularity/smallness assumptions, and the timescale on which the resulting inequality must hold.
-        - Do not let a framework-formalization, conditional assembly, or gap-naming task outrank a choice-classification task when it would only restate that some model, parameter, data, weight, or ansatz choice must satisfy the existing chain's hypotheses.
-        - Do not replace that scan with re-proving verified infrastructure, sharper constants, alternative test functions, or stronger PDE/ODE machinery unless the choice-classification scan is already complete or rules out viable choices.
-        - When a verified proposition Statement conflicts with an index or knowledge summary, treat the verified Statement as authoritative and ask whether the summary is stale rather than planning from the weaker summary.
-        - If a reviewed `unverified_propositions/` file already has a passed review and records a system interface, constants, derivative levels, assumptions, or obstruction, ask whether promoting or repairing that proposition is the best verified-progress step before opening a new local route.
-        - When a reviewer returns ranked recommendations, preserve that ranking in your own research plan unless you can name the verified proposition, knowledge synthesis, or tool evidence that justifies re-ranking it.
-        - If the reviewer ranks an exact system or interface assembly first, do not demote it as bookkeeping merely because it may expose a harder local gap; that assembly may be the research proposition needed to determine which local gap is actually blocking the proof.
-        - Do not present an unverified route as the core blocker unless a verified proposition, knowledge synthesis, or prior reviewer report explicitly identifies it as such.
     ResearchProgressReview:
       override: |-
         Audit a Markdown research/proof workspace before deciding current progress or next propositions.

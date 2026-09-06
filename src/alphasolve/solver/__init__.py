@@ -20,8 +20,11 @@
 公共 API：AlphaSolve（入口类）+ run_alphasolve。
 """
 from .app import AlphaSolve, run_alphasolve
+from .policy import DifficultyDagPolicy, SolverPolicy
 
 __all__ = [
     "AlphaSolve",
+    "DifficultyDagPolicy",
+    "SolverPolicy",
     "run_alphasolve",
 ]

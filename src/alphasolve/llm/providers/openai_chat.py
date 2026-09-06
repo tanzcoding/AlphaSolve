@@ -138,15 +138,22 @@ class OpenAIChatClient:
     ) -> dict[str, Any]:
         stream_request = dict(request)
         stream_request["stream"] = True
+        # 让 OpenAI 兼容后端在流末尾额外回一个带 usage 的 chunk（否则流式 usage 为空，
+        # token 统计会全 0）。DeepSeek/OpenAI 均支持该选项。
+        stream_request["stream_options"] = {"include_usage": True}
 
         role = "assistant"
         content_parts: list[str] = []
         reasoning_parts: list[str] = []
         tool_call_parts: dict[int, dict[str, Any]] = {}
         finish_reason: str = "stop"
+        usage_captured: dict[str, Any] = {}
 
         for chunk in self.client.chat.completions.create(**stream_request):
             chunk_dict = _object_to_dict(chunk)
+            chunk_usage = chunk_dict.get("usage")
+            if chunk_usage:
+                usage_captured = _object_to_dict(chunk_usage)
             choices = chunk_dict.get("choices") or []
             if not choices:
                 continue
@@ -190,9 +197,27 @@ class OpenAIChatClient:
         if reasoning_parts:
             message["reasoning_content"] = "".join(reasoning_parts)
         if tool_call_parts:
-            message["tool_calls"] = [tool_call_parts[i] for i in sorted(tool_call_parts)]
+            # Some providers (DeepSeek) may not send a tool_call ``id`` in the
+            # streaming delta, or may send it only in the first chunk for the
+            # first tool call and omit it for subsequent ones. An empty or
+            # duplicate ``id`` causes the API to reject the next request with
+            # "Messages with role 'tool' must be a response to a preceding
+            # message with 'tool_calls'" or "insufficient tool messages
+            # following tool_calls". Backfill any missing/duplicate ids so the
+            # message sequence stays valid. The same _next_backfill_id() used by
+            # _messages_to_openai ensures consistency between streaming and
+            # non-streaming paths.
+            tool_calls_list = [tool_call_parts[i] for i in sorted(tool_call_parts)]
+            seen_ids: set[str] = set()
+            for tc in tool_calls_list:
+                tc_id = tc.get("id") or ""
+                if not tc_id or tc_id in seen_ids:
+                    tc_id = _next_backfill_id()
+                seen_ids.add(tc_id)
+                tc["id"] = tc_id
+            message["tool_calls"] = tool_calls_list
         message["_finish_reason"] = finish_reason
-        message["_usage"] = {}
+        message["_usage"] = usage_captured
         message["_raw"] = None
         return message
 
@@ -268,30 +293,111 @@ def _first_present_reasoning_value(message: dict[str, Any]) -> Any:
     return _MISSING
 
 
+_BACKFILL_ID_COUNTER = [0]
+
+
+def _next_backfill_id() -> str:
+    """Generate a stable, unique tool_call id for providers that omit it.
+
+    Uses a module-level monotonic counter so ids are unique across calls within
+    a process, avoiding collisions that ``id(tc)`` (object address) can suffer
+    from after garbage collection reuses memory.
+    """
+    _BACKFILL_ID_COUNTER[0] += 1
+    return f"call_backfill_{_BACKFILL_ID_COUNTER[0]}"
+
+
 def _messages_to_openai(messages: list[Message], *, thinking_mode: bool) -> list[dict[str, Any]]:
+    """Serialize ``Message`` list to OpenAI chat-completions format.
+
+    This function also **repairs the message sequence** to prevent 400 errors
+    from OpenAI-compatible providers (especially DeepSeek) whose streaming
+    deltas may omit or mis-time ``tool_call.id``:
+
+    1. Every ``assistant`` message with ``tool_calls`` gets non-empty, unique
+       ids on each tool call (backfilling empties).
+    2. Every ``tool`` message's ``tool_call_id`` is reconciled to match the id
+       of the corresponding tool call in the preceding assistant message.
+    3. If an assistant message has *N* tool calls but fewer than *N* following
+       ``tool`` messages (because the agent loop exited early or a tool was
+       skipped), placeholder ``tool`` messages are appended so every
+       ``tool_call_id`` has a response — otherwise the API rejects with
+       "insufficient tool messages following tool_calls".
+    4. Orphan ``tool`` messages (no preceding ``assistant`` with matching
+       ``tool_calls``) are dropped, preventing "Messages with role 'tool' must
+       be a response to a preceding message with 'tool_calls'".
+    """
     out: list[dict[str, Any]] = []
+    # Track the tool_call ids declared by the most recent assistant message
+    # that carried tool_calls.  ``tool`` messages that follow must respond to
+    # exactly these ids, in order.
+    pending_tc_ids: list[str] | None = None  # ids awaiting tool responses
+    pending_tc_consumed: set[str] = set()     # ids already responded to
+
     for m in messages:
         if m.role == "tool":
+            # If there are no pending tool_calls to respond to, this tool
+            # message is an orphan — drop it to avoid a 400 error.
+            if not pending_tc_ids:
+                continue
+            # Find the matching tool_call id.  Prefer the stored tool_call_id
+            # if it matches one of the pending ids; otherwise assign the next
+            # un-consumed pending id (positional fallback for providers whose
+            # ids were lost in streaming).
+            tc_id = m.tool_call_id or ""
+            if tc_id in pending_tc_ids and tc_id not in pending_tc_consumed:
+                resolved_id = tc_id
+            else:
+                # Positional fallback: take the first un-consumed id.
+                resolved_id = next(
+                    (tid for tid in pending_tc_ids if tid not in pending_tc_consumed),
+                    pending_tc_ids[-1],  # shouldn't happen, but be safe
+                )
+            pending_tc_consumed.add(resolved_id)
             out.append({
                 "role": "tool",
                 "content": m.content,
-                "tool_call_id": m.tool_call_id or "",
+                "tool_call_id": resolved_id,
                 "name": m.name or "",
             })
             continue
+
+        # Before emitting a new assistant/user message, if the previous
+        # assistant had tool_calls that were not fully responded to, inject
+        # placeholder tool messages for the missing responses.
+        if pending_tc_ids and len(pending_tc_consumed) < len(pending_tc_ids):
+            for tid in pending_tc_ids:
+                if tid not in pending_tc_consumed:
+                    out.append({
+                        "role": "tool",
+                        "content": "",
+                        "tool_call_id": tid,
+                        "name": "",
+                    })
+        pending_tc_ids = None
+        pending_tc_consumed = set()
+
         d: dict[str, Any] = {"role": m.role, "content": m.content}
         if m.tool_calls:
-            d["tool_calls"] = [
-                {
-                    "id": tc.id,
+            tc_list = []
+            seen_ids: set[str] = set()
+            for tc in m.tool_calls:
+                tc_id = tc.id
+                if not tc_id or tc_id in seen_ids:
+                    tc_id = _next_backfill_id()
+                seen_ids.add(tc_id)
+                tc_list.append({
+                    "id": tc_id,
                     "type": "function",
                     "function": {
                         "name": tc.name,
                         "arguments": json.dumps(tc.args, ensure_ascii=False),
                     },
-                }
-                for tc in m.tool_calls
-            ]
+                })
+            d["tool_calls"] = tc_list
+            # Record the ids so subsequent tool messages can be reconciled.
+            pending_tc_ids = [tc["id"] for tc in tc_list]
+            pending_tc_consumed = set()
         if m.reasoning_content:
             d["reasoning_content"] = m.reasoning_content
         elif thinking_mode and m.role == "assistant" and m.tool_calls and "reasoning_content" not in d:
@@ -300,6 +406,19 @@ def _messages_to_openai(messages: list[Message], *, thinking_mode: bool) -> list
             # reasoning_content. Inject an empty string so the field is present.
             d["reasoning_content"] = ""
         out.append(d)
+
+    # If the very last assistant message had tool_calls without responses,
+    # backfill placeholders at the tail too.
+    if pending_tc_ids and len(pending_tc_consumed) < len(pending_tc_ids):
+        for tid in pending_tc_ids:
+            if tid not in pending_tc_consumed:
+                out.append({
+                    "role": "tool",
+                    "content": "",
+                    "tool_call_id": tid,
+                    "name": "",
+                })
+
     return out
 
 

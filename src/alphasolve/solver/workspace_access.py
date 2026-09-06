@@ -10,6 +10,11 @@ from typing import Any
 from alphasolve.agent import Workspace
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, PagedReadResult, read_text_page
 
+# 机器生成的证据（difficulty DAG、curation_input、decision、outcome ledger）都是 JSON/JSONL。
+# 读这些文件的角色必须显式声明这些扩展名，否则 ``_extension_allowed`` 会以
+# "file extension is not allowed" 拒绝掉自己 prompt 里被要求读的文件。
+EVIDENCE_READ_EXTENSIONS: tuple[str, ...] = (".md", ".json", ".jsonl", ".py", ".lean")
+
 
 @dataclass
 class RoleWorkspaceAccess:
@@ -17,6 +22,10 @@ class RoleWorkspaceAccess:
     worker_rel: str | None = None
     deny_other_unverified: bool = False
     read_root_rel: str | None = None
+    read_root_rels: tuple[str, ...] = ()
+    # 少数角色需要读一个不在任何 read root 下的固定证据文件（例如 workspace 根的
+    # outcome ledger）。这里按精确相对路径开洞，而不是把整个根目录放进 read root。
+    read_file_rels: tuple[str, ...] = ()
     write_root_rel: str | None = None
     deny_read_rel: str | None = None  # deny reads under this subtree (used to block other verifier attempt dirs)
     deny_read_rels: tuple[str, ...] = ()
@@ -26,6 +35,9 @@ class RoleWorkspaceAccess:
     exact_write_rel: str | None = None
     single_proposition_file: bool = False
     allowed_extensions: tuple[str, ...] = (".md", ".py", ".lean")
+    # 写入通常比读取更窄：读机器生成的 JSON 证据是必要的，但不该因此获得写 JSON 的权限。
+    # 为 None 时写入沿用 ``allowed_extensions``。
+    write_allowed_extensions: tuple[str, ...] | None = None
     destructive_protected_file_names: tuple[str, ...] = ()
     preserve_markdown_file_names_on_rename: bool = False
 
@@ -113,40 +125,84 @@ class RoleWorkspaceAccess:
 
     @classmethod
     def orchestrator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """主 orchestrator：可整理 ``verified_propositions/``，禁止重命名 index.md 等关键文件。"""
+        """主 orchestrator：可整理 ``verified_propositions/``，禁止重命名 index.md / state.md 等关键文件。
+
+        不可读 ``unverified_propositions/``：那是 worker 未验证的半成品草稿（review.md/worker_hint.md/
+        proposition.md），ResearchProgressReview 曾把其中的失败尝试（例如目标只设到旧上界为止的构造尝试）
+        当作背景证据展示给 orchestrator，容易被误当成已有结论去锚定战略判断。与 orchestrator_subagent
+        （research_reviewer）保持一致的隔离。
+        """
         return cls(
             workspace=workspace,
             write_root_rel="verified_propositions",
             allowed_extensions=(".md",),
-            destructive_protected_file_names=("index.md",),
+            destructive_protected_file_names=("index.md", "state.md"),
+            deny_read_rels=("unverified_propositions", "curation_records"),
         )
 
     @classmethod
     def orchestrator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """orchestrator 的 research_reviewer subagent：只读，且不可看 ``unverified_propositions/``。"""
+        """research reviewer：只读，只接收运行时 frontier 投影而不扫描原始 DAG。"""
+        return cls(
+            workspace=workspace,
+            deny_read_rels=("unverified_propositions", "curation_records"),
+        )
+
+    @classmethod
+    def process_auditor(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
+        """独立进度审计器：只读审计快照、已验证事实和知识，不读取未验证草稿。"""
         return cls(
             workspace=workspace,
             deny_read_rel="unverified_propositions",
+            allowed_extensions=EVIDENCE_READ_EXTENSIONS,
+        )
+
+    @classmethod
+    def task_auditor(cls, workspace: Workspace, worker_rel: str | None = None) -> "RoleWorkspaceAccess":
+        """短程任务审计器：只读被审 worker 自己的产出与已验证命题。
+
+        它与 ``process_auditor`` 的取舍相反：进度审计不得把未验证草稿当证据，而任务审计
+        的对象**就是**那一次交付，因此必须能读该 worker 的 `proposition.md` / `review.md`。
+        隔离靠 ``deny_other_unverified`` 收紧到单个 worker 目录，避免它顺带把别人的失败
+        草稿当成本次交付的证据。它没有任何写权限，也不读 knowledge/（验收只对陈述负责，
+        不引入战略叙事）。
+        """
+        return cls(
+            workspace=workspace,
+            worker_rel=worker_rel,
+            deny_other_unverified=True,
+            deny_read_rels=("knowledge", "curation_records", "progress_audits"),
         )
 
     @classmethod
     def curator(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """主 curator：读写均限于 ``knowledge/``，禁止重命名 index.md / common-errors.md。"""
+        """主 curator：可读证据、审计和已验证命题，但只允许写 ``knowledge/``。
+
+        curator 的 canonical 输入（``curation_records/difficulty_dag.json``、每个 checkpoint 的
+        ``curation_input.json`` / ``decision.json``、workspace 根的 outcome ledger）都是机器生成的
+        JSON/JSONL，因此读扩展名必须包含它们；写仍然只允许 Markdown，避免 curator 直接改机器状态文件
+        （DAG 只能通过 ``CurateDifficultyDag`` 变更）。
+        """
         return cls(
             workspace=workspace,
-            read_root_rel="knowledge",
+            read_root_rels=("knowledge", "progress_audits", "curation_records", "verified_propositions"),
+            read_file_rels=("progress_audit_outcomes.jsonl",),
             write_root_rel="knowledge",
             deny_text_write_rels=("knowledge/references",),
             protected_reference_rels=("knowledge/references",),
             destructive_protected_file_names=("index.md", "common-errors.md"),
+            allowed_extensions=EVIDENCE_READ_EXTENSIONS,
+            write_allowed_extensions=(".md",),
         )
 
     @classmethod
     def curator_subagent(cls, workspace: Workspace) -> "RoleWorkspaceAccess":
-        """curator 的 subagent：只读 ``knowledge/``。"""
+        """curator 的 subagent：只读证据、审计与已验证命题。"""
         return cls(
             workspace=workspace,
-            read_root_rel="knowledge",
+            read_root_rels=("knowledge", "progress_audits", "curation_records", "verified_propositions"),
+            read_file_rels=("progress_audit_outcomes.jsonl",),
+            allowed_extensions=EVIDENCE_READ_EXTENSIONS,
         )
 
     def read_text_page(
@@ -378,6 +434,12 @@ class RoleWorkspaceAccess:
                 continue
             if self._is_denied_read_file(child):
                 continue
+            # 文件按角色可读扩展名过滤，避免列出自己 Read 不了的机器状态文件
+            # （例如调度层的 scheduler_state.json）——曾经出现过 worker 因
+            # 看到 ListDir 结果里的 .json 而去 Read，撞上 "file extension is
+            # not allowed"。目录本身不受扩展名限制，始终展示以保留可导航性。
+            if child.is_file() and not self._extension_allowed(child):
+                continue
             out.append(self._rel(child) + ("/" if child.is_dir() else ""))
             if len(out) >= max_results:
                 break
@@ -534,9 +596,9 @@ class RoleWorkspaceAccess:
                 raise ValueError(f"not a directory: {path}")
             if expect_dir is False and not target.is_file():
                 raise ValueError(f"not a file: {path}")
-            if target.is_file() and not self._extension_allowed(target):
+            if target.is_file() and not self._write_extension_allowed(target):
                 raise ValueError(f"file extension is not allowed: {path}")
-        elif expect_dir is not True and not self._extension_allowed(target):
+        elif expect_dir is not True and not self._write_extension_allowed(target):
             raise ValueError(f"file extension is not allowed: {path}")
         return target
 
@@ -571,7 +633,7 @@ class RoleWorkspaceAccess:
             raise ValueError(f"not a file: {path}")
         if target.exists() and not target.is_file():
             raise ValueError(f"not a file: {path}")
-        if not self._extension_allowed(target):
+        if not self._write_extension_allowed(target):
             raise ValueError(f"file extension is not allowed: {path}")
         return target
 
@@ -617,6 +679,14 @@ class RoleWorkspaceAccess:
     def _extension_allowed(self, path: Path) -> bool:
         return path.suffix.lower() in self.allowed_extensions
 
+    def _write_extension_allowed(self, path: Path) -> bool:
+        extensions = (
+            self.allowed_extensions
+            if self.write_allowed_extensions is None
+            else self.write_allowed_extensions
+        )
+        return path.suffix.lower() in extensions
+
     def _rel(self, path: Path) -> str:
         return path.resolve().relative_to(self.workspace.root).as_posix()
 
@@ -630,11 +700,21 @@ class RoleWorkspaceAccess:
             raise ValueError(f"{kind} path must stay under {root_rel}")
 
     def _ensure_under_read_root(self, path: Path) -> None:
-        if self.read_root_rel is not None:
-            self._ensure_under_root(path, self.read_root_rel, kind="read")
+        allowed_roots = tuple(root for root in (self.read_root_rel, *self.read_root_rels) if root)
+        if allowed_roots and not self._is_explicit_read_file(path) and not any(
+            path == self.workspace.resolve(root) or self.workspace.resolve(root) in path.parents
+            for root in allowed_roots
+        ):
+            roots_text = ", ".join(allowed_roots)
+            if self.read_file_rels:
+                roots_text += f" (plus: {', '.join(self.read_file_rels)})"
+            raise ValueError(f"read path must stay under one of: {roots_text}")
         for deny_rel in self._denied_read_roots():
             if self._is_under_rel(path, deny_rel):
                 raise ValueError(f"read access to {deny_rel} is denied for this agent")
+
+    def _is_explicit_read_file(self, path: Path) -> bool:
+        return any(path == self.workspace.resolve(file_rel) for file_rel in self.read_file_rels)
 
     def _is_other_worker_path(self, path: Path) -> bool:
         if not self.deny_other_unverified:

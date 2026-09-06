@@ -1571,7 +1571,7 @@ def _research_markdown_file_priority(path: str) -> tuple[int, int, str]:
     basename = parts[-1] if parts else ""
     if normalized == "problem.md":
         group = 0
-    elif basename == "index.md":
+    elif basename in {"index.md", "state.md"}:
         group = 1
     elif normalized.startswith("verified_propositions/"):
         group = 2
@@ -1588,7 +1588,7 @@ def _run_research_progress_review(workspace: WorkspaceLike, args: dict[str, Any]
     root = str(args.get("path", "."))
     raw_paths = args.get("paths", [])
     paths = [str(path) for path in raw_paths] if isinstance(raw_paths, list) else []
-    max_files = int(args.get("max_files", 120))
+    max_files = int(args.get("max_files", 150))
     try:
         scan_paths = _research_progress_scan_paths(workspace, root, paths)
         files: list[str] = []
