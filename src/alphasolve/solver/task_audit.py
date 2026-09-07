@@ -244,7 +244,10 @@ class TaskAuditor:
             event_sink=event_sink,
             stop_event=self.stop_event,
         )
-        return agent.run(prompt, description="Task delivery audit").final_answer
+        try:
+            return agent.run(prompt, description="Task delivery audit").final_answer
+        finally:
+            agent.close()
 
     def _write_report(
         self,

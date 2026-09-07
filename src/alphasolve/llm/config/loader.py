@@ -10,8 +10,8 @@ import yaml
 from .preset import Preset
 from .tier import TierMapping
 
-_VALID_WIRE_FORMATS = {"openai_chat", "anthropic_messages"}
-_REQUIRED_PRESET_FIELDS = ("wire_format", "base_url", "api_key_env", "model")
+_PRESET_FIELDS = {"provider", "model", "base_url", "api_key_env", "reasoning_effort"}
+_LEGACY_FIELDS = {"wire_format", "params", "timeout"}
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -27,23 +27,37 @@ def _read_yaml(path: Path) -> dict[str, Any]:
 def _build_preset(name: str, raw: Mapping[str, Any]) -> Preset:
     if not isinstance(raw, Mapping):
         raise ValueError(f"preset {name!r}: value must be a mapping")
-    missing = [field for field in _REQUIRED_PRESET_FIELDS if field not in raw]
-    if missing:
-        raise ValueError(f"preset {name!r}: missing required fields: {missing}")
-    wire = raw["wire_format"]
-    if wire not in _VALID_WIRE_FORMATS:
+    legacy = _LEGACY_FIELDS.intersection(raw)
+    if legacy:
         raise ValueError(
-            f"preset {name!r}: unknown wire_format {wire!r}; "
-            f"expected one of {sorted(_VALID_WIRE_FORMATS)}"
+            f"preset {name!r}: 旧配置字段 {sorted(legacy)} 已移除；"
+            "请使用 provider、model、reasoning_effort 配置 Codex，"
+            "ChatGPT 订阅使用 provider: chatgpt。"
         )
+    unknown = set(raw) - _PRESET_FIELDS
+    if unknown:
+        raise ValueError(f"preset {name!r}: unknown fields: {sorted(unknown)}")
+    values = {}
+    for field in _PRESET_FIELDS:
+        value = raw.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"preset {name!r}: {field} must be a non-empty string")
+        values[field] = value
+    provider = values["provider"] or "chatgpt"
+    if provider == "chatgpt":
+        if values["base_url"] is not None or values["api_key_env"] is not None:
+            raise ValueError(f"preset {name!r}: chatgpt 使用 Codex 登录，不接受 base_url 或 api_key_env")
+    else:
+        missing = [field for field in ("model", "base_url", "api_key_env") if not values[field]]
+        if missing:
+            raise ValueError(f"preset {name!r}: 自定义 Responses provider 缺少 {missing}")
     return Preset(
         name=name,
-        wire_format=wire,
-        base_url=str(raw["base_url"]),
-        api_key_env=str(raw["api_key_env"]),
-        model=str(raw["model"]),
-        timeout=float(raw.get("timeout", 3600)),
-        params=dict(raw.get("params") or {}),
+        provider=provider,
+        model=values["model"],
+        base_url=values["base_url"],
+        api_key_env=values["api_key_env"],
+        reasoning_effort=values["reasoning_effort"],
     )
 
 
@@ -53,7 +67,7 @@ def load_presets(*, repo_path: Path, user_path: Path | None) -> dict[str, Preset
 
     merged: dict[str, Mapping[str, Any]] = {}
     merged.update(repo_raw)
-    merged.update(user_raw)  # whole-record replacement
+    merged.update(user_raw)  # 用户配置按整条 preset 覆盖。
 
     return {name: _build_preset(name, raw) for name, raw in merged.items()}
 

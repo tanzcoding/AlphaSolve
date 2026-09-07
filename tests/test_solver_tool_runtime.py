@@ -8,7 +8,8 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
 from alphasolve.agent import AgentConfig, Workspace  # noqa: E402
-from alphasolve.llm.types import CompletionResponse, Message  # noqa: E402
+from alphasolve.llm.types import Message  # noqa: E402
+from tests.response_fakes import CompletionResponse  # noqa: E402
 from alphasolve.solver.subagent_service import SubagentService  # noqa: E402
 from alphasolve.solver.tool_runtime import build_solver_tool_registry  # noqa: E402
 from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
@@ -40,7 +41,6 @@ def test_subagent_runtime_tool_filter_preserves_tool_descriptions(tmp_path: Path
         system_prompt="You inspect files.",
         tools=("Read", "Agent"),
         tool_descriptions={"Read": {"suffix": "CUSTOM READ DESCRIPTION"}},
-        max_turns=1,
     )
     suite = SimpleNamespace(subagents={"researcher": config})
     seen_descriptions: list[str] = []

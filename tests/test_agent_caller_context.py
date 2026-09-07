@@ -4,7 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from alphasolve.agent import Agent, AgentConfig, ToolRegistry
-from alphasolve.llm.types import CompletionResponse, Message
+from alphasolve.llm.types import Message
+from tests.response_fakes import CompletionResponse
 
 
 class _StubClient:

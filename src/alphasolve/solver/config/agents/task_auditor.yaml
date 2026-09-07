@@ -3,7 +3,6 @@ agent:
   name: task_auditor
   system_prompt_path: ../../prompts/task_auditor.md
   tier: cheap
-  max_turns: 30
   tools:
     - Read
     - ListDir

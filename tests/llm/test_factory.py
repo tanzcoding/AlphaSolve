@@ -4,85 +4,52 @@ from dataclasses import dataclass
 
 import pytest
 
-from alphasolve.llm import make_client, make_client_factory
-from alphasolve.llm.config.preset import Preset
-from alphasolve.llm.config.tier import TierMapping
-from alphasolve.llm.providers.openai_chat import OpenAIChatClient
-from alphasolve.llm.providers.anthropic_messages import AnthropicMessagesClient
-
-
-def _preset(name: str, wire: str = "openai_chat") -> Preset:
-    return Preset(
-        name=name, wire_format=wire,
-        base_url="https://example.com", api_key_env="X", model="m",
-    )
+from alphasolve.llm import CodexClient, Preset, TierMapping, make_client, make_client_factory
 
 
 @dataclass
-class _FakeAgentConfig:
-    name: str
-    tier: str = "balanced"
+class _AgentConfig:
+    tier: str
 
     def effective_tier(self) -> str:
         return self.tier
 
 
-def test_make_client_dispatches_openai(monkeypatch):
-    monkeypatch.setenv("X", "sk")
-    c = make_client(_preset("a", "openai_chat"))
-    assert isinstance(c, OpenAIChatClient)
+def test_factory_selects_subscription_and_api_for_different_roles(monkeypatch):
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    subscription = Preset(name="subscription")
+    api = Preset(
+        name="api", provider="deepseek", model="deepseek-v4-pro",
+        base_url="https://api.deepseek.com", api_key_env="DEEPSEEK_API_KEY",
+    )
+    factory = make_client_factory(
+        TierMapping(name="default", tier_to_preset={"balanced": "subscription", "cheap": "api"}),
+        {"subscription": subscription, "api": api},
+    )
+
+    assert factory(_AgentConfig("balanced")).preset is subscription
+    assert factory(_AgentConfig("cheap")).preset is api
 
 
-def test_make_client_dispatches_anthropic(monkeypatch):
-    monkeypatch.setenv("X", "sk")
-    c = make_client(_preset("a", "anthropic_messages"))
-    assert isinstance(c, AnthropicMessagesClient)
+def test_client_construction_does_not_start_codex_or_require_authentication():
+    client = make_client(Preset(name="default"))
+    assert isinstance(client, CodexClient)
+    assert client.model is None
+    assert not hasattr(client, "complete")
 
 
-def test_make_client_unknown_wire_format(monkeypatch):
-    monkeypatch.setenv("X", "sk")
-    # Construct manually bypassing Literal type checking
-    p = Preset.__new__(Preset)
-    object.__setattr__(p, "name", "x")
-    object.__setattr__(p, "wire_format", "gemini_native")
-    object.__setattr__(p, "base_url", "u")
-    object.__setattr__(p, "api_key_env", "X")
-    object.__setattr__(p, "model", "m")
-    object.__setattr__(p, "timeout", 3600.0)
-    object.__setattr__(p, "params", {})
-    with pytest.raises(ValueError) as exc:
-        make_client(p)
-    assert "gemini_native" in str(exc.value)
+def test_factory_rejects_unknown_tier():
+    factory = make_client_factory(
+        TierMapping(name="default", tier_to_preset={"balanced": "default"}),
+        {"default": Preset(name="default")},
+    )
+    with pytest.raises(KeyError, match="max"):
+        factory(_AgentConfig("max"))
 
 
-def test_make_client_factory_resolves_tier(monkeypatch):
-    monkeypatch.setenv("X", "sk")
-    presets = {"p1": _preset("p1"), "p2": _preset("p2")}
-    tier_mapping = TierMapping(name="t", tier_to_preset={"balanced": "p1", "cheap": "p2"})
-
-    factory = make_client_factory(tier_mapping, presets)
-    client_b = factory(_FakeAgentConfig(name="orchestrator", tier="balanced"))
-    client_c = factory(_FakeAgentConfig(name="curator", tier="cheap"))
-    assert isinstance(client_b, OpenAIChatClient)
-    assert isinstance(client_c, OpenAIChatClient)
-    assert client_b.preset.name == "p1"
-    assert client_c.preset.name == "p2"
-
-
-def test_make_client_factory_unknown_tier(monkeypatch):
-    monkeypatch.setenv("X", "sk")
-    presets = {"p1": _preset("p1")}
-    tier_mapping = TierMapping(name="t", tier_to_preset={"balanced": "p1"})
-    factory = make_client_factory(tier_mapping, presets)
-    with pytest.raises(KeyError):
-        factory(_FakeAgentConfig(name="x", tier="max"))
-
-
-def test_make_client_factory_tier_maps_to_missing_preset(monkeypatch):
-    monkeypatch.setenv("X", "sk")
-    presets = {"p1": _preset("p1")}
-    tier_mapping = TierMapping(name="t", tier_to_preset={"balanced": "p_ghost"})
-    factory = make_client_factory(tier_mapping, presets)
-    with pytest.raises(KeyError) as exc:
-        factory(_FakeAgentConfig(name="x", tier="balanced"))
-    assert "p_ghost" in str(exc.value)
+def test_factory_rejects_missing_preset():
+    factory = make_client_factory(
+        TierMapping(name="default", tier_to_preset={"balanced": "missing"}), {},
+    )
+    with pytest.raises(KeyError, match="missing"):
+        factory(_AgentConfig("balanced"))

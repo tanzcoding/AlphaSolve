@@ -1,4 +1,4 @@
-"""ClientFactory 类型别名：把 AgentConfig 映射到 ChatClient 的工厂。"""
+"""ClientFactory 类型别名：根据角色配置选择 Codex 会话的模型配置。"""
 from __future__ import annotations
 
 from typing import Any, Callable

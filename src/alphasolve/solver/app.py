@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import json
-import socket
 import threading
 import traceback
 import uuid
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 from alphasolve.agent import AgentRunError, AgentConfig, load_agent_suite
 from alphasolve.solver.wolfram_state import AlphaSolveConfig
@@ -83,7 +80,7 @@ class AlphaSolve:
             self.layout.ensure()
             # 统一运行日志（alphasolve_run.log）始终启用；仅详细 trace 日志受
             # --debug 控制（detail=self.debug）。这样默认就能看到每次 LLM 调用的
-            # token 消耗（区分输入/输出）与 CoT，而不必开 --debug。
+            # token 消耗（区分输入/输出）与可见推理摘要，而不必开 --debug。
             log_session = LogSession(base_dir=str(self.layout.logs_dir), detail=self.debug)
             startup: dict[str, Any] = {
                 "project_root": str(self.layout.project_root),
@@ -231,6 +228,19 @@ class AlphaSolve:
             # （停止后台汇总线程并写最终汇总）；此时 workers/subagents/curator 均已结束。
             if log_session is not None:
                 log_session.close_run_log()
+        if curator_queue is not None and curator_queue.fatal_error is not None:
+            failure = curator_queue.fatal_error
+            result = OrchestratorRunResult(
+                final_answer=f"curator stopped: {failure}",
+                trace=[*result.trace, {
+                    "type": "run_error",
+                    "agent": "curator",
+                    "failure_kind": failure.failure_kind,
+                    "error": str(failure),
+                }],
+                worker_results=result.worker_results,
+                solution_path=result.solution_path,
+            )
         (self.layout.logs_dir / "orchestrator_trace.json").write_text(
             json.dumps(result.trace, ensure_ascii=False, indent=2),
             encoding="utf-8",
@@ -274,45 +284,6 @@ class AlphaSolve:
 
 def run_alphasolve(**kwargs) -> OrchestratorRunResult:
     return AlphaSolve(**kwargs).run()
-
-
-def _build_keepalive_transport() -> httpx.HTTPTransport:
-    """Build an HTTP transport with TCP keepalive to survive long-thinking non-streaming requests.
-
-    During non-streaming requests the wire is silent while the model thinks
-    (potentially minutes).  Stateful firewalls, NAT gateways, and load
-    balancers may drop idle connections.  TCP keepalive sends periodic
-    zero-byte probes at the OS level, keeping the connection alive without
-    any application-level traffic.
-    """
-    options: list[tuple[int, int, int]] = [
-        (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-    ]
-    # Per-platform idle / interval / count tuning
-    if hasattr(socket, "TCP_KEEPIDLE"):
-        # Linux 2.4+, Windows 10+ (requires Python ≥3.10 on Windows)
-        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60))
-    elif hasattr(socket, "TCP_KEEPALIVE"):
-        # macOS / BSD
-        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, 60))
-    if hasattr(socket, "TCP_KEEPINTVL"):
-        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 15))
-    if hasattr(socket, "TCP_KEEPCNT"):
-        options.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5))
-
-    return httpx.HTTPTransport(socket_options=options)
-
-
-class _SharedHTTPXClient(httpx.Client):
-    """A thread-safe httpx.Client whose ``close()`` is a no-op.
-
-    The OpenAI SDK calls ``close()`` on its internal http client when the
-    ``OpenAI`` object is garbage-collected.  Since we share one connection
-    pool across every agent, individual agents must not tear down the pool.
-    """
-
-    def close(self) -> None:
-        pass  # lifecycle managed by the factory, not by individual OpenAI clients
 
 
 def _worker_result_to_json(result) -> dict[str, Any]:

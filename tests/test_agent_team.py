@@ -9,6 +9,7 @@ import threading
 import time
 from contextlib import contextmanager
 
+import pytest
 from rich.console import Console
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
@@ -16,7 +17,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 import alphasolve  # noqa: E402
 from alphasolve.agent import AgentConfig, Workspace, load_agent_suite  # noqa: E402
 from alphasolve.solver import AlphaSolve  # noqa: E402
-from alphasolve.solver.demo import make_demo_client_factory  # noqa: E402
+from tests.demo_client import make_demo_client_factory  # noqa: E402
 from alphasolve.solver.curator import (  # noqa: E402
     CURATOR_HEALTH_CHECK_INTERVAL,
     CuratorTask,
@@ -38,7 +39,8 @@ from alphasolve.solver.workspace_access import RoleWorkspaceAccess  # noqa: E402
 from alphasolve.solver.wolfram_state import AlphaSolveConfig  # noqa: E402
 PACKAGE_ROOT = pathlib.Path(alphasolve.__file__).resolve().parent
 from alphasolve.solver.execution import ExecutionGateway  # noqa: E402
-from alphasolve.llm.types import CompletionResponse, Message, ToolCall  # noqa: E402
+from alphasolve.llm.types import Message, ToolCall  # noqa: E402
+from tests.response_fakes import CompletionResponse  # noqa: E402
 from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer  # noqa: E402
 
 
@@ -102,24 +104,10 @@ def test_default_agent_suite_loads_yaml_roles():
     index_pattern = r"^verified_propositions(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*/index\.md$"
     assert suite.agents["orchestrator"].tool_parameters["Write"]["path"]["pattern"] == index_pattern
     assert suite.agents["orchestrator"].tool_parameters["Edit"]["path"]["pattern"] == index_pattern
-    assert "index writes as objective bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Write"]["override"]
-    assert "index edits as objective bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Edit"]["override"]
-    assert "not a ranked list — treat that plan as a prior" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "rank that candidate against broader theorem work" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "constraint on the choice-classification target" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "answer-facing inequality" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "exact system levels, constants, remainders, and restrictions" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "repair listed as a premise" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "rank that prerequisite before the downstream promotion" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "classify choices that make the existing chain's hypotheses hold" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "cover the whole theorem interface" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "framework-formalization, conditional assembly, or gap-naming task" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "re-proving verified infrastructure" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
+    assert "within this agent's allowed write area" in suite.agents["orchestrator"].tool_descriptions["Write"]["override"]
+    assert "Performs exact string replacements" in suite.agents["orchestrator"].tool_descriptions["Edit"]["override"]
     assert "selected target is choice-classification" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
     assert "underclaimed answer-facing bound" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
-    assert "treat the verified Statement as authoritative" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "passed review and records a system interface" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
-    assert "do not demote it as bookkeeping" in suite.agents["orchestrator"].tool_descriptions["Agent"]["suffix"]
     assert "inspect that target before broadening" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
     assert "not as a deterministic verdict" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
     assert "not ordinary bookkeeping" in suite.agents["orchestrator"].tool_descriptions["ResearchProgressReview"]["override"]
@@ -134,7 +122,7 @@ def test_default_agent_suite_loads_yaml_roles():
     assert "RequestResearchPlan" in orchestrator_prompt
     assert "ExecuteResearchPlan" in orchestrator_prompt
     assert "RecordResearchImpact" not in orchestrator_prompt
-    assert "followup_handoff_ids" in orchestrator_prompt
+    assert "route_label" in orchestrator_prompt
     assert "AttackLocalDifficulty" not in orchestrator_prompt
     assert "visible only to the research reviewer" in orchestrator_prompt
     assert "curator" in orchestrator_prompt.lower()
@@ -223,6 +211,7 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
             "RecordDifficulty",
             {
                 "obstacle": "The required global inequality remains unproved by the current argument.",
+                "delivered_instead": "Only the reflexive equality x=x was proved.",
             },
             enabled=list(generator_config.tools),
             tool_parameters=generator_config.tool_parameters,
@@ -242,6 +231,7 @@ def test_record_difficulty_preserves_generator_declaration_and_reviser_updates()
             "RecordDifficulty",
             {
                 "obstacle": "The verifier's global step cannot be repaired from the current hypotheses.",
+                "delivered_instead": "The existing reflexive equality proof remains unchanged.",
             },
             enabled=list(reviser_config.tools),
             tool_parameters=reviser_config.tool_parameters,
@@ -423,7 +413,6 @@ def test_knowledge_curator_task_prompt_hides_source_labels():
                     name="curator",
                     system_prompt="Curator prompt",
                     tools=[],
-                    max_turns=1,
                 )
             }
 
@@ -475,7 +464,6 @@ def test_final_verifier_curator_prompt_caps_common_errors():
                     name="curator",
                     system_prompt="Curator prompt",
                     tools=[],
-                    max_turns=1,
                 )
             }
 
@@ -1402,23 +1390,22 @@ def test_orchestrator_can_organize_verified_propositions_without_renaming_markdo
         # from registered_tools(); only that it is absent from the orchestrator
         # agent's enabled tool defs.
         tool_descriptions = {t.name: t.description for t in defs}
-        assert "return immediately" in tool_descriptions["SpawnWorker"]
+        assert "Direct-dispatch surface for bounded bootstrap" in tool_descriptions["SpawnWorker"]
         assert "active_count" in tool_descriptions["SpawnWorker"]
         assert "Wait until one active worker finishes" in tool_descriptions["TaskOutput"]
         assert "available_worker_slots" in tool_descriptions["TaskOutput"]
         assert "difficulty_handoff" in tool_descriptions["TaskOutput"]
-        assert "local_difficulties" in tool_descriptions["TaskOutput"]
+        assert "process_audit_decisions" in tool_descriptions["TaskOutput"]
         assert "direct proposition, review, and verification artifacts" in tool_descriptions["TaskOutput"]
         spawn_definition = next(tool for tool in defs if tool.name == "SpawnWorker")
         assert "followup_handoff_ids" in spawn_definition.parameters["properties"]
         assert "evidence_refs" in spawn_definition.parameters["properties"]
-        assert "local_difficulties" in tool_descriptions["TaskOutput"]
         assert "difficulty_assessment" not in tool_descriptions["TaskOutput"]
         assert "RequestResearchPlan" in tool_descriptions["TaskOutput"]
         assert "timed_out" in tool_descriptions["TaskOutput"]
         assert "process_audit_context_reset" not in tool_descriptions["TaskOutput"]
         assert "fresh reviewer report" not in tool_descriptions["TaskOutput"]
-        assert "open-ended, non-targeted exploration" in tool_descriptions["SpawnFreeExploration"]
+        assert "bounded orthogonal exploration" in tool_descriptions["SpawnFreeExploration"]
         assert "Agent" not in tool_descriptions
         rename_description = next(t.description for t in defs if t.name == "Rename")
         assert "Rename a folder" in rename_description
@@ -1778,7 +1765,8 @@ def test_update_entry_metadata_normalizes_frontmatter_to_modification_count_only
         assert entry.read_text(encoding="utf-8").startswith("---\nmodification_count: 2\n---\n\n# Energy Estimate\n")
 
 
-def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
+@pytest.mark.parametrize("message_field", ["content", "reasoning_content"])
+def test_generator_curator_submits_visible_context_with_each_subagent_trace(message_field):
     class CapturingCuratorQueue:
         def __init__(self):
             self.tasks = []
@@ -1801,8 +1789,7 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
                     return CompletionResponse(
                         message=Message(
                             role="assistant",
-                            content="",
-                            reasoning_content="First generator reasoning slice.",
+                            **{message_field: "First generator visible context."},
                             tool_calls=(
                                 ToolCall(
                                     id="call_reasoning_a",
@@ -1817,8 +1804,7 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
                     return CompletionResponse(
                         message=Message(
                             role="assistant",
-                            content="",
-                            reasoning_content="Second generator reasoning slice.",
+                            **{message_field: "Second generator visible context."},
                             tool_calls=(
                                 ToolCall(
                                     id="call_reasoning_b",
@@ -1885,9 +1871,10 @@ def test_generator_curator_submits_reasoning_slice_with_each_subagent_trace():
         second_context = generator_tasks[1].caller_context
         assert generator_tasks[0].source_label.endswith("/generator/reasoning_subagent")
         assert first_context["caller_role"] == "generator"
-        assert first_context["reasoning_since_previous_subagent"][0]["content"] == "First generator reasoning slice."
-        assert second_context["reasoning_since_previous_subagent"][0]["content"] == "Second generator reasoning slice."
-        assert "First generator reasoning slice." not in json.dumps(second_context, ensure_ascii=False)
+        assert first_context["visible_context_since_previous_subagent"][0]["content"] == "First generator visible context."
+        assert second_context["visible_context_since_previous_subagent"][0]["content"] == "Second generator visible context."
+        assert first_context["subagent_task"] == "Check the first bounded claim."
+        assert "First generator visible context." not in json.dumps(second_context, ensure_ascii=False)
         assert generator_tasks[0].trace_segment[0]["type"] == "run_start"
 
 
@@ -2039,7 +2026,10 @@ def test_reasoning_subagent_registry_records_obstacle_with_delegated_task(tmp_pa
     )
     recorded = registry.execute(
         "RecordDifficulty",
-        {"obstacle": "The equality case cannot be excluded under assumptions A and B."},
+        {
+            "obstacle": "The equality case cannot be excluded under assumptions A and B.",
+            "delivered_instead": "A reduction to the unresolved equality case.",
+        },
         enabled=list(reasoning_config.tools),
         tool_parameters=reasoning_config.tool_parameters,
     )
@@ -2050,11 +2040,14 @@ def test_reasoning_subagent_registry_records_obstacle_with_delegated_task(tmp_pa
         "index": 1,
         "role": "reasoning_subagent",
         "obstacle": "The equality case cannot be excluded under assumptions A and B.",
+        "delivered_instead": "A reduction to the unresolved equality case.",
+        "obstacle_scope": "unclear",
         "delegated_description": "Check local lemma",
         "delegated_task": "Prove the local lemma under assumptions A and B.",
         "subagent_session_id": "worker-reasoning/reasoning/1",
     }]
-    assert "Write" not in [tool.name for tool in registry.registered_tools()]
+    enabled_tools = [name for name in reasoning_config.tools if name != "Agent"]
+    assert "Write" not in [tool.name for tool in registry.tool_defs(enabled_tools)]
 
 
 def test_subagent_service_cleans_up_gateway_session_after_return():

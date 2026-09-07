@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from alphasolve.agent import AgentRunError
 from alphasolve.solver.logging.event_log import compose_event_sinks
 
 from alphasolve.solver.ui.dashboard import make_curator_event_sink
@@ -82,6 +83,7 @@ class CuratorQueue:
         self._touched_paths_lock = threading.Lock()
         self._active_tasks = 0
         self._active_tasks_lock = threading.Lock()
+        self.fatal_error: AgentRunError | None = None
 
     def start(self) -> None:
         if not self._started:
@@ -95,7 +97,7 @@ class CuratorQueue:
         self._thread.join(timeout=timeout)
 
     def submit(self, task: CuratorTask) -> None:
-        if self._started:
+        if self._started and self.fatal_error is None:
             if self.renderer is not None:
                 self.renderer.enqueue_curator_task(task.source_label)
             self._queue.put(task)
@@ -145,6 +147,11 @@ class CuratorQueue:
                 self._run_curator(task)
             except Exception as exc:
                 self._record_failure(task, exc)
+                if isinstance(exc, AgentRunError) and exc.fatal:
+                    self.fatal_error = exc
+                    if self.stop_event is not None:
+                        self.stop_event.set()
+                    break
                 if task.attempts < 1:
                     task.attempts += 1
                     task.recovery_reason = str(exc)[:2000]
@@ -203,6 +210,7 @@ class CuratorQueue:
                 "attempt": task.attempts + 1,
                 "error_type": type(exc).__name__,
                 "error": str(exc)[:2000],
+                "failure_kind": exc.failure_kind if isinstance(exc, AgentRunError) else "runtime",
             }
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
@@ -279,6 +287,7 @@ class CuratorQueue:
         if self.renderer is not None:
             self.renderer.set_curator_model(_model_name(config, suite=self.suite))
             self.renderer.start_curator_task(task.source_label)
+        agent = None
         try:
             agent = Agent(
                 config=config,
@@ -306,6 +315,8 @@ class CuratorQueue:
                     )
             curator_success = True
         finally:
+            if agent is not None:
+                agent.close()
             if curator_sink is not None:
                 curator_sink.close()
             if self.renderer is not None:

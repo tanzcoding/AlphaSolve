@@ -1,4 +1,4 @@
-"""RunLogWriter：逐次 LLM 调用明细（token + CoT + 输出）与定期汇总。"""
+"""RunLogWriter：逐次 Codex 交互明细（token + 可见推理摘要 + 输出）与定期汇总。"""
 from __future__ import annotations
 
 import threading
@@ -51,8 +51,8 @@ def test_records_call_detail_with_cot_and_tokens(tmp_path: Path):
     assert "in=1,200" in text
     assert "out=340" in text
     assert "cached=800" in text
-    # CoT 与输出正文均落盘
-    assert "COT (reasoning)" in text
+    # 可见推理摘要 与输出正文均落盘
+    assert "REASONING (visible summary)" in text
     assert "先考虑归纳法" in text
     assert "OUTPUT (content)" in text
     assert "命题成立" in text
@@ -86,12 +86,12 @@ def test_flush_leftover_pending_on_run_finish(tmp_path: Path):
     sink = writer.sink_for("orchestrator")
 
     sink(_usage(1, agent="manager", inp=50, out=5))
-    sink(_thinking(1, "残留 CoT，没有 assistant_message"))
+    sink(_thinking(1, "残留 可见推理摘要，没有 assistant_message"))
     sink({"type": "run_finish", "turn": 1, "final_answer": "x"})
     writer.close()
 
     text = log_path.read_text(encoding="utf-8")
-    assert "残留 CoT" in text
+    assert "残留 可见推理摘要" in text
     assert "in=50" in text
 
 
@@ -146,3 +146,35 @@ def test_note_is_noop_after_close(tmp_path: Path):
 
     text = log_path.read_text(encoding="utf-8")
     assert "should not appear" not in text
+
+
+def test_usage_can_arrive_after_assistant_output(tmp_path: Path):
+    """Codex 晚到的用量应归入同一条记录，不能重复累计调用。"""
+    path = tmp_path / "run.log"
+    writer = RunLogWriter(path, flush_interval=3600)
+    sink = writer.sink_for("orchestrator")
+    sink(_thinking(1, "检查已验证结论。"))
+    sink(_assistant(1, agent="manager", content="已完成本轮规划。"))
+    sink(_usage(1, agent="manager", inp=120, out=30, cached=20))
+    sink({"type": "run_finish", "turn": 1})
+    writer.close()
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count("AGENT TURN │") == 1
+    assert "已完成本轮规划。" in text
+    assert "检查已验证结论。" in text
+    assert "TOTAL: calls=1" in text
+    assert "input=120" in text
+    assert "output=30" in text
+
+
+def test_interrupted_output_without_usage_is_preserved(tmp_path: Path):
+    """中断时即便服务尚未报告用量，也保留已收到的正文。"""
+    path = tmp_path / "run.log"
+    writer = RunLogWriter(path, flush_interval=3600)
+    sink = writer.sink_for("worker")
+    sink(_assistant(1, agent="generator", content="已经写入部分推导。"))
+    sink({"type": "run_stopped", "turn": 1})
+    writer.close()
+
+    assert "已经写入部分推导。" in path.read_text(encoding="utf-8")

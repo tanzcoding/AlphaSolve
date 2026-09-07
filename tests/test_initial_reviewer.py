@@ -10,7 +10,8 @@ import alphasolve.solver as solver_pkg
 from alphasolve.solver.cold_start import ColdStartRuntime
 from alphasolve.solver.subagent_service import SubagentService
 from alphasolve.agent import load_agent_suite
-from alphasolve.llm.types import CompletionResponse, Message
+from alphasolve.llm.types import Message
+from tests.response_fakes import CompletionResponse
 from alphasolve.solver.orchestrator import Orchestrator
 from alphasolve.solver.project import ProjectLayout
 

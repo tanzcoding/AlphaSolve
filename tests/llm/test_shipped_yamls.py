@@ -2,49 +2,35 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from alphasolve.llm.config.loader import load_presets, load_tier_mapping
-
-PRESETS_PATH = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config" / "presets.yaml"
-TIERS_PATH = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config" / "tiers.yaml"
+from alphasolve.llm import load_presets, load_tier_mapping
 
 
-def test_shipped_presets_load():
-    presets = load_presets(repo_path=PRESETS_PATH, user_path=None)
-    expected_openai = {
-        "deepseek-flash", "deepseek-pro", "parasail-deepseek", "longcat",
-        "moonshot-kimi", "volcano-doubao", "volcano-deepseek",
-        "dashscope-deepseek", "mimo", "openrouter-gemini",
-        "qwen-3.7-max",
-    }
-    expected_anthropic = {"deepseek-pro-anthropic", "moonshot-kimi-anthropic"}
-    assert set(presets) == expected_openai | expected_anthropic
-    for name in expected_openai:
-        assert presets[name].wire_format == "openai_chat", name
-    for name in expected_anthropic:
-        assert presets[name].wire_format == "anthropic_messages", name
+CONFIG_ROOT = Path(__file__).resolve().parents[2] / "src" / "alphasolve" / "config"
 
 
-def test_tier_coverage():
-    """All required tiers must be mapped in tiers.yaml."""
-    tm = load_tier_mapping(repo_path=TIERS_PATH, user_path=None)
-    required = {"cheap", "balanced", "max"}
-    assert set(tm.tier_to_preset) == required
+def test_shipped_presets_are_subscription_or_explicit_responses_apis():
+    presets = load_presets(repo_path=CONFIG_ROOT / "presets.yaml", user_path=None)
+    assert "gpt-5.6-luna" in presets
+    for preset in presets.values():
+        if preset.provider == "chatgpt":
+            assert preset.api_key_env is None
+            assert preset.base_url is None
+        else:
+            assert preset.model
+            assert preset.api_key_env
+            assert preset.base_url.startswith("https://")
 
 
-def test_each_tier_resolves_to_a_real_preset():
-    """Every tier in tiers.yaml must point to a preset defined in presets.yaml."""
-    presets = load_presets(repo_path=PRESETS_PATH, user_path=None)
-    tm = load_tier_mapping(repo_path=TIERS_PATH, user_path=None)
-    for tier, preset_name in tm.tier_to_preset.items():
-        assert preset_name in presets, (
-            f"tier {tier!r} -> preset {preset_name!r} not found"
-        )
+def test_shipped_tiers_use_subscription_without_paid_fallback():
+    mapping = load_tier_mapping(repo_path=CONFIG_ROOT / "tiers.yaml", user_path=None)
+    presets = load_presets(repo_path=CONFIG_ROOT / "presets.yaml", user_path=None)
+    assert set(mapping.tier_to_preset) == {"cheap", "balanced", "max"}
+    for name in mapping.tier_to_preset.values():
+        assert name == "gpt-5.6-luna"
+        assert presets[name].provider == "chatgpt"
+        assert presets[name].model == "gpt-5.6-luna"
 
 
-def test_no_yaml_uses_model_config_field():
-    """Regression: model_config: must never reappear in shipped configs."""
-    config_root = Path(__file__).parent.parent.parent / "src" / "alphasolve" / "config"
-    for yaml_path in config_root.rglob("*.yaml"):
-        content = yaml_path.read_text(encoding="utf-8")
-        assert "model_config:" not in content, f"{yaml_path}: contains model_config:"
-
+def test_shipped_configs_do_not_use_legacy_model_config_field():
+    for path in CONFIG_ROOT.rglob("*.yaml"):
+        assert "model_config:" not in path.read_text(encoding="utf-8")

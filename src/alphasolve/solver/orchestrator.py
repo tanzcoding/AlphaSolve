@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
-from alphasolve.agent import AgentRunError, Agent, AgentContextPolicy, AgentEventSink, Workspace
+from alphasolve.agent import AgentRunError, Agent, AgentEventSink, Workspace
 from alphasolve.agent.tools import ToolRegistry, ToolResult
 from alphasolve.solver.logging.event_log import compose_event_sinks
 
@@ -205,6 +205,7 @@ class WorkerManager:
         orchestrator_session_id: str | None = None,
         log_session: LogSession | None = None,
         stop_event: threading.Event | None = None,
+        run_stop_event: threading.Event | None = None,
         policy: SolverPolicy | None = None,
         attempt_observer: Any | None = None,
     ) -> None:
@@ -250,6 +251,7 @@ class WorkerManager:
         # 不参与任何调度决策；写入失败绝不能影响 worker 执行。
         self.attempt_observer = attempt_observer
         self.stop_event = stop_event or threading.Event()
+        self.run_stop_event = run_stop_event
         self.solution_path: Path | None = None
         self.solved_result: WorkerRunResult | None = None
         self.completion_handler: Callable[[WorkerRunResult], dict[str, Any] | None] | None = None
@@ -433,6 +435,7 @@ class WorkerManager:
             pass
 
     def wait(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
+        self._stop_requested()
         self._collect_done()
         if self.completed_backlog:
             completed = list(self.completed_backlog)
@@ -441,11 +444,25 @@ class WorkerManager:
         if not self.active:
             return self._with_runtime_updates(self._attach_audit_decisions({"completed": [], **self._pool_status(), "message": "no active workers"}))
         timeout = self.default_wait_timeout_seconds if timeout_seconds is None else max(1200.0, float(timeout_seconds))
-        done, _ = concurrent.futures.wait(
-            list(self.active.keys()),
-            timeout=timeout,
-            return_when=concurrent.futures.FIRST_COMPLETED,
-        )
+        deadline = time.monotonic() + timeout
+        done = set()
+        while not done:
+            # TaskOutput 在 agent 调用线程执行，短轮询才能及时响应 Ctrl+C 或关键角色失败。
+            if self._stop_requested():
+                return self._with_runtime_updates({
+                    "completed": [],
+                    "stopped": True,
+                    "message": "run stopped while waiting for workers",
+                    **self._pool_status(),
+                })
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            done, _ = concurrent.futures.wait(
+                list(self.active.keys()),
+                timeout=min(0.1, remaining),
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
         if not done:
             return self._with_runtime_updates({
                 "completed": [],
@@ -456,12 +473,18 @@ class WorkerManager:
             })
         return self._with_runtime_updates(self._attach_audit_decisions(self._wait_payload(self._consume_done(done))))
 
+    def _stop_requested(self) -> bool:
+        if self.run_stop_event is not None and self.run_stop_event.is_set():
+            self.stop_event.set()
+        return self.stop_event.is_set()
+
     def _attach_audit_decisions(self, payload: dict[str, Any]) -> dict[str, Any]:
         checkpoint_ids = list(dict.fromkeys(self._task_output_audit_checkpoints))
         self._task_output_audit_checkpoints.clear()
-        if not checkpoint_ids or self.progress_audit_queue is None:
+        if not checkpoint_ids or self.progress_audit_queue is None or self._stop_requested():
             return payload
         decisions = self.progress_audit_queue.wait_for_decisions(checkpoint_ids)
+        self._stop_requested()
         payload["process_audit_decisions"] = decisions
         payload["process_audit_decision_required"] = bool(decisions)
         if not decisions:
@@ -971,6 +994,7 @@ class Orchestrator:
                 orchestrator_session_id=self.session_id,
                 log_session=self.log_session,
                 stop_event=self.worker_stop_event,
+                run_stop_event=self.stop_event,
                 policy=self.policy,
                 attempt_observer=self.search,
             )
@@ -1004,6 +1028,8 @@ class Orchestrator:
                 reviewer_history_path=self.layout.curation_records_dir / "reviewer_history.md",
             )
             self._planning_subagents = subagents
+            agent = None
+            fatal_failure = False
             try:
                 agent = self.build_agent(
                     manager,
@@ -1021,11 +1047,26 @@ class Orchestrator:
             except AgentRunError as exc:
                 error_final_answer = str(exc)
                 error_trace = exc.trace
+                fatal_failure = exc.fatal
+                if fatal_failure:
+                    if self.stop_event is not None:
+                        self.stop_event.set()
+                    self.worker_stop_event.set()
             finally:
+                if agent is not None:
+                    agent.close()
+                curator_failed = (
+                    self.curator_queue is not None
+                    and self.curator_queue.fatal_error is not None
+                )
+                if curator_failed:
+                    self.worker_stop_event.set()
                 user_requested_stop = (
                     self.stop_event is not None
                     and self.stop_event.is_set()
                     and manager.solved_result is None
+                    and not fatal_failure
+                    and not curator_failed
                 )
                 manager.close(graceful=user_requested_stop)
                 progress_audit_queue.stop()
@@ -1079,7 +1120,6 @@ class Orchestrator:
         *,
         subagents: SubagentService | None = None,
         event_sink: AgentEventSink | None = None,
-        context_policy: AgentContextPolicy | None = None,
     ) -> Agent:
         """按真实 orchestrator 配方装配单个 Agent，供 run() 和外部入口共用。"""
         registry = self._build_registry(manager, subagents=subagents)
@@ -1093,7 +1133,6 @@ class Orchestrator:
             tool_registry=registry,
             event_sink=event_sink,
             stop_event=self.stop_event,
-            context_policy=context_policy,
         )
 
     def _build_registry(self, manager: WorkerManager, *, subagents: SubagentService | None = None) -> ToolRegistry:

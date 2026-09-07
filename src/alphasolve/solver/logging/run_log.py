@@ -1,9 +1,9 @@
-"""统一运行日志：逐次 LLM 调用明细 + 定期 token 汇总（写到 alphasolve_run.log）。
+"""统一运行日志：逐次 Codex 交互明细 + 定期 token 汇总（写到 alphasolve_run.log）。
 
 与 :mod:`token_usage_log` 的区别与分工：
 
-- ``token_usage_log`` 只做**汇总表**（按 role 分组累加），不含 CoT 与输出正文；
-- 本模块面向"想看清每一次 LLM 调用花了多少 token、模型想了什么（CoT）、
+- ``token_usage_log`` 只做**汇总表**（按 role 分组累加），不含 可见推理摘要 与输出正文；
+- 本模块面向"想看清每一次 LLM 调用花了多少 token、模型想了什么（可见推理摘要）、
   最终输出了什么"的诊断诉求，逐次调用落一条明细，并由后台线程**定期**把
   跨 agent/subagent 的 token 汇总追加到同一份日志里。
 
@@ -17,10 +17,10 @@ worker 各角色 / subagent / curator）在创建时通过 :meth:`RunLogWriter.s
 - 只有"写文件"和"累加全局统计"需要跨线程同步（worker 在多线程里跑），由
   :class:`RunLogWriter` 内部一把锁保护。
 
-Agent 每轮事件的发射顺序恒为 ``usage → thinking(可选) → assistant_message``
-（见 ``agent/agent.py``），因此以 ``assistant_message`` 作为一条调用记录的落盘
-触发点；若某轮因异常/中断缺少 ``assistant_message``，则在 agent 收尾事件
-（``run_finish`` / ``run_error`` / ``run_stopped``）时兜底 flush 残留 pending。
+Codex 可能先发出正文，再报告用量；同一轮的用量和正文到齐后才落盘。
+这里一轮对应一次 ``Agent.run``，包含 Codex 内部完成任务所需的模型与工具循环。
+若某轮因异常或中断缺少其中一项，则在代理收尾事件
+（``run_finish`` / ``run_error`` / ``run_stopped``）时写入已经收到的内容。
 
 本模块只做"观测/记录"，不改变任何 agent 的执行语义。
 """
@@ -34,9 +34,9 @@ from typing import Any, Callable
 
 AgentEventSink = Callable[[dict[str, Any]], None]
 
-# CoT 与输出正文的单条截断上限（字符）。取较大值以尽量保留完整 CoT，
+# 可见推理摘要 与输出正文的单条截断上限（字符）。取较大值以尽量保留完整 可见推理摘要，
 # 同时避免个别超长响应把日志撑爆。
-_TRUNCATE_COT_CHARS = 16_000
+_TRUNCATE_REASONING_CHARS = 16_000
 _TRUNCATE_OUTPUT_CHARS = 12_000
 
 # 后台汇总线程的默认刷新周期（秒）。
@@ -52,10 +52,11 @@ class _PendingCall:
     output_tokens: int = 0
     cached_tokens: int = 0
     elapsed: float = 0.0
-    cot: str = ""
+    reasoning: str = ""
     output: str = ""
     tool_call_count: int = 0
     usage_seen: bool = False
+    assistant_seen: bool = False
 
 
 @dataclass
@@ -92,8 +93,8 @@ class RunLogWriter:
     """整个 run 共享、线程安全的运行日志写入器。
 
     职责：
-    - 通过 :meth:`sink_for` 为每个 agent 发一个 event sink，逐次 LLM 调用落一条
-      明细（含输入/输出/缓存 token、CoT、输出正文）；
+    - 通过 :meth:`sink_for` 为每个 agent 发一个 event sink，逐次 Codex 交互落一条
+      明细（含输入/输出/缓存 token、可见推理摘要、输出正文）；
     - 后台线程按 ``flush_interval`` 秒周期，把跨 agent/subagent 的 token 汇总
       追加写入同一份日志。
     """
@@ -144,23 +145,27 @@ class RunLogWriter:
                 call.cached_tokens = int(event.get("cached_tokens") or 0)
                 call.elapsed = float(event.get("elapsed") or 0.0)
                 call.usage_seen = True
+                if call.assistant_seen:
+                    pending.pop(turn)
+                    self._record_call(label=label, turn=turn, call=call)
             elif etype == "thinking":
                 turn = int(event.get("turn") or 0)
                 call = pending.setdefault(turn, _PendingCall())
-                call.cot = str(event.get("content") or "")
+                call.reasoning = str(event.get("content") or "")
             elif etype == "assistant_message":
                 turn = int(event.get("turn") or 0)
-                # 正常情况下同一轮的 usage 已先到，pending[turn] 必然存在；
-                # 兜底：即便缺失也补一条（token 记 0），以免丢掉这轮输出。
-                call = pending.pop(turn, None) or _PendingCall(agent=str(event.get("agent") or ""))
+                call = pending.setdefault(turn, _PendingCall(agent=str(event.get("agent") or "")))
                 call.output = str(event.get("content") or "")
                 call.tool_call_count = int(event.get("tool_call_count") or 0)
-                self._record_call(label=label, turn=turn, call=call)
+                call.assistant_seen = True
+                if call.usage_seen:
+                    pending.pop(turn)
+                    self._record_call(label=label, turn=turn, call=call)
             elif etype in ("run_finish", "run_error", "run_stopped"):
                 # 兜底：把该 agent 未随 assistant_message 落盘的残留 pending 冲刷掉。
                 for turn in sorted(pending):
                     leftover = pending[turn]
-                    if leftover.usage_seen or leftover.cot or leftover.output:
+                    if leftover.usage_seen or leftover.reasoning or leftover.assistant_seen:
                         self._record_call(label=label, turn=turn, call=leftover)
                 pending.clear()
 
@@ -186,15 +191,15 @@ class RunLogWriter:
         agent = call.agent or "?"
         elapsed = f"{call.elapsed:.1f}s" if call.elapsed else "-"
         header = (
-            f"[{ts}] LLM CALL │ {label} · agent={agent} · turn={turn} │ "
+            f"[{ts}] AGENT TURN │ {label} · agent={agent} · turn={turn} │ "
             f"in={call.input_tokens:,} out={call.output_tokens:,} "
             f"cached={call.cached_tokens:,} · {elapsed}"
         )
         self._log.write(header + "\n")
-        cot = _truncate(call.cot, _TRUNCATE_COT_CHARS)
-        if cot.strip():
-            self._log.write("  ├─ COT (reasoning):\n")
-            self._write_indented(cot, prefix="  │  ")
+        reasoning = _truncate(call.reasoning, _TRUNCATE_REASONING_CHARS)
+        if reasoning.strip():
+            self._log.write("  ├─ REASONING (visible summary):\n")
+            self._write_indented(reasoning, prefix="  │  ")
         out = _truncate(call.output, _TRUNCATE_OUTPUT_CHARS)
         if out.strip():
             self._log.write("  └─ OUTPUT (content):\n")
@@ -292,7 +297,7 @@ class RunLogWriter:
     def _write_header_locked(self) -> None:
         ts = self._started.strftime("%Y-%m-%d %H:%M:%S")
         self._log.write("=" * 92 + "\n")
-        self._log.write(f"AlphaSolve 运行日志（逐次 LLM 调用明细 + 定期 token 汇总）\n")
+        self._log.write(f"AlphaSolve 运行日志（逐次 Codex 交互明细 + 定期 token 汇总）\n")
         self._log.write(f"启动时间: {ts}\n")
         self._log.write("=" * 92 + "\n\n")
         self._log.flush()

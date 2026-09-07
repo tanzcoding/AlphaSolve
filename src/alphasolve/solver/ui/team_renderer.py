@@ -1122,7 +1122,7 @@ class PropositionTeamRenderer:
         return Text(_truncate(t.plain, width), style="")
 
     def _render_footer(self, *, width: int) -> Text:
-        text = "CoT streaming  |  tool ✓/✗  |  Ctrl+C stop"
+        text = "Visible reasoning  |  tool ✓/✗  |  Ctrl+C stop"
         return Text(_truncate(text, width), style="grey50")
 
     def _render_sidebar(self, *, width: int, height: int) -> "RenderableType":

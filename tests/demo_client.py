@@ -3,9 +3,8 @@ from __future__ import annotations
 import re
 
 from alphasolve.agent import AgentConfig
+from tests.response_fakes import ChatDeltaSink, CompletionResponse
 from alphasolve.llm.types import (
-    ChatDeltaSink,
-    CompletionResponse,
     Message,
     ToolCall,
     ToolDef,

@@ -39,6 +39,7 @@ Thumbs.db
 
 # Cache & testing
 .pytest_cache/
+.pytest-tmp/
 .codex_tmp/
 .pytest_tmp/
 _pytest_tmp/

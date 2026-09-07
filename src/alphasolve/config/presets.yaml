@@ -1,106 +1,38 @@
-# OpenAI Chat Completions presets (1:1 migration from agent_config.py)
+# 默认通过 Codex 的 ChatGPT 登录使用 GPT 5.6 Luna。
+gpt-5.6-luna:
+  provider: chatgpt
+  model: gpt-5.6-luna
 
+# 需要固定模型时，可在 tiers.yaml 中选用此 preset 或添加自己的配置。
+gpt-5.5:
+  provider: chatgpt
+  model: gpt-5.5
+  reasoning_effort: high
+
+# 以下均为普通按量 API，通过 Codex 的 Responses provider 接入。
+# 只有 tier 实际选用这些 preset 时才会调用相应服务，不会作为订阅失败后的回退。
 deepseek-flash:
-  wire_format: openai_chat
+  provider: deepseek
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY
   model: deepseek-v4-flash
-  timeout: 3600
-  params: { extra_body: { reasoning: { effort: max } } }
+  reasoning_effort: high
 
 deepseek-pro:
-  wire_format: openai_chat
+  provider: deepseek
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY
   model: deepseek-v4-pro
-  timeout: 3600
-  params: { extra_body: { reasoning: { effort: max } } }
-
-parasail-deepseek:
-  wire_format: openai_chat
-  base_url: https://api.parasail.io/v1
-  api_key_env: PARASAIL_API_KEY
-  model: deepseek-ai/DeepSeek-V3.2
-  timeout: 3600
-  params: { extra_body: { enable_thinking: true } }
-
-longcat:
-  wire_format: openai_chat
-  base_url: https://api.longcat.chat/openai
-  api_key_env: LONGCAT_API_KEY
-  model: LongCat-Flash-Thinking-2601
-  timeout: 3600
-
-moonshot-kimi:
-  wire_format: openai_chat
-  base_url: https://api.moonshot.cn/v1
-  api_key_env: MOONSHOT_API_KEY
-  model: kimi-k2-thinking
-  timeout: 3600
-  params: { temperature: 1.0 }
-
-volcano-doubao:
-  wire_format: openai_chat
-  base_url: https://ark.cn-beijing.volces.com/api/v3
-  api_key_env: ARK_API_KEY
-  model: doubao-seed-2-0-pro-260215
-  timeout: 180
-  params: { extra_body: { thinking: { type: enabled } } }
-
-volcano-deepseek:
-  wire_format: openai_chat
-  base_url: https://ark.cn-beijing.volces.com/api/v3
-  api_key_env: ARK_API_KEY
-  model: deepseek-v3-2-251201
-  timeout: 180
-  params: { extra_body: { thinking: { type: enabled } } }
-
-dashscope-deepseek:
-  wire_format: openai_chat
-  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
-  api_key_env: DASHSCOPE_API_KEY
-  model: deepseek-v3.2
-  timeout: 3600
-  params: { temperature: 1.0, extra_body: { enable_thinking: true } }
-
-mimo:
-  wire_format: openai_chat
-  base_url: https://api.xiaomimimo.com/v1
-  api_key_env: MIMO_API_KEY
-  model: mimo-v2-flash
-  timeout: 3600
-  params: { temperature: 1.0, extra_body: { thinking: { type: enabled } } }
-
-openrouter-gemini:
-  wire_format: openai_chat
-  base_url: https://openrouter.ai/api/v1
-  api_key_env: OPENROUTER_API_KEY
-  model: google/gemini-2.5-flash
-  timeout: 3600
-  params: { extra_body: { reasoning: { effort: high } } }
-
-# Anthropic Messages presets (new). All URLs/model_ids confirmed by user
-# before implementation.
-
-deepseek-pro-anthropic:
-  wire_format: anthropic_messages
-  base_url: https://api.deepseek.com/anthropic
-  api_key_env: DEEPSEEK_API_KEY
-  model: deepseek-v4-pro
-  timeout: 3600
-
-moonshot-kimi-anthropic:
-  wire_format: anthropic_messages
-  base_url: https://api.moonshot.cn/anthropic
-  api_key_env: MOONSHOT_API_KEY
-  model: kimi-k2-thinking
-  timeout: 3600
-
-# Strategic-tier orchestrator model
+  reasoning_effort: high
 
 qwen-3.7-max:
-  wire_format: openai_chat
+  provider: qwen
   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key_env: DASHSCOPE_API_KEY
   model: qwen3.7-max
-  timeout: 3600
+
+moonshot-kimi:
+  provider: moonshot
+  base_url: https://api.moonshot.cn/v1
+  api_key_env: MOONSHOT_API_KEY
+  model: kimi-k3

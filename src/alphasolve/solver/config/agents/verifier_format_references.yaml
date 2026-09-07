@@ -3,7 +3,6 @@ agent:
   name: verifier_format_references
   system_prompt_path: ../../prompts/verifier_format_references.md
   tier: balanced
-  max_turns: 80
   tools:
     - Read
     - ListDir

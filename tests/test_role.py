@@ -26,7 +26,8 @@ class _StubClient:
         self._text = text
 
     def complete(self, *, messages, tools, **_):
-        from alphasolve.llm.types import CompletionResponse, Usage
+        from alphasolve.llm.types import Usage
+        from tests.response_fakes import CompletionResponse
 
         return CompletionResponse(
             message=Message(role="assistant", content=self._text, tool_calls=()),
@@ -46,7 +47,6 @@ def _build_suite(tmp_path: Path) -> AgentSuite:
             name=name,
             system_prompt=f"You are {name}.",
             tools=(),
-            max_turns=1,
             tier="balanced",
         )
 

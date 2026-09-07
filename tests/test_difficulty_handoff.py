@@ -35,6 +35,7 @@ def _record_generator_obstacle(tmp_path):
         "RecordDifficulty",
         {
             "obstacle": "The current matching argument does not control the extra marker family, so it cannot prove the global packing bound.",
+            "delivered_instead": "A matching bound that excludes the extra marker family.",
         },
     )
     assert not result.is_error
@@ -59,9 +60,18 @@ def test_record_difficulty_appends_generator_reviser_and_reasoning_records(tmp_p
     reviser = ToolRegistry()
     register_difficulty_declaration_tool(reviser, declaration_path=declaration_path, role="reviser")
 
-    assert not reasoning.execute("RecordDifficulty", {"obstacle": "The reduction leaves an equality case with no exclusion argument."}).is_error
-    assert not generator.execute("RecordDifficulty", {"obstacle": "Without the marker-family lemma, the global packing bound remains unproved."}).is_error
-    assert not reviser.execute("RecordDifficulty", {"obstacle": "The verifier's global step cannot be repaired from the current hypotheses."}).is_error
+    assert not reasoning.execute("RecordDifficulty", {
+        "obstacle": "The reduction leaves an equality case with no exclusion argument.",
+        "delivered_instead": "A reduction to the equality case.",
+    }).is_error
+    assert not generator.execute("RecordDifficulty", {
+        "obstacle": "Without the marker-family lemma, the global packing bound remains unproved.",
+        "delivered_instead": "A conditional packing bound assuming the marker-family lemma.",
+    }).is_error
+    assert not reviser.execute("RecordDifficulty", {
+        "obstacle": "The verifier's global step cannot be repaired from the current hypotheses.",
+        "delivered_instead": "The conditional bound with its missing hypothesis made explicit.",
+    }).is_error
 
     declaration = load_difficulty_declaration(declaration_path)
     assert declaration is not None
@@ -109,8 +119,14 @@ def test_materialized_handoff_prefers_outer_obstacle_and_retains_reasoning_evide
     )
     generator = ToolRegistry()
     register_difficulty_declaration_tool(generator, declaration_path=declaration_path, role="generator")
-    assert not reasoning.execute("RecordDifficulty", {"obstacle": "The equality case is not excluded."}).is_error
-    assert not generator.execute("RecordDifficulty", {"obstacle": "The unresolved equality case prevents proving the global packing bound."}).is_error
+    assert not reasoning.execute("RecordDifficulty", {
+        "obstacle": "The equality case is not excluded.",
+        "delivered_instead": "A reduction to the equality case.",
+    }).is_error
+    assert not generator.execute("RecordDifficulty", {
+        "obstacle": "The unresolved equality case prevents proving the global packing bound.",
+        "delivered_instead": "A conditional packing bound excluding equality.",
+    }).is_error
     review = worker_dir / "review.md"
     review.write_text("Verdict: fail\nThe global packing step is absent.\n", encoding="utf-8")
 

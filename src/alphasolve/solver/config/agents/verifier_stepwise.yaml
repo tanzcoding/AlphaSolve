@@ -3,7 +3,6 @@ agent:
   name: verifier_stepwise
   system_prompt_path: ../../prompts/verifier_stepwise.md
   tier: balanced
-  max_turns: 80
   tools:
     - Read
     - ListDir

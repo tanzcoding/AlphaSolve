@@ -9,7 +9,7 @@
 包含子域：
 - solver.app / solver.orchestrator / solver.worker / solver.curator —— 编排核心
 - solver.subagent_service —— subagent 递归调用
-- solver.client_factory / solver.demo / solver.project / solver.solution / solver.workspace_access
+- solver.client_factory / solver.project / solver.solution / solver.workspace_access
 - solver.execution —— Python/Wolfram 执行 gateway + runners
 - solver.logging —— Logger / EventLogWriter / LogSession
 - solver.ui —— PropositionTeamRenderer / dashboard（多 agent 协同 UI）

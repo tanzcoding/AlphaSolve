@@ -1,7 +1,10 @@
 import json
+import concurrent.futures
 import threading
 import time
 from types import SimpleNamespace
+
+import pytest
 
 from alphasolve.agent import AgentConfig
 from alphasolve.solver import orchestrator as orchestrator_module
@@ -9,6 +12,7 @@ from alphasolve.solver import app as workflow_module
 from alphasolve.solver import AlphaSolve
 from alphasolve.solver.orchestrator import Orchestrator, WorkerManager, FREE_EXPLORATION_WORKER_HINT
 from alphasolve.solver.project import ProjectLayout
+from alphasolve.solver.progress_audit import ProgressAuditQueue
 from alphasolve.solver.orchestrator import OrchestratorRunResult
 from alphasolve.solver.worker import Worker, WorkerRunResult
 
@@ -173,7 +177,6 @@ def test_orchestrator_interrupt_uses_separate_worker_stop_event(tmp_path, monkey
                 name="orchestrator",
                 system_prompt="Stop immediately.",
                 tools=[],
-                max_turns=1,
             )
         },
         subagents={},
@@ -277,6 +280,93 @@ def test_task_output_returns_completed_result_and_remaining_active_snapshot(tmp_
         assert "current agent:" in payload["active_workers"][0]["progress"]
         assert "second branch" not in payload["active_workers"][0]["progress"]
     finally:
+        manager.close(timeout=0)
+
+
+@pytest.mark.parametrize("stop_source", ["run", "worker"])
+def test_task_output_stop_interrupts_wait_and_notifies_workers(tmp_path, monkeypatch, stop_source):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    manager.run_stop_event = threading.Event()
+    unfinished = concurrent.futures.Future()
+    manager.active[unfinished] = "waiting-worker"
+    waiting = threading.Event()
+    actual_wait = concurrent.futures.wait
+    result = {}
+
+    def observed_wait(*args, **kwargs):
+        waiting.set()
+        return actual_wait(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator_module.concurrent.futures, "wait", observed_wait)
+    waiter = threading.Thread(target=lambda: result.update(manager.wait(timeout_seconds=3600)))
+    try:
+        waiter.start()
+        assert waiting.wait(timeout=1)
+        stop_event = manager.run_stop_event if stop_source == "run" else manager.stop_event
+        stop_event.set()
+        waiter.join(timeout=1)
+
+        assert not waiter.is_alive()
+        assert manager.stop_event.is_set()
+        assert result["stopped"] is True
+        assert "timed_out" not in result
+        assert not unfinished.done()
+    finally:
+        manager.stop_event.set()
+        waiter.join(timeout=1)
+        manager.active.clear()
+        manager.close(timeout=0)
+
+
+def test_task_output_short_polls_preserve_configured_timeout(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    manager.default_wait_timeout_seconds = 0.01
+    manager.active[concurrent.futures.Future()] = "waiting-worker"
+    try:
+        result = manager.wait()
+
+        assert result["timed_out"] is True
+        assert result["timeout_seconds"] == 0.01
+        assert "stopped" not in result
+    finally:
+        manager.active.clear()
+        manager.close(timeout=0)
+
+
+def test_task_output_stop_interrupts_pending_audit_and_notifies_workers(tmp_path, monkeypatch):
+    manager = _manager(tmp_path, monkeypatch, max_workers=1)
+    manager.run_stop_event = threading.Event()
+    audit_queue = ProgressAuditQueue(
+        layout=manager.layout,
+        suite=object(),
+        client_factory=lambda _config: None,
+        stop_event=manager.run_stop_event,
+    )
+    manager.progress_audit_queue = audit_queue
+    manager._task_output_audit_checkpoints = ["pending-checkpoint"]
+    waiting = threading.Event()
+    actual_wait = audit_queue._decision_ready.wait
+    result = {}
+
+    def observed_wait(*args, **kwargs):
+        waiting.set()
+        return actual_wait(*args, **kwargs)
+
+    monkeypatch.setattr(audit_queue._decision_ready, "wait", observed_wait)
+    waiter = threading.Thread(target=lambda: result.update(manager.wait()))
+    try:
+        waiter.start()
+        assert waiting.wait(timeout=1)
+        manager.run_stop_event.set()
+        waiter.join(timeout=1)
+
+        assert not waiter.is_alive()
+        assert manager.stop_event.is_set()
+        assert result["process_audit_decisions"] == []
+        assert result["process_audit_decision_pending"] == ["pending-checkpoint"]
+    finally:
+        manager.run_stop_event.set()
+        waiter.join(timeout=1)
         manager.close(timeout=0)
 
 

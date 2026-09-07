@@ -12,7 +12,6 @@ from alphasolve.agent import (
     AgentRunResult,
     AgentConfig,
     Agent,
-    AgentContextPolicy,
     ToolRegistry,
     ToolResult,
 )
@@ -20,7 +19,6 @@ from alphasolve.agent.tools import register_agent_tool
 from alphasolve.solver.execution.runners import run_python, run_wolfram
 
 from .client_factory import ClientFactory
-from .context_policies import context_policy_for_subagent
 from .logging.event_log import compose_event_sinks
 from .tool_runtime import build_solver_tool_registry, clone_agent_config_with_tools, register_execution_tools
 from .workspace_access import RoleWorkspaceAccess
@@ -77,7 +75,6 @@ class SubagentService:
         curator_context_provider: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         log_session: "Any | None" = None,
         stop_event: threading.Event | None = None,
-        context_policy_factory: Callable[[str], AgentContextPolicy | None] | None = None,
         reviewer_history_path: "Path | None" = None,
         reviewer_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         call_guard: Callable[[str, int], None] | None = None,
@@ -94,12 +91,6 @@ class SubagentService:
         self.curator_context_provider = curator_context_provider
         self.log_session = log_session
         self.stop_event = stop_event
-        # 按 agent_type 返回 context_policy；默认用 context_policy_for_subagent。
-        # 调用方可传 None 完全禁用压缩，或传自定义 factory 覆盖默认行为。
-        self.context_policy_factory = (
-            context_policy_factory if context_policy_factory is not None
-            else context_policy_for_subagent
-        )
         # research_reviewer 跨调用记忆：每次 reviewer 返回后，把 final_answer 追加到此文件。
         # 下次 reviewer 启动时读这个文件，知道前几次 reviewer 推荐了什么、发现了什么。
         self.reviewer_history_path = reviewer_history_path
@@ -119,7 +110,7 @@ class SubagentService:
         return types
 
     def describe_type(self, agent_type: str) -> str:
-        """供第二层 register_agent_tool 用：返回 subagent 的 when_to_use 描述。
+        """供 register_agent_tool 用：返回 subagent 的 when_to_use 描述。
 
         与原 register_agent_tool 内部硬编码的查询逻辑一致：从 suite.subagents 拿
         config，返回 when_to_use（缺失时返回 agent_type 本身）。
@@ -380,10 +371,7 @@ class SubagentService:
         # 只返回对抗性证据，不写入 worker 的 difficulty_declaration。
         if self._is_reviewer_policy_delegate(agent_type):
             enabled_tools = [name for name in enabled_tools if name != "RecordDifficulty"]
-        # TODO(B-phase): 这段在 Python 里硬过滤 subagent 能用的文件/Agent 工具，
-        # 是 A 阶段 Task 8 之后第三层仅剩的运行时工具白名单逻辑。B 阶段会让
-        # extension API 用更通用的方式表达"按 file_access_factory / 递归 depth
-        # 决定的运行时工具开关"。参见 plan §8。
+        # 按文件访问模式和当前委派深度收紧工具列表，再交给 Codex 会话注册。
         if self.file_access_factory is not None:
             for name in ("Read", "ListDir", "Glob", "Grep"):
                 if name not in enabled_tools:
@@ -410,30 +398,25 @@ class SubagentService:
         if self.log_session is not None:
             parent = "orchestrator" if self.session_prefix.startswith("orchestrator") else "worker"
             token_sink = self.log_session.token_usage_sink(f"{parent}-subagent/{agent_type}")
-            # 统一运行日志：逐次调用明细（token + CoT + 输出），同样按父角色-subagent/类型归组。
+            # 统一运行日志：逐次调用明细（token + 可见推理摘要 + 输出），同样按父角色-subagent/类型归组。
             run_sink = self.log_session.run_log_sink(f"{parent}-subagent/{agent_type}")
             event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink)
         previous_reviewer_budget = getattr(self._reviewer_delegate_budget, "value", None)
         if agent_type == "research_reviewer":
             self._reviewer_delegate_budget.value = dict(self.REVIEWER_LIMITED_DELEGATE_LIMITS)
+        agent = None
         try:
-            # 按 agent_type 决定是否注入上下文压缩策略
-            context_policy = None
-            if self.context_policy_factory is not None:
-                try:
-                    context_policy = self.context_policy_factory(agent_type)
-                except Exception:
-                    context_policy = None
             agent = Agent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
                 event_sink=event_sink,
                 stop_event=self.stop_event,
-                context_policy=context_policy,
             )
             result = agent.run(prompt, description=description)
         finally:
+            if agent is not None:
+                agent.close()
             if agent_type == "research_reviewer":
                 if previous_reviewer_budget is None:
                     delattr(self._reviewer_delegate_budget, "value")

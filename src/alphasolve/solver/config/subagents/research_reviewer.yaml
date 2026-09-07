@@ -3,7 +3,6 @@ agent:
   name: research_reviewer
   system_prompt_path: ../../prompts/research_reviewer.md
   tier: balanced
-  max_turns: 40
   max_tokens: 8192
   when_to_use: After a cold-start worker batch or later evidence collection, compare verified propositions, worker results, handoffs, and the canonical frontier; produce route-level primary/challenger/supporting contracts with ordered evidence milestones, adversarially review them once, and perform at most one decision-critical bounded numerical check.
   tools:

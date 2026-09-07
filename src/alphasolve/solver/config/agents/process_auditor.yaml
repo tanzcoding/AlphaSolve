@@ -3,7 +3,6 @@ agent:
   name: process_auditor
   system_prompt_path: ../../prompts/process_auditor.md
   tier: balanced
-  max_turns: 40
   tools:
     - Read
     - ListDir

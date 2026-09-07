@@ -3,7 +3,6 @@ agent:
   name: numerical_experiment_subagent
   system_prompt_path: ../../prompts/numerical_experiment_subagent.md
   tier: cheap
-  max_turns: 80
   when_to_use: >
     Bounded exploration, branch checks, local numerical experiments, small-n exhaustive
     search, counterexample mining, invariant discovery, and constraint-gap quantification.
