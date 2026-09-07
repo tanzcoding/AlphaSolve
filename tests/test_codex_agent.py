@@ -314,3 +314,232 @@ def test_native_typed_failure_is_not_mistaken_for_success(monkeypatch):
     assert raised.value.failure_kind == 'quota'
     assert raised.value.fatal
     assert raised.value.trace[-1]['type'] == 'run_error'
+
+
+@pytest.mark.parametrize('role', ['orchestrator', 'worker', 'curator'])
+def test_native_items_reach_dashboard_and_logs_before_tool_returns(monkeypatch, tmp_path, role):
+    import io
+
+    from rich.console import Console
+
+    from alphasolve.solver.logging.event_log import EventLogWriter, compose_event_sinks
+    from alphasolve.solver.logging.run_log import RunLogWriter
+    from alphasolve.solver.ui.dashboard import (
+        make_curator_event_sink, make_orchestrator_event_sink, make_worker_event_sink,
+    )
+    from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
+
+    renderer = PropositionTeamRenderer(console=Console(file=io.StringIO(), force_terminal=False))
+    if role == 'worker':
+        renderer.register_worker('worker')
+        ui_sink = make_worker_event_sink(renderer, worker_id='worker', role='generator')
+        state = renderer._workers['worker']
+    elif role == 'curator':
+        ui_sink = make_curator_event_sink(renderer)
+        state = renderer._curator
+    else:
+        ui_sink = make_orchestrator_event_sink(renderer)
+        state = renderer._orchestrator
+    trace_path = tmp_path / 'agent.log'
+    run_path = tmp_path / 'run.log'
+    events = []
+    snapshots = []
+
+    def inspect_stream(event):
+        if event['type'] == 'thinking_delta':
+            snapshots.append(state.thinking_text)
+        events.append(event)
+
+    def inspect_tool(_):
+        # 工具执行前就应能看到已完成的说明和推理，不能等整个 turn 返回。
+        assert [item.text for item in state.timeline if item.type.name == 'CONTENT'] == ['checking now']
+        assert state.active_tool == 'Echo'
+        detail = trace_path.read_text(encoding='utf-8')
+        assert 'first step\n    boundary' in detail
+        assert 'checking now' in detail
+        assert '[tool] Echo' in detail
+        return ToolResult('checked')
+
+    request = ToolRequest({'tool': 'Echo', 'callId': 'echo', 'arguments': {}}, Future())
+    registry = ToolRegistry()
+    registry.register(name='Echo', description='Echo', parameters={'type': 'object'}, handler=inspect_tool)
+    final_item = ('item/completed', {'item': {
+        'type': 'agentMessage', 'id': 'm2', 'text': 'all done', 'phase': 'final_answer',
+    }})
+    session = Session(lambda _: [
+        ('item/reasoning/summaryTextDelta', {'itemId': 'r1', 'summaryIndex': 0, 'delta': 'first'}),
+        ('item/reasoning/summaryTextDelta', {'itemId': 'r1', 'summaryIndex': 0, 'delta': ' step'}),
+        ('item/reasoning/summaryTextDelta', {'itemId': 'r1', 'summaryIndex': 1, 'delta': 'boundary'}),
+        ('item/completed', {'item': {'type': 'reasoning', 'id': 'r1', 'summary': ['first step', 'boundary']}}),
+        ('item/agentMessage/delta', {'itemId': 'm1', 'delta': 'checking'}),
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'm1', 'text': 'checking now', 'phase': 'commentary'}}),
+        request,
+        ('item/completed', {'item': {'type': 'reasoning', 'id': 'r2', 'summary': [{'text': 'second step'}]}}),
+        final_item,
+        final_item,
+        ('thread/tokenUsage/updated', {'tokenUsage': {'total': {'inputTokens': 100, 'outputTokens': 20, 'cachedInputTokens': 5}}}),
+        ('turn/completed', {'turn': {'status': 'completed'}}),
+    ])
+    run_log = RunLogWriter(run_path, flush_interval=3600)
+    try:
+        with EventLogWriter(trace_path, scope=role) as log:
+            sink = compose_event_sinks(ui_sink, log, run_log.sink_for(role), inspect_stream)
+            with build(monkeypatch, session, registry=registry, tools=('Echo',), sink=sink) as agent:
+                result = agent.run('inspect events')
+    finally:
+        run_log.close()
+
+    assert result.final_answer == 'all done'
+    assert snapshots == ['first', 'first step', 'first step\nboundary', 'second step']
+    assert [item.text for item in state.timeline if item.type.name == 'CONTENT'] == ['checking now', 'all done']
+    assert len([item for item in state.timeline if item.type.name == 'THOUGHT']) == 2
+    assert request.response.result()['success'] is True
+    assert [event['content'] for event in result.trace if event['type'] == 'assistant_message'] == ['checking now', 'all done']
+    assert [event['content'] for event in result.trace if event['type'] == 'thinking'] == ['first step\nboundary', 'second step']
+    assert all(event['agent'] == 'role' for event in events)
+    assert all(event['caller_context']['parent_agent_id'] == 'parent' for event in events)
+    run_text = run_path.read_text(encoding='utf-8')
+    assert run_text.count('AGENT TURN │') == 1
+    for content in ('first step', 'boundary', 'second step', 'checking now', 'all done'):
+        assert run_text.count(content) == 1
+    assert 'in=100 out=20 cached=5' in run_text
+
+
+def test_native_streams_keep_separate_items_and_turns(monkeypatch):
+    events = []
+    session = Session(lambda n: [
+        ('item/agentMessage/delta', {'itemId': 'm1', 'delta': f'first {n}'}),
+        ('item/agentMessage/delta', {'itemId': 'm2', 'delta': f'second {n}'}),
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'm1', 'text': f'first {n}', 'phase': 'commentary'}}),
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'm2', 'text': f'second {n}', 'phase': 'final_answer'}}),
+        ('turn/completed', {'turn': {'status': 'completed'}}),
+    ])
+    with build(monkeypatch, session, sink=events.append) as agent:
+        assert agent.run('first').final_answer == 'second 1'
+        assert agent.run('second').final_answer == 'second 2'
+    deltas = [event for event in events if event['type'] == 'assistant_delta']
+    assert [event['content'] for event in deltas] == ['first 1', 'second 1', 'first 2', 'second 2']
+    assert [event['delta'] for event in deltas] == ['first 1', 'second 1', 'first 2', 'second 2']
+    assert [event['turn'] for event in deltas] == [1, 1, 2, 2]
+
+
+@pytest.mark.parametrize('finish', ['stopped', 'failed'])
+def test_partial_native_streams_survive_interruption(monkeypatch, tmp_path, finish):
+    from alphasolve.solver.logging.run_log import RunLogWriter
+
+    session = Session(lambda _: [
+        ('item/reasoning/summaryTextDelta', {'itemId': 'r1', 'summaryIndex': 0, 'delta': 'partial thought'}),
+        ('item/agentMessage/delta', {'itemId': 'm1', 'delta': 'partial answer'}),
+        ('turn/completed', {'turn': {'status': 'interrupted' if finish == 'stopped' else 'failed',
+                                   'error': {'message': 'network down'} if finish == 'failed' else None}}),
+    ])
+    path = tmp_path / 'run.log'
+    writer = RunLogWriter(path, flush_interval=3600)
+    try:
+        with build(monkeypatch, session, sink=writer.sink_for('worker')) as agent:
+            if finish == 'failed':
+                with pytest.raises(AgentRunError) as caught:
+                    agent.run('test partial')
+                trace = caught.value.trace
+            else:
+                trace = agent.run('test partial').trace
+    finally:
+        writer.close()
+    partials = [event for event in trace if event.get('partial')]
+    assert [event['content'] for event in partials] == ['partial thought', 'partial answer']
+    assert trace[-1]['type'] == ('run_stopped' if finish == 'stopped' else 'run_error')
+    text = path.read_text(encoding='utf-8')
+    assert text.count('partial thought') == 1
+    assert text.count('partial answer') == 1
+    assert text.count('AGENT TURN │') == 1
+
+
+@pytest.mark.parametrize('role', ['orchestrator', 'worker', 'curator'])
+@pytest.mark.parametrize('snapshot', ['corrected answer', ''])
+def test_completed_snapshot_preserves_other_items_and_empty_streams(monkeypatch, role, snapshot):
+    import io
+
+    from rich.console import Console
+
+    from alphasolve.solver.logging.event_log import compose_event_sinks
+    from alphasolve.solver.ui.dashboard import (
+        make_curator_event_sink, make_orchestrator_event_sink, make_worker_event_sink,
+    )
+    from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
+
+    renderer = PropositionTeamRenderer(console=Console(file=io.StringIO(), force_terminal=False))
+    if role == 'worker':
+        renderer.register_worker('worker')
+        sink = make_worker_event_sink(renderer, worker_id='worker', role='generator')
+        state = renderer._workers['worker']
+    elif role == 'curator':
+        sink = make_curator_event_sink(renderer)
+        state = renderer._curator
+    else:
+        sink = make_orchestrator_event_sink(renderer)
+        state = renderer._orchestrator
+    renderer.update_orchestrator_tool_start(module='parent', name='Agent', arg_preview='waiting')
+    snapshots = []
+
+    def observe(event):
+        if event['type'] == 'assistant_message' and event.get('item_id') == 'current':
+            snapshots.append((state.output_buffer, state.thinking_text, state.active_tool,
+                              [item.text for item in state.timeline if item.type.name == 'CONTENT']))
+
+    session = Session(lambda _: [
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'previous', 'text': 'earlier', 'phase': 'commentary'}}),
+        ('item/reasoning/summaryTextDelta', {'itemId': 'r1', 'summaryIndex': 0, 'delta': 'kept thought'}),
+        ('item/completed', {'item': {'type': 'reasoning', 'id': 'r1', 'summary': []}}),
+        ('item/reasoning/summaryTextDelta', {'itemId': 'r2', 'summaryIndex': 0, 'delta': 'still thinking'}),
+        ('item/agentMessage/delta', {'itemId': 'current', 'delta': 'old answer'}),
+        ('item/agentMessage/delta', {'itemId': 'neighbor', 'delta': 'neighbor'}),
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'current', 'text': snapshot, 'phase': 'commentary'}}),
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'neighbor', 'text': '', 'phase': 'final_answer'}}),
+        ('item/completed', {'item': {'type': 'reasoning', 'id': 'r2', 'summary': []}}),
+        ('turn/completed', {'turn': {'status': 'completed'}}),
+    ])
+    with build(monkeypatch, session, sink=compose_event_sinks(sink, observe)) as agent:
+        result = agent.run('test snapshots')
+
+    answer = snapshot or 'old answer'
+    assert len(snapshots) == 1
+    buffer, thought, active_tool, timeline = snapshots[0]
+    assert buffer == 'neighbor'
+    assert thought == 'still thinking'
+    assert timeline == ['earlier', answer]
+    if role == 'orchestrator':
+        assert active_tool == 'Agent'
+    else:
+        assert renderer._orchestrator.active_tool == 'Agent'
+        assert renderer._orchestrator.status == 'tool'
+    assert [item.text for item in state.timeline if item.type.name == 'CONTENT'] == ['earlier', answer, 'neighbor']
+    assert state.output_buffer == ''
+    assert state.thinking_text == ''
+    assert [event['content'] for event in result.trace if event['type'] == 'thinking'] == ['kept thought', 'still thinking']
+    assert [event['content'] for event in result.trace if event['type'] == 'codex_message'] == ['earlier', answer, 'neighbor']
+    assert [message.content for message in result.messages if message.role == 'assistant'] == ['earlier', answer, 'neighbor']
+    assert result.final_answer == 'neighbor'
+
+
+@pytest.mark.parametrize('completed_text', ['partial answer', 'corrected answer'])
+def test_anonymous_deltas_match_named_completion_without_repeating(monkeypatch, completed_text):
+    import io
+
+    from rich.console import Console
+
+    from alphasolve.solver.ui.dashboard import make_worker_event_sink
+    from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
+
+    renderer = PropositionTeamRenderer(console=Console(file=io.StringIO(), force_terminal=False))
+    sink = make_worker_event_sink(renderer, worker_id='worker', role='generator')
+    session = Session(lambda _: [
+        ('item/agentMessage/delta', {'delta': 'partial'}),
+        ('item/completed', {'item': {'type': 'agentMessage', 'id': 'named', 'text': completed_text, 'phase': 'final_answer'}}),
+        ('turn/completed', {'turn': {'status': 'completed'}}),
+    ])
+    with build(monkeypatch, session, sink=sink) as agent:
+        result = agent.run('anonymous source')
+    state = renderer._workers['worker']
+    assert [item.text for item in state.timeline if item.type.name == 'CONTENT'] == [completed_text]
+    assert state.output_buffer == ''
+    assert result.final_answer == completed_text

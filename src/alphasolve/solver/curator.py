@@ -235,6 +235,7 @@ class CuratorQueue:
             max_depth=1,
             execution_gateway=self.execution_gateway,
             session_prefix="curator",
+            event_sink=make_curator_event_sink(self.renderer),
             log_session=self.log_session,
             stop_event=self.stop_event,
             file_access_factory=lambda: RoleWorkspaceAccess.curator_subagent(

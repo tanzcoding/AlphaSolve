@@ -10,13 +10,67 @@ from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
 AgentEventHandler = Callable[[dict[str, Any]], None]
 
 
+class _AssistantOutput:
+    """按原生项结束正文；修正快照时只重建尚未刷入时间线的正文。"""
+
+    def __init__(self, append: Callable[[str], None], flush: Callable[[], None],
+                 reset: Callable[[int], None]) -> None:
+        self.append = append
+        self.flush = flush
+        self.reset = reset
+        self.chunks: list[tuple[str | None, str]] = []
+
+    def __call__(self, event: dict[str, Any]) -> bool:
+        kind = event.get("type")
+        if kind in {"run_start", "run_finish", "model_retry"}:
+            self.chunks.clear()
+        if kind == "assistant_delta":
+            delta = str(event.get("delta") or "")
+            if delta:
+                self.chunks.append((event.get("item_id"), delta))
+                self.append(delta)
+            return True
+        if kind != "assistant_message":
+            return False
+        content = str(event.get("content") or "")
+        if "item_id" not in event:
+            # 旧事件源没有项标识，保持原来的追加与完成约定。
+            if content and not event.get("streamed_content"):
+                self.append(content)
+            if event.get("streamed_content"):
+                self.flush()
+                self.chunks.clear()
+            return True
+        item_id = event.get("stream_item_id", event.get("item_id"))
+        remaining = [(key, text) for key, text in self.chunks if key != item_id]
+        if event.get("replace_content") is not None or remaining:
+            # 仅撤回本 sink 记录的未完成正文；其他项随后原样恢复，不清推理或父调用。
+            self.reset(sum(len(text) for _, text in self.chunks))
+            self.append(content)
+            self.flush()
+            for _, text in remaining:
+                self.append(text)
+        else:
+            if content and not event.get("streamed_content"):
+                self.append(content)
+            self.flush()
+        self.chunks = remaining
+        return True
+
+
 def make_orchestrator_event_sink(renderer: PropositionTeamRenderer | None) -> AgentEventHandler | None:
     if renderer is None:
         return None
+    output = _AssistantOutput(renderer.append_orchestrator_output, renderer.flush_orchestrator_output,
+                              lambda chars: renderer.reset_orchestrator_stream(content_chars=chars))
 
     def sink(event: dict[str, Any]) -> None:
+        if output(event):
+            return
         event_type = event.get("type")
-        if event_type == "run_start":
+        if event_type == "subagent_event":
+            _show_subagent_event(renderer, event, parent="orchestrator")
+        elif event_type == "run_start":
             renderer.update_orchestrator_phase("orchestrator", status="running")
             renderer.log(None, "orchestrator started", module="orchestrator")
         elif event_type == "model_request":
@@ -41,16 +95,6 @@ def make_orchestrator_event_sink(renderer: PropositionTeamRenderer | None) -> Ag
                 if not event.get("streamed"):
                     renderer.update_orchestrator_thinking(module="orchestrator", thinking_text=content, elapsed=0)
                 renderer.finish_orchestrator_thinking(module="orchestrator", elapsed=float(event.get("elapsed") or 0), char_count=len(content))
-        elif event_type == "assistant_delta":
-            delta = str(event.get("delta") or "")
-            if delta:
-                renderer.append_orchestrator_output(delta)
-        elif event_type == "assistant_message":
-            content = str(event.get("content") or "")
-            if content and not event.get("streamed_content"):
-                renderer.append_orchestrator_output(content)
-            if event.get("streamed_content"):
-                renderer.flush_orchestrator_output()
         elif event_type == "tool_call":
             renderer.update_orchestrator_tool_start(
                 module="orchestrator",
@@ -79,10 +123,16 @@ def make_orchestrator_event_sink(renderer: PropositionTeamRenderer | None) -> Ag
 def make_curator_event_sink(renderer: PropositionTeamRenderer | None) -> AgentEventHandler | None:
     if renderer is None:
         return None
+    output = _AssistantOutput(renderer.append_curator_output, renderer.flush_curator_output,
+                              lambda chars: renderer.reset_curator_stream(content_chars=chars))
 
     def sink(event: dict[str, Any]) -> None:
+        if output(event):
+            return
         event_type = event.get("type")
-        if event_type == "run_start":
+        if event_type == "subagent_event":
+            _show_subagent_event(renderer, event, parent="curator")
+        elif event_type == "run_start":
             renderer.update_curator_phase("curator", status="running")
             renderer.log_curator("curator started", module="curator")
         elif event_type == "model_request":
@@ -111,16 +161,6 @@ def make_curator_event_sink(renderer: PropositionTeamRenderer | None) -> AgentEv
                     elapsed=float(event.get("elapsed") or 0),
                     char_count=len(content),
                 )
-        elif event_type == "assistant_delta":
-            delta = str(event.get("delta") or "")
-            if delta:
-                renderer.append_curator_output(delta)
-        elif event_type == "assistant_message":
-            content = str(event.get("content") or "")
-            if content and not event.get("streamed_content"):
-                renderer.append_curator_output(content)
-            if event.get("streamed_content"):
-                renderer.flush_curator_output()
         elif event_type == "tool_call":
             renderer.update_curator_tool_start(
                 module="curator",
@@ -151,10 +191,17 @@ def make_worker_event_sink(
 ) -> AgentEventHandler | None:
     if renderer is None:
         return None
+    output = _AssistantOutput(lambda text: renderer.append_output(worker_id, text),
+                              lambda: renderer.flush_output(worker_id),
+                              lambda chars: renderer.reset_stream(worker_id, content_chars=chars))
 
     def sink(event: dict[str, Any]) -> None:
+        if output(event):
+            return
         event_type = event.get("type")
-        if event_type == "run_start":
+        if event_type == "subagent_event":
+            _show_subagent_event(renderer, event, parent="worker", worker_id=worker_id)
+        elif event_type == "run_start":
             renderer.update_phase(worker_id, role, status="running")
             renderer.log(worker_id, f"{role} started", module=role)
         elif event_type == "model_request":
@@ -182,16 +229,6 @@ def make_worker_event_sink(
                 if not event.get("streamed"):
                     renderer.update_thinking(worker_id, module=role, thinking_text=content, elapsed=0)
                 renderer.finish_thinking(worker_id, module=role, elapsed=float(event.get("elapsed") or 0), char_count=len(content))
-        elif event_type == "assistant_delta":
-            delta = str(event.get("delta") or "")
-            if delta:
-                renderer.append_output(worker_id, delta)
-        elif event_type == "assistant_message":
-            content = str(event.get("content") or "")
-            if content and not event.get("streamed_content"):
-                renderer.append_output(worker_id, content)
-            if event.get("streamed_content"):
-                renderer.flush_output(worker_id)
         elif event_type == "tool_call":
             renderer.update_tool_start(
                 worker_id,
@@ -213,6 +250,61 @@ def make_worker_event_sink(
             renderer.log(worker_id, _event_error(event), module=role, level="ERROR")
 
     return sink
+
+
+def _show_subagent_event(
+    renderer: PropositionTeamRenderer,
+    envelope: dict[str, Any],
+    *,
+    parent: str,
+    worker_id: str | None = None,
+) -> None:
+    """仅转发可见活动；子调用的完成不能结束父角色的等待。"""
+    event = envelope.get("event") or {}
+    kind = event.get("type")
+    status = "running"
+    append = finished = record = False
+    if kind == "run_start":
+        text = "started " + _shorten(str(event.get("description") or ""), 160)
+        record = True
+    elif kind == "model_request":
+        status, text = "thinking", ""
+    elif kind == "thinking_delta":
+        status = "thinking"
+        text = str(event.get("content") or event.get("delta") or "")
+        append = "content" not in event
+    elif kind == "assistant_delta":
+        status, text, append = "writing", str(event.get("delta") or ""), True
+    elif kind in {"thinking", "assistant_message"}:
+        status = "thinking" if kind == "thinking" else "writing"
+        text = str(event.get("content") or "")
+    elif kind == "tool_call":
+        status = "tool"
+        text = f"Using {event.get('name') or ''}  {_event_args_preview(event)}"
+    elif kind == "tool_result":
+        status = "failed" if event.get("is_error") else "running"
+        marker = "✗" if event.get("is_error") else "✓"
+        text = f"{marker} {event.get('name') or ''}"
+        if event.get("is_error"):
+            text += " " + _content_preview(event)
+        record = True
+    elif kind in {"run_finish", "run_error", "run_stopped"}:
+        status = {"run_finish": "complete", "run_error": "failed", "run_stopped": "cancelled"}[kind]
+        text = _event_error(event) if kind == "run_error" else status
+        finished = record = True
+    else:
+        return
+    renderer.update_subagent_activity(
+        parent=parent,
+        worker_id=worker_id,
+        session_id=str(envelope.get("session_id") or ""),
+        name=str(envelope.get("agent_type") or "subagent"),
+        status=status,
+        text=text,
+        append=append,
+        finished=finished,
+        record=record,
+    )
 
 
 def _event_args_preview(event: dict[str, Any]) -> str:

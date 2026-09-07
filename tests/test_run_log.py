@@ -178,3 +178,19 @@ def test_interrupted_output_without_usage_is_preserved(tmp_path: Path):
     writer.close()
 
     assert "已经写入部分推导。" in path.read_text(encoding="utf-8")
+
+
+def test_tool_only_native_turn_retains_tool_count(tmp_path: Path):
+    """原生 turn 没有正文时，直接从工具事件保留调用次数。"""
+    path = tmp_path / "run.log"
+    writer = RunLogWriter(path, flush_interval=3600)
+    sink = writer.sink_for("worker")
+    sink({"type": "tool_call", "agent": "generator", "turn": 1, "name": "Read", "tool_call_id": "r"})
+    sink({"type": "tool_call", "agent": "generator", "turn": 1, "name": "Finish", "tool_call_id": "f"})
+    sink(_usage(1, agent="generator", inp=80, out=10))
+    sink({"type": "run_finish", "turn": 1, "reason": "tool_requested_stop"})
+    writer.close()
+
+    text = path.read_text(encoding="utf-8")
+    assert text.count("AGENT TURN │") == 1
+    assert "<2 tool call(s), no text>" in text

@@ -151,16 +151,23 @@ class RunLogWriter:
             elif etype == "thinking":
                 turn = int(event.get("turn") or 0)
                 call = pending.setdefault(turn, _PendingCall())
-                call.reasoning = str(event.get("content") or "")
+                content = str(event.get("content") or "")
+                call.reasoning = "\n".join(part for part in (call.reasoning, content) if part)
             elif etype == "assistant_message":
                 turn = int(event.get("turn") or 0)
                 call = pending.setdefault(turn, _PendingCall(agent=str(event.get("agent") or "")))
-                call.output = str(event.get("content") or "")
-                call.tool_call_count = int(event.get("tool_call_count") or 0)
+                content = str(event.get("content") or "")
+                # 同一次原生 turn 可以在工具前后完成多条消息，应按顺序保留每一项。
+                call.output = "\n\n".join(part for part in (call.output, content) if part)
+                call.tool_call_count = max(call.tool_call_count, int(event.get("tool_call_count") or 0))
                 call.assistant_seen = True
                 if call.usage_seen:
                     pending.pop(turn)
                     self._record_call(label=label, turn=turn, call=call)
+            elif etype == "tool_call":
+                turn = int(event.get("turn") or 0)
+                call = pending.setdefault(turn, _PendingCall(agent=str(event.get("agent") or "")))
+                call.tool_call_count += 1
             elif etype in ("run_finish", "run_error", "run_stopped"):
                 # 兜底：把该 agent 未随 assistant_message 落盘的残留 pending 冲刷掉。
                 for turn in sorted(pending):

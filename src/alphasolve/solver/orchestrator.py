@@ -942,6 +942,29 @@ class Orchestrator:
             # The state file is operator-facing telemetry; it must not interrupt solving.
             pass
 
+    def _show_cold_start_progress(self, stage: str, completed: int, total: int) -> None:
+        """展示初始证据批次的进度，不参与调度或停止决策。"""
+        if self.renderer is None:
+            return
+        count = f"{completed}/{total}"
+        if stage == "waiting":
+            phase, status = f"cold start {count}", "waiting"
+            message = (
+                f"initial workers finished {count}; "
+                "waiting for initial worker evidence before starting orchestrator"
+            )
+        elif stage == "completed":
+            phase, status = f"cold start complete {count}", "running"
+            message = f"initial workers finished {count}; starting orchestrator"
+        elif stage == "interrupted":
+            phase, status = f"cold start interrupted {count}", "stopped"
+            message = f"initial worker collection interrupted; workers finished {count}"
+        else:
+            phase, status = f"cold start incomplete {count}", "running"
+            message = f"initial worker collection ended at {count}; continuing with available evidence"
+        self.renderer.update_orchestrator_phase(phase, status=status)
+        self.renderer.log(None, message, module="cold start")
+
     def run(self) -> OrchestratorRunResult:
         append_curation_event(
             self.layout,
@@ -1001,7 +1024,10 @@ class Orchestrator:
             # Bootstrap has no prior portfolio for the reviewer to compare. Preserve the
             # bounded runtime evidence batch, then hand its outcomes to the reviewer for
             # every subsequent route-level reflection or pivot.
-            self._startup_evidence = self.cold_start_runtime.prepare(manager)
+            self._startup_evidence = self.cold_start_runtime.prepare(
+                manager,
+                progress_callback=self._show_cold_start_progress,
+            )
             self._refresh_research_frontier_state(manager)
             result = None
             error_final_answer = ""
@@ -1017,6 +1043,7 @@ class Orchestrator:
                 execution_gateway=self.execution_gateway,
                 session_prefix="orchestrator",
                 allow_research_reviewer=True,
+                event_sink=make_orchestrator_event_sink(self.renderer),
                 log_session=self.log_session,
                 file_access_factory=lambda: RoleWorkspaceAccess.orchestrator_subagent(
                     Workspace(self.layout.workspace_dir)

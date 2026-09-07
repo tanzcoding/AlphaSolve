@@ -71,19 +71,62 @@ class Agent:
         trace: list[dict[str, Any]] = []
         messages = [Message(role="system", content=self.config.system_prompt), Message(role="user", content=task)]
         self.last_trace = trace
-        texts: list[str] = []
-        reasoning: list[str] = []
-        calls: list[ToolCall] = []
         final_answer = ""
         usage = dict(self._usage_total)
         flushed = False
-        streamed_text = False
-        streamed_reasoning = False
+        visible_streams: dict[tuple[str, str | None], dict[int, str]] = {}
+        completed_items: set[tuple[str, str]] = set()
 
         def record(kind: str, **values: Any) -> None:
             event = {"type": kind, "agent": self.config.name, "turn": turn, **values}
             trace.append(event)
             self._emit(event)
+
+        def stream_content(parts: dict[int, str]) -> str:
+            return "\n".join(parts[index] for index in sorted(parts))
+
+        def completed_content(kind: str, content: str, item_id: str | None) -> str:
+            if content:
+                return content
+            parts = visible_streams.get((kind, item_id))
+            if parts is None:
+                parts = visible_streams.get((kind, None), {})
+            # 完成通知可能省略正文；已收到的可见增量仍属于这一项。
+            return stream_content(parts)
+
+        def emit_delta(kind: str, *, content: str, delta: str, item_id: str | None) -> None:
+            if delta:
+                self._emit({"type": kind + "_delta", "agent": self.config.name, "turn": turn,
+                            "content": content, "delta": delta, "item_id": item_id,
+                            "elapsed": time.monotonic() - started})
+
+        def finish_visible(kind: str, content: str, item_id: str | None, *, partial: bool = False) -> None:
+            stream_item_id = item_id
+            parts = visible_streams.pop((kind, item_id), None)
+            if parts is None:
+                # 兼容没有 itemId 的事件源；原生会话仍按各自的 item 隔离增量。
+                parts = visible_streams.pop((kind, None), None)
+                if parts is not None:
+                    stream_item_id = None
+                else:
+                    parts = {}
+            streamed = stream_content(parts)
+            if content.startswith(streamed):
+                # 某些项只发送完成事件，或只发送部分增量；补齐正文后再结束这一项。
+                emit_delta(kind, content=content, delta=content[len(streamed):], item_id=stream_item_id)
+                delivered = True
+            else:
+                delivered = False
+            if kind == "thinking":
+                if content:
+                    record("thinking", content=content, streamed=delivered, item_id=item_id,
+                           partial=partial, elapsed=time.monotonic() - started)
+            else:
+                record("assistant_message", content=content, tool_call_count=0,
+                       streamed_content=delivered, item_id=item_id, partial=partial,
+                       stream_item_id=stream_item_id,
+                       replace_content=streamed if not delivered else None,
+                       raw={"role": "assistant", "content": content})
 
         def flush() -> None:
             nonlocal flushed
@@ -91,10 +134,9 @@ class Agent:
                 return
             flushed = True
             elapsed = time.monotonic() - started
-            if reasoning:
-                record("thinking", content="\n".join(reasoning), elapsed=elapsed, streamed=streamed_reasoning)
-            record("assistant_message", content="\n\n".join(texts), tool_call_count=len(calls),
-                   streamed_content=streamed_text, raw={"role": "assistant", "content": "\n\n".join(texts)})
+            # 异常或中断时保留已经可见的片段，不重复发送已经完成的项。
+            for (kind, item_id), parts in list(visible_streams.items()):
+                finish_visible(kind, stream_content(parts), item_id, partial=True)
             record("usage", input_tokens=max(0, usage.get("inputTokens", 0) - self._usage_total["inputTokens"]),
                    output_tokens=max(0, usage.get("outputTokens", 0) - self._usage_total["outputTokens"]),
                    cached_tokens=max(0, usage.get("cachedInputTokens", 0) - self._usage_total["cachedInputTokens"]), elapsed=elapsed)
@@ -136,7 +178,6 @@ class Agent:
                             args = None
                     record("tool_call", name=name, tool_call_id=call_id, arguments=args)
                     call = ToolCall(id=call_id, name=name, args=args if isinstance(args, dict) else {})
-                    calls.append(call)
                     messages.append(Message(role="assistant", tool_calls=(call,)))
                     if not isinstance(args, dict):
                         result = ToolResult("Tool arguments must be a JSON object; please retry.", is_error=True)
@@ -160,27 +201,40 @@ class Agent:
                     raise data["error"]
                 if method == "thread/tokenUsage/updated":
                     usage = data["tokenUsage"]["total"]
-                elif method == "item/agentMessage/delta":
-                    streamed_text = True
-                    self._emit({"type": "assistant_delta", "turn": turn, "delta": data.get("delta", "")})
-                elif method == "item/reasoning/summaryTextDelta":
-                    streamed_reasoning = True
-                    self._emit({"type": "thinking_delta", "turn": turn, "delta": data.get("delta", "")})
+                elif method in {"item/agentMessage/delta", "item/reasoning/summaryTextDelta"}:
+                    kind = "assistant" if method == "item/agentMessage/delta" else "thinking"
+                    item_id = data.get("itemId")
+                    if item_id is not None and (kind, item_id) in completed_items:
+                        continue
+                    parts = visible_streams.setdefault((kind, item_id), {})
+                    before = stream_content(parts)
+                    index = int(data.get("summaryIndex") or 0) if kind == "thinking" else 0
+                    parts[index] = parts.get(index, "") + data.get("delta", "")
+                    content = stream_content(parts)
+                    delta = content[len(before):] if content.startswith(before) else data.get("delta", "")
+                    emit_delta(kind, content=content, delta=delta, item_id=item_id)
                 elif method == "item/completed":
                     item = data["item"]
+                    item_id = item.get("id")
+                    kind = {"agentMessage": "assistant", "reasoning": "thinking"}.get(item["type"])
+                    if kind is not None and item_id is not None:
+                        if (kind, item_id) in completed_items:
+                            continue
+                        completed_items.add((kind, item_id))
                     if item["type"] == "agentMessage":
-                        text = item.get("text", "")
-                        texts.append(text)
+                        text = completed_content("assistant", item.get("text", ""), item_id)
                         messages.append(Message(role="assistant", content=text))
-                        record("codex_message", content=text, phase=item.get("phase"), item_id=item.get("id"))
+                        record("codex_message", content=text, phase=item.get("phase"), item_id=item_id)
+                        finish_visible("assistant", text, item_id)
                         if item.get("phase") != "commentary":
                             final_answer = text
                     elif item["type"] == "reasoning":
                         summary = item.get("summary", [])
                         parts = [part if isinstance(part, str) else part.get("text", "") for part in summary]
-                        reasoning.extend(parts)
-                        if parts:
-                            record("visible_reasoning", content="\n".join(parts), item_id=item.get("id"))
+                        content = completed_content("thinking", "\n".join(parts), item_id)
+                        if content:
+                            record("visible_reasoning", content=content, item_id=item_id)
+                        finish_visible("thinking", content, item_id)
                     elif item["type"] == "contextCompaction":
                         record("context_compacted")
                 elif method == "thread/compacted":

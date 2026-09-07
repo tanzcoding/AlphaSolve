@@ -79,6 +79,7 @@ class SubagentService:
         reviewer_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         call_guard: Callable[[str, int], None] | None = None,
         allow_research_reviewer: bool = False,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.suite = suite
         self.client_factory = client_factory
@@ -91,6 +92,7 @@ class SubagentService:
         self.curator_context_provider = curator_context_provider
         self.log_session = log_session
         self.stop_event = stop_event
+        self.event_sink = event_sink
         # research_reviewer 跨调用记忆：每次 reviewer 返回后，把 final_answer 追加到此文件。
         # 下次 reviewer 启动时读这个文件，知道前几次 reviewer 推荐了什么、发现了什么。
         self.reviewer_history_path = reviewer_history_path
@@ -394,13 +396,23 @@ class SubagentService:
             config = clone_agent_config_with_tools(config, enabled_tools)
         subagent_sink = self.log_session.create_subagent_sink(agent_type) if self.log_session is not None else None
         # R2：把该 subagent 的 token 用量计入共享聚合器，按“父角色-subagent/类型”归组。
-        event_sink = subagent_sink
+        def relay_event(event: dict[str, Any]) -> None:
+            # 子调用保留独立身份，避免覆盖父 agent 正在等待的 Agent 工具状态。
+            if self.event_sink is not None:
+                self.event_sink({
+                    "type": "subagent_event",
+                    "session_id": session_id,
+                    "agent_type": agent_type,
+                    "event": event,
+                })
+
+        event_sink = compose_event_sinks(subagent_sink, relay_event)
         if self.log_session is not None:
             parent = "orchestrator" if self.session_prefix.startswith("orchestrator") else "worker"
             token_sink = self.log_session.token_usage_sink(f"{parent}-subagent/{agent_type}")
             # 统一运行日志：逐次调用明细（token + 可见推理摘要 + 输出），同样按父角色-subagent/类型归组。
             run_sink = self.log_session.run_log_sink(f"{parent}-subagent/{agent_type}")
-            event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink)
+            event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink, relay_event)
         previous_reviewer_budget = getattr(self._reviewer_delegate_budget, "value", None)
         if agent_type == "research_reviewer":
             self._reviewer_delegate_budget.value = dict(self.REVIEWER_LIMITED_DELEGATE_LIMITS)

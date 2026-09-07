@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -168,3 +168,27 @@ def test_role_exposes_underlying_agent_for_tests(role_ctx):
     role = Role.for_generator(role_ctx)
     assert isinstance(role.agent, Agent)
     assert role.agent.config.name == "generator"
+
+
+def test_role_forwards_delegated_events_with_independent_identity(role_ctx):
+    events = []
+    role_ctx.event_sink_factory = lambda _label: events.append
+    role_ctx.suite.agents["generator"] = replace(role_ctx.suite.agents["generator"], tools=("Agent",))
+    role_ctx.suite.subagents["reasoning_subagent"] = AgentConfig(
+        name="reasoning_subagent", system_prompt="Check the claim.", tools=(),
+    )
+    role = Role.for_generator(role_ctx)
+    result = role.agent.tool_registry.execute(
+        "Agent",
+        {"type": "reasoning_subagent", "description": "Check claim", "prompt": "Check the boundary."},
+        enabled=["Agent"],
+    )
+
+    assert not result.is_error
+    delegated = [event for event in events if event["type"] == "subagent_event"]
+    assert delegated
+    assert len({event["session_id"] for event in delegated}) == 1
+    assert {event["agent_type"] for event in delegated} == {"reasoning_subagent"}
+    assert delegated[0]["event"]["type"] == "run_start"
+    assert delegated[-1]["event"]["type"] == "run_finish"
+    assert not any(event["type"] == "run_finish" for event in events)

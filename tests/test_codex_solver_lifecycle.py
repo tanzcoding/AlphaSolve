@@ -133,7 +133,7 @@ def test_orchestrator_quota_error_stops_workers_and_closes_session(tmp_path, mon
         layout=layout, suite=suite, client_factory=lambda _config: None,
         stop_event=stop_event,
         cold_start_runtime=SimpleNamespace(
-            prepare=lambda _manager: [], context_for_orchestrator=lambda: "",
+            prepare=lambda _manager, **_kwargs: [], context_for_orchestrator=lambda: "",
         ),
     )
     result = orchestrator.run()

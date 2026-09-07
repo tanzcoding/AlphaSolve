@@ -269,6 +269,7 @@ def _assemble_agent(
     event_sink = ctx.event_sink_factory(event_sink_label)
     if event_sink_decorator is not None:
         event_sink = event_sink_decorator(event_sink)
+    subagents.event_sink = event_sink
     return Agent(
         config=config,
         client=ctx.client_factory(config),
