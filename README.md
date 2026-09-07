@@ -74,19 +74,41 @@ Worker 和 subagent 在研究过程中产生的大量推理轨迹、失败比较
 
 > 本节面向没有编程经验的数学工作者和数学系学生，跟着做就行。
 
-### 1. 安装当前版本
+### 1. 安装 Codex CLI
 
-需要 Python 3.10 或更高版本。在已检出的 AlphaSolve 源码目录运行：
+Windows 请在 PowerShell 中运行 OpenAI Codex README 给出的独立安装命令：
 
-```bash
-python -m pip install -e .
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-也可以用 `uv tool install -e .` 安装独立的命令行工具。当前开发分支应从本地源码安装，远程 `main` 的安装脚本不会包含尚未合并的改动。
+macOS 或 Linux：
 
-AlphaSolve 固定依赖 **`openai-codex==0.147.0`**。官方 Python SDK 携带同版本的 Codex CLI 运行时，由 AlphaSolve 启动 App Server；模型与工具循环、认证和上下文压缩都由 Codex 管理。无需另外安装 Node.js 来运行 AlphaSolve。[官方 SDK 文档](https://learn.chatgpt.com/docs/codex-sdk)
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
 
-### 2. 使用 ChatGPT 订阅登录
+也可以选用 `npm install -g @openai/codex`，macOS 还可用 `brew install --cask codex`。安装或更新后确认：
+
+```bash
+codex --version
+```
+
+AlphaSolve 会自动使用 PATH 中不低于 0.153.4 的 Codex CLI 稳定版；若版本更低或是预发布版，请重新运行对应安装命令更新。命令来源见 [OpenAI Codex 官方 README](https://github.com/openai/codex#installing-and-running-codex-cli)。
+
+### 2. 安装当前版本
+
+需要 Python 3.10 或更高版本。推荐先[安装 uv](https://docs.astral.sh/uv/getting-started/installation/)，再在已检出的 AlphaSolve 源码目录运行：
+
+```bash
+uv tool install -e .
+```
+
+这会把 AlphaSolve 安装为独立的命令行工具；如果终端还找不到 `alphasolve`，运行 `uv tool update-shell` 后重新打开终端。当前开发分支应从本地源码安装，远程 `main` 不包含尚未合并的改动。pip/pipx 和开发虚拟环境的替代命令见[从源码安装](#从源码安装)。
+
+AlphaSolve 固定依赖可发布的 **`openai-codex==0.147.0`** Python SDK。运行时会优先复用 PATH 中版本不低于当前兼容基线 0.153.4 的独立 `codex` CLI，以获得较新的模型和配置格式支持；找不到兼容版本时再回退到 SDK 严格配套的 0.147.0 运行时。当前已验证 SDK 0.147.0 客户端可与 `codex-cli 0.153.4` 完成初始化、模型查询和线程创建。App Server、模型与工具循环、认证和上下文压缩仍由 Codex 管理。[官方 SDK 文档](https://learn.chatgpt.com/docs/codex-sdk)
+
+### 3. 使用 ChatGPT 订阅登录
 
 默认所有角色都使用 ChatGPT 订阅，不需要设置 `OPENAI_API_KEY`。先通过 Codex CLI 完成登录：
 
@@ -97,15 +119,11 @@ codex login status
 
 登录时选择 ChatGPT 账号。若当前账号已经在 Codex CLI 中登录，可以复用登录状态。只有浏览器里的 ChatGPT 登录不等于已完成 Codex CLI 登录。[官方认证说明](https://learn.chatgpt.com/docs/auth)
 
-Python SDK 不会向 PATH 添加 `codex` 命令。没有独立 CLI 时，可以按[官方 CLI 安装说明](https://learn.chatgpt.com/docs/codex/cli)安装；也可以在安装 AlphaSolve 的 Python 环境中直接调用 SDK 携带的程序：
-
-```bash
-python -c "import subprocess; from codex_cli_bin import bundled_codex_path; subprocess.run([str(bundled_codex_path()), 'login'], check=True)"
-```
+也可以用 `ALPHASOLVE_CODEX_BIN` 指定明确的 CLI 路径；路径无效、版本低于 0.153.4 或是预发布版时会直接报配置错误。未指定该变量且 PATH 中没有兼容版本时，AlphaSolve 才回退到 SDK 严格配套的 0.147.0 运行时。SDK 内部运行时不是通用的 PATH 安装方式，因此请使用第 1 步的独立 CLI 完成登录。
 
 订阅额度耗尽或登录失效时，AlphaSolve 不会自动切换到按量 API。Orchestrator 或 Curator 无法继续时，整次运行停止并保留已完成结果；普通子代理失败作为工具错误交回调用者。
 
-### 3. 写一个数学问题
+### 4. 写一个数学问题
 
 1. 新建一个空白文件夹（比如桌面上的 `my_problem`）
 2. 在里面新建文件 `problem.md`（注意后缀是 `.md` 不是 `.txt`）
@@ -120,14 +138,14 @@ $$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
 
 4. 保存文件
 
-### 4. 运行
+### 5. 运行
 
 1. 在文件夹空白处右击 → **「在终端中打开」**
 2. 输入 `alphasolve` 回车
 
 你会看到实时面板，显示各阶段进度。使用 `Ctrl+C` 请求停止：第一次停止 worker，第二次停止整个程序。
 
-### 5. 查看结果
+### 6. 查看结果
 
 运行结束后文件夹下会生成：
 
@@ -362,7 +380,7 @@ orchestrator 测试入口不会自动运行冷启动 worker；只有模型显式
 | `balanced` | `gpt-5.6-luna` | Generator、Verifier、Reviser、Research Reviewer |
 | `max` | `gpt-5.6-luna` | Orchestrator |
 
-`gpt-5.6-luna` preset 使用 `provider: chatgpt` 和 `model: gpt-5.6-luna`，默认固定为 GPT 5.6 Luna。可用模型取决于当前登录账号。内置配置还提供 `gpt-5.5`、`deepseek-flash`、`deepseek-pro`、`qwen-3.7-max` 和 `moonshot-kimi`；以命令输出为准：
+默认的 `gpt-5.6-luna` preset 使用 `provider: chatgpt` 和 `model: gpt-5.6-luna`，推理强度交给 Codex 默认值。`gpt-5.6-sol` preset 仍然保留，并固定 `reasoning_effort: max`，可在用户 tier 映射中选用。可用模型和思考强度取决于当前登录账号。内置配置还提供 `gpt-5.5`、`deepseek-flash`、`deepseek-pro`、`qwen-3.7-max` 和 `moonshot-kimi`；以命令输出为准：
 
 ```bash
 alphasolve --list-tiers
@@ -377,8 +395,8 @@ alphasolve --list-presets
 # ~/.alphasolve/presets.yaml
 my-gpt:
   provider: chatgpt
-  model: gpt-5.5
-  reasoning_effort: high
+  model: gpt-5.6-sol
+  reasoning_effort: max
 ```
 
 再在 `~/.alphasolve/tiers.yaml` 中选择它：
@@ -394,7 +412,7 @@ max: my-gpt
 ```yaml
 cheap: deepseek-flash
 balanced: gpt-5.6-luna
-max: gpt-5.6-luna
+max: gpt-5.6-sol
 ```
 
 用户文件优先于内置配置；同名 preset 按整条配置覆盖。`ALPHASOLVE_CONFIG_DIR` 可以改变模型配置目录。`--config` 选择的是角色与求解参数目录，不是 preset 目录。
@@ -534,6 +552,8 @@ CLI (alphasolve)
 
 ## 从源码安装
 
+先按[快速开始第 1 步](#1-安装-codex-cli)安装 Codex CLI，并准备 Python 3.10 或更高版本。克隆仓库后，推荐从下面两种隔离安装方式中任选一种：
+
 ```bash
 git clone https://github.com/tanzcoding/AlphaSolve.git
 cd AlphaSolve
@@ -541,11 +561,24 @@ cd AlphaSolve
 # uv（推荐）
 uv tool install -e .
 
-# pipx
+# 或 pipx
 pipx install -e .
+```
 
-# pip（开发模式）
-pip install -e .
+需要在源码环境里开发时，请先创建并激活虚拟环境，再用 pip 安装。Windows PowerShell：
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+macOS 或 Linux：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ---

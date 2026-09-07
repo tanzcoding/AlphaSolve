@@ -4,9 +4,13 @@ from __future__ import annotations
 
 from concurrent.futures import Future
 from dataclasses import dataclass
+from functools import lru_cache
 import json
 import os
+from pathlib import Path
 from queue import Queue
+import re
+import subprocess
 from tempfile import TemporaryDirectory
 import threading
 from typing import Any
@@ -14,10 +18,127 @@ from typing import Any
 from alphasolve.llm import Preset, ToolDef
 
 
+_EXTERNAL_CODEX_MIN_VERSION = (0, 153, 4)
+
+
 class SessionFailure(RuntimeError):
     def __init__(self, message: str, failure_kind: str = "runtime") -> None:
         super().__init__(message)
         self.failure_kind = failure_kind
+
+
+@lru_cache(maxsize=8)
+def _external_codex_version(path: str) -> tuple[int, int, int]:
+    """读取独立 Codex CLI 的稳定版三段版本号。"""
+    try:
+        completed = subprocess.run(
+            [path, "--version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(f"无法执行 {path!r} --version：{exc}") from exc
+    match = re.search(
+        r"\bcodex-cli\s+(\d+)\.(\d+)\.(\d+)(?P<suffix>[-+][0-9A-Za-z.-]+)?(?=\s|$)",
+        completed.stdout,
+    )
+    if completed.returncode != 0 or match is None:
+        output = completed.stdout.strip() or f"退出码 {completed.returncode}"
+        raise ValueError(f"无法识别 {path!r} 的 Codex CLI 版本：{output}")
+    suffix = match.group("suffix")
+    if suffix and suffix.startswith("-"):
+        raise ValueError(f"{path!r} 使用 Codex CLI 预发布版本 {match.group(0).split()[-1]}，请安装稳定版。")
+    return tuple(int(match.group(index)) for index in range(1, 4))
+
+
+def _compatible_external_codex(path: Path, *, explicit: bool) -> str | None:
+    """验证外部 CLI；自动发现失败时允许 SDK 回退，显式配置则报错。"""
+    try:
+        resolved = path.resolve()
+    except (OSError, RuntimeError) as exc:
+        message = f"无法解析 Codex CLI 路径 {str(path)!r}：{exc}"
+        if explicit:
+            raise SessionFailure(message, "configuration") from exc
+        return None
+    invalid = not resolved.is_file() or (
+        os.name != "nt" and not os.access(resolved, os.X_OK)
+    )
+    if invalid:
+        message = f"Codex CLI 路径不是可执行文件：{resolved}"
+        if explicit:
+            raise SessionFailure(message, "configuration")
+        return None
+    try:
+        version = _external_codex_version(str(resolved))
+    except ValueError as exc:
+        if explicit:
+            raise SessionFailure(str(exc), "configuration") from exc
+        return None
+    if version < _EXTERNAL_CODEX_MIN_VERSION:
+        required = ".".join(str(part) for part in _EXTERNAL_CODEX_MIN_VERSION)
+        found = ".".join(str(part) for part in version)
+        if explicit:
+            raise SessionFailure(
+                f"ALPHASOLVE_CODEX_BIN 的 Codex CLI 版本为 {found}，需要 {required} 或更高版本。",
+                "configuration",
+            )
+        return None
+    return str(resolved)
+
+
+def _codex_on_path() -> Path | None:
+    """只在 PATH 的可信绝对目录中查找 Codex，避免 Windows 隐式搜索当前目录。"""
+    try:
+        current_dir = Path.cwd().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if os.name == "nt":
+        raw_extensions = os.getenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        extensions = tuple(
+            extension if extension.startswith(".") else f".{extension}"
+            for value in raw_extensions.split(os.pathsep)
+            if (extension := value.strip())
+        )
+    else:
+        extensions = ("",)
+
+    for value in os.getenv("PATH", os.defpath).split(os.pathsep):
+        entry = value.strip().strip('"')
+        if not entry:
+            continue
+        try:
+            directory = Path(os.path.expandvars(entry)).expanduser()
+            if not directory.is_absolute():
+                continue
+            directory = directory.resolve()
+        except (OSError, RuntimeError):
+            continue
+        if directory == current_dir:
+            continue
+        for extension in extensions:
+            candidate = directory / f"codex{extension}"
+            if candidate.is_file() and (os.name == "nt" or os.access(candidate, os.X_OK)):
+                return candidate
+    return None
+
+
+def _preferred_codex_bin() -> str | None:
+    """优先使用兼容的独立 CLI；不可用时交给 SDK 选择随包运行时。"""
+    override = os.getenv("ALPHASOLVE_CODEX_BIN")
+    if override:
+        try:
+            path = Path(os.path.expandvars(override)).expanduser()
+        except (OSError, RuntimeError) as exc:
+            raise SessionFailure(f"无法解析 ALPHASOLVE_CODEX_BIN：{exc}", "configuration") from exc
+        return _compatible_external_codex(path, explicit=True)
+
+    discovered = _codex_on_path()
+    return _compatible_external_codex(discovered, explicit=False) if discovered else None
 
 
 def classify_failure(error: Any) -> str:
@@ -89,16 +210,18 @@ class CodexSession:
                 return
             from openai_codex.client import CodexClient, CodexConfig
 
+            codex_bin = _preferred_codex_bin()
+            config = self._config()
+            overrides = tuple(f"{key}={json.dumps(value, ensure_ascii=False)}" for key, value in config.items())
+            env = {"OPENAI_API_KEY": "", "CODEX_API_KEY": ""} if self.preset.provider == "chatgpt" else {}
             # 只锁住进程的创建和启动，关闭操作不等待初始化或网络请求。
             with self._lifecycle_lock:
                 if self._closed.is_set():
                     return
                 self._temp = TemporaryDirectory(prefix="alphasolve-codex-")
-                config = self._config()
-                overrides = tuple(f"{key}={json.dumps(value, ensure_ascii=False)}" for key, value in config.items())
-                env = {"OPENAI_API_KEY": "", "CODEX_API_KEY": ""} if self.preset.provider == "chatgpt" else {}
                 self._sdk = CodexClient(
-                    CodexConfig(cwd=self._temp.name, env=env, config_overrides=overrides,
+                    CodexConfig(codex_bin=codex_bin, cwd=self._temp.name,
+                                env=env, config_overrides=overrides,
                                 client_name="alphasolve", client_title="AlphaSolve"),
                     approval_handler=self._handle_request,
                 )

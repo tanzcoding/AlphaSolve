@@ -15,6 +15,7 @@ from alphasolve.llm import CodexClient, Preset
 
 
 def test_bundled_codex_roundtrip_exposes_only_role_tools(tmp_path, monkeypatch):
+    monkeypatch.setattr('alphasolve.agent.codex_session._preferred_codex_bin', lambda: None)
     requests = []
     executed = []
     visible_events = []

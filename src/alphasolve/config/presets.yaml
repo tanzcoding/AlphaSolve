@@ -3,6 +3,12 @@ gpt-5.6-luna:
   provider: chatgpt
   model: gpt-5.6-luna
 
+# 保留 GPT 5.6 Sol 最大思考强度，供自定义 tier 映射选用。
+gpt-5.6-sol:
+  provider: chatgpt
+  model: gpt-5.6-sol
+  reasoning_effort: max
+
 # 需要固定模型时，可在 tiers.yaml 中选用此 preset 或添加自己的配置。
 gpt-5.5:
   provider: chatgpt

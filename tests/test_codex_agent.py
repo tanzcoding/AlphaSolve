@@ -1,12 +1,16 @@
 """Codex 事件适配层的会话、权限与停止行为。"""
 from concurrent.futures import Future
+import os
 from queue import Queue
+import stat
 import threading
+from types import SimpleNamespace
 
 import pytest
 
+import alphasolve.agent.codex_session as codex_session_module
 from alphasolve.agent import Agent, AgentConfig, AgentRunError, ToolRegistry, ToolResult
-from alphasolve.agent.codex_session import ToolRequest
+from alphasolve.agent.codex_session import CodexSession, SessionFailure, ToolRequest
 from alphasolve.llm import CodexClient, Preset
 
 
@@ -30,6 +34,158 @@ class Session:
 def completed(text='done', status='completed', error=None):
     return [('item/completed', {'item': {'type': 'agentMessage', 'text': text, 'phase': 'final_answer'}}),
             ('turn/completed', {'turn': {'status': status, 'error': error}})]
+
+
+def test_session_forwards_preset_reasoning_effort_to_codex_config():
+    session = CodexSession(Preset('sol', model='gpt-5.6-sol', reasoning_effort='max'), 'test', [])
+    assert session._config()['model_reasoning_effort'] == 'max'
+
+
+def make_executable(path):
+    path.touch()
+    path.chmod(path.stat().st_mode | stat.S_IXUSR)
+    return path
+
+
+def codex_executable_name():
+    return 'codex.exe' if os.name == 'nt' else 'codex'
+
+
+def test_prefers_explicit_codex_binary(tmp_path, monkeypatch):
+    executable = make_executable(tmp_path / 'custom-codex')
+    monkeypatch.setenv('ALPHASOLVE_CODEX_BIN', str(executable))
+    monkeypatch.setattr(codex_session_module, '_codex_on_path', lambda: None)
+    monkeypatch.setattr(codex_session_module, '_external_codex_version', lambda _path: (0, 153, 4))
+    assert codex_session_module._preferred_codex_bin() == str(executable.resolve())
+
+
+def test_discovers_codex_on_path_and_allows_bundled_fallback(tmp_path, monkeypatch):
+    executable = make_executable(tmp_path / 'codex')
+    monkeypatch.delenv('ALPHASOLVE_CODEX_BIN', raising=False)
+    monkeypatch.setattr(codex_session_module, '_codex_on_path', lambda: executable)
+    monkeypatch.setattr(codex_session_module, '_external_codex_version', lambda _path: (0, 153, 4))
+    assert codex_session_module._preferred_codex_bin() == str(executable.resolve())
+    monkeypatch.setattr(codex_session_module, '_external_codex_version', lambda _path: (0, 153, 3))
+    assert codex_session_module._preferred_codex_bin() is None
+    monkeypatch.setattr(codex_session_module, '_codex_on_path', lambda: None)
+    assert codex_session_module._preferred_codex_bin() is None
+
+
+def test_path_lookup_skips_current_and_relative_directories(tmp_path, monkeypatch):
+    current = tmp_path / 'problem'
+    safe_bin = tmp_path / 'safe-bin'
+    current.mkdir()
+    safe_bin.mkdir()
+    make_executable(current / codex_executable_name())
+    expected = make_executable(safe_bin / codex_executable_name())
+    monkeypatch.chdir(current)
+    monkeypatch.setenv('PATH', os.pathsep.join(['', '.', str(current), str(safe_bin)]))
+    assert codex_session_module._codex_on_path() == expected.resolve()
+
+
+def test_path_lookup_does_not_implicitly_execute_codex_from_cwd(tmp_path, monkeypatch):
+    make_executable(tmp_path / codex_executable_name())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv('PATH', '')
+    assert codex_session_module._codex_on_path() is None
+
+
+def test_rejects_missing_explicit_codex_binary(tmp_path, monkeypatch):
+    monkeypatch.setenv('ALPHASOLVE_CODEX_BIN', str(tmp_path / 'missing-codex'))
+    with pytest.raises(SessionFailure) as caught:
+        codex_session_module._preferred_codex_bin()
+    assert caught.value.failure_kind == 'configuration'
+
+
+def test_rejects_old_explicit_codex_binary(tmp_path, monkeypatch):
+    executable = make_executable(tmp_path / 'old-codex')
+    monkeypatch.setenv('ALPHASOLVE_CODEX_BIN', str(executable))
+    monkeypatch.setattr(codex_session_module, '_external_codex_version', lambda _path: (0, 153, 3))
+    with pytest.raises(SessionFailure, match='0.153.4') as caught:
+        codex_session_module._preferred_codex_bin()
+    assert caught.value.failure_kind == 'configuration'
+
+
+def test_parses_external_codex_version(monkeypatch):
+    completed = SimpleNamespace(returncode=0, stdout='codex-cli 0.153.4\n')
+    monkeypatch.setattr(codex_session_module.subprocess, 'run', lambda *args, **kwargs: completed)
+    codex_session_module._external_codex_version.cache_clear()
+    try:
+        assert codex_session_module._external_codex_version('codex') == (0, 153, 4)
+    finally:
+        codex_session_module._external_codex_version.cache_clear()
+
+
+@pytest.mark.parametrize('suffix', ['-alpha.1', '-rc.2', '-dev'])
+def test_rejects_external_codex_prerelease(monkeypatch, suffix):
+    completed = SimpleNamespace(returncode=0, stdout=f'codex-cli 0.153.4{suffix}\n')
+    monkeypatch.setattr(codex_session_module.subprocess, 'run', lambda *args, **kwargs: completed)
+    codex_session_module._external_codex_version.cache_clear()
+    try:
+        with pytest.raises(ValueError, match='预发布版本'):
+            codex_session_module._external_codex_version('codex')
+    finally:
+        codex_session_module._external_codex_version.cache_clear()
+
+
+def test_explicit_codex_path_resolution_error_is_configuration_failure(monkeypatch):
+    monkeypatch.setenv('ALPHASOLVE_CODEX_BIN', '~invalid/codex')
+
+    def fail_expanduser(_path):
+        raise RuntimeError('unknown user')
+
+    monkeypatch.setattr(codex_session_module.Path, 'expanduser', fail_expanduser)
+    with pytest.raises(SessionFailure, match='ALPHASOLVE_CODEX_BIN') as caught:
+        codex_session_module._preferred_codex_bin()
+    assert caught.value.failure_kind == 'configuration'
+
+
+def test_invalid_path_entry_allows_bundled_fallback(tmp_path, monkeypatch):
+    broken = tmp_path / 'broken'
+    original_resolve = codex_session_module.Path.resolve
+
+    def fail_broken(path, *args, **kwargs):
+        if path == broken:
+            raise OSError('unreadable path')
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setenv('PATH', str(broken))
+    monkeypatch.setattr(codex_session_module.Path, 'resolve', fail_broken)
+    assert codex_session_module._codex_on_path() is None
+
+
+def test_close_does_not_wait_for_codex_probe_or_start_sdk(monkeypatch):
+    probe_started = threading.Event()
+    release_probe = threading.Event()
+    sdk_created = threading.Event()
+
+    def blocking_probe():
+        probe_started.set()
+        assert release_probe.wait(5)
+        return None
+
+    class UnexpectedSdk:
+        def __init__(self, *_args, **_kwargs):
+            sdk_created.set()
+
+    monkeypatch.setattr(codex_session_module, '_preferred_codex_bin', blocking_probe)
+    monkeypatch.setattr('openai_codex.client.CodexClient', UnexpectedSdk)
+    session = CodexSession(Preset('luna', model='gpt-5.6-luna'), 'test', [])
+    connector = threading.Thread(target=session._connect)
+    connector.start()
+    assert probe_started.wait(1)
+
+    closer = threading.Thread(target=session.close)
+    closer.start()
+    closer.join(1)
+    try:
+        assert not closer.is_alive()
+        assert not sdk_created.is_set()
+    finally:
+        release_probe.set()
+        connector.join(1)
+    assert not connector.is_alive()
+    assert not sdk_created.is_set()
 
 
 def build(monkeypatch, session, *, registry=None, tools=(), stop=None, sink=None):
@@ -143,7 +299,6 @@ def test_stop_arriving_with_tool_request_prevents_side_effect(monkeypatch):
 def test_native_typed_failure_is_not_mistaken_for_success(monkeypatch):
     from openai_codex.generated.v2_all import TurnCompletedNotification
     from openai_codex.models import Notification
-    from alphasolve.agent.codex_session import CodexSession
 
     # SDK 的 status 是 Enum；转为 JSON 值后再判断，才能正确传播真实失败。
     payload = TurnCompletedNotification.model_validate({

@@ -215,7 +215,11 @@ def main() -> None:
         presets = load_presets(repo_path=presets_path, user_path=user_presets)
         for name in sorted(presets):
             p = presets[name]
-            print(f"  {name:<28} {p.provider:<22} {p.model or '(Codex default)'}")
+            effort = p.reasoning_effort or "(Codex default)"
+            print(
+                f"  {name:<28} {p.provider:<22} "
+                f"{p.model or '(Codex default)'}  reasoning={effort}"
+            )
         return
 
     if args.list_tiers:

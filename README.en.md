@@ -74,19 +74,41 @@ This material is not a substitute for `verified_propositions`: it may be wrong, 
 
 > This section is for mathematicians and math students with no programming experience. Just follow the steps.
 
-### 1. Install the Current Checkout
+### 1. Install Codex CLI
 
-Python 3.10 or newer is required. From your checked-out AlphaSolve repository:
+On Windows, run the standalone installer from the OpenAI Codex README in PowerShell:
 
-```bash
-python -m pip install -e .
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-Alternatively, use `uv tool install -e .` for an isolated command-line installation. Install this development branch from its local checkout; the remote `main` installer does not contain unmerged changes.
+On macOS or Linux:
 
-AlphaSolve pins **`openai-codex==0.147.0`**. The official Python SDK includes the matching Codex CLI runtime and starts its App Server. Codex handles authentication, the model/tool loop, and context compaction. Running AlphaSolve does not require a separate Node.js installation. See the [official SDK documentation](https://learn.chatgpt.com/docs/codex-sdk).
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
 
-### 2. Sign In with ChatGPT
+You may instead use `npm install -g @openai/codex`, or `brew install --cask codex` on macOS. After installing or updating, verify the command:
+
+```bash
+codex --version
+```
+
+AlphaSolve automatically uses a stable Codex CLI on PATH at version 0.153.4 or newer. If the version is older or is a prerelease, rerun the corresponding installer to update it. These commands come from the [official OpenAI Codex README](https://github.com/openai/codex#installing-and-running-codex-cli).
+
+### 2. Install the Current Checkout
+
+Python 3.10 or newer is required. We recommend [installing uv](https://docs.astral.sh/uv/getting-started/installation/) and then running this from your checked-out AlphaSolve repository:
+
+```bash
+uv tool install -e .
+```
+
+This installs AlphaSolve as an isolated command-line tool. If the shell still cannot find `alphasolve`, run `uv tool update-shell` and reopen the terminal. Install this development branch from its local checkout; remote `main` does not contain unmerged changes. See [Install from Source](#install-from-source) for pip, pipx, and development-virtual-environment alternatives.
+
+AlphaSolve pins the published **`openai-codex==0.147.0`** Python SDK. At runtime it prefers a separately installed `codex` CLI on PATH at or above the current compatibility baseline of 0.153.4, then falls back to the SDK's strictly matched 0.147.0 runtime when no compatible external CLI is found. The 0.147.0 SDK client has been verified to initialize, list models, and start a thread with `codex-cli 0.153.4`. Codex still handles the App Server, authentication, the model/tool loop, and context compaction. See the [official SDK documentation](https://learn.chatgpt.com/docs/codex-sdk).
+
+### 3. Sign In with ChatGPT
 
 All roles use the ChatGPT subscription by default. No `OPENAI_API_KEY` is needed:
 
@@ -97,15 +119,11 @@ codex login status
 
 Choose your ChatGPT account. An existing Codex CLI login can be reused; signing into ChatGPT in a browser alone does not authenticate the CLI. See [OpenAI authentication](https://learn.chatgpt.com/docs/auth).
 
-The Python SDK does not add `codex` to PATH. If you do not have a separate CLI, follow the [CLI installation instructions](https://learn.chatgpt.com/docs/codex/cli), or invoke the bundled executable in the Python environment where AlphaSolve is installed:
-
-```bash
-python -c "import subprocess; from codex_cli_bin import bundled_codex_path; subprocess.run([str(bundled_codex_path()), 'login'], check=True)"
-```
+`ALPHASOLVE_CODEX_BIN` can select a specific CLI path; an invalid path, a version below 0.153.4, or a prerelease is a configuration error. When that variable is unset and no compatible CLI is on PATH, AlphaSolve falls back to the SDK's strictly matched 0.147.0 runtime. The SDK-internal runtime is not a general PATH installation, so use the standalone CLI from step 1 to sign in.
 
 AlphaSolve never automatically falls back to a paid API when subscription quota or authentication fails. A fatal Orchestrator or Curator failure stops the run and preserves completed results. Ordinary subagent failures remain tool errors returned to their callers.
 
-### 3. Write a Math Problem
+### 4. Write a Math Problem
 
 1. Create a new empty folder (e.g. `my_problem` on your desktop)
 2. Create a file named `problem.md` inside it (extension `.md`, not `.txt`)
@@ -121,14 +139,14 @@ $$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
 
 4. Save the file
 
-### 4. Run
+### 5. Run
 
 1. Right-click an empty area in the folder → **Open in Terminal**
 2. Type `alphasolve` and press Enter
 
 A live dashboard shows progress. The first `Ctrl+C` stops workers; the second stops the entire program.
 
-### 5. Check Results
+### 6. Check Results
 
 After the run, the folder contains:
 
@@ -355,7 +373,7 @@ Model selection still follows **role YAML `tier` → `tiers.yaml` → `presets.y
 | `balanced` | `gpt-5.6-luna` | Generator, Verifier, Reviser, Research Reviewer |
 | `max` | `gpt-5.6-luna` | Orchestrator |
 
-The `gpt-5.6-luna` preset sets `provider: chatgpt` and `model: gpt-5.6-luna`, pinning the default to GPT 5.6 Luna. Model availability depends on the signed-in account. Other built-in presets are `gpt-5.5`, `deepseek-flash`, `deepseek-pro`, `qwen-3.7-max`, and `moonshot-kimi`:
+The default `gpt-5.6-luna` preset sets `provider: chatgpt` and `model: gpt-5.6-luna`, leaving reasoning effort at the Codex default. The `gpt-5.6-sol` preset remains available for user tier mappings and pins `reasoning_effort: max`. Model and reasoning-effort availability depends on the signed-in account. Other built-in presets are `gpt-5.5`, `deepseek-flash`, `deepseek-pro`, `qwen-3.7-max`, and `moonshot-kimi`:
 
 ```bash
 alphasolve --list-tiers
@@ -369,8 +387,8 @@ User configuration lives in `~/.alphasolve/` (`%USERPROFILE%\.alphasolve\` on Wi
 ```yaml
 my-gpt:
   provider: chatgpt
-  model: gpt-5.5
-  reasoning_effort: high
+  model: gpt-5.6-sol
+  reasoning_effort: max
 ```
 
 Select it in `tiers.yaml`:
@@ -386,7 +404,7 @@ Subscription and API roles can coexist in one run:
 ```yaml
 cheap: deepseek-flash
 balanced: gpt-5.6-luna
-max: gpt-5.6-luna
+max: gpt-5.6-sol
 ```
 
 User configuration takes precedence; a same-named preset replaces the entire built-in record. `ALPHASOLVE_CONFIG_DIR` changes the model configuration directory. `--config` selects role/solver configuration, not the preset directory.
@@ -530,6 +548,8 @@ CLI (alphasolve)
 
 ## Install from Source
 
+Install Codex CLI as described in [Quick Start step 1](#1-install-codex-cli), and make sure Python 3.10 or newer is available. After cloning, choose one of these isolated installation methods:
+
 ```bash
 git clone https://github.com/tanzcoding/AlphaSolve.git
 cd AlphaSolve
@@ -537,11 +557,24 @@ cd AlphaSolve
 # uv (recommended)
 uv tool install -e .
 
-# pipx
+# Or pipx
 pipx install -e .
+```
 
-# pip (development mode)
-pip install -e .
+For development in the source environment, create and activate a virtual environment before using pip. On Windows PowerShell:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+On macOS or Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ---
