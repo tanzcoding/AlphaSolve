@@ -1886,7 +1886,7 @@ def test_execution_gateway_keeps_sessions_isolated_and_blocks_filesystem():
         other_session = gateway.run_python(session_id="beta", code="'x' in globals()")
         denied = gateway.run_python(session_id="alpha", code="import os\nos.listdir('.')", timeout_seconds=5)
 
-        assert "[stdout]" in same_session.tool_content
+        assert "[output]" in same_session.tool_content
         assert "42" in same_session.tool_content
         assert "False" in other_session.tool_content
         assert "[error]" in denied.tool_content
@@ -1916,8 +1916,8 @@ def test_execution_gateway_close_session_resets_python_env_and_workdir():
         )
         cleared = gateway.run_python(session_id="alpha", code="'x' in globals()")
 
-        assert "[stdout]" in first_dir.tool_content
-        assert "[stdout]" in second_dir.tool_content
+        assert "[output]" in first_dir.tool_content
+        assert "[output]" in second_dir.tool_content
         assert first_dir.tool_content != second_dir.tool_content
         assert "False" in cleared.tool_content
     finally:
@@ -1949,7 +1949,7 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
             delegated_description="Identity check",
             delegated_task="Check x=x.",
         )
-        python_result = registry.execute("RunPython", {"code": "value = 6 * 7\nvalue"})
+        python_result = registry.execute("RunPython", {"code": "print('[error] is ordinary output')\nvalue = 6 * 7\nvalue"})
         denied = registry.execute("RunPython", {"code": "open('leak.txt', 'w')"})
         tools = registry.tool_defs(["Agent"], suite.agents["generator"].tool_parameters)
         type_schema = tools[0].parameters["properties"]["type"]
@@ -1960,8 +1960,9 @@ def test_subagent_service_uses_strict_types_and_gateway_python_tool():
             tool_parameters=suite.agents["generator"].tool_parameters,
         )
 
-        assert "[stdout]" in python_result.content
+        assert "[output]" in python_result.content
         assert "42" in python_result.content
+        assert not python_result.is_error
         assert denied.is_error
         assert "filesystem access is disabled" in denied.content
         assert type_schema["enum"] == [
@@ -2050,14 +2051,39 @@ def test_reasoning_subagent_registry_records_obstacle_with_delegated_task(tmp_pa
     assert "Write" not in [tool.name for tool in registry.tool_defs(enabled_tools)]
 
 
-def test_subagent_service_cleans_up_gateway_session_after_return():
+@pytest.mark.parametrize("external_gateway", [False, True])
+def test_subagent_service_cleans_up_gateway_session_after_return(monkeypatch, external_gateway):
+    created_gateways = []
+    python_results = []
+    stop_event = threading.Event()
+
+    class RecordingGateway(ExecutionGateway):
+        def __init__(self):
+            super().__init__(python_workers=1, wolfram_enabled=False)
+            self.closed_sessions = []
+            self.closed = False
+            self.python_calls = []
+            created_gateways.append(self)
+
+        def run_python(self, **kwargs):
+            self.python_calls.append(kwargs)
+            return super().run_python(**kwargs)
+
+        def close_session(self, session_id):
+            self.closed_sessions.append(session_id)
+            super().close_session(session_id)
+
+        def close(self):
+            self.closed = True
+            super().close()
+
     class SessionClient:
         def __init__(self, role):
             self.role = role
             self.calls = 0
 
         def complete(self, *, messages, tools):
-            del messages, tools
+            del tools
             self.calls += 1
             if self.role == "compute_subagent" and self.calls == 1:
                 return _resp(
@@ -2065,30 +2091,103 @@ def test_subagent_service_cleans_up_gateway_session_after_return():
                         ToolCall(
                             id="run_python_once",
                             name="RunPython",
-                            args={"code": "x = 6 * 7\nx"},
+                            args={"code": "import multiprocessing\nx = 6 * 7\nprint(x)\nmultiprocessing.current_process().pid"},
                         ),
                     ),
                 )
+            python_results.extend(message.content for message in messages if message.role == "tool")
             return _resp("done")
 
+    monkeypatch.setattr("alphasolve.solver.subagent_service.ExecutionGateway", RecordingGateway)
     suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config" / "agents.yaml")
-    gateway = ExecutionGateway(python_workers=1, wolfram_enabled=False)
+    gateway = RecordingGateway() if external_gateway else None
+    if gateway is not None:
+        gateway.run_python(session_id="unrelated", code="kept = 123")
     service = SubagentService(
         suite=suite,
         client_factory=lambda config: SessionClient(config.name),
         max_depth=1,
         execution_gateway=gateway,
         session_prefix="pytest-cleanup",
+        stop_event=stop_event,
     )
     try:
         result = service.call("compute_subagent", "Python compute", "Use Python once and finish.")
 
-        pool = gateway._python_pool
-        assert pool is not None
         assert "agent_id: pytest-cleanup/compute_subagent/depth-0/" in result
         assert "actual_subagent_type: compute_subagent" in result
         assert "status: completed" in result
         assert "[summary]\ndone" in result
-        assert pool._session_worker == {}
+        assert len(created_gateways) == 1
+        used_gateway = created_gateways[0]
+        session_id = result.splitlines()[0].removeprefix("agent_id: ")
+        python_call = next(call for call in used_gateway.python_calls if call["session_id"] == session_id)
+        assert python_call["stop_event"] is stop_event
+        assert python_call["allow_filesystem"] is False
+        assert len(python_results) == 1
+        assert "[output]" in python_results[0]
+        assert "42" in python_results[0]
+        child_pid = int(python_results[0].strip().splitlines()[-1])
+        assert child_pid != os.getpid()
+        if external_gateway:
+            assert used_gateway.closed_sessions == [session_id]
+            assert not used_gateway.closed
+            assert "False" in used_gateway.run_python(session_id=session_id, code="'x' in globals()").tool_content
+            assert "123" in used_gateway.run_python(session_id="unrelated", code="kept").tool_content
+        else:
+            assert used_gateway.closed
+            closed = used_gateway.run_python(session_id=session_id, code="1 + 1")
+            assert "[error]" in closed.tool_content
+            assert "closed" in closed.tool_content
     finally:
-        gateway.close()
+        for used_gateway in created_gateways:
+            used_gateway.close()
+
+
+def test_subagent_service_closes_owned_gateway_when_client_setup_fails(monkeypatch):
+    created_gateways = []
+
+    class RecordingGateway(ExecutionGateway):
+        def __init__(self):
+            super().__init__(python_workers=1, wolfram_enabled=False)
+            self.closed = False
+            created_gateways.append(self)
+
+        def close(self):
+            self.closed = True
+            super().close()
+
+    def fail_client(_config):
+        raise RuntimeError("client setup failed")
+
+    monkeypatch.setattr("alphasolve.solver.subagent_service.ExecutionGateway", RecordingGateway)
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
+    service = SubagentService(suite=suite, client_factory=fail_client)
+
+    with pytest.raises(RuntimeError, match="client setup failed"):
+        service.call("compute_subagent", "Compute", "Compute 1 + 1.")
+
+    assert len(created_gateways) == 1
+    assert created_gateways[0].closed
+
+
+def test_subagent_registry_without_runtime_does_not_allocate_execution_resources(monkeypatch):
+    def unexpected_gateway():
+        raise AssertionError("building a registry must not allocate execution resources")
+
+    monkeypatch.setattr("alphasolve.solver.subagent_service.ExecutionGateway", unexpected_gateway)
+    suite = load_agent_suite(pathlib.Path(PACKAGE_ROOT) / "solver" / "config")
+    service = SubagentService(suite=suite, client_factory=make_demo_client_factory())
+    registry = service._build_subagent_registry(
+        depth=0,
+        session_id="registry-only",
+        config=suite.subagents["compute_subagent"],
+        max_depth=0,
+        delegated_description="Compute",
+        delegated_task="Compute 1 + 1.",
+    )
+
+    for name in ("RunPython", "RunWolfram"):
+        result = registry.execute(name, {"code": "1 + 1"})
+        assert result.is_error
+        assert "requires an active execution session" in result.content

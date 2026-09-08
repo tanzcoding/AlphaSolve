@@ -7,7 +7,6 @@ import io
 import queue
 import sys
 import threading
-import time
 import traceback
 import types
 import warnings
@@ -20,6 +19,48 @@ FILESYSTEM_ATTR_NAMES = {
     "mkdir", "unlink", "rmdir", "iterdir", "listdir", "walk",
     "scandir", "remove", "rmtree", "copy", "copy2",
 }
+MAX_PYTHON_OUTPUT_CHARS = 1024 * 1024
+MAX_PYTHON_ERROR_CHARS = 1024 * 1024
+
+
+class _BoundedTextCapture(io.TextIOBase):
+    """达到上限后继续接收写入，只保留有界文本，不中断用户计算。"""
+
+    def __init__(self, *, limit: int, label: str) -> None:
+        super().__init__()
+        self._buffer = io.StringIO()
+        self._limit = limit
+        self._label = label
+        self._size = 0
+        self._lock = threading.Lock()
+        self.truncated = False
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, text: str) -> int:
+        if not isinstance(text, str):
+            raise TypeError("text output requires a string")
+        if self.closed:
+            raise ValueError("I/O operation on closed file")
+        size = len(text)
+        with self._lock:
+            remaining = self._limit - self._size
+            if remaining > 0:
+                kept = text[:remaining]
+                self._buffer.write(kept)
+                self._size += len(kept)
+            if size > remaining:
+                self.truncated = True
+        return size
+
+    def getvalue(self) -> str:
+        with self._lock:
+            value = self._buffer.getvalue()
+            if not self.truncated:
+                return value
+            notice = f"\n[{self._label} truncated: exceeded {self._limit} characters]\n"
+            return value[:self._limit - len(notice)] + notice
 
 
 def _is_banned(name: str) -> bool:
@@ -61,33 +102,37 @@ def _check_code(code: str, *, allow_filesystem: bool) -> tuple[ast.Module | None
 
 
 def _syntax_warning_error(records: list[warnings.WarningMessage]) -> str | None:
-    """Turn compile-time syntax warnings into actionable tool errors."""
+    """把编译期警告转为有界的工具错误，并给出修正方法。"""
     syntax_warnings = [record for record in records if issubclass(record.category, SyntaxWarning)]
     if not syntax_warnings:
         return None
-    lines = [
-        "Python code was rejected because it contains a SyntaxWarning.",
-        "Fix the code and run it again; do not rely on the warning being ignored.",
-    ]
+    capture = _BoundedTextCapture(limit=MAX_PYTHON_ERROR_CHARS, label="error")
+    capture.write(
+        "Python code was rejected because it contains a SyntaxWarning.\n"
+        "Fix the code and run it again; do not rely on the warning being ignored.\n"
+    )
     for record in syntax_warnings:
         location = f"{record.filename}:{record.lineno}" if record.lineno else str(record.filename)
-        lines.append(f"{location}: {record.category.__name__}: {record.message}")
-    lines.append(
+        capture.write(f"{location}: {record.category.__name__}: {record.message}\n")
+        if capture.truncated:
+            break
+    capture.write(
         'For regexes or strings with backslashes, prefer raw strings such as r"\\{" '
         'or double escaping such as "\\\\{".'
     )
-    return "\n".join(lines)
+    return capture.getvalue()
 
 
-def run_python(
+def evaluate_python(
     code: str,
     env: dict | None = None,
-    timeout_seconds: int = 300,
     *,
     allow_filesystem: bool = True,
 ) -> tuple[str, str | None]:
-    buf = io.StringIO()
+    """在专属子进程内求值；截止时间和取消由父进程监督。"""
+    buf = _BoundedTextCapture(limit=MAX_PYTHON_OUTPUT_CHARS, label="output")
     old_out = sys.stdout
+    old_err = sys.stderr
     err = None
     if env is None:
         env = {}
@@ -99,7 +144,9 @@ def run_python(
     if syntax_warning_error:
         return "", syntax_warning_error
     if static_error:
-        return "", static_error
+        capture = _BoundedTextCapture(limit=MAX_PYTHON_ERROR_CHARS, label="error")
+        capture.write(static_error)
+        return "", capture.getvalue()
 
     _purge_banned()
     for k in list(env.keys()):
@@ -137,19 +184,9 @@ def run_python(
             raise ImportError("importlib.import_module is unavailable")
         return original_importlib_import(name, package=package)
 
-    env_snapshot = dict(env)
-    env_keys_snapshot = set(env_snapshot.keys())
-    start_t = time.monotonic()
-    old_trace = sys.gettrace()
-
-    def _trace(frame, event, arg):
-        if timeout_seconds and (time.monotonic() - start_t) > timeout_seconds:
-            raise TimeoutError("timeout")
-        return _trace
-
     try:
         sys.stdout = buf
-        sys.settrace(_trace)
+        sys.stderr = buf
         builtins.__import__ = _blocked_import
         if not allow_filesystem:
             builtins.open = _blocked_open
@@ -166,23 +203,14 @@ def run_python(
                 print(repr(result))
         else:
             exec(code, env, env)
-    except SyntaxError:
-        try:
-            exec(code, env, env)
-        except Exception:
-            err = traceback.format_exc().strip()
-    except TimeoutError:
-        err = "timeout"
-        for k in list(env.keys()):
-            if k not in env_keys_snapshot:
-                env.pop(k, None)
-        for k, v in env_snapshot.items():
-            env[k] = v
-    except Exception:
-        err = traceback.format_exc().strip()
+    except BaseException:
+        # 用户代码中的退出异常也是本次工具结果，不能结束承载会话的解释器。
+        capture = _BoundedTextCapture(limit=MAX_PYTHON_ERROR_CHARS, label="error")
+        traceback.print_exc(limit=100, file=capture)
+        err = capture.getvalue().strip()
     finally:
         sys.stdout = old_out
-        sys.settrace(old_trace)
+        sys.stderr = old_err
         builtins.__import__ = original_import
         if not allow_filesystem:
             builtins.open = original_open

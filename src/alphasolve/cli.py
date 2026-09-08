@@ -169,7 +169,7 @@ def main() -> None:
     parser.add_argument("--no_dashboard", action="store_true",
                         help="Disable the live terminal dashboard")
     parser.add_argument("--tool_executor_size", type=int, default=None,
-                        help="Number of Python execution worker processes (default: from agents.yaml)")
+                        help="Maximum concurrent Python executions (default: from agents.yaml)")
     parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
                         help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
     parser.add_argument("--list-tiers", action="store_true",

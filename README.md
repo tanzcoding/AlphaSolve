@@ -354,7 +354,7 @@ orchestrator 测试入口不会自动运行冷启动 worker；只有模型显式
 | `--subagent_max_depth` | 1 | subagent 最大递归深度 |
 | `--max_orchestrator_restarts` | 50 | Orchestrator 最大重启次数 |
 | `--debug` | false | 启用调试日志（`logs/` 下记录每个 agent 的详细 trace） |
-| `--tool_executor_size` | 4 | Python 执行进程池大小 |
+| `--tool_executor_size` | 4 | 同时执行的 Python 请求上限；闲置会话不占额度 |
 | `--no_wolfram_prime` | false | 跳过 Wolfram 探测 |
 | `--no_dashboard` | false | 关闭实时终端面板 |
 | `--agent` | false | 进入交互式 Agent REPL |
@@ -520,7 +520,7 @@ AlphaSolve 保留数学研究编排和工具权限，以官方 Codex SDK 替换�
 CLI (alphasolve)
     └── AlphaSolve.run()                        [solver/app.py]
             ├── Wolfram 内核探测
-            ├── ExecutionGateway (Python / Wolfram 进程池)
+            ├── ExecutionGateway (独立 Python 会话 / Wolfram 会话)
             ├── CuratorQueue (后台知识管理 agent)
             └── Orchestrator.run()              [solver/orchestrator.py]
                     └── WorkerManager
@@ -532,6 +532,12 @@ CLI (alphasolve)
 ```
 
 ### 核心组件
+
+`RunPython` 的每个会话按需启动独立解释器，变量在该会话内保留。同一会话串行执行，不同会话共享 `tool_executor_size` 个执行额度。子代理结束时关闭所属会话并清理临时目录；独立入口与正式求解使用同一个执行网关。
+
+每次请求的 300 秒预算包含排队、解释器启动、执行和结果返回。父进程监督截止时间、停止信号和解释器存活状态，能够终止 Python 死循环及原生库阻塞。派发前超时或取消不会执行代码，并保留已有变量；执行开始后的超时、取消或进程崩溃会重置该会话，工具结果明确提示变量丢失，下一次请求会重建解释器，不自动重试原代码。普通异常以及代码主动抛出的 `SystemExit`、`KeyboardInterrupt` 只返回工具错误，解释器仍可继续使用。
+
+计算不安装逐行 tracing。标准输出和标准错误合并捕获，过量输出带截断提示；详细工具日志记录带时区的开始与结束时间，耗时使用单调时钟，便于区分工具等待和工具调用之间的模型耗时。
 
 | 组件 | Tier | 作用 |
 |------|------|------|
