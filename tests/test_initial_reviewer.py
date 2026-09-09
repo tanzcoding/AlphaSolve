@@ -366,7 +366,7 @@ def test_spawn_worker_uses_handoffs_as_evidence_for_local_follow_up(tmp_path):
 
 
 def test_spawn_worker_requires_acceptance_rubric(tmp_path):
-    """下发 hint 必须同时给出验收标准，否则任务审计无从判断"是否完成"。"""
+    """下发 hint 必须同时给出验收标准，否则任务审计无从判断“是否完成”。"""
     (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
     layout = ProjectLayout.create(tmp_path)
     layout.ensure()

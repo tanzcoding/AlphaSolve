@@ -353,3 +353,111 @@ def test_canonical_node_keeps_full_attempt_history_for_long_term_strategy(tmp_pa
     assert stored["attempt_count"] == 81
     assert len(stored["attempts"]) == 81
     assert projection["progress"]["method_attempt_counts"]["direct_proof"] == 81
+
+
+def test_shared_obstacle_clusters_group_distinct_nodes_with_identical_obstacle_text(tmp_path):
+    """No curator/reviewer LLM judgment involved: this is a pure text-match runtime fact.
+
+    Two different canonical nodes whose worker-reported obstacles happen to read
+    identically are flagged so a reviewer or curator can decide whether it is a true
+    duplicate, a shared root-architecture assumption, or coincidental wording -- see
+    `_shared_obstacle_clusters`.
+    """
+    layout = _layout(tmp_path)
+    shared_obstacle = "Independent local contributions do not compose into a global soundness bound."
+    outcomes = [
+        {
+            "sequence": 1,
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "worker_id": "worker-1",
+            "difficulty_id": "leaf-a",
+            "method_id": "direct_proof",
+            "status": "rejected",
+            "difficulty_handoff": {"obstacle": shared_obstacle},
+        },
+        {
+            "sequence": 2,
+            "recorded_at": "2026-01-02T00:00:00Z",
+            "worker_id": "worker-2",
+            "difficulty_id": "leaf-b",
+            "method_id": "construction",
+            "status": "rejected",
+            "difficulty_handoff": {"obstacle": shared_obstacle},
+        },
+        {
+            "sequence": 3,
+            "recorded_at": "2026-01-03T00:00:00Z",
+            "worker_id": "worker-3",
+            "difficulty_id": "leaf-c",
+            "method_id": "contradiction",
+            "status": "rejected",
+            "difficulty_handoff": {"obstacle": "A completely unrelated short-form obstacle text."},
+        },
+    ]
+    layout.progress_audit_outcomes_path.write_text(
+        "\n".join(json.dumps(item) for item in outcomes) + "\n",
+        encoding="utf-8",
+    )
+    dag = DifficultyDagStore(layout.workspace_dir)
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[
+            {"difficulty_id": "leaf-a", "statement": "Prove leaf A.", "source_handoff_ids": ["handoff-a"]},
+            {"difficulty_id": "leaf-b", "statement": "Prove leaf B.", "source_handoff_ids": ["handoff-b"]},
+            {"difficulty_id": "leaf-c", "statement": "Prove leaf C.", "source_handoff_ids": ["handoff-c"]},
+        ],
+    )
+
+    projection = dag.reviewer_graph_projection()
+    clusters = projection["shared_obstacle_clusters"]
+
+    assert len(clusters) == 1
+    assert clusters[0]["difficulty_ids"] == ["leaf-a", "leaf-b"]
+    assert clusters[0]["obstacle_digest"] == shared_obstacle.lower()
+
+
+def test_shared_obstacle_clusters_ignore_short_digests_and_single_node_matches(tmp_path):
+    layout = _layout(tmp_path)
+    outcomes = [
+        {
+            "sequence": 1,
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "worker_id": "worker-1",
+            "difficulty_id": "leaf-a",
+            "method_id": "direct_proof",
+            "status": "rejected",
+            # Too short to be meaningful evidence of a genuinely shared obstacle.
+            "difficulty_handoff": {"obstacle": "Gap."},
+        },
+        {
+            "sequence": 2,
+            "recorded_at": "2026-01-02T00:00:00Z",
+            "worker_id": "worker-2",
+            "difficulty_id": "leaf-a",
+            "method_id": "construction",
+            "status": "rejected",
+            # Same node repeating its own obstacle must not count as a cross-node cluster.
+            "difficulty_handoff": {"obstacle": "The exact same long obstacle text repeated twice here."},
+        },
+        {
+            "sequence": 3,
+            "recorded_at": "2026-01-03T00:00:00Z",
+            "worker_id": "worker-3",
+            "difficulty_id": "leaf-a",
+            "method_id": "contradiction",
+            "status": "rejected",
+            "difficulty_handoff": {"obstacle": "The exact same long obstacle text repeated twice here."},
+        },
+    ]
+    layout.progress_audit_outcomes_path.write_text(
+        "\n".join(json.dumps(item) for item in outcomes) + "\n",
+        encoding="utf-8",
+    )
+    dag = DifficultyDagStore(layout.workspace_dir)
+    dag.record_curation(
+        checkpoint_id="checkpoint-0001",
+        difficulties=[{"difficulty_id": "leaf-a", "statement": "Prove leaf A.", "source_handoff_ids": ["handoff-a"]}],
+    )
+
+    projection = dag.reviewer_graph_projection()
+    assert projection["shared_obstacle_clusters"] == []

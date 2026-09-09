@@ -1,14 +1,349 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+import alphasolve.solver as _solver_pkg
 from alphasolve.solver.research_planning import (
     ReviewerPlanGateway,
     frontier_projection,
     parse_recommendation,
     reviewer_prompt,
     reviewer_strategy_memory,
+    unknown_difficulty_id_warnings,
 )
+
+# The research_reviewer role's static system prompt: the single source of truth for policy
+# prose shared with the dynamic per-call prompt built by ``reviewer_prompt``.
+_REVIEWER_SYSTEM_PROMPT_PATH = Path(_solver_pkg.__file__).resolve().parent / "prompts" / "research_reviewer.md"
+
+
+def test_counterfactual_architecture_review_links_a_discriminating_exploration_track():
+    plan = """### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Escape the current separable exploit basin.",
+    "strategy": "Two descendant routes share an unverified separability assumption, so test one counterfactual mechanism.",
+    "architecture_reviews": [{
+      "review_id": "nonseparable-state",
+      "disposition": "counterfactual",
+      "architecture_id": "nonseparable-state",
+      "root_difficulty_ids": ["root-soundness"],
+      "core_assumptions": ["The current local contributions are independently additive."],
+      "state_basis": {"difficulty_ids": ["root-soundness", "leaf-a", "leaf-b"], "evidence_refs": ["verified_propositions/exact-bridge.md"], "knowledge_refs": ["knowledge/geometry.md"], "plan_ids": ["plan-old"], "tabu_rule_ids": []},
+      "closure_witness": "Both leaf routes retain independent additivity and fail on arbitrary-object soundness.",
+      "shared_blocker": "Close soundness for every final object.",
+      "reopen_condition": "Reopen separability if a composition lemma controls all interactions.",
+      "counterfactual": {"escaped_assumption": "Independent additivity is not assumed.", "new_mechanism": "Use a coupled global state invariant.", "non_duplicate_witness": "Prior routes only changed local gadgets while retaining additive soundness.", "first_discriminating_artifact": "Construct or rule out the smallest coupled invariant.", "soundness_falsification": "An arbitrary threshold object violating the invariant falsifies the mechanism."}
+    }],
+    "tracks": [{
+      "track_id": "coupled-invariant",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "selection_scope": "TECHNIQUE_EXPLORATION",
+      "difficulty_id": "",
+      "terminal_obligation": "Construct or refute a parameterized reduction.",
+      "method_id": "construction",
+      "route_label": "coupled-global-invariant",
+      "architecture_review_id": "nonseparable-state",
+      "research_goal": "Construct the smallest coupled invariant.",
+      "rationale": "It is the state review's first discriminating artifact.",
+      "avoid": "Do not reintroduce additive local soundness.",
+      "route_contract": {"hypothesis": "A coupled invariant can enforce soundness.", "required_invariants": [], "success_condition": "A coupled invariant theorem.", "failure_condition": "A counterexample to arbitrary-object soundness."},
+      "milestones": [{"milestone_id": "coupled-invariant", "objective": "Construct the smallest coupled invariant.", "evidence_needed": "A proof or counterexample."}]
+    }]
+  }
+}
+```"""
+    parsed = parse_recommendation(plan)
+    assert parsed is not None
+    assert parsed["research_plan"]["architecture_reviews"][0]["disposition"] == "counterfactual"
+    assert parsed["research_plan"]["tracks"][0]["architecture_review_id"] == "nonseparable-state"
+    assert parse_recommendation(plan.replace('"counterfactual"', '"park"')) is None
+
+
+def test_research_plan_parses_terminal_closure_and_causal_milestone_fields():
+    report = """### Research Strategy JSON
+```json
+{
+  "research_plan": {
+    "objective": "Close the reduction.",
+    "strategy": "Test the current causal prerequisite.",
+    "terminal_closure": {
+      "terminal_claim": "Establish a parameterized reduction.",
+      "required_conditions": ["selection encoding", "soundness"]
+    },
+    "architecture_reviews": [],
+    "tracks": [{
+      "track_id": "phase",
+      "priority": "primary",
+      "kind": "NEW_DIRECTION",
+      "selection_scope": "TECHNIQUE_EXPLORATION",
+      "difficulty_id": "",
+      "terminal_obligation": "Establish a parameterized reduction.",
+      "method_id": "construction",
+      "route_label": "phase-run",
+      "research_goal": "Construct one controlled phase run.",
+      "rationale": "It is the first causal prerequisite.",
+      "avoid": "Do not claim full soundness.",
+      "route_contract": {
+        "hypothesis": "A local run can control matching phase.",
+        "required_invariants": [],
+        "success_condition": "A controlled run.",
+        "failure_condition": "A bypass witness."
+      },
+      "milestones": [{
+        "milestone_id": "controlled-run",
+        "objective": "Construct one controlled run.",
+        "evidence_needed": "A proof of controlled behavior.",
+        "preconditions": ["matching model"],
+        "success_effect": "Makes edge encoding eligible for review.",
+        "failure_interpretation": "Only this layout is ruled out.",
+        "terminal_link": "Serves the selection-encoding condition."
+      }]
+    }]
+  }
+}
+```"""
+
+    parsed = parse_recommendation(report)
+
+    assert parsed is not None
+    plan = parsed["research_plan"]
+    assert plan["terminal_closure"]["required_conditions"] == ["selection encoding", "soundness"]
+    milestone = plan["tracks"][0]["milestones"][0]
+    assert milestone["causal_contract_stated"] is True
+    assert milestone["success_effect"].startswith("Makes edge encoding")
+
+
+def _base_architecture_review() -> dict:
+    return {
+        "review_id": "nonseparable-state",
+        "disposition": "park",
+        "architecture_id": "nonseparable-state",
+        "root_difficulty_ids": ["root-soundness"],
+        "core_assumptions": ["The current local contributions are independently additive."],
+        "state_basis": {
+            "difficulty_ids": ["root-soundness", "leaf-a", "leaf-b"],
+            "evidence_refs": [],
+            "knowledge_refs": [],
+            "plan_ids": [],
+            "tabu_rule_ids": [],
+        },
+        "closure_witness": "Both leaf routes retain independent additivity and fail on arbitrary-object soundness.",
+        "shared_blocker": "Close soundness for every final object.",
+        "reopen_condition": "Reopen separability if a composition lemma controls all interactions.",
+    }
+
+
+def _plan_with_architecture_reviews(reviews: list[dict], *, hold: bool = True) -> str:
+    body: dict = {
+        "research_plan": {
+            "objective": "Diagnose the shared root assumption.",
+            "strategy": "Park the exhausted architecture and record why.",
+            "architecture_reviews": reviews,
+        }
+    }
+    if hold:
+        body["research_plan"]["tracks"] = []
+        body["research_plan"]["hold_reason"] = "Parking the architecture; no live track yet."
+    return "### Research Strategy JSON\n```json\n" + json.dumps(body) + "\n```"
+
+
+def test_architecture_review_requires_closure_witness_and_shared_blocker():
+    missing_closure = _base_architecture_review()
+    del missing_closure["closure_witness"]
+    assert parse_recommendation(_plan_with_architecture_reviews([missing_closure])) is None
+
+    missing_blocker = _base_architecture_review()
+    del missing_blocker["shared_blocker"]
+    assert parse_recommendation(_plan_with_architecture_reviews([missing_blocker])) is None
+
+
+def test_architecture_review_requires_root_difficulty_ids_and_core_assumptions():
+    missing_root = _base_architecture_review()
+    missing_root["root_difficulty_ids"] = []
+    assert parse_recommendation(_plan_with_architecture_reviews([missing_root])) is None
+
+    missing_assumptions = _base_architecture_review()
+    missing_assumptions["core_assumptions"] = []
+    assert parse_recommendation(_plan_with_architecture_reviews([missing_assumptions])) is None
+
+
+def test_park_disposition_requires_reopen_condition_and_cannot_end_in_hold():
+    missing_reopen = _base_architecture_review()
+    del missing_reopen["reopen_condition"]
+    assert parse_recommendation(_plan_with_architecture_reviews([missing_reopen])) is None
+
+    # PARK closes only the old architecture. It must trigger counterfactual synthesis,
+    # rather than turning a still-open terminal obligation into an empty HOLD plan.
+    with_reopen = _base_architecture_review()
+    assert parse_recommendation(_plan_with_architecture_reviews([with_reopen])) is None
+
+
+def test_park_requires_linked_counterfactual_technique_exploration():
+    parked = _base_architecture_review()
+    counterfactual = _base_architecture_review()
+    counterfactual.update({
+        "review_id": "global-invariant-state",
+        "architecture_id": "global-invariant-state",
+        "disposition": "counterfactual",
+        "core_assumptions": ["The replacement does not assume independent local additivity."],
+        "state_basis": {
+            "difficulty_ids": ["root-soundness"],
+            "evidence_refs": [],
+            "knowledge_refs": [],
+            "plan_ids": [],
+            "tabu_rule_ids": ["old-additive-route"],
+        },
+        "counterfactual": {
+            "escaped_assumption": "Independent local additivity is suspended.",
+            "new_mechanism": "A global invariant directly constrains arbitrary objects.",
+            "non_duplicate_witness": "The old route only repaired local gadgets under additive soundness.",
+            "first_discriminating_artifact": "Construct or refute the smallest global invariant.",
+            "soundness_falsification": "An admissible object violating the invariant falsifies the mechanism.",
+        },
+    })
+    track = {
+        "track_id": "global-invariant-probe",
+        "priority": "primary",
+        "kind": "NEW_DIRECTION",
+        "selection_scope": "TECHNIQUE_EXPLORATION",
+        "difficulty_id": "",
+        "terminal_obligation": "Settle the terminal soundness obligation through a non-additive representation.",
+        "method_id": "construction",
+        "route_label": "global-invariant-representation",
+        "architecture_review_id": "global-invariant-state",
+        "tabu_rule_ids": ["old-additive-route"],
+        "research_goal": "Construct the smallest global invariant.",
+        "rationale": "It escapes the parked additive architecture and tests the counterfactual's first artifact.",
+        "avoid": "Do not reintroduce additive local soundness.",
+        "route_contract": {
+            "hypothesis": "A global invariant can settle soundness without additive local contributions.",
+            "required_invariants": [],
+            "success_condition": "A global-invariant theorem.",
+            "failure_condition": "A counterexample to the invariant.",
+        },
+        "milestones": [{
+            "milestone_id": "global-invariant-artifact",
+            "objective": "Construct or refute the smallest global invariant.",
+            "evidence_needed": "A proof or counterexample for the named invariant.",
+        }],
+    }
+    body = {
+        "research_plan": {
+            "objective": "Leave a parked additive architecture.",
+            "strategy": "Park the exhausted mechanism and synthesize a representation outside its tabu scope.",
+            "architecture_reviews": [parked, counterfactual],
+            "tabu_rules": [{
+                "tabu_id": "old-additive-route",
+                "level": "soft",
+                "route_label": "additive-local-route",
+                "mechanism": "Independent local contributions compose additively.",
+                "applies_to": "GLOBAL",
+                "evidence_refs": ["verified_propositions/additive-collapse.md"],
+                "reopen_condition": "A composition theorem controlling all interactions.",
+            }],
+            "tracks": [track],
+        }
+    }
+    plan = "### Research Strategy JSON\n```json\n" + json.dumps(body) + "\n```"
+    assert parse_recommendation(plan) is not None
+
+    # The new technique track must carry the tabu boundary the counterfactual claims to escape.
+    body["research_plan"]["tracks"][0]["tabu_rule_ids"] = []
+    plan = "### Research Strategy JSON\n```json\n" + json.dumps(body) + "\n```"
+    assert parse_recommendation(plan) is None
+
+
+def test_counterfactual_disposition_requires_every_counterfactual_field():
+    full_fields = {
+        "escaped_assumption": "Independent additivity is not assumed.",
+        "new_mechanism": "Use a coupled global state invariant.",
+        "non_duplicate_witness": "Prior routes only changed local gadgets.",
+        "first_discriminating_artifact": "Construct the smallest coupled invariant.",
+        "soundness_falsification": "An arbitrary threshold object violating the invariant falsifies it.",
+    }
+    for missing_key in full_fields:
+        review = _base_architecture_review()
+        review["disposition"] = "counterfactual"
+        review["counterfactual"] = {k: v for k, v in full_fields.items() if k != missing_key}
+        assert parse_recommendation(_plan_with_architecture_reviews([review])) is None, missing_key
+
+    review = _base_architecture_review()
+    review["disposition"] = "counterfactual"
+    review["counterfactual"] = dict(full_fields)
+    assert parse_recommendation(_plan_with_architecture_reviews([review])) is not None
+
+
+def test_architecture_review_rejects_duplicate_review_ids():
+    first = _base_architecture_review()
+    second = _base_architecture_review()
+    assert parse_recommendation(_plan_with_architecture_reviews([first, second])) is None
+
+
+def test_architecture_review_rejects_invalid_disposition():
+    review = _base_architecture_review()
+    review["disposition"] = "unknown_status"
+    assert parse_recommendation(_plan_with_architecture_reviews([review])) is None
+
+
+def test_architecture_review_caps_at_four_entries():
+    reviews = []
+    for index in range(5):
+        review = _base_architecture_review()
+        review["review_id"] = f"architecture-{index}"
+        review["architecture_id"] = f"architecture-{index}"
+        reviews.append(review)
+    assert parse_recommendation(_plan_with_architecture_reviews(reviews)) is None
+
+
+def test_plan_rejects_local_repair_track_on_a_difficulty_the_same_plan_just_parked():
+    """Self-consistency: a plan cannot park an architecture and immediately re-exploit it.
+
+    Mirrors ``hard_tabu_routes`` rejecting a track whose route_label the same plan just
+    hard-tabooed: parking is this plan's other durable strategy conclusion.
+    """
+    review = _base_architecture_review()
+    body = {
+        "research_plan": {
+            "objective": "Park the architecture but still exploit its leaf.",
+            "strategy": "Inconsistent: park root-soundness, then locally repair leaf-a.",
+            "architecture_reviews": [review],
+            "tracks": [{
+                "track_id": "leaf-a-repair",
+                "priority": "primary",
+                "kind": "TARGET_NODE",
+                "selection_scope": "LOCAL_REPAIR",
+                "difficulty_id": "leaf-a",
+                "method_id": "direct_proof",
+                "route_label": "leaf-a-bridge",
+                "research_goal": "Close the local bridge on leaf-a.",
+                "rationale": "This is deliberately inconsistent with the park decision above.",
+                "avoid": "None.",
+                "route_contract": {
+                    "hypothesis": "The bridge mechanism survives.",
+                    "required_invariants": [],
+                    "success_condition": "The bridge is proved.",
+                    "failure_condition": "A counterexample to the bridge.",
+                },
+                "milestones": [{
+                    "milestone_id": "bridge",
+                    "objective": "Close the bridge.",
+                    "evidence_needed": "A proof or counterexample.",
+                }],
+            }],
+        }
+    }
+    plan_text = "### Research Strategy JSON\n```json\n" + json.dumps(body) + "\n```"
+    assert parse_recommendation(plan_text) is None
+
+    # Changing only the difficulty cannot cure the plan: PARK requires a linked
+    # counterfactual technique exploration, not an unrelated NODE_ROUTE.
+    body["research_plan"]["tracks"][0]["difficulty_id"] = "unrelated-leaf"
+    plan_text = "### Research Strategy JSON\n```json\n" + json.dumps(body) + "\n```"
+    assert parse_recommendation(plan_text) is None
 
 
 def test_gateway_rebases_unrelated_frontier_update_but_blocks_changed_target():
@@ -117,6 +452,60 @@ def test_strategy_memory_layers_older_proposals_into_compact_conclusions(tmp_pat
     assert newest["strategy"] == "Strategy 4."
     assert newest["tracks"][0]["route_label"] == "route-4"
     assert newest["prior_proposal_review"]["decision"] == "PIVOT"
+
+
+def test_parked_architecture_survives_compaction_into_older_memory(tmp_path):
+    """A park decision must not vanish once its plan ages out of the detailed window.
+
+    Mirrors hard_tabu_route_labels: parking an architecture is this proposal's other
+    durable strategy conclusion, and a later reviewer must still see the closure
+    witness/reopen condition even after several newer plans push it out of `detail: full`.
+    """
+    plans_dir = tmp_path / "curation_records" / "research_plans"
+    plans_dir.mkdir(parents=True)
+    (plans_dir / "plan-00.json").write_text(json.dumps({
+        "plan_id": "plan-00",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "execution_status": "executed",
+        "recommendation": {"research_plan": {
+            "objective": "Diagnose the shared root assumption.",
+            "strategy": "Park the exhausted architecture.",
+            "architecture_reviews": [{
+                "review_id": "nonseparable-state",
+                "disposition": "park",
+                "architecture_id": "nonseparable-state",
+                "root_difficulty_ids": ["root-soundness"],
+                "core_assumptions": ["Independent additivity."],
+                "state_basis": {"difficulty_ids": [], "evidence_refs": [], "knowledge_refs": [], "plan_ids": [], "tabu_rule_ids": []},
+                "closure_witness": "Both leaf routes fail on arbitrary-object soundness.",
+                "shared_blocker": "Close soundness for every final object.",
+                "reopen_condition": "Reopen if a composition lemma controls all interactions.",
+            }],
+            "tracks": [{"track_id": "t", "route_label": "route-0", "research_goal": "Goal."}],
+        }},
+    }), encoding="utf-8")
+    for index in range(1, 5):
+        (plans_dir / f"plan-{index:02d}.json").write_text(json.dumps({
+            "plan_id": f"plan-{index:02d}",
+            "created_at": f"2026-01-0{index + 1}T00:00:00+00:00",
+            "execution_status": "executed",
+            "recommendation": {"research_plan": {
+                "objective": "Continue.",
+                "strategy": f"Strategy {index}.",
+                "tracks": [{"track_id": "t", "route_label": f"route-{index}", "research_goal": "Goal."}],
+            }},
+        }), encoding="utf-8")
+
+    memory = reviewer_strategy_memory(tmp_path, detailed_limit=2)
+
+    oldest = memory[0]
+    assert oldest["detail"] == "compact"
+    assert oldest["parked_architectures"] == [{
+        "architecture_id": "nonseparable-state",
+        "root_difficulty_ids": ["root-soundness"],
+        "shared_blocker": "Close soundness for every final object.",
+        "reopen_condition": "Reopen if a composition lemma controls all interactions.",
+    }]
 
 
 def test_reflection_is_required_once_a_prior_proposal_has_audit_evidence():
@@ -467,6 +856,11 @@ def test_research_plan_preserves_route_contract_and_milestones():
         "milestone_id": "coupling-census",
         "objective": "Decide whether the smallest coupled geometry preserves clean selection.",
         "evidence_needed": "An exhaustive classification or a structural proof.",
+        "preconditions": [],
+        "success_effect": "Not recorded.",
+        "failure_interpretation": "Not recorded.",
+        "terminal_link": "Not recorded.",
+        "causal_contract_stated": False,
     }]
     # The reviewer omitted the terminal-sufficiency comparison. That is a real defect, but
     # discarding the whole plan here would burn an entire reviewer cycle and hide the
@@ -564,10 +958,14 @@ def test_route_contract_marks_a_stated_falsification_condition():
 
 def test_reviewer_prompt_requires_top_down_obligation_decomposition():
     prompt = reviewer_prompt(worker_results=[], frontier={"frontier_revision": "r", "dispatchable": [], "graph": {}, "sources": {}})
-    assert "Decompose the terminal obligation top-down" in prompt
     assert "converse/soundness direction" in prompt
     assert "falsification_condition" in prompt
     assert "SCAFFOLDING_ASSUMPTION_UNVERIFIED" in prompt
+    # The top-down decomposition requirement itself is defined once, in this role's static
+    # system prompt (sent on every call), rather than duplicated into the per-call dynamic
+    # prompt built by ``reviewer_prompt``.
+    system_prompt = _REVIEWER_SYSTEM_PROMPT_PATH.read_text(encoding="utf-8")
+    assert "Decompose the terminal obligation top-down" in system_prompt
 
 
 def test_research_plan_rejects_track_without_route_identity():
@@ -811,3 +1209,65 @@ def test_force_pivot_allows_a_hold_plan():
 ```""", stagnation_level="FORCE_PIVOT")
     assert held is not None
     assert held["research_plan"]["tracks"] == []
+
+
+def _frontier_with_known_ids(*known_ids: str) -> dict:
+    return {
+        "graph": {
+            "nodes": [{"difficulty_id": difficulty_id} for difficulty_id in known_ids],
+        },
+    }
+
+
+def test_unknown_difficulty_id_warnings_flags_stale_graph_portfolio_targets():
+    frontier = _frontier_with_known_ids("root-a", "leaf-a")
+    recommendation = {
+        "research_plan": {
+            "tracks": [{
+                "track_id": "portfolio",
+                "target_difficulty_ids": ["root-a", "ghost-node"],
+            }],
+            "architecture_reviews": [],
+        }
+    }
+    warnings = unknown_difficulty_id_warnings(frontier=frontier, recommendation=recommendation)
+    assert warnings == [{
+        "location": "tracks[portfolio].target_difficulty_ids",
+        "unknown_difficulty_ids": ["ghost-node"],
+    }]
+
+
+def test_unknown_difficulty_id_warnings_flags_stale_architecture_review_ids():
+    frontier = _frontier_with_known_ids("root-soundness")
+    recommendation = {
+        "research_plan": {
+            "tracks": [],
+            "architecture_reviews": [{
+                "review_id": "nonseparable-state",
+                "root_difficulty_ids": ["root-soundness", "ghost-root"],
+                "state_basis": {"difficulty_ids": ["ghost-leaf"]},
+            }],
+        }
+    }
+    warnings = unknown_difficulty_id_warnings(frontier=frontier, recommendation=recommendation)
+    assert warnings == [
+        {
+            "location": "architecture_reviews[nonseparable-state].root_difficulty_ids",
+            "unknown_difficulty_ids": ["ghost-root"],
+        },
+        {
+            "location": "architecture_reviews[nonseparable-state].state_basis.difficulty_ids",
+            "unknown_difficulty_ids": ["ghost-leaf"],
+        },
+    ]
+
+
+def test_unknown_difficulty_id_warnings_empty_when_all_ids_known():
+    frontier = _frontier_with_known_ids("root-a", "leaf-a")
+    recommendation = {
+        "research_plan": {
+            "tracks": [{"track_id": "portfolio", "target_difficulty_ids": ["root-a", "leaf-a"]}],
+            "architecture_reviews": [],
+        }
+    }
+    assert unknown_difficulty_id_warnings(frontier=frontier, recommendation=recommendation) == []

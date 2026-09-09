@@ -376,3 +376,74 @@ def test_raw_spawn_remains_a_compatible_evidence_collection_path():
 
     assert payload["spawned"] is True
     assert spawned[0]["hint"] == "Check one bounded premise."
+
+
+def test_execute_research_plan_requires_causal_task_context_when_milestone_declares_it():
+    orchestrator, spawned = _orchestrator()
+    plan = orchestrator._research_plans["plan-test"]
+    research_plan = plan["recommendation"]["research_plan"]
+    research_plan["terminal_closure"] = {
+        "terminal_claim": "Settle the cubic bound.",
+        "required_conditions": ["Prove the finite case before the general assembly."],
+    }
+    milestone = research_plan["tracks"][0]["milestones"][0]
+    milestone.update({
+        "preconditions": ["The full interval formulation is available."],
+        "success_effect": "The general assembly may be reviewed.",
+        "failure_interpretation": "Only this finite decomposition is ruled out.",
+        "terminal_link": "Supplies one necessary component of the cubic-bound proof.",
+        "causal_contract_stated": True,
+    })
+
+    class Manager:
+        def __init__(self) -> None:
+            self.active = 0
+
+        def has_available_worker_slot(self) -> bool:
+            return self.active < 1
+
+    missing = orchestrator._execute_research_plan_tool(
+        Manager(),
+        {"plan_id": "plan-test", "tasks": [{
+            "track_id": "primary-route",
+            "milestone_id": "three-valued-case",
+            "task": "Prove the finite case.",
+            "rubric": "- The Statement settles the finite case.",
+        }]},
+    )
+    assert missing.is_error
+    assert json.loads(missing.content)["error"] == "causal task context is required for this milestone"
+
+    manager = Manager()
+    delivered = orchestrator._execute_research_plan_tool(
+        manager,
+        {"plan_id": "plan-test", "tasks": [{
+            "track_id": "primary-route",
+            "milestone_id": "three-valued-case",
+            "task": "Prove the finite case.",
+            "rubric": "- The Statement settles the finite case.",
+            "causal_intent": "Test the finite prerequisite of the current plan.",
+            "expected_evidence": "A proof or counterexample for all three-valued instances.",
+            "success_effect": "Makes the general assembly eligible for reviewer confirmation.",
+            "failure_effect": "Rules out only the proposed finite decomposition.",
+        }]},
+    )
+    assert not delivered.is_error
+    assert spawned[-1]["causal_context"]["milestone_id"] == "three-valued-case"
+    assert spawned[-1]["causal_context"]["causal_intent"].startswith("Test the finite")
+
+
+def test_executed_hold_blocks_direct_worker_dispatch():
+    orchestrator, _spawned = _orchestrator()
+    del orchestrator.__dict__["_spawn_difficulty_leaf"]
+    orchestrator._held_research_plan_id = "plan-held"
+
+    result = orchestrator._spawn_difficulty_leaf(
+        None,
+        {"hint": "Try an unplanned route.", "rubric": "- State one claim."},
+    )
+
+    assert not result.is_error
+    payload = json.loads(result.content)
+    assert payload["reason"] == "reviewer_hold_blocks_direct_dispatch"
+    assert payload["held_plan_id"] == "plan-held"

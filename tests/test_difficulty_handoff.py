@@ -142,6 +142,51 @@ def test_materialized_handoff_prefers_outer_obstacle_and_retains_reasoning_evide
     assert "refutation_witness" not in handoff
 
 
+def test_handoff_retains_plan_local_causal_context_and_scope_boundary(tmp_path):
+    worker_dir, declaration_path = _worker_dir(tmp_path)
+    target = json.loads((worker_dir / "research_target.json").read_text(encoding="utf-8"))
+    target["causal_context"] = {
+        "track_id": "phase-encoding",
+        "milestone_id": "controlled-run",
+        "causal_intent": "Test whether the candidate run controls phase.",
+        "expected_evidence": "A bypass-resistant local construction.",
+    }
+    (worker_dir / "research_target.json").write_text(json.dumps(target), encoding="utf-8")
+    registry = ToolRegistry()
+    register_difficulty_declaration_tool(registry, declaration_path=declaration_path, role="generator")
+    result = registry.execute(
+        "RecordDifficulty",
+        {
+            "obstacle": "An admissible matching bypasses the candidate run's intended phase.",
+            "delivered_instead": "A counterexample for this particular run layout.",
+            "obstacle_scope": "local",
+            "causal_effect": "Blocks the current layout but not the phase-encoding architecture.",
+            "scope_boundary": "The eight-seat candidate run only.",
+            "does_not_establish": "Does not refute a different phase-controlled run.",
+            "next_blocking_condition": "A bypass-resistant run is still needed.",
+        },
+    )
+    assert not result.is_error
+
+    _, handoff = materialize_difficulty_handoff(
+        declaration_path=declaration_path,
+        worker_id="worker-a",
+        difficulty_id="global-packing",
+        method_id="matching",
+        execution_status="verified",
+        failure_kind=None,
+        review_file=None,
+        proposition_file=None,
+        verified_file=None,
+    )
+
+    assert handoff is not None
+    assert handoff["causal_context"]["milestone_id"] == "controlled-run"
+    assert handoff["causal_effect"].startswith("Blocks the current layout")
+    assert handoff["scope_boundary"] == "The eight-seat candidate run only."
+    assert handoff["does_not_establish"].startswith("Does not refute")
+
+
 def test_portfolio_exposes_task_specific_reasoning_observation(tmp_path):
     _, declaration_path = _record_generator_obstacle(tmp_path)
     _, handoff = materialize_difficulty_handoff(
