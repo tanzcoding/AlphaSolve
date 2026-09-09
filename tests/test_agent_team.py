@@ -91,6 +91,7 @@ def test_default_agent_suite_loads_yaml_roles():
         "theorem_checker",
     } <= set(suite.agents)
     assert {"reasoning_subagent", "compute_subagent", "numerical_experiment_subagent"} <= set(suite.subagents)
+    assert "architecture_reviewer" not in suite.subagents
     assert "Agent" not in suite.agents["orchestrator"].tools
     assert "RequestResearchPlan" in suite.agents["orchestrator"].tools
     assert "Write" in suite.agents["orchestrator"].tools
