@@ -1,164 +1,167 @@
-"""--agent CLI 入口的最小单测：构造 + run_once 不崩，且不引入 solver 依赖。"""
+"""交互入口的会话连续性、工具装配和调试输出测试。"""
 from __future__ import annotations
 
-import ast
 import io
-from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from rich.console import Console
 
-from alphasolve.agent import AgentConfig
-from alphasolve.agent.ui.cli_app import AgentApp, make_print_debug_event_sink
-from alphasolve.llm.types import CompletionResponse, Message, ToolCall
+from alphasolve.agent import AgentRunError
+from alphasolve.agent.ui import cli_app
+from alphasolve.agent.ui.cli_app import AgentApp, make_print_debug_event_sink, make_repl_event_sink
 
 
-class _StubClient:
-    def complete(self, *, messages, tools, delta_sink=None):
-        return CompletionResponse(
-            message=Message(role="assistant", content="hello from stub"),
-            finish_reason="stop",
-        )
+class _FakeAgent:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+        self.calls = []
+        self.closed = False
+
+    def run(self, task, **kwargs):
+        self.calls.append((task, kwargs))
+        return SimpleNamespace(final_answer="done", messages=["visible trace"], trace=[])
+
+    def close(self):
+        self.closed = True
 
 
-class _ToolUsingStubClient:
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def complete(self, *, messages, tools, delta_sink=None):
-        self.calls += 1
-        if self.calls == 1:
-            return CompletionResponse(
-                message=Message(
-                    role="assistant",
-                    reasoning_content="I should inspect note.md.",
-                    tool_calls=(ToolCall(id="read-1", name="Read", args={"path": "note.md"}),),
-                ),
-                finish_reason="tool_calls",
-            )
-        return CompletionResponse(
-            message=Message(role="assistant", content="debug complete"),
-            finish_reason="stop",
-        )
+@pytest.fixture
+def app(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli_app, "Agent", _FakeAgent)
+    application = AgentApp(project_dir=tmp_path, client_factory=lambda config: object())
+    yield application
+    application.close()
 
 
-class _SubagentUsingStubClient:
-    def __init__(self, config: AgentConfig, seen_tools: dict[str, list[list[str]]]) -> None:
-        self.config = config
-        self.seen_tools = seen_tools
-        self.calls = 0
-
-    def complete(self, *, messages, tools, delta_sink=None):
-        self.calls += 1
-        tool_names = [tool.name for tool in tools]
-        self.seen_tools.setdefault(self.config.name, []).append(tool_names)
-        if self.config.name == "agent:scoped_explorer":
-            return CompletionResponse(
-                message=Message(role="assistant", content="subagent evidence report"),
-                finish_reason="stop",
-            )
-        if self.calls == 1:
-            return CompletionResponse(
-                message=Message(
-                    role="assistant",
-                    tool_calls=(
-                        ToolCall(
-                            id="agent-1",
-                            name="Agent",
-                            args={
-                                "type": "scoped_explorer",
-                                "description": "inspect notes",
-                                "prompt": "Inspect note.md and report evidence.",
-                            },
-                        ),
-                    ),
-                ),
-                finish_reason="tool_calls",
-            )
-        assert any(message.role == "tool" and "subagent evidence report" in message.content for message in messages)
-        return CompletionResponse(
-            message=Message(role="assistant", content="parent complete"),
-            finish_reason="stop",
-        )
+def test_agent_app_preserves_one_agent_across_prompts_and_closes_it(app):
+    assert app.run_once("first", event_sink=None).final_answer == "done"
+    agent = app.build_agent()
+    app.run_once("second", event_sink=None)
+    assert app.build_agent() is agent
+    assert [task for task, kwargs in agent.calls] == ["first", "second"]
+    assert all("extra_messages" not in kwargs for task, kwargs in agent.calls)
+    app.close()
+    assert agent.closed
 
 
-def test_agent_app_run_once_returns_result(tmp_path: Path):
-    app = AgentApp(
-        project_dir=tmp_path,
-        client_factory=lambda config: _StubClient(),  # type: ignore[arg-type]
-    )
-    result = app.run_once("hi")
-    assert result.final_answer == "hello from stub"
+def test_repl_does_not_replay_visible_trace_as_native_history(app, monkeypatch):
+    prompts = iter(["first", "second", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(prompts))
+    app.run()
+    assert [task for task, kwargs in app.build_agent().calls] == ["first", "second"]
+    assert all("extra_messages" not in kwargs for task, kwargs in app.build_agent().calls)
 
 
-def test_agent_app_does_not_import_solver():
-    """spec §2: --agent 启动的入口必须独立于 solver。"""
-    import alphasolve.agent.ui.cli_app as cli_app_module
-    source = Path(cli_app_module.__file__).read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            assert not module.startswith("alphasolve.solver"), (
-                f"agent/ui/cli_app.py must not import alphasolve.solver.*; found: {module}"
-            )
-            assert not module.startswith("alphasolve.workflow"), (
-                f"agent/ui/cli_app.py must not import alphasolve.workflow.*; found: {module}"
-            )
-
-
-def test_agent_app_uses_default_tools(tmp_path: Path):
-    """AgentApp 默认使用 build_default_tool_registry 注册的工具集，并挂通用 Agent 工具。"""
-    app = AgentApp(
-        project_dir=tmp_path,
-        client_factory=lambda config: _StubClient(),  # type: ignore[arg-type]
-    )
-    config = app._build_config()
+def test_show_tools_uses_effective_definitions_without_running_agent(app):
+    definitions = app.tool_defs()
+    config = app.build_agent().config
+    assert [tool.name for tool in definitions] == list(config.tools)
     assert "Read" in config.tools
-    assert "Write" in config.tools
-    # Bash 或 Shell 二选一（按平台），至少有一个
-    assert "Bash" in config.tools or "Shell" in config.tools
     assert "Agent" in config.tools
+    assert "Bash" in config.tools or "Shell" in config.tools
     assert "general-purpose coding agent" in config.system_prompt
-    assert "Read" in config.system_prompt
-    assert "Write" in config.system_prompt
+    assert app.build_agent().calls == []
 
 
-def test_agent_app_agent_tool_launches_non_recursive_scoped_explorer(tmp_path: Path):
-    (tmp_path / "note.md").write_text("subagent should inspect this\n", encoding="utf-8")
-    seen_tools: dict[str, list[list[str]]] = {}
-    app = AgentApp(
-        project_dir=tmp_path,
-        client_factory=lambda config: _SubagentUsingStubClient(config, seen_tools),  # type: ignore[arg-type]
+def test_scoped_explorer_uses_its_tools_and_closes_child(app, monkeypatch):
+    children = []
+
+    def make_child(**kwargs):
+        child = _FakeAgent(**kwargs)
+        children.append(child)
+        return child
+
+    parent = app.build_agent()
+    monkeypatch.setattr(cli_app, "Agent", make_child)
+    result = parent.tool_registry.execute(
+        "Agent",
+        {"type": "scoped_explorer", "description": "inspect notes", "prompt": "Inspect notes."},
+        enabled=list(parent.config.tools),
     )
+    assert not result.is_error
+    assert "done" in result.content
+    assert len(children) == 1
+    assert "Agent" not in children[0].config.tools
+    assert "Read" in children[0].config.tools
+    assert children[0].closed
 
-    result = app.run_once("split the review", event_sink=None)
 
-    assert result.final_answer == "parent complete"
-    assert "Agent" in seen_tools["agent"][0]
-    assert "Agent" not in seen_tools["agent:scoped_explorer"][0]
-    assert "Read" in seen_tools["agent:scoped_explorer"][0]
-
-
-def test_print_debug_sink_shows_reasoning_and_tool_events(tmp_path: Path):
-    (tmp_path / "note.md").write_text("important note\n", encoding="utf-8")
-    client = _ToolUsingStubClient()
-    app = AgentApp(
-        project_dir=tmp_path,
-        client_factory=lambda config: client,  # type: ignore[arg-type]
-    )
+@pytest.mark.parametrize("sink_factory", [make_repl_event_sink, make_print_debug_event_sink])
+def test_event_sinks_keep_tool_results_literal_and_complete(sink_factory):
     output = io.StringIO()
     console = Console(file=output, force_terminal=False, color_system=None, width=100)
+    sink = sink_factory(console)
+    sink({"type": "tool_call", "name": "Read", "arguments": {"path": "note.md"}})
+    content = "[red]literal tool output[/red]\n" + "last line\n" * 150
+    sink({"type": "tool_result", "name": "Read", "content": content, "is_error": False})
+    rendered = output.getvalue()
+    assert "note.md" in rendered
+    assert "[red]literal tool output[/red]" in rendered
+    assert rendered.count("last line") == 150
 
-    result = app.run_once(
-        "inspect",
-        event_sink=make_print_debug_event_sink(console),
-    )
 
-    debug_text = output.getvalue()
-    assert result.final_answer == "debug complete"
-    assert "COT" in debug_text
-    assert "I should inspect note.md." in debug_text
-    assert "tool call: Read" in debug_text
-    assert "path: note.md" in debug_text
-    assert "tool result: Read" in debug_text
-    assert "important note" in debug_text
+def test_print_debug_sink_labels_only_visible_reasoning():
+    output = io.StringIO()
+    sink = make_print_debug_event_sink(Console(file=output, color_system=None))
+    sink({"type": "thinking", "content": "Checking the note.", "streamed": False})
+    assert "Visible reasoning" in output.getvalue()
+    assert "Checking the note." in output.getvalue()
+    assert "COT" not in output.getvalue()
+
+
+def test_fatal_failure_stops_repl_without_reading_another_prompt(app, monkeypatch):
+    prompts = []
+
+    def read_prompt(_):
+        prompts.append("prompt")
+        return "hello"
+
+    def fail_run(*args, **kwargs):
+        raise AgentRunError("subscription limit", trace=[], failure_kind="quota")
+
+    monkeypatch.setattr("builtins.input", read_prompt)
+    monkeypatch.setattr(app.build_agent(), "run", fail_run)
+    with pytest.raises(AgentRunError, match="subscription limit"):
+        app.run()
+    assert prompts == ["prompt"]
+    assert app.stop_event.is_set()
+
+
+def test_nonfatal_failure_allows_an_explicit_next_prompt(app, monkeypatch):
+    attempts = []
+    prompts = iter(["first", "second", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _: next(prompts))
+
+    def run(task):
+        attempts.append(task)
+        if len(attempts) == 1:
+            raise AgentRunError("temporary failure", trace=[])
+        return SimpleNamespace(final_answer="done")
+
+    monkeypatch.setattr(app.build_agent(), "run", run)
+    app.run()
+    assert attempts == ["first", "second"]
+    assert not app.stop_event.is_set()
+
+
+def test_cli_print_failure_closes_app_and_returns_nonzero(tmp_path, monkeypatch, capsys):
+    from alphasolve import cli
+
+    closed = []
+
+    def run_once(*args, **kwargs):
+        raise AgentRunError("subscription exhausted", trace=[], failure_kind="quota")
+
+    application = SimpleNamespace(run_once=run_once, close=lambda: closed.append(True))
+    monkeypatch.setattr(cli_app, "AgentApp", lambda **kwargs: application)
+    monkeypatch.setattr(cli, "_install_console_handler", lambda: None, raising=False)
+    monkeypatch.setattr(cli.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(cli, "_apply_env_sources", lambda **kwargs: None)
+    monkeypatch.setenv("ALPHASOLVE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.argv", ["alphasolve", "--agent", "-p", "hello"])
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 1
+    assert closed == [True]
+    assert "subscription exhausted" in capsys.readouterr().err

@@ -3,7 +3,6 @@ agent:
   name: verifier_citation
   system_prompt_path: ../../prompts/verifier_citation.md
   tier: balanced
-  max_turns: 40
   tools:
     - Read
     - ListDir

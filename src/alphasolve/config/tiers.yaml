@@ -1,3 +1,4 @@
-cheap: deepseek-flash
-balanced: deepseek-pro
-max: deepseek-pro
+# 各角色通过 tier 选择 preset；cheap 使用 Luna，balanced 和 max 使用 Sol。
+cheap: gpt-5.6-luna
+balanced: gpt-5.6-sol
+max: gpt-5.6-sol

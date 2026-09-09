@@ -39,6 +39,7 @@ Thumbs.db
 
 # Cache & testing
 .pytest_cache/
+.pytest-tmp/
 .codex_tmp/
 .pytest_tmp/
 _pytest_tmp/
@@ -57,6 +58,7 @@ logs/
 logs_as_html/
 log_as_html/
 benchmark_results*
+_benchmarks/
 
 # Runtime data
 pocketflow/

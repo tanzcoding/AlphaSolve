@@ -18,7 +18,6 @@ class AgentConfig:
     tools: tuple[str, ...] = ()
     tool_parameters: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_descriptions: dict[str, dict[str, Any]] = field(default_factory=dict)
-    max_turns: int = 80
     skills: tuple[str, ...] = ()
     when_to_use: str = ""
     system_prompt_template: str = ""
@@ -214,7 +213,6 @@ def _resolve_agent_config(
         tools=tuple(tools),
         tool_parameters=tool_parameters,
         tool_descriptions=tool_descriptions,
-        max_turns=int(raw.get("max_turns", base.max_turns if base else 80)),
         skills=tuple(skills),
         when_to_use=str(raw.get("when_to_use") or (base.when_to_use if base else "")),
         system_prompt_template=prompt_template,

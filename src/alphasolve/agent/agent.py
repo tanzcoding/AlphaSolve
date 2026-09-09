@@ -1,36 +1,21 @@
 from __future__ import annotations
 
-import inspect
+import json
+import queue
 import threading
 import time
-import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable
 
-from alphasolve.llm.types import (
-    ChatClient,
-    ChatDeltaSink,
-    CompletionResponse,
-    Message,
-    StreamDelta,
-    ToolCall,
-    ToolDef,
-)
+from alphasolve.llm.client import CodexClient
+from alphasolve.llm.types import Message, ToolCall
 
+from .codex_session import CodexSession, ToolRequest, classify_failure
 from .config import AgentConfig
-from .tools import ToolRegistry
+from .tools import ToolRegistry, ToolResult
 
 
-__all__ = [
-    "Agent",
-    "AgentContextPolicy",
-    "AgentContextPolicyInput",
-    "AgentEventSink",
-    "AgentRunError",
-    "AgentRunResult",
-    "ChatClient",
-    "ChatDeltaSink",
-]
+AgentEventSink = Callable[[dict[str, Any]], None]
 
 
 @dataclass(frozen=True)
@@ -42,565 +27,251 @@ class AgentRunResult:
 
 
 class AgentRunError(RuntimeError):
-    def __init__(self, message: str, *, trace: list[dict[str, Any]]):
+    def __init__(self, message: str, *, trace: list[dict[str, Any]], failure_kind: str = "runtime"):
         super().__init__(message)
         self.trace = trace
-
-
-AgentEventSink = Callable[[dict[str, Any]], None]
-
-
-@dataclass(frozen=True)
-class AgentContextPolicyInput:
-    """模型请求前消息选择/压缩策略的输入。
-
-    策略收到的是规范会话历史的快照，返回本轮真正发送给模型的消息；Agent 自身仍保留
-    未压缩的规范历史，用于 trace 和最终结果。
-    """
-
-    messages: list[Message]
-    config: AgentConfig
-    turn: int
-    trace: list[dict[str, Any]]
-
-
-AgentContextPolicy = Callable[[AgentContextPolicyInput], list[Message]]
-AgentContextResetProvider = Callable[[], str | None]
+        self.failure_kind = failure_kind
+        self.fatal = failure_kind in {"quota", "auth", "configuration"}
 
 
 class Agent:
-    def __init__(
-        self,
-        *,
-        config: AgentConfig,
-        client: ChatClient,
-        tool_registry: ToolRegistry,
-        event_sink: AgentEventSink | None = None,
-        stop_event: threading.Event | None = None,
-        caller_context: dict[str, Any] | None = None,
-        context_policy: AgentContextPolicy | None = None,
-        context_reset_provider: AgentContextResetProvider | None = None,
-    ) -> None:
+    """角色工具与可见 trace 的适配器；原生会话和上下文压缩交给 Codex。"""
+
+    def __init__(self, *, config: AgentConfig, client: CodexClient, tool_registry: ToolRegistry,
+                 event_sink: AgentEventSink | None = None, stop_event: threading.Event | None = None,
+                 caller_context: dict[str, Any] | None = None):
         self.config = config
         self.client = client
         self.tool_registry = tool_registry
-        self.last_trace: list[dict[str, Any]] = []
         self.event_sink = event_sink
         self.stop_event = stop_event
-        # 第二层不解释 caller_context 字段（parent_agent_id / depth / caller_tool_call_id
-        # 等）；第三层（或未来的扩展编排）通过它注入调用关系元数据，curator /
-        # verify_subagent 拦截策略据此识别调用树。原样拷贝一份避免外部修改。
-        self.caller_context = dict(caller_context) if caller_context else None
-        self.context_policy = context_policy
-        self.context_reset_provider = context_reset_provider
+        self.caller_context = dict(caller_context or {})
+        self.last_trace: list[dict[str, Any]] = []
+        self._session: CodexSession | None = None
+        self._usage_total = {"inputTokens": 0, "outputTokens": 0, "cachedInputTokens": 0}
+        self._turn = 0
 
-    def run(
-        self,
-        task: str,
-        *,
-        description: str = "",
-        extra_messages: list[Message] | None = None,
-    ) -> AgentRunResult:
-        messages: list[Message] = [Message(role="system", content=self.config.system_prompt)]
-        if extra_messages:
-            messages.extend(extra_messages)
-        messages.append(Message(role="user", content=task))
-
-        tools: list[ToolDef] = self.tool_registry.tool_defs(
-            self.config.tools, self.config.tool_parameters, self.config.tool_descriptions,
-        )
-        final_answer = ""
-        trace: list[dict[str, Any]] = [
-            {
-                "type": "run_start",
-                "agent": self.config.name,
-                "task": task,
-                "description": description,
-                "enabled_tools": list(self.config.tools),
-                "tool_parameters": self.config.tool_parameters,
-            }
-        ]
-        self.last_trace = trace
-        self._emit(trace[-1])
-
-        for turn in range(1, self.config.max_turns + 1):
-            if self.stop_event is not None and self.stop_event.is_set():
-                trace.append(
-                    {"type": "run_stopped", "turn": turn, "reason": "stop_event set"}
-                )
-                self.last_trace = trace
-                self._emit(trace[-1])
-                return AgentRunResult(
-                    final_answer="",
-                    messages=messages,
-                    trace=trace,
-                    turns=turn - 1,
-                )
-            reset_instruction = self._consume_context_reset()
-            if reset_instruction:
-                messages = [
-                    messages[0],
-                    Message(role="user", content=reset_instruction),
-                ]
-                trace.append(
-                    {
-                        "type": "context_reset",
-                        "turn": turn,
-                        "agent": self.config.name,
-                        "instruction": reset_instruction,
-                    }
-                )
-                self.last_trace = trace
-                self._emit(trace[-1])
-            turn_start = time.time()
-            trace.append({"type": "model_request", "agent": self.config.name, "turn": turn})
-            self._emit(trace[-1])
-            stream_state = {"reasoning": "", "content": ""}
-            delta_sink = self._make_delta_sink(turn=turn, state=stream_state) if self.event_sink is not None else None
-            try:
-                request_messages = self._messages_for_model(messages, turn=turn, trace=trace)
-                response = self._complete(messages=request_messages, tools=tools, delta_sink=delta_sink)
-            except KeyboardInterrupt:
-                trace.append(
-                    {"type": "run_stopped", "turn": turn, "reason": "keyboard_interrupt"}
-                )
-                self.last_trace = trace
-                self._emit(trace[-1])
-                return AgentRunResult(
-                    final_answer="",
-                    messages=messages,
-                    trace=trace,
-                    turns=turn - 1,
-                )
-            except Exception as exc:
-                trace.append(
-                    {
-                        "type": "run_error",
-                        "turn": turn,
-                        "error_type": type(exc).__name__,
-                        "error": str(exc),
-                        "error_detail": _format_exception_detail(exc),
-                    }
-                )
-                self.last_trace = trace
-                self._emit(trace[-1])
-                raise AgentRunError(f"agent {self.config.name} failed: {exc}", trace=trace) from exc
-            turn_elapsed = time.time() - turn_start
-
-            # R2：把本轮模型调用的 token 用量 emit 出去，供跨角色 token 聚合器累加。
-            # 这是纯观测事件（不进 trace 主流程语义），EventLogWriter 无 handler 会忽略它。
-            usage = response.usage
-            self._emit(
-                {
-                    "type": "usage",
-                    "agent": self.config.name,
-                    "turn": turn,
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                    "cached_tokens": usage.cached_tokens,
-                    "elapsed": turn_elapsed,
-                }
-            )
-
-            assistant_message = response.message
-            # Streaming reasoning/content may have been captured into stream_state but not into the
-            # final message (some providers stream deltas but return an empty body). Patch the
-            # captured text back so the trace and the persisted message both reflect what the user saw.
-            if stream_state["reasoning"] and not assistant_message.reasoning_content:
-                assistant_message = _replace_message(assistant_message, reasoning_content=stream_state["reasoning"])
-            if stream_state["content"] and not assistant_message.content:
-                assistant_message = _replace_message(assistant_message, content=stream_state["content"])
-
-            messages.append(assistant_message)
-            reasoning = assistant_message.reasoning_content
-            if reasoning:
-                trace.append(
-                    {
-                        "type": "thinking",
-                        "turn": turn,
-                        "content": reasoning,
-                        "streamed": bool(stream_state["reasoning"]),
-                        "elapsed": turn_elapsed,
-                    }
-                )
-                self._emit(trace[-1])
-            trace.append(
-                {
-                    "type": "assistant_message",
-                    "turn": turn,
-                    "content": assistant_message.content,
-                    "tool_call_count": len(assistant_message.tool_calls),
-                    "streamed_content": bool(stream_state["content"]),
-                    "raw": _message_to_log(assistant_message),
-                }
-            )
-            self._emit(trace[-1])
-
-            if self.stop_event is not None and self.stop_event.is_set():
-                trace.append(
-                    {"type": "run_stopped", "turn": turn, "reason": "stop_event set after model response"}
-                )
-                self.last_trace = trace
-                self._emit(trace[-1])
-                return AgentRunResult(
-                    final_answer="",
-                    messages=messages,
-                    trace=trace,
-                    turns=turn,
-                )
-
-            tool_calls = assistant_message.tool_calls
-            if not tool_calls:
-                final_answer = assistant_message.content
-                trace.append(
-                    {
-                        "type": "run_finish",
-                        "turn": turn,
-                        "final_answer": final_answer,
-                    }
-                )
-                self._emit(trace[-1])
-                return AgentRunResult(final_answer=final_answer, messages=messages, trace=trace, turns=turn)
-
-            for tool_call in tool_calls:
-                if self.stop_event is not None and self.stop_event.is_set():
-                    # Backfill placeholder tool messages for any tool_calls that
-                    # already have results so the message sequence is valid, plus
-                    # all remaining tool_calls that will not be executed.
-                    self._backfill_pending_tool_messages(
-                        messages, trace, turn, tool_calls, tool_call,
-                        reason="stop_event set before tool execution",
-                        include_current=True,
-                    )
-                    return AgentRunResult(
-                        final_answer="",
-                        messages=messages,
-                        trace=trace,
-                        turns=turn,
-                    )
-                name = tool_call.name
-                parsed_args = tool_call.args
-
-                # Handle JSON parse failures — return error to LLM instead of crashing
-                if tool_call.parse_error is not None:
-                    trace.append(
-                        {
-                            "type": "tool_call",
-                            "turn": turn,
-                            "tool_call_id": tool_call.id,
-                            "name": name,
-                            "arguments": parsed_args,
-                            "parse_error": tool_call.parse_error,
-                            "raw_args": tool_call.raw_args,
-                        }
-                    )
-                    self._emit(trace[-1])
-                    raw_preview = tool_call.raw_args[:500] if tool_call.raw_args else ""
-                    result_content = (
-                        f"Error: the arguments for tool '{name}' could not be parsed "
-                        f"as valid JSON.\n\n"
-                        f"{tool_call.parse_error}\n\n"
-                        f"Raw arguments (first 500 chars):\n{raw_preview}\n\n"
-                        "Please retry the tool call with properly formatted JSON arguments."
-                    )
-                    trace.append(
-                        {
-                            "type": "tool_result",
-                            "turn": turn,
-                            "tool_call_id": tool_call.id,
-                            "name": name,
-                            "content": result_content,
-                            "is_error": True,
-                            "stop_agent": False,
-                        }
-                    )
-                    self._emit(trace[-1])
-                    messages.append(
-                        Message(
-                            role="tool",
-                            content=result_content,
-                            tool_call_id=tool_call.id,
-                            name=name,
-                        )
-                    )
-                    continue
-
-                trace.append(
-                    {
-                        "type": "tool_call",
-                        "turn": turn,
-                        "tool_call_id": tool_call.id,
-                        "name": name,
-                        "arguments": parsed_args,
-                    }
-                )
-                self._emit(trace[-1])
-
-                result = self.tool_registry.execute(
-                    name,
-                    parsed_args,
-                    enabled=list(self.config.tools),
-                    tool_parameters=self.config.tool_parameters,
-                )
-                result_content = result.content
-                is_error = result.is_error
-                stop_agent = result.stop_agent
-                trace.append(
-                    {
-                        "type": "tool_result",
-                        "turn": turn,
-                        "tool_call_id": tool_call.id,
-                        "name": name,
-                        "content": result_content,
-                        "is_error": is_error,
-                        "stop_agent": stop_agent,
-                    }
-                )
-                self._emit(trace[-1])
-
-                messages.append(
-                    Message(
-                        role="tool",
-                        content=result_content,
-                        tool_call_id=tool_call.id,
-                        name=name,
-                    )
-                )
-                if stop_agent:
-                    # Remaining tool_calls in this assistant message have no tool
-                    # response, which would make the next LLM request fail with a
-                    # 400 "insufficient tool messages following tool_calls" error.
-                    # Append placeholder tool messages for every unprocessed call
-                    # so the message sequence stays valid for the API.
-                    self._backfill_pending_tool_messages(
-                        messages, trace, turn, tool_calls, tool_call,
-                        reason="agent stopped by prior tool",
-                    )
-                    final_answer = result.stop_answer or result_content
-                    trace.append(
-                        {
-                            "type": "run_finish",
-                            "turn": turn,
-                            "final_answer": final_answer,
-                            "reason": "tool_requested_stop",
-                        }
-                    )
-                    self._emit(trace[-1])
-                    return AgentRunResult(final_answer=final_answer, messages=messages, trace=trace, turns=turn)
-
-        trace.append(
-            {
-                "type": "run_error",
-                "turn": self.config.max_turns,
-                "error_type": "MaxTurnsExceeded",
-                "error": f"agent exceeded max_turns={self.config.max_turns}",
-            }
-        )
-        self.last_trace = trace
-        self._emit(trace[-1])
-        raise AgentRunError(f"agent exceeded max_turns={self.config.max_turns}", trace=trace)
-
-    def _backfill_pending_tool_messages(
-        self,
-        messages: list[Message],
-        trace: list[dict[str, Any]],
-        turn: int,
-        tool_calls: tuple[ToolCall, ...],
-        current_tool_call: ToolCall,
-        *,
-        reason: str,
-        include_current: bool = False,
-    ) -> None:
-        """Append placeholder tool messages for unexecuted tool_calls.
-
-        When the agent loop exits early (stop_event or stop_agent), any
-        remaining tool_calls in the current assistant message have no
-        corresponding tool response. Without backfill, the next LLM request
-        would fail with a 400 "insufficient tool messages following
-        tool_calls" error.
-
-        *include_current=False* (default, for stop_agent): *current_tool_call*
-        has already been executed and its tool message appended; backfill
-        starts from the next call.
-
-        *include_current=True* (for stop_event at loop top): *current_tool_call*
-        has NOT been executed; backfill includes it.
-        """
-        self.last_trace = trace
-        start_index = tool_calls.index(current_tool_call)
-        if not include_current:
-            start_index += 1
-        for skipped in tool_calls[start_index:]:
-            skipped_content = f"[skipped: {reason}]"
-            trace.append(
-                {
-                    "type": "tool_result",
-                    "turn": turn,
-                    "tool_call_id": skipped.id,
-                    "name": skipped.name,
-                    "content": skipped_content,
-                    "is_error": False,
-                    "stop_agent": False,
-                    "skipped": True,
-                }
-            )
-            self._emit(trace[-1])
-            messages.append(
-                Message(
-                    role="tool",
-                    content=skipped_content,
-                    tool_call_id=skipped.id,
-                    name=skipped.name,
-                )
-            )
-
-    def _consume_context_reset(self) -> str | None:
-        if self.context_reset_provider is None:
-            return None
-        try:
-            instruction = self.context_reset_provider()
-        except Exception:
-            return None
-        clean = str(instruction or "").strip()
-        return clean or None
-
-    def _messages_for_model(
-        self,
-        messages: list[Message],
-        *,
-        turn: int,
-        trace: list[dict[str, Any]],
-    ) -> list[Message]:
-        if self.context_policy is None:
-            return messages
-        original_count = len(messages)
-        request_messages = self.context_policy(
-            AgentContextPolicyInput(
-                messages=list(messages),
-                config=self.config,
-                turn=turn,
-                trace=trace,
-            )
-        )
-        if not request_messages:
-            raise ValueError("context_policy returned no messages")
-        if request_messages[0].role != "system":
-            raise ValueError("context_policy must preserve a leading system message")
-        trace.append(
-            {
-                "type": "context_policy",
-                "turn": turn,
-                "original_message_count": original_count,
-                "request_message_count": len(request_messages),
-            }
-        )
-        self._emit(trace[-1])
-        return request_messages
+    def _make_session(self) -> CodexSession:
+        return CodexSession(self.client.preset, self.config.system_prompt, self.tool_registry.tool_defs(
+            self.config.tools, self.config.tool_parameters, self.config.tool_descriptions))
 
     def _emit(self, event: dict[str, Any]) -> None:
-        if self.caller_context is not None and "caller_context" not in event:
-            event = {**event, "caller_context": self.caller_context}
-        if self.event_sink is None:
-            return
+        if self.caller_context:
+            event["caller_context"] = self.caller_context
+        if self.event_sink:
+            try:
+                self.event_sink(event)
+            except Exception:
+                pass
+
+    def run(self, task: str, *, description: str = "") -> AgentRunResult:
+        self._turn += 1
+        turn = self._turn
+        started = time.monotonic()
+        trace: list[dict[str, Any]] = []
+        messages = [Message(role="system", content=self.config.system_prompt), Message(role="user", content=task)]
+        self.last_trace = trace
+        final_answer = ""
+        usage = dict(self._usage_total)
+        flushed = False
+        visible_streams: dict[tuple[str, str | None], dict[int, str]] = {}
+        completed_items: set[tuple[str, str]] = set()
+
+        def record(kind: str, **values: Any) -> None:
+            event = {"type": kind, "agent": self.config.name, "turn": turn, **values}
+            trace.append(event)
+            self._emit(event)
+
+        def stream_content(parts: dict[int, str]) -> str:
+            return "\n".join(parts[index] for index in sorted(parts))
+
+        def completed_content(kind: str, content: str, item_id: str | None) -> str:
+            if content:
+                return content
+            parts = visible_streams.get((kind, item_id))
+            if parts is None:
+                parts = visible_streams.get((kind, None), {})
+            # 完成通知可能省略正文；已收到的可见增量仍属于这一项。
+            return stream_content(parts)
+
+        def emit_delta(kind: str, *, content: str, delta: str, item_id: str | None) -> None:
+            if delta:
+                self._emit({"type": kind + "_delta", "agent": self.config.name, "turn": turn,
+                            "content": content, "delta": delta, "item_id": item_id,
+                            "elapsed": time.monotonic() - started})
+
+        def finish_visible(kind: str, content: str, item_id: str | None, *, partial: bool = False) -> None:
+            stream_item_id = item_id
+            parts = visible_streams.pop((kind, item_id), None)
+            if parts is None:
+                # 兼容没有 itemId 的事件源；原生会话仍按各自的 item 隔离增量。
+                parts = visible_streams.pop((kind, None), None)
+                if parts is not None:
+                    stream_item_id = None
+                else:
+                    parts = {}
+            streamed = stream_content(parts)
+            if content.startswith(streamed):
+                # 某些项只发送完成事件，或只发送部分增量；补齐正文后再结束这一项。
+                emit_delta(kind, content=content, delta=content[len(streamed):], item_id=stream_item_id)
+                delivered = True
+            else:
+                delivered = False
+            if kind == "thinking":
+                if content:
+                    record("thinking", content=content, streamed=delivered, item_id=item_id,
+                           partial=partial, elapsed=time.monotonic() - started)
+            else:
+                record("assistant_message", content=content, tool_call_count=0,
+                       streamed_content=delivered, item_id=item_id, partial=partial,
+                       stream_item_id=stream_item_id,
+                       replace_content=streamed if not delivered else None,
+                       raw={"role": "assistant", "content": content})
+
+        def flush() -> None:
+            nonlocal flushed
+            if flushed:
+                return
+            flushed = True
+            elapsed = time.monotonic() - started
+            # 异常或中断时保留已经可见的片段，不重复发送已经完成的项。
+            for (kind, item_id), parts in list(visible_streams.items()):
+                finish_visible(kind, stream_content(parts), item_id, partial=True)
+            record("usage", input_tokens=max(0, usage.get("inputTokens", 0) - self._usage_total["inputTokens"]),
+                   output_tokens=max(0, usage.get("outputTokens", 0) - self._usage_total["outputTokens"]),
+                   cached_tokens=max(0, usage.get("cachedInputTokens", 0) - self._usage_total["cachedInputTokens"]), elapsed=elapsed)
+            self._usage_total = usage
+
+        record("run_start", task=task, description=description, enabled_tools=list(self.config.tools), tool_parameters=self.config.tool_parameters)
         try:
-            self.event_sink(event)
-        except Exception:
-            pass
+            if self.stop_event is not None and self.stop_event.is_set():
+                record("run_stopped", reason="stop_event set")
+                return AgentRunResult("", messages, trace, 0)
+            if self._session is None:
+                self._session = self._make_session()
+            record("model_request")
+            self._session.start_turn(task)
+            while True:
+                if self.stop_event is not None and self.stop_event.is_set():
+                    flush()
+                    record("run_stopped", reason="stop_event set")
+                    self.close()
+                    return AgentRunResult("", messages, trace, 1)
+                try:
+                    event = self._session.events.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if self.stop_event is not None and self.stop_event.is_set():
+                    flush()
+                    record("run_stopped", reason="stop_event set")
+                    self.close()
+                    return AgentRunResult("", messages, trace, 1)
+                if isinstance(event, ToolRequest):
+                    params = event.params
+                    name = params["tool"]
+                    call_id = params["callId"]
+                    args = params.get("arguments", {})
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except json.JSONDecodeError:
+                            args = None
+                    record("tool_call", name=name, tool_call_id=call_id, arguments=args)
+                    call = ToolCall(id=call_id, name=name, args=args if isinstance(args, dict) else {})
+                    messages.append(Message(role="assistant", tool_calls=(call,)))
+                    if not isinstance(args, dict):
+                        result = ToolResult("Tool arguments must be a JSON object; please retry.", is_error=True)
+                    else:
+                        # 留在当前线程：子代理的委派预算与调用上下文使用 threading.local。
+                        result = self.tool_registry.execute(name, args, enabled=list(self.config.tools), tool_parameters=self.config.tool_parameters)
+                    record("tool_result", name=name, tool_call_id=call_id, content=result.content,
+                           is_error=result.is_error, stop_agent=result.stop_agent)
+                    messages.append(Message(role="tool", name=name, tool_call_id=call_id, content=result.content))
+                    if not event.response.done():
+                        event.response.set_result({"contentItems": [{"type": "inputText", "text": result.content}], "success": not result.is_error})
+                    if result.stop_agent:
+                        final_answer = result.stop_answer or result.content
+                        flush()
+                        record("run_finish", final_answer=final_answer, reason="tool_requested_stop")
+                        self.close()
+                        return AgentRunResult(final_answer, messages, trace, 1)
+                    continue
+                method, data = event
+                if method == "_failure":
+                    raise data["error"]
+                if method == "thread/tokenUsage/updated":
+                    usage = data["tokenUsage"]["total"]
+                elif method in {"item/agentMessage/delta", "item/reasoning/summaryTextDelta"}:
+                    kind = "assistant" if method == "item/agentMessage/delta" else "thinking"
+                    item_id = data.get("itemId")
+                    if item_id is not None and (kind, item_id) in completed_items:
+                        continue
+                    parts = visible_streams.setdefault((kind, item_id), {})
+                    before = stream_content(parts)
+                    index = int(data.get("summaryIndex") or 0) if kind == "thinking" else 0
+                    parts[index] = parts.get(index, "") + data.get("delta", "")
+                    content = stream_content(parts)
+                    delta = content[len(before):] if content.startswith(before) else data.get("delta", "")
+                    emit_delta(kind, content=content, delta=delta, item_id=item_id)
+                elif method == "item/completed":
+                    item = data["item"]
+                    item_id = item.get("id")
+                    kind = {"agentMessage": "assistant", "reasoning": "thinking"}.get(item["type"])
+                    if kind is not None and item_id is not None:
+                        if (kind, item_id) in completed_items:
+                            continue
+                        completed_items.add((kind, item_id))
+                    if item["type"] == "agentMessage":
+                        text = completed_content("assistant", item.get("text", ""), item_id)
+                        messages.append(Message(role="assistant", content=text))
+                        record("codex_message", content=text, phase=item.get("phase"), item_id=item_id)
+                        finish_visible("assistant", text, item_id)
+                        if item.get("phase") != "commentary":
+                            final_answer = text
+                    elif item["type"] == "reasoning":
+                        summary = item.get("summary", [])
+                        parts = [part if isinstance(part, str) else part.get("text", "") for part in summary]
+                        content = completed_content("thinking", "\n".join(parts), item_id)
+                        if content:
+                            record("visible_reasoning", content=content, item_id=item_id)
+                        finish_visible("thinking", content, item_id)
+                    elif item["type"] == "contextCompaction":
+                        record("context_compacted")
+                elif method == "thread/compacted":
+                    record("context_compacted")
+                elif method == "error":
+                    record("codex_error", **data)
+                elif method == "turn/completed":
+                    native_turn = data["turn"]
+                    flush()
+                    if native_turn["status"] == "failed":
+                        error = native_turn.get("error") or {"message": "Codex turn failed"}
+                        raise AgentRunError(str(error), trace=trace, failure_kind=classify_failure(error))
+                    if native_turn["status"] == "interrupted":
+                        record("run_stopped", reason="Codex turn interrupted")
+                    else:
+                        record("run_finish", final_answer=final_answer)
+                    return AgentRunResult(final_answer, messages, trace, 1)
+        except KeyboardInterrupt:
+            flush()
+            record("run_stopped", reason="keyboard_interrupt")
+            self.close()
+            return AgentRunResult("", messages, trace, 1)
+        except Exception as exc:
+            flush()
+            kind = classify_failure(exc)
+            record("run_error", error_type=type(exc).__name__, error=str(exc), failure_kind=kind)
+            self.close()
+            raise AgentRunError(f"agent {self.config.name} failed: {exc}", trace=trace, failure_kind=kind) from exc
 
-    def _complete(
-        self,
-        *,
-        messages: list[Message],
-        tools: list[ToolDef],
-        delta_sink: ChatDeltaSink | None,
-    ) -> CompletionResponse:
-        if delta_sink is not None and _client_accepts_delta_sink(self.client):
-            return self.client.complete(messages=messages, tools=tools, delta_sink=delta_sink)
-        return self.client.complete(messages=messages, tools=tools)
+    def close(self) -> None:
+        if self._session is not None:
+            self._session.close()
+            self._session = None
+            self._usage_total = {"inputTokens": 0, "outputTokens": 0, "cachedInputTokens": 0}
 
-    def _make_delta_sink(self, *, turn: int, state: dict[str, str]) -> ChatDeltaSink:
-        started_at = time.time()
+    def __enter__(self) -> Agent:
+        return self
 
-        def sink(delta: StreamDelta) -> None:
-            if delta.type == "retry":
-                reasoning_chars = len(state["reasoning"])
-                content_chars = len(state["content"])
-                state["reasoning"] = ""
-                state["content"] = ""
-                self._emit(
-                    {
-                        "type": "model_retry",
-                        "turn": turn,
-                        "attempt": delta.attempt,
-                        "error_type": delta.error_type or "Error",
-                        "error": delta.error,
-                        "error_detail": delta.error_detail,
-                        "reasoning_chars": reasoning_chars,
-                        "content_chars": content_chars,
-                        "elapsed": time.time() - started_at,
-                        **({"fallback": delta.fallback} if delta.fallback else {}),
-                    }
-                )
-                return
-
-            text = delta.text
-            if not text:
-                return
-
-            if delta.type == "reasoning":
-                state["reasoning"] += text
-                self._emit(
-                    {
-                        "type": "thinking_delta",
-                        "turn": turn,
-                        "content": state["reasoning"],
-                        "delta": text,
-                        "elapsed": time.time() - started_at,
-                    }
-                )
-            elif delta.type == "text":
-                state["content"] += text
-                self._emit(
-                    {
-                        "type": "assistant_delta",
-                        "turn": turn,
-                        "content": state["content"],
-                        "delta": text,
-                        "elapsed": time.time() - started_at,
-                    }
-                )
-
-        return sink
-
-
-def _client_accepts_delta_sink(client: ChatClient) -> bool:
-    try:
-        signature = inspect.signature(client.complete)
-    except (TypeError, ValueError):
-        return False
-    return "delta_sink" in signature.parameters or any(
-        parameter.kind == inspect.Parameter.VAR_KEYWORD
-        for parameter in signature.parameters.values()
-    )
-
-
-def _replace_message(msg: Message, **changes: Any) -> Message:
-    from dataclasses import replace
-    return replace(msg, **changes)
-
-
-def _message_to_log(msg: Message) -> dict[str, Any]:
-    from dataclasses import asdict
-    return asdict(msg)
-
-
-def _format_exception_detail(exc: BaseException) -> str:
-    lines = [item.strip() for item in traceback.format_exception_only(type(exc), exc) if item.strip()]
-    detail = " ".join(lines)
-    cause = exc.__cause__ or exc.__context__
-    if cause is not None:
-        cause_lines = [item.strip() for item in traceback.format_exception_only(type(cause), cause) if item.strip()]
-        cause_detail = " ".join(cause_lines)
-        if cause_detail and cause_detail not in detail:
-            detail = f"{detail} | caused by {cause_detail}" if detail else cause_detail
-    return detail
+    def __exit__(self, *args: Any) -> None:
+        self.close()

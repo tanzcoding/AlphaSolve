@@ -2,37 +2,27 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
+from .client import CodexClient
 from .config.preset import Preset
 from .config.tier import TierMapping
-from .types import ChatClient
 
 
 class _AgentConfigLike(Protocol):
-    """Minimal shape consumed by the client factory.
-
-    Why: keeps alphasolve.llm decoupled from alphasolve.agent — any object
-    exposing ``effective_tier()`` works, including test doubles.
-    """
+    """只依赖 tier 选择接口，避免模型配置反向依赖角色实现。"""
 
     def effective_tier(self) -> str: ...
 
 
-def make_client(preset: Preset) -> ChatClient:
-    """Construct a ChatClient for the given preset. Dispatched on wire_format."""
-    if preset.wire_format == "openai_chat":
-        from .providers.openai_chat import OpenAIChatClient
-        return OpenAIChatClient(preset)
-    if preset.wire_format == "anthropic_messages":
-        from .providers.anthropic_messages import AnthropicMessagesClient
-        return AnthropicMessagesClient(preset)
-    raise ValueError(f"unknown wire_format: {preset.wire_format!r}")
+def make_client(preset: Preset) -> CodexClient:
+    """选择模型配置；此处不启动 Codex，也不读取登录凭据。"""
+    return CodexClient(preset)
 
 
 def make_client_factory(
     tier_mapping: TierMapping,
     presets: dict[str, Preset],
-) -> Callable[[_AgentConfigLike], ChatClient]:
-    def factory(agent_config: _AgentConfigLike) -> ChatClient:
+) -> Callable[[_AgentConfigLike], CodexClient]:
+    def factory(agent_config: _AgentConfigLike) -> CodexClient:
         tier = agent_config.effective_tier()
         preset_name = tier_mapping.preset_for(tier)
         if preset_name not in presets:

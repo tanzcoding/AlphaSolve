@@ -1,4 +1,4 @@
-"""第二层公共 API 烟雾测试：__all__ 完整可用且不泄漏 LLM 类型。"""
+"""Codex 适配器公共 API 测试：保留工具和角色接口，移除旧上下文策略。"""
 from __future__ import annotations
 
 
@@ -6,16 +6,15 @@ def test_agent_public_api_complete():
     """每个名字都能 from alphasolve.agent import；__all__ 与实际 export 一致。"""
     import alphasolve.agent as mod
     expected = {
-        # Agent runtime
+        # 运行时。
         "Agent", "AgentRunResult", "AgentRunError", "AgentEventSink",
-        "AgentContextPolicy", "AgentContextPolicyInput",
-        # Config
+        # 配置。
         "AgentConfig", "AgentSuite", "load_agent_config", "load_agent_suite",
-        # Tools
+        # 工具。
         "ToolRegistry", "ToolResult", "RegisteredTool",
         "build_default_tool_registry",
         "SubagentDispatcher", "register_agent_tool",
-        # Workspace
+        # 工作区。
         "Workspace", "WorkspaceLike", "PagedReadResult",
     }
     assert set(mod.__all__) == expected, (
@@ -26,13 +25,12 @@ def test_agent_public_api_complete():
         assert hasattr(mod, name), f"alphasolve.agent missing: {name}"
 
 
-def test_agent_does_not_reexport_llm_types():
-    """LLM 类型继续从 alphasolve.llm 拿；第二层不做中转。"""
+def test_agent_does_not_reexport_model_configuration_or_trace_types():
+    """模型配置和可见 trace 类型继续从 alphasolve.llm 获取。"""
     import alphasolve.agent as mod
     forbidden = {
-        "Message", "ChatClient", "ChatDeltaSink", "ToolDef", "ToolCall",
-        "CompletionResponse", "Usage", "StreamDelta", "FinishReason", "Role",
-        "Preset", "TierMapping", "WireFormat",
+        "Message", "CodexClient", "ToolDef", "ToolCall", "Usage", "Role",
+        "Preset", "TierMapping",
         "load_presets", "load_tier_mapping",
         "make_client", "make_client_factory",
     }
@@ -40,6 +38,13 @@ def test_agent_does_not_reexport_llm_types():
         assert not hasattr(mod, name), (
             f"{name} should only be in alphasolve.llm, not re-exported by alphasolve.agent"
         )
+
+
+def test_agent_does_not_export_legacy_context_policy():
+    import alphasolve.agent as module
+
+    assert not hasattr(module, "AgentContextPolicy")
+    assert not hasattr(module, "AgentContextPolicyInput")
 
 
 def test_agent_does_not_import_workflow():

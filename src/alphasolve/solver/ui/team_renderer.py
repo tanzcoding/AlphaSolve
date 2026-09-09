@@ -183,6 +183,15 @@ class TimelineEvent:
 
 
 @dataclass
+class SubagentActivity:
+    name: str
+    status: str = "running"
+    text: str = ""
+    started_at: float = field(default_factory=time.time)
+    updated_at: float = field(default_factory=time.time)
+
+
+@dataclass
 class WorkerRenderState:
     worker_id: str
     color: str
@@ -207,6 +216,7 @@ class WorkerRenderState:
     result_summary: str = ""
     model: str = ""
     solved_flash_until: float = 0.0
+    subagents: dict[str, SubagentActivity] = field(default_factory=dict)
 
 
 @dataclass
@@ -226,6 +236,7 @@ class OrchestratorRenderState:
     active_tool_args: str = ""
     output_buffer: str = ""
     model: str = ""
+    subagents: dict[str, SubagentActivity] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +735,43 @@ class PropositionTeamRenderer:
             self._append_team_log_locked(f"@worker-{worker_id} {line}")
             self._refresh_locked()
 
+    def update_subagent_activity(
+        self,
+        *,
+        parent: str,
+        worker_id: str | None,
+        session_id: str,
+        name: str,
+        status: str,
+        text: str,
+        append: bool = False,
+        finished: bool = False,
+        record: bool = False,
+    ) -> None:
+        """把委派活动显示在所属面板内，不改变父角色状态或 worker 计数。"""
+        with self._lock:
+            if parent == "worker":
+                state = self._ensure_worker(worker_id)
+            else:
+                state = self._curator if parent == "curator" else self._orchestrator
+            activity = state.subagents.pop(session_id, None) or SubagentActivity(name=name)
+            state.subagents[session_id] = activity
+            if append and activity.status == status:
+                activity.text = _tail_chars(activity.text + text, _THINKING_CHAR_LIMIT)
+            else:
+                activity.text = _tail_chars(text, _THINKING_CHAR_LIMIT)
+            activity.status = status
+            activity.updated_at = state.updated_at = time.time()
+            if record:
+                style = "red" if status == "failed" else "grey60"
+                self._append_event(state, EventType.LOG, f"↳ {name} {text}", style=style)
+            if finished:
+                state.subagents.pop(session_id, None)
+            if record or finished:
+                self._refresh_locked(force=True)
+            else:
+                self._refresh_stream_locked()
+
     def log_curator(
         self,
         message: str,
@@ -1122,7 +1170,7 @@ class PropositionTeamRenderer:
         return Text(_truncate(t.plain, width), style="")
 
     def _render_footer(self, *, width: int) -> Text:
-        text = "CoT streaming  |  tool ✓/✗  |  Ctrl+C stop"
+        text = "Visible reasoning  |  tool ✓/✗  |  Ctrl+C stop"
         return Text(_truncate(text, width), style="grey50")
 
     def _render_sidebar(self, *, width: int, height: int) -> "RenderableType":
@@ -1315,6 +1363,16 @@ class PropositionTeamRenderer:
         width: int,
     ) -> list[Text]:
         lines: list[Text] = []
+        if state.subagents:
+            # 深层委派优先占用有限的面板空间，父工具仍保留，子调用结束后恢复显示。
+            activity = next(reversed(state.subagents.values()))
+            elapsed = _fmt_elapsed(time.time() - activity.started_at)
+            lines.append(_text_line(
+                _truncate(f"↳ {activity.name}  {activity.status}  {elapsed}", width), "cyan"
+            ))
+            if activity.text:
+                lines.append(_text_line(_truncate(activity.text, width), "grey70"))
+            return lines
         if state.status == "thinking" and state.thinking_started_at > 0:
             thinking_elapsed = time.time() - state.thinking_started_at
             count_str = _fmt_count(state.thinking_token_count)
@@ -1358,6 +1416,8 @@ class PropositionTeamRenderer:
         return lines
 
     def _panel_subtitle(self, state: WorkerRenderState | OrchestratorRenderState) -> str:
+        if state.subagents:
+            return f"[cyan]{len(state.subagents)} subagents running[/]"
         if state is self._curator:
             status = "[red]last run failed[/]" if state.status == "failed" else "[grey50]live[/]"
             if state.active_tool:

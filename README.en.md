@@ -64,7 +64,7 @@ The tool boundary is also a role boundary: subagents return evidence or strategy
 
 ### 4. Self-Generated Knowledge Is Valuable but Expensive
 
-Worker and subagent traces contain useful route comparisons, discarded approaches, failure diagnoses, and local insights even when they do not become verified propositions. AlphaSolve experiments with extracting this self-generated knowledge, including selected CoT-derived research summaries, into `knowledge/` as navigation information for later Reviewers and Workers.
+Worker and subagent traces contain useful route comparisons, discarded approaches, failure diagnoses, and local insights even when they do not become verified propositions. AlphaSolve extracts visible messages, tool arguments and results, conclusions, and any available reasoning summaries into `knowledge/` for later Reviewers and Workers. Full private chain of thought is neither returned by GPT nor required by Curator.
 
 This material is not a substitute for `verified_propositions`: it may be wrong, duplicated, or stale, and must be used with citations, audits, and subsequent verification. Knowledge extraction, compression, conflict resolution, and context injection also consume substantial tokens and time, so this remains an expensive experimental capability. Future work will optimize summary granularity, incremental updates, and retrieval.
 
@@ -74,45 +74,56 @@ This material is not a substitute for `verified_propositions`: it may be wrong, 
 
 > This section is for mathematicians and math students with no programming experience. Just follow the steps.
 
-### 1. Get an API Key
+### 1. Install Codex CLI
 
-AlphaSolve calls an LLM for reasoning. **DeepSeek** is recommended (Chinese phone numbers can register directly; new users get free credits).
+On Windows, run the standalone installer from the OpenAI Codex README in PowerShell:
 
-1. Open https://platform.deepseek.com/ and create an account
-2. Go to "API Keys" → **Create API Key** → copy the key (looks like `sk-xxxxxxxxxxxxxxxx`). **The key is shown only once — save it immediately**
-
-Set the key as a permanent environment variable (one-time setup):
-
-On Windows:
-
-3. Press `Win`, type **environment**, open **Edit the system environment variables**
-4. Click **Environment Variables...** → under **System variables** click **New...**
-5. Variable name: `DEEPSEEK_API_KEY`, Variable value: paste your key
-6. Click **OK** on all windows
-
-On macOS/Linux, add to your shell profile:
-
-```bash
-export DEEPSEEK_API_KEY=your_key
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-### 2. Install
-
-On Windows, open Command Prompt (`Win + R` → `cmd` → Enter) and paste:
+On macOS or Linux:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tanzcoding/AlphaSolve/main/install.bat -o install.bat && install.bat
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
-On macOS/Linux:
+You may instead use `npm install -g @openai/codex`, or `brew install --cask codex` on macOS. After installing or updating, verify the command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tanzcoding/AlphaSolve/main/install.sh | sh
+codex --version
 ```
 
-The script installs uv, downloads AlphaSolve, and installs dependencies. No separate Python needed. After installation, `alphasolve` is available globally.
+AlphaSolve automatically uses a stable Codex CLI on PATH at version 0.153.4 or newer. If the version is older or is a prerelease, rerun the corresponding installer to update it. These commands come from the [official OpenAI Codex README](https://github.com/openai/codex#installing-and-running-codex-cli).
 
-### 3. Write a Math Problem
+### 2. Install the Current Checkout
+
+Python 3.10 or newer is required. We recommend [installing uv](https://docs.astral.sh/uv/getting-started/installation/) and then running this from your checked-out AlphaSolve repository:
+
+```bash
+uv tool install -e .
+```
+
+This installs AlphaSolve as an isolated command-line tool. If the shell still cannot find `alphasolve`, run `uv tool update-shell` and reopen the terminal. Install this development branch from its local checkout; remote `main` does not contain unmerged changes. See [Install from Source](#install-from-source) for pip, pipx, and development-virtual-environment alternatives.
+
+AlphaSolve pins the published **`openai-codex==0.147.0`** Python SDK. At runtime it prefers a separately installed `codex` CLI on PATH at or above the current compatibility baseline of 0.153.4, then falls back to the SDK's strictly matched 0.147.0 runtime when no compatible external CLI is found. The 0.147.0 SDK client has been verified to initialize, list models, and start a thread with `codex-cli 0.153.4`. Codex still handles the App Server, authentication, the model/tool loop, and context compaction. See the [official SDK documentation](https://learn.chatgpt.com/docs/codex-sdk).
+
+### 3. Sign In with ChatGPT
+
+All roles use the ChatGPT subscription by default. No `OPENAI_API_KEY` is needed:
+
+```bash
+codex login
+codex login status
+```
+
+Choose your ChatGPT account. An existing Codex CLI login can be reused; signing into ChatGPT in a browser alone does not authenticate the CLI. See [OpenAI authentication](https://learn.chatgpt.com/docs/auth).
+
+`ALPHASOLVE_CODEX_BIN` can select a specific CLI path; an invalid path, a version below 0.153.4, or a prerelease is a configuration error. When that variable is unset and no compatible CLI is on PATH, AlphaSolve falls back to the SDK's strictly matched 0.147.0 runtime. The SDK-internal runtime is not a general PATH installation, so use the standalone CLI from step 1 to sign in.
+
+AlphaSolve never automatically falls back to a paid API when subscription quota or authentication fails. A fatal Orchestrator or Curator failure stops the run and preserves completed results. Ordinary subagent failures remain tool errors returned to their callers.
+
+### 4. Write a Math Problem
 
 1. Create a new empty folder (e.g. `my_problem` on your desktop)
 2. Create a file named `problem.md` inside it (extension `.md`, not `.txt`)
@@ -128,14 +139,14 @@ $$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
 
 4. Save the file
 
-### 4. Run
+### 5. Run
 
 1. Right-click an empty area in the folder → **Open in Terminal**
 2. Type `alphasolve` and press Enter
 
-You'll see a live dashboard showing progress. Keep the terminal open. To stop, close the window or press `Ctrl+C`.
+A live dashboard shows progress. The first `Ctrl+C` stops workers; the second stops the entire program.
 
-### 5. Check Results
+### 6. Check Results
 
 After the run, the folder contains:
 
@@ -148,7 +159,7 @@ After the run, the folder contains:
 | `workspace/curation_records/research_plans/` | Reviewer research plans and execution records |
 | `workspace/progress_audits/` | Task/Process Audit checkpoints and evidence snapshots |
 
-Stopping and running `alphasolve` again in the same folder resumes automatically — verified propositions and the knowledge base are reused.
+Running `alphasolve` again in the same folder reuses verified propositions, knowledge, files, and logs while restarting the research workflow. This version does not resume each agent's previous Codex session.
 
 ---
 
@@ -311,9 +322,17 @@ alphasolve --agent
 # Single-shot Agent mode (non-interactive, prints result)
 alphasolve --agent -p "Prove that 1+2+...+n = n(n+1)/2"
 
-# Local demo (no LLM calls)
-alphasolve --demo
+# 查看最终工具定义，不调用模型
+alphasolve --agent --show-tools
+
+# 使用正式 generator 工具集
+alphasolve --agent --profile generator --worker-dir unverified_propositions/agent-test
+
+# 使用正式 orchestrator 工具集
+alphasolve --agent --profile orchestrator -p "Inspect research progress without starting workers."
 ```
+
+The `generator` and `orchestrator` profiles treat the current directory as an existing research workspace and reuse production prompts, tools, and permissions. Tools execute real actions; use a workspace copy for experiments. The orchestrator test profile does not automatically bootstrap workers. Interactive sessions retain one Codex thread until the process exits. `--debug -p` writes tool arguments, complete results, and visible reasoning to stderr while the final answer goes to stdout.
 
 ### CLI Options
 
@@ -332,73 +351,93 @@ alphasolve --demo
 | `--no_wolfram_prime` | false | Skip Wolfram kernel probe at startup |
 | `--no_dashboard` | false | Disable live terminal dashboard |
 | `--agent` | false | Enter interactive Agent REPL |
+| `--profile` | `generic` | Tool-test role: `generic`, `generator`, or `orchestrator` |
+| `--worker-dir` | `unverified_propositions/agent-test` | Generator's directory within the current workspace |
+| `--show-tools` | false | Print effective tool descriptions and schemas without model calls |
 | `-p` / `--print` | none | Single-shot Agent execution (requires `--agent`) |
 | `--list-tiers` | false | List tier mappings and exit |
 | `--list-presets` | false | List presets and exit |
 | `--env KEY=VAL` | none | Temporary env var override (repeatable) |
-| `--demo` | false | Local demo mode (no LLM calls) |
 
 ---
 
 ## Configuration
 
-### Model Selection: Tier + Preset System
+### Model Selection: Tiers and Presets
 
-AlphaSolve uses a **Tier → Preset → Model** three-layer mapping for model configuration, rather than per-agent hardcoding.
+Model selection still follows **role YAML `tier` → `tiers.yaml` → `presets.yaml`**. `cheap`, `balanced`, and `max` are role groups; all default to `gpt-5.6-luna` and do not imply different subscription prices.
 
-**Tiers** are three levels. Each agent declares its tier in its YAML config:
+| Tier | Default preset | Typical roles |
+|------|----------------|---------------|
+| `cheap` | `gpt-5.6-luna` | Curator, computation, numerical experiments |
+| `balanced` | `gpt-5.6-luna` | Generator, Verifier, Reviser, Research Reviewer |
+| `max` | `gpt-5.6-luna` | Orchestrator |
 
-| Tier | Default mapping | Usage |
-|------|----------------|-------|
-| `cheap` | `deepseek-flash` | Curator, compute subagent — background/computation tasks |
-| `balanced` | `deepseek-pro` | Generator, Verifier, Reviser — core reasoning tasks |
-| `max` | `qwen-3.7-max` | Orchestrator — needs strongest planning capability |
-
-**Presets** define specific API connection parameters (endpoint, key env var, model name, timeout, etc.). View all presets:
+The default `gpt-5.6-luna` preset sets `provider: chatgpt` and `model: gpt-5.6-luna`, leaving reasoning effort at the Codex default. The `gpt-5.6-sol` preset remains available for user tier mappings and pins `reasoning_effort: max`. Model and reasoning-effort availability depends on the signed-in account. Other built-in presets are `gpt-5.5`, `deepseek-flash`, `deepseek-pro`, `qwen-3.7-max`, and `moonshot-kimi`:
 
 ```bash
+alphasolve --list-tiers
 alphasolve --list-presets
 ```
 
-Built-in presets include: `deepseek-flash`, `deepseek-pro`, `parasail-deepseek`, `longcat`, `moonshot-kimi`, `volcano-doubao`, `volcano-deepseek`, `dashscope-deepseek`, `mimo`, `openrouter-gemini`, `deepseek-pro-anthropic`, `moonshot-kimi-anthropic`, `qwen-3.7-max`.
-
 ### Customizing Tiers and Presets
 
-Create `tiers.yaml` and `presets.yaml` under `~/.alphasolve/` to override built-in configs or add your own presets. Format follows the built-in files at `src/alphasolve/config/tiers.yaml` and `presets.yaml`.
-
-For example, to switch the `balanced` tier to Moonshot Kimi:
+User configuration lives in `~/.alphasolve/` (`%USERPROFILE%\.alphasolve\` on Windows). To pin a subscription model, add this to `presets.yaml`:
 
 ```yaml
-# ~/.alphasolve/tiers.yaml
-cheap: deepseek-flash
-balanced: moonshot-kimi
-max: qwen-3.7-max
+my-gpt:
+  provider: chatgpt
+  model: gpt-5.6-sol
+  reasoning_effort: max
 ```
 
-User files merge with built-in configs, with user files taking priority.
+Select it in `tiers.yaml`:
 
-### API Keys
+```yaml
+cheap: my-gpt
+balanced: my-gpt
+max: my-gpt
+```
 
-Set environment variables for the providers you use:
+Subscription and API roles can coexist in one run:
 
-| Env var | Provider |
-|---------|----------|
-| `DEEPSEEK_API_KEY` | DeepSeek |
-| `ARK_API_KEY` | Volcengine (ByteDance) |
-| `MOONSHOT_API_KEY` | Moonshot / Kimi |
-| `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope |
-| `LONGCAT_API_KEY` | LongCat |
-| `PARASAIL_API_KEY` | Parasail |
-| `OPENROUTER_API_KEY` | OpenRouter |
-| `MIMO_API_KEY` | Xiaomi MIMO |
+```yaml
+cheap: deepseek-flash
+balanced: gpt-5.6-luna
+max: gpt-5.6-sol
+```
 
-Keys can be provided in three ways (highest priority first):
+User configuration takes precedence; a same-named preset replaces the entire built-in record. `ALPHASOLVE_CONFIG_DIR` changes the model configuration directory. `--config` selects role/solver configuration, not the preset directory.
 
-1. `--env KEY=VAL` command-line flags
-2. System environment variables (the table above)
-3. `.env` files (project-local `.env` or `~/.alphasolve/.env`)
+### Optional Responses API Providers
 
-You can also change the config directory location with the `ALPHASOLVE_CONFIG_DIR` env var (default: `~/.alphasolve/`).
+All providers run through Codex. AlphaSolve no longer maintains Chat Completions or Anthropic Messages clients. A custom provider must support Codex's Responses protocol:
+
+```yaml
+my-deepseek:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
+  model: deepseek-v4-pro
+  reasoning_effort: high
+```
+
+Use the provider root as `base_url`, without `/responses`. An API is used and billed only when a tier explicitly selects its preset. These presets are never automatic subscription fallbacks.
+
+| Environment variable | Built-in API presets |
+|----------------------|----------------------|
+| `DEEPSEEK_API_KEY` | `deepseek-flash`, `deepseek-pro` |
+| `DASHSCOPE_API_KEY` | `qwen-3.7-max` |
+| `MOONSHOT_API_KEY` | `moonshot-kimi` (`kimi-k3`) |
+
+Keys can come from `--env KEY=VAL`, environment variables, or project/user `.env` files. Confirm that a provider's plan permits automation; a coding subscription and a normal API are different products.
+
+### Migrating Old Configuration
+
+- Keep role tiers, tool lists, descriptions, and parameter constraints.
+- Rewrite user presets: `wire_format`, `params`, and `timeout` were removed. Use `provider`, `model`, and `reasoning_effort`; custom API providers also need `base_url` and `api_key_env`.
+- Remove role `max_turns`. Codex manages context and compaction natively; this version has no per-model-request Python `context_policy` callback.
+- Verification rounds, worker concurrency, delegation depth, and tool timeouts still apply to the research workflow.
 
 ### Wolfram Engine (Optional)
 
@@ -412,7 +451,7 @@ export WOLFRAM_KERNEL=/path/to/WolframKernel
 
 ### Agent Configuration Files
 
-Each agent's system prompt, tool list, max_turns, etc. are configured in individual YAML files:
+Each agent's system prompt, tier, tool list, descriptions, and parameter constraints are configured in individual YAML files:
 
 ```
 src/alphasolve/solver/config/
@@ -455,6 +494,20 @@ Use `--config` to specify your own config directory (place same-named YAMLs to o
 
 ## System Architecture
 
+AlphaSolve keeps mathematical research orchestration and tool permissions while the official Codex SDK replaces the old unified provider and minimal agent loop. `agent.Agent` adapts sessions and events; it no longer implements a model/tool loop or history trimming.
+
+```text
+Role YAML → tier / preset → Codex session
+                           +-- ChatGPT subscription authentication
+                           +-- or custom Responses provider
+                           +-- native context management and model loop
+                           +-- AlphaSolve tools → Python handlers
+```
+
+Each AlphaSolve subagent gets its own Codex session. `SubagentService` continues to choose its role, model, and permissions. Native Codex subagent tools are disabled, and AlphaSolve file/research tools keep the same descriptions, constraints, and access checks. Sessions expose only the selected role's tools and do not inherit personal Codex plugins or tool configuration.
+
+Completed subagent traces are submitted to Curator, whose queue may batch nearby digest tasks. Curator consumes visible evidence and does not depend on private chain of thought.
+
 ```
 CLI (alphasolve)
     +-- AlphaSolve.run()                        [solver/app.py]
@@ -495,6 +548,8 @@ CLI (alphasolve)
 
 ## Install from Source
 
+Install Codex CLI as described in [Quick Start step 1](#1-install-codex-cli), and make sure Python 3.10 or newer is available. After cloning, choose one of these isolated installation methods:
+
 ```bash
 git clone https://github.com/tanzcoding/AlphaSolve.git
 cd AlphaSolve
@@ -502,16 +557,31 @@ cd AlphaSolve
 # uv (recommended)
 uv tool install -e .
 
-# pipx
+# Or pipx
 pipx install -e .
+```
 
-# pip (development mode)
-pip install -e .
+For development in the source environment, create and activate a virtual environment before using pip. On Windows PowerShell:
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+On macOS or Linux:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ---
 
 ## Debug Logs and Research State
+
+Traces contain visible text, tool calls/results, and reasoning summaries supplied by the service, never GPT's full private chain of thought. `AGENT TURN` log entries and usage `calls` count Codex interactions, each of which can include multiple internal model/tool steps.
 
 Running with `--debug` records detailed agent behavior traces under `logs/`. Runtime research state and reproducible evidence are stored under the problem folder's `workspace/`:
 

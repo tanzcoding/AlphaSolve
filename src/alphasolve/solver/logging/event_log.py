@@ -127,8 +127,9 @@ class EventLogWriter:
         args = event.get("arguments")
         raw = event.get("raw_arguments")
         tool_id = event.get("tool_call_id") or name
-        self._tool_times[tool_id] = time.time()
+        self._tool_times[tool_id] = time.monotonic()
         self._log.write(f"  [tool] {name}\n")
+        self._log.write(f"    started_at: {datetime.now().astimezone().isoformat(timespec='milliseconds')}\n")
         arg_str = _format_args(args, raw)
         if arg_str:
             self._log.write(f"    args: {arg_str}\n")
@@ -140,11 +141,12 @@ class EventLogWriter:
         elapsed = ""
         started = self._tool_times.pop(tool_id, None)
         if started is not None:
-            elapsed = f"{time.time() - started:.1f}s, "
+            elapsed = f"{time.monotonic() - started:.1f}s, "
         is_error = bool(event.get("is_error"))
         content = str(event.get("content") or "")
         tag = "error" if is_error else "result"
         short = _truncate_result(content, tool_name=name)
+        self._log.write(f"    finished_at: {datetime.now().astimezone().isoformat(timespec='milliseconds')}\n")
         self._log.write(f"    {tag} ({elapsed}{len(content)} bytes): {short}\n\n")
         self._log.flush()
 

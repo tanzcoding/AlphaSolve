@@ -1,20 +1,6 @@
-"""第二层：通用 coding agent runtime。
-
-依赖契约（phase C 后）：
-- 允许 import: alphasolve.llm.types（公共类型/协议如 ChatClient/Message/ToolDef）
-- 禁止 import: alphasolve.solver.*（反向依赖）
-- 禁止 import: alphasolve.llm.providers.*、alphasolve.llm.config.*（实现细节）
-
-包含子域：
-- agent.agent / agent.config / agent.tools / agent.workspace —— Agent runtime
-- agent.shell —— bash/PowerShell 探测与执行（Bash 工具的支撑）
-- agent.ui —— 第二层自己的 UI（单 agent 事件渲染 + --agent CLI REPL）
-
-公共 API（__all__）：见下。LLM 类型继续从 alphasolve.llm 拿，第二层不 re-export。
-"""
+"""Codex 会话适配、角色配置和 AlphaSolve 工具。"""
 from .agent import (
     Agent, AgentRunResult, AgentRunError, AgentEventSink,
-    AgentContextPolicy, AgentContextPolicyInput,
 )
 from .config import (
     AgentConfig, AgentSuite,
@@ -28,15 +14,14 @@ from .tools import (
 from .workspace import Workspace, WorkspaceLike, PagedReadResult
 
 __all__ = [
-    # Agent runtime
+    # 会话运行时。
     "Agent", "AgentRunResult", "AgentRunError", "AgentEventSink",
-    "AgentContextPolicy", "AgentContextPolicyInput",
-    # Config
+    # 角色配置。
     "AgentConfig", "AgentSuite", "load_agent_config", "load_agent_suite",
-    # Tools
+    # 工具注册与执行。
     "ToolRegistry", "ToolResult", "RegisteredTool",
     "build_default_tool_registry",
     "SubagentDispatcher", "register_agent_tool",
-    # Workspace
+    # 工作区访问。
     "Workspace", "WorkspaceLike", "PagedReadResult",
 ]

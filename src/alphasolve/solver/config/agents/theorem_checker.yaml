@@ -3,7 +3,6 @@ agent:
   name: theorem_checker
   system_prompt_path: ../../prompts/theorem_checker.md
   tier: balanced
-  max_turns: 60
   tools:
     - Read
     - ListDir

@@ -1,156 +1,103 @@
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
+import textwrap
 
 import pytest
 
-from alphasolve.llm.config.loader import load_presets
-from alphasolve.llm.config.preset import Preset
+from alphasolve.llm import load_presets
+from alphasolve.llm.config.loader import _user_config_dir
 
 
 def _write(path: Path, content: str) -> None:
     path.write_text(textwrap.dedent(content), encoding="utf-8")
 
 
-def test_loads_simple_preset(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    _write(repo_yaml, """
-        deepseek-pro:
-          wire_format: openai_chat
+def test_loads_subscription_with_codex_default_model(tmp_path):
+    path = tmp_path / "presets.yaml"
+    _write(path, "subscription: {provider: chatgpt}\n")
+    preset = load_presets(repo_path=path, user_path=None)["subscription"]
+    assert preset.provider == "chatgpt"
+    assert preset.model is None
+
+
+def test_loads_custom_responses_provider_without_reading_secret(tmp_path, monkeypatch):
+    monkeypatch.delenv("TEST_PROVIDER_KEY", raising=False)
+    path = tmp_path / "presets.yaml"
+    _write(path, """
+        research:
+          provider: deepseek
+          model: deepseek-v4-pro
           base_url: https://api.deepseek.com
-          api_key_env: DEEPSEEK_API_KEY
-          model: deepseek-v4-pro
+          api_key_env: TEST_PROVIDER_KEY
+          reasoning_effort: high
     """)
-    presets = load_presets(repo_path=repo_yaml, user_path=None)
-    assert "deepseek-pro" in presets
-    p = presets["deepseek-pro"]
-    assert isinstance(p, Preset)
-    assert p.model == "deepseek-v4-pro"
-    assert p.timeout == 3600  # default
-    assert p.params == {}     # default
+    preset = load_presets(repo_path=path, user_path=None)["research"]
+    assert preset.provider == "deepseek"
+    assert preset.reasoning_effort == "high"
+    assert preset.api_key_env == "TEST_PROVIDER_KEY"
 
 
-def test_loads_preset_with_params(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    _write(repo_yaml, """
-        kimi:
-          wire_format: openai_chat
-          base_url: https://api.moonshot.cn/v1
-          api_key_env: MOONSHOT_API_KEY
-          model: kimi-k2-thinking
-          timeout: 1800
-          params:
-            temperature: 1.0
-            extra_body: { reasoning: { effort: max } }
-    """)
-    presets = load_presets(repo_path=repo_yaml, user_path=None)
-    p = presets["kimi"]
-    assert p.timeout == 1800
-    assert p.params["temperature"] == 1.0
-    assert p.params["extra_body"]["reasoning"]["effort"] == "max"
+@pytest.mark.parametrize("field", ["wire_format", "params", "timeout"])
+def test_old_provider_config_reports_migration_instead_of_silent_fallback(tmp_path, field):
+    path = tmp_path / "presets.yaml"
+    _write(path, f"old: {{model: example, {field}: old-value}}\n")
+    with pytest.raises(ValueError, match="旧配置字段") as exc:
+        load_presets(repo_path=path, user_path=None)
+    assert field in str(exc.value)
+    assert "provider: chatgpt" in str(exc.value)
 
 
-def test_unknown_wire_format_raises(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    _write(repo_yaml, """
-        bad:
-          wire_format: gemini_native
-          base_url: https://example.com
-          api_key_env: X
-          model: y
-    """)
-    with pytest.raises(ValueError) as exc:
-        load_presets(repo_path=repo_yaml, user_path=None)
-    assert "gemini_native" in str(exc.value)
-    assert "bad" in str(exc.value)
+def test_subscription_rejects_api_authentication_fields(tmp_path):
+    path = tmp_path / "presets.yaml"
+    _write(path, "subscription: {provider: chatgpt, api_key_env: OPENAI_API_KEY}\n")
+    with pytest.raises(ValueError, match="Codex 登录"):
+        load_presets(repo_path=path, user_path=None)
 
 
-def test_missing_required_field_raises(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    _write(repo_yaml, """
-        broken:
-          wire_format: openai_chat
-          base_url: https://example.com
-          # missing api_key_env and model
-    """)
-    with pytest.raises(ValueError) as exc:
-        load_presets(repo_path=repo_yaml, user_path=None)
-    assert "broken" in str(exc.value)
+@pytest.mark.parametrize("missing", ["model", "base_url", "api_key_env"])
+def test_custom_provider_requires_explicit_endpoint_model_and_key_variable(tmp_path, missing):
+    fields = {
+        "provider": "custom", "model": "example-model", "base_url": "https://example.com/v1",
+        "api_key_env": "EXAMPLE_KEY",
+    }
+    fields.pop(missing)
+    path = tmp_path / "presets.yaml"
+    _write(path, "custom:\n" + "".join(f"  {key}: {value}\n" for key, value in fields.items()))
+    with pytest.raises(ValueError, match=missing):
+        load_presets(repo_path=path, user_path=None)
 
 
-def test_user_override_replaces_whole_record(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    user_yaml = tmp_path / "user_presets.yaml"
-    _write(repo_yaml, """
-        deepseek-pro:
-          wire_format: openai_chat
-          base_url: https://api.deepseek.com
-          api_key_env: DEEPSEEK_API_KEY
-          model: deepseek-v4-pro
-          params: { extra_body: { reasoning: { effort: max } } }
-    """)
-    _write(user_yaml, """
-        deepseek-pro:
-          wire_format: openai_chat
-          base_url: https://my-proxy.internal/deepseek
-          api_key_env: MY_PROXY_KEY
-          model: deepseek-v4-pro
-          timeout: 7200
-        # note: params absent → user wins, no merge from repo
-    """)
-    presets = load_presets(repo_path=repo_yaml, user_path=user_yaml)
-    p = presets["deepseek-pro"]
-    assert p.base_url == "https://my-proxy.internal/deepseek"
-    assert p.api_key_env == "MY_PROXY_KEY"
-    assert p.timeout == 7200
-    assert p.params == {}, "user-provided preset replaces wholesale, no field merge"
+@pytest.mark.parametrize("raw", ["reasoning_efffort: high", "model: 123", "provider: ''"])
+def test_invalid_field_does_not_select_unintended_defaults(tmp_path, raw):
+    path = tmp_path / "presets.yaml"
+    _write(path, f"invalid: {{{raw}}}\n")
+    with pytest.raises(ValueError, match="invalid"):
+        load_presets(repo_path=path, user_path=None)
 
 
-def test_user_adds_new_preset(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    user_yaml = tmp_path / "user_presets.yaml"
-    _write(repo_yaml, """
-        deepseek-pro:
-          wire_format: openai_chat
-          base_url: https://api.deepseek.com
-          api_key_env: DEEPSEEK_API_KEY
-          model: deepseek-v4-pro
-    """)
-    _write(user_yaml, """
-        my-claude:
-          wire_format: anthropic_messages
-          base_url: https://api.anthropic.com
-          api_key_env: ANTHROPIC_API_KEY
-          model: claude-opus-4
-    """)
-    presets = load_presets(repo_path=repo_yaml, user_path=user_yaml)
-    assert "deepseek-pro" in presets
-    assert "my-claude" in presets
-    assert presets["my-claude"].wire_format == "anthropic_messages"
+def test_user_override_replaces_whole_preset(tmp_path):
+    repo = tmp_path / "presets.yaml"
+    user = tmp_path / "user.yaml"
+    _write(repo, "selected: {provider: chatgpt, model: gpt-5.5, reasoning_effort: high}\n")
+    _write(user, "selected: {provider: chatgpt}\ncustom: {provider: chatgpt, model: gpt-5.5}\n")
+    presets = load_presets(repo_path=repo, user_path=user)
+    assert presets["selected"].model is None
+    assert presets["selected"].reasoning_effort is None
+    assert presets["custom"].model == "gpt-5.5"
 
 
-def test_user_path_nonexistent_is_ok(tmp_path):
-    repo_yaml = tmp_path / "presets.yaml"
-    _write(repo_yaml, """
-        x:
-          wire_format: openai_chat
-          base_url: u
-          api_key_env: K
-          model: m
-    """)
-    user_yaml = tmp_path / "does_not_exist.yaml"
-    presets = load_presets(repo_path=repo_yaml, user_path=user_yaml)
-    assert "x" in presets
+def test_missing_user_file_is_allowed(tmp_path):
+    repo = tmp_path / "presets.yaml"
+    _write(repo, "default: {}\n")
+    assert "default" in load_presets(repo_path=repo, user_path=tmp_path / "missing.yaml")
 
 
-def test_user_config_dir_resolves_env_var(tmp_path, monkeypatch):
+def test_user_config_directory_uses_override(tmp_path, monkeypatch):
     monkeypatch.setenv("ALPHASOLVE_CONFIG_DIR", str(tmp_path))
-    from alphasolve.llm.config.loader import _user_config_dir
     assert _user_config_dir() == tmp_path
 
 
-def test_user_config_dir_falls_back_to_home(monkeypatch):
+def test_user_config_directory_defaults_to_home(monkeypatch):
     monkeypatch.delenv("ALPHASOLVE_CONFIG_DIR", raising=False)
-    from alphasolve.llm.config.loader import _user_config_dir
     assert _user_config_dir() == Path.home() / ".alphasolve"

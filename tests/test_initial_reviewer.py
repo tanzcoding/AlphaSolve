@@ -1,18 +1,24 @@
 from __future__ import annotations
 
+import io
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 import alphasolve.solver as solver_pkg
+import alphasolve.solver.orchestrator as orchestrator_module
 from alphasolve.solver.cold_start import ColdStartRuntime
 from alphasolve.solver.subagent_service import SubagentService
 from alphasolve.agent import load_agent_suite
-from alphasolve.llm.types import CompletionResponse, Message
+from alphasolve.llm.types import Message
+from tests.response_fakes import CompletionResponse
 from alphasolve.solver.orchestrator import Orchestrator
 from alphasolve.solver.project import ProjectLayout
+from alphasolve.solver.ui.team_renderer import PropositionTeamRenderer
 
 
 def _response(content: str) -> CompletionResponse:
@@ -225,8 +231,9 @@ def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestra
 
     manager = Manager()
     runtime = ColdStartRuntime(layout=layout, max_workers=2, threshold=3)
+    progress = []
 
-    evidence = runtime.prepare(manager)
+    evidence = runtime.prepare(manager, progress_callback=lambda *event: progress.append(event))
 
     assert [item["worker_id"] for item in evidence] == ["worker-1", "worker-2"]
     assert all(hint is None for hint, _kwargs in manager.calls)
@@ -238,13 +245,107 @@ def test_cold_start_runtime_uses_verified_proposition_threshold_before_orchestra
         for _hint, kwargs in manager.calls
     )
     assert "first evidence" in runtime.context_for_orchestrator()
+    assert progress == [("waiting", 0, 2), ("completed", 2, 2)]
+    assert runtime.prepare(manager, progress_callback=lambda *event: progress.append(event)) == evidence
+    assert len(progress) == 2
 
     for index in range(3):
         (layout.verified_dir / f"verified-{index}.md").write_text("## Statement\n", encoding="utf-8")
     non_cold_manager = Manager()
 
-    assert ColdStartRuntime(layout=layout, max_workers=2, threshold=3).prepare(non_cold_manager) == []
+    warm_progress = []
+    assert ColdStartRuntime(layout=layout, max_workers=2, threshold=3).prepare(
+        non_cold_manager, progress_callback=lambda *event: warm_progress.append(event)
+    ) == []
     assert non_cold_manager.calls == []
+    assert warm_progress == []
+
+
+@pytest.mark.parametrize("ending", ["completed", "interrupted", "incomplete"])
+def test_orchestrator_shows_initial_worker_progress_before_agent_starts(tmp_path, monkeypatch, ending):
+    (tmp_path / "problem.md").write_text("# Problem\n", encoding="utf-8")
+    layout = ProjectLayout.create(tmp_path)
+    layout.ensure()
+    suite = load_agent_suite(Path(solver_pkg.__file__).parent / "config")
+    stop_event = threading.Event()
+    phases = []
+    logs = []
+    renderer = PropositionTeamRenderer(console=Console(file=io.StringIO()))
+    monkeypatch.setattr(
+        renderer, "update_orchestrator_phase",
+        lambda phase, **kwargs: phases.append((phase, kwargs["status"])),
+    )
+    monkeypatch.setattr(
+        renderer, "log", lambda _worker_id, message, **_kwargs: logs.append(message),
+    )
+
+    class Manager:
+        def __init__(self, **_kwargs):
+            self.results = []
+            self.solution_path = None
+            self.solved_result = None
+            self.active = {}
+            self.spawned = 0
+            self.waits = 0
+
+        def has_available_worker_slot(self):
+            return self.spawned < 2
+
+        def spawn(self, **_kwargs):
+            self.spawned += 1
+            worker_id = f"worker-{self.spawned}"
+            self.active[worker_id] = True
+            return {"spawned": True, "worker_id": worker_id}
+
+        def wait(self):
+            # 在阻塞等待入口检查，防止只在收尾时补画进度而让等待过程仍停在 starting。
+            assert phases[-1] == (f"cold start {self.waits}/2", "waiting")
+            assert "waiting for initial worker evidence before starting orchestrator" in logs[-1]
+            self.waits += 1
+            if self.waits == 2 and ending != "completed":
+                if ending == "interrupted":
+                    stop_event.set()
+                else:
+                    self.active.clear()
+                return {"completed": []}
+            worker_id = f"worker-{self.waits}"
+            self.active.pop(worker_id)
+            return {"completed": [{"worker_id": worker_id, "status": "partial"}]}
+
+        def close(self, **_kwargs):
+            pass
+
+    def build_agent(self, _manager, **_kwargs):
+        # 模型启动前必须已经展示准确的批次结束状态；所有模型行为均由本地假对象替代。
+        expected = {
+            "completed": ("cold start complete 2/2", "running"),
+            "interrupted": ("cold start interrupted 1/2", "stopped"),
+            "incomplete": ("cold start incomplete 1/2", "running"),
+        }[ending]
+        assert phases[-1] == expected
+        return SimpleNamespace(
+            run=lambda _task: SimpleNamespace(final_answer="done", trace=[]),
+            close=lambda: None,
+        )
+
+    monkeypatch.setattr(orchestrator_module, "WorkerManager", Manager)
+    monkeypatch.setattr(Orchestrator, "build_agent", build_agent)
+    monkeypatch.setattr(Orchestrator, "_task", lambda _self: "collect evidence")
+    orchestrator = Orchestrator(
+        layout=layout,
+        suite=suite,
+        client_factory=lambda _config: pytest.fail("progress display must not invoke a model"),
+        max_workers=2,
+        renderer=renderer,
+        stop_event=stop_event,
+    )
+
+    orchestrator.run()
+
+    assert phases[:3] == [("starting", "running"), ("cold start 0/2", "waiting"), ("cold start 1/2", "waiting")]
+    if ending != "completed":
+        assert not any("cold start complete" in phase for phase, _status in phases)
+        assert not any("initial workers finished 2/2" in message for message in logs)
 
 
 def test_reviewer_reasoning_delegate_receives_multilevel_strategy_contract():

@@ -1,7 +1,7 @@
 """第三层 agent 工具装配的权威入口。
 
-第二层只提供通用 coding agent runtime 和 ToolRegistry 注册接口；本模块负责把
-AlphaSolve 研究工作区、执行网关、编排等第三层工具注册到同一个 registry。
+Codex 负责代理运行循环；本模块把 AlphaSolve 研究工作区、执行网关和编排工具
+注册到同一个 registry，交互测试和正式求解共用这些定义与权限检查。
 """
 from __future__ import annotations
 
@@ -35,7 +35,6 @@ def clone_agent_config_with_tools(config: AgentConfig, tools: list[str] | tuple[
         tools=tuple(tools),
         tool_parameters=config.tool_parameters,
         tool_descriptions=config.tool_descriptions,
-        max_turns=config.max_turns,
         skills=config.skills,
         when_to_use=config.when_to_use,
         system_prompt_template=config.system_prompt_template,
@@ -272,6 +271,12 @@ def register_execution_tools(
             "Usage:\n"
             "- Run Python/SymPy/NumPy/SciPy code for symbolic/numeric computation.\n"
             "- The Python environment persists across calls within the same session.\n"
+            "- Each call has a 300-second total time budget, including queueing and interpreter startup.\n"
+            "- Timeout, cancellation, or interpreter failure can reset this session. If the result reports a session "
+            "reset, previous variables are gone; recreate the required setup before retrying.\n"
+            "- Python exceptions, including SystemExit and KeyboardInterrupt raised by your code, return tool errors.\n"
+            "- Standard output and standard error are combined. Output and error text are each limited to "
+            "1,048,576 characters, with a truncation notice; calculation continues after the output limit.\n"
             "- No filesystem access is permitted; use file tools separately if needed.\n"
             '- For regexes or strings containing backslashes, use raw strings (for example `r"\\{"`) '
             'or double escaping (for example `"\\\\{"`); never write `"\\{"`.'

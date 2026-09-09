@@ -9,8 +9,9 @@ worker / 各 subagent）emit 的 ``usage`` 事件，按 **role 分组**累加，
 
 线程安全：worker 在多线程里跑，聚合器内部用一把锁保护累加与文件写入。
 
-本模块只做"观测/累加"，不改变任何 agent 的执行语义。usage 数据源是
-``CompletionResponse.usage``（agent.py 在每轮模型返回后 emit 的 ``usage`` 事件）。
+本模块只做观测和累加，不改变代理执行语义。用量来自 Codex 适配器转换后的
+``usage`` 事件，内容限于服务实际报告的输入、输出与缓存 token。
+``calls`` 计数对应 Codex 交互轮次，不代表其内部模型请求次数。
 """
 from __future__ import annotations
 

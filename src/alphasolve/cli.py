@@ -14,7 +14,6 @@ if sys.platform == "win32":
         pass
 
 from alphasolve.solver import AlphaSolve
-from alphasolve.solver.demo import make_demo_client_factory
 from alphasolve.solver.policy import SolverPolicy
 
 _app: AlphaSolve | None = None
@@ -156,19 +155,21 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true",
                         help="Produce detailed solver trace logs under logs/. With --agent -p, print intermediate reasoning and tool events to stderr.")
     parser.add_argument("--agent", action="store_true",
-                        help="Run an interactive second-layer Agent REPL")
-    parser.add_argument("--profile", choices=["generic", "orchestrator"], default="generic",
+                        help="Chat with a Codex agent using AlphaSolve tools")
+    parser.add_argument("--profile", choices=["generic", "orchestrator", "generator"], default="generic",
                         help="Agent profile to use with --agent (default: generic)")
+    parser.add_argument("--worker-dir", default=None,
+                        help="Generator worker directory relative to the current workspace snapshot")
+    parser.add_argument("--show-tools", action="store_true",
+                        help="Print the selected agent's effective tool descriptions and schemas without calling a model")
     parser.add_argument("-p", "--print", dest="agent_prompt", metavar="PROMPT",
                         help="Run --agent once with PROMPT and print the final answer")
-    parser.add_argument("--demo", action="store_true",
-                        help="Run a deterministic local demo without calling an LLM API")
     parser.add_argument("--no_wolfram_prime", action="store_true",
                         help="Skip the startup Wolfram kernel probe")
     parser.add_argument("--no_dashboard", action="store_true",
                         help="Disable the live terminal dashboard")
     parser.add_argument("--tool_executor_size", type=int, default=None,
-                        help="Number of Python execution worker processes (default: from agents.yaml)")
+                        help="Maximum concurrent Python executions (default: from agents.yaml)")
     parser.add_argument("--max_orchestrator_restarts", type=int, default=None,
                         help="Maximum Ralph-loop orchestrator restarts (default: from agents.yaml or 5)")
     parser.add_argument("--list-tiers", action="store_true",
@@ -184,8 +185,12 @@ def main() -> None:
         parser.error("-p/--print can only be used with --agent")
     if args.profile != "generic" and not args.agent:
         parser.error("--profile can only be used with --agent")
+    if args.show_tools and not args.agent:
+        parser.error("--show-tools can only be used with --agent")
+    if args.worker_dir is not None and (not args.agent or args.profile != "generator"):
+        parser.error("--worker-dir requires --agent --profile generator")
 
-    from alphasolve.agent import load_agent_suite
+    from alphasolve.agent import AgentRunError, load_agent_suite
 
     PACKAGE_ROOT = Path(__file__).resolve().parent
     from alphasolve.llm import load_presets, load_tier_mapping, make_client_factory
@@ -210,7 +215,11 @@ def main() -> None:
         presets = load_presets(repo_path=presets_path, user_path=user_presets)
         for name in sorted(presets):
             p = presets[name]
-            print(f"  {name:<28} {p.wire_format:<22} {p.model}")
+            effort = p.reasoning_effort or "(Codex default)"
+            print(
+                f"  {name:<28} {p.provider:<22} "
+                f"{p.model or '(Codex default)'}  reasoning={effort}"
+            )
         return
 
     if args.list_tiers:
@@ -232,12 +241,9 @@ def main() -> None:
     config_path = Path(args.config).resolve() if args.config else PACKAGE_ROOT / "solver" / "config"
     suite = load_agent_suite(config_path)
 
-    if args.demo:
-        client_factory = make_demo_client_factory()
-    else:
-        tier_mapping = load_tier_mapping(repo_path=tiers_path, user_path=user_tiers)
-        presets = load_presets(repo_path=presets_path, user_path=user_presets)
-        client_factory = make_client_factory(tier_mapping, presets)
+    tier_mapping = load_tier_mapping(repo_path=tiers_path, user_path=user_tiers)
+    presets = load_presets(repo_path=presets_path, user_path=user_presets)
+    client_factory = make_client_factory(tier_mapping, presets)
 
     try:
         policy = SolverPolicy.from_settings(suite.settings).with_overrides(
@@ -259,6 +265,16 @@ def main() -> None:
                 project_dir=Path.cwd(),
                 client_factory=client_factory,
             )
+        elif args.profile == "generator":
+            from alphasolve.solver.role_agent_app import GeneratorAgentApp
+
+            _app = GeneratorAgentApp(
+                project_dir=Path.cwd(),
+                suite=suite,
+                client_factory=client_factory,
+                policy=policy,
+                worker_dir=args.worker_dir or "unverified_propositions/agent-test",
+            )
         else:
             from alphasolve.solver.orchestrator_agent_app import OrchestratorAgentApp
 
@@ -269,7 +285,12 @@ def main() -> None:
                 policy=policy,
             )
         try:
-            if args.agent_prompt is not None:
+            if args.show_tools:
+                import json
+                from dataclasses import asdict
+
+                print(json.dumps([asdict(tool) for tool in _app.tool_defs()], ensure_ascii=False, indent=2))
+            elif args.agent_prompt is not None:
                 if args.debug:
                     from rich.console import Console
 
@@ -280,6 +301,9 @@ def main() -> None:
                 print(result.final_answer or "")
             else:
                 _app.run()
+        except AgentRunError as exc:
+            print(str(exc), file=sys.stderr)
+            sys.exit(1)
         except KeyboardInterrupt:
             print("\nInterrupted.")
             sys.exit(130)

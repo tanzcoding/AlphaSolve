@@ -64,7 +64,7 @@ AlphaSolve 因此将两者分开：
 
 ### 4. Self-generated knowledge 有价值，但成本高
 
-Worker 和 subagent 在研究过程中产生的大量推理轨迹、失败比较、路线淘汰和局部洞见，即使没有形成 verified proposition，也可能对后续研究有价值。AlphaSolve 尝试将这类 self-generated knowledge（包括部分 CoT 派生的研究摘要）沉淀到 `knowledge/`，作为导航信息提供给后续 Reviewer 和 Worker。
+Worker 和 subagent 在研究过程中产生的大量推理轨迹、失败比较、路线淘汰和局部洞见，即使没有形成 verified proposition，也可能对后续研究有价值。AlphaSolve 将可见回答、工具参数和返回值、研究结论及可见推理摘要沉淀到 `knowledge/`，作为导航信息提供给后续 Reviewer 和 Worker。GPT 的完整内部思维链不会返回，也不是 Curator 的输入要求。
 
 这类知识不能替代 verified proposition：它可能包含错误、重复或过时判断，必须通过引用、审计和后续验证来使用。与此同时，知识提取、压缩、冲突处理和上下文注入的 token/时间成本较高，当前仍是成本较大的实验能力，后续会继续优化其摘要粒度、增量更新和检索方式。
 
@@ -74,33 +74,56 @@ Worker 和 subagent 在研究过程中产生的大量推理轨迹、失败比较
 
 > 本节面向没有编程经验的数学工作者和数学系学生，跟着做就行。
 
-### 1. 获取 API 密钥
+### 1. 安装 Codex CLI
 
-AlphaSolve 需要调用大语言模型来推理。推荐 **DeepSeek**（国内手机号直接注册，新用户有免费额度）。
+Windows 请在 PowerShell 中运行 OpenAI Codex README 给出的独立安装命令：
 
-1. 打开 https://platform.deepseek.com/ ，注册账号
-2. 进入「API Keys」页面，点击 **创建 API Key**，复制密钥（格式类似 `sk-xxxxxxxxxxxxxxxx`）——密钥只显示一次，立即保存
-
-把密钥设为永久环境变量（只需一次）：
-
-3. 按 `Win` 键，输入**「环境」**，打开**「编辑系统环境变量」**
-4. 点击**「环境变量(N)…」** → **「系统变量(S)」** 下点击**「新建(W)…」**
-5. 变量名：`DEEPSEEK_API_KEY`，变量值：粘贴密钥
-6. 全部点**「确定」**关闭
-
-### 2. 安装
-
-打开终端（`Win + R` → 输入 `cmd` → 回车），粘贴运行：
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tanzcoding/AlphaSolve/main/install.bat -o install.bat && install.bat
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
 ```
 
-> macOS / Linux：`curl -fsSL https://raw.githubusercontent.com/tanzcoding/AlphaSolve/main/install.sh | sh`
+macOS 或 Linux：
 
-脚本自动安装 uv、下载 AlphaSolve 和依赖。不需要单独装 Python。完成后 `alphasolve` 命令全局可用。
+```bash
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
+```
 
-### 3. 写一个数学问题
+也可以选用 `npm install -g @openai/codex`，macOS 还可用 `brew install --cask codex`。安装或更新后确认：
+
+```bash
+codex --version
+```
+
+AlphaSolve 会自动使用 PATH 中不低于 0.153.4 的 Codex CLI 稳定版；若版本更低或是预发布版，请重新运行对应安装命令更新。命令来源见 [OpenAI Codex 官方 README](https://github.com/openai/codex#installing-and-running-codex-cli)。
+
+### 2. 安装当前版本
+
+需要 Python 3.10 或更高版本。推荐先[安装 uv](https://docs.astral.sh/uv/getting-started/installation/)，再在已检出的 AlphaSolve 源码目录运行：
+
+```bash
+uv tool install -e .
+```
+
+这会把 AlphaSolve 安装为独立的命令行工具；如果终端还找不到 `alphasolve`，运行 `uv tool update-shell` 后重新打开终端。当前开发分支应从本地源码安装，远程 `main` 不包含尚未合并的改动。pip/pipx 和开发虚拟环境的替代命令见[从源码安装](#从源码安装)。
+
+AlphaSolve 固定依赖可发布的 **`openai-codex==0.147.0`** Python SDK。运行时会优先复用 PATH 中版本不低于当前兼容基线 0.153.4 的独立 `codex` CLI，以获得较新的模型和配置格式支持；找不到兼容版本时再回退到 SDK 严格配套的 0.147.0 运行时。当前已验证 SDK 0.147.0 客户端可与 `codex-cli 0.153.4` 完成初始化、模型查询和线程创建。App Server、模型与工具循环、认证和上下文压缩仍由 Codex 管理。[官方 SDK 文档](https://learn.chatgpt.com/docs/codex-sdk)
+
+### 3. 使用 ChatGPT 订阅登录
+
+默认所有角色都使用 ChatGPT 订阅，不需要设置 `OPENAI_API_KEY`。先通过 Codex CLI 完成登录：
+
+```bash
+codex login
+codex login status
+```
+
+登录时选择 ChatGPT 账号。若当前账号已经在 Codex CLI 中登录，可以复用登录状态。只有浏览器里的 ChatGPT 登录不等于已完成 Codex CLI 登录。[官方认证说明](https://learn.chatgpt.com/docs/auth)
+
+也可以用 `ALPHASOLVE_CODEX_BIN` 指定明确的 CLI 路径；路径无效、版本低于 0.153.4 或是预发布版时会直接报配置错误。未指定该变量且 PATH 中没有兼容版本时，AlphaSolve 才回退到 SDK 严格配套的 0.147.0 运行时。SDK 内部运行时不是通用的 PATH 安装方式，因此请使用第 1 步的独立 CLI 完成登录。
+
+订阅额度耗尽或登录失效时，AlphaSolve 不会自动切换到按量 API。Orchestrator 或 Curator 无法继续时，整次运行停止并保留已完成结果；普通子代理失败作为工具错误交回调用者。
+
+### 4. 写一个数学问题
 
 1. 新建一个空白文件夹（比如桌面上的 `my_problem`）
 2. 在里面新建文件 `problem.md`（注意后缀是 `.md` 不是 `.txt`）
@@ -115,14 +138,14 @@ $$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
 
 4. 保存文件
 
-### 4. 运行
+### 5. 运行
 
 1. 在文件夹空白处右击 → **「在终端中打开」**
 2. 输入 `alphasolve` 回车
 
-你会看到实时面板，显示各阶段进度。不要关终端，让它跑。想停就关窗口或 `Ctrl+C`。
+你会看到实时面板，显示各阶段进度。使用 `Ctrl+C` 请求停止：第一次停止 worker，第二次停止整个程序。
 
-### 5. 查看结果
+### 6. 查看结果
 
 运行结束后文件夹下会生成：
 
@@ -135,7 +158,7 @@ $$\sum_{k=1}^n k^3 = \left(\sum_{k=1}^n k\right)^2$$
 | `workspace/curation_records/research_plans/` | Research Reviewer 生成的 research plan 及执行记录 |
 | `workspace/progress_audits/` | Task/Process Audit 的 checkpoint 和证据快照 |
 
-中途停止后再在同一文件夹运行 `alphasolve`，会自动接续——已验证命题和知识库直接复用。
+中途停止后，在同一文件夹再次运行 `alphasolve` 会复用已验证命题、知识库、文件和日志，重新启动研究流程。第一版不恢复每个 agent 上一次的 Codex 会话。
 
 ---
 
@@ -292,15 +315,31 @@ alphasolve --debug
 # 关闭实时面板
 alphasolve --no_dashboard
 
-# 交互式 Agent REPL（第二层单 agent 模式）
+# 与使用 AlphaSolve 工具的 Codex 连续对话
 alphasolve --agent
 
 # 单次 Agent 模式（非交互，输出结果后退出）
 alphasolve --agent -p "证明 1+2+...+n = n(n+1)/2"
 
-# 本地 demo（不调用 LLM）
-alphasolve --demo
+# 查看实际工具描述和参数 schema，不登录、不调用模型
+alphasolve --agent --show-tools
+
+# 在 workspace 目录内，用正式 generator 的工具和权限进行测试
+alphasolve --agent --profile generator --worker-dir unverified_propositions/agent-test
+
+# 在 workspace 目录内，用真实 orchestrator 配置进行单次测试
+alphasolve --agent --profile orchestrator -p "检查当前研究进度，暂时不要启动 worker。" --debug
+
 ```
+
+`generic` 使用通用文件工具和限定范围的探索子代理。`generator` 和 `orchestrator`
+把当前目录当作研究 workspace，复用正式运行时的提示词、工具描述、参数约束和权限。
+generator 默认使用 `unverified_propositions/agent-test` 作为自己的工作目录，也可以通过
+`--worker-dir` 指定已有 worker。工具会真实执行，建议在 workspace 的副本中调试。
+orchestrator 测试入口不会自动运行冷启动 worker；只有模型显式调用相关工具时才会启动任务。
+交互模式在本次进程内保留同一个 Codex 会话；退出后再次启动会创建新会话。
+`--show-tools` 输出最终工具定义；`--debug -p` 在 stderr 展示工具参数、完整返回消息和
+可见推理，在 stdout 输出最终回答。
 
 ### CLI 参数一览
 
@@ -315,15 +354,17 @@ alphasolve --demo
 | `--subagent_max_depth` | 1 | subagent 最大递归深度 |
 | `--max_orchestrator_restarts` | 50 | Orchestrator 最大重启次数 |
 | `--debug` | false | 启用调试日志（`logs/` 下记录每个 agent 的详细 trace） |
-| `--tool_executor_size` | 4 | Python 执行进程池大小 |
+| `--tool_executor_size` | 4 | 同时执行的 Python 请求上限；闲置会话不占额度 |
 | `--no_wolfram_prime` | false | 跳过 Wolfram 探测 |
 | `--no_dashboard` | false | 关闭实时终端面板 |
 | `--agent` | false | 进入交互式 Agent REPL |
+| `--profile` | `generic` | 工具测试角色：`generic`、`generator` 或 `orchestrator` |
+| `--worker-dir` | `unverified_propositions/agent-test` | generator 在当前 workspace 内的工作目录 |
+| `--show-tools` | false | 输出所选角色的工具描述和参数 schema，不调用模型 |
 | `-p` / `--print` | 无 | 单次 Agent 执行（需配合 `--agent`） |
 | `--list-tiers` | false | 列出 tier 配置后退出 |
 | `--list-presets` | false | 列出 preset 配置后退出 |
 | `--env KEY=VAL` | 无 | 临时环境变量（可重复使用） |
-| `--demo` | false | 本地 demo（无 LLM 调用） |
 
 ---
 
@@ -331,61 +372,80 @@ alphasolve --demo
 
 ### 模型选择：Tier + Preset 系统
 
-AlphaSolve 用 **Tier → Preset → 模型** 的三层映射来配置模型，而不是逐个 agent 硬编码。
+仍然通过 **角色 YAML 的 `tier` → `tiers.yaml` → `presets.yaml`** 选择模型。`cheap`、`balanced`、`max` 是角色分组名称；默认都映射到 `gpt-5.6-luna`，并不代表三种不同的订阅价格。
 
-**Tier** 是三个档位，每个 agent 在 YAML 中声明自己属于哪个档位：
+| Tier | 默认映射 | 主要角色 |
+|------|----------|----------|
+| `cheap` | `gpt-5.6-luna` | Curator、计算和数值实验子代理 |
+| `balanced` | `gpt-5.6-luna` | Generator、Verifier、Reviser、Research Reviewer |
+| `max` | `gpt-5.6-luna` | Orchestrator |
 
-| Tier | 默认映射 | 用途 |
-|------|----------|------|
-| `cheap` | `deepseek-flash` | Curator、compute subagent 等后台/计算任务 |
-| `balanced` | `deepseek-pro` | Generator、Verifier、Reviser 等核心推理任务 |
-| `max` | `qwen-3.7-max` | Orchestrator（需要最强的规划能力） |
-
-**Preset** 定义具体的 API 连接参数（endpoint、密钥环境变量、模型名、超时等）。查看全部 preset：
+默认的 `gpt-5.6-luna` preset 使用 `provider: chatgpt` 和 `model: gpt-5.6-luna`，推理强度交给 Codex 默认值。`gpt-5.6-sol` preset 仍然保留，并固定 `reasoning_effort: max`，可在用户 tier 映射中选用。可用模型和思考强度取决于当前登录账号。内置配置还提供 `gpt-5.5`、`deepseek-flash`、`deepseek-pro`、`qwen-3.7-max` 和 `moonshot-kimi`；以命令输出为准：
 
 ```bash
+alphasolve --list-tiers
 alphasolve --list-presets
 ```
 
-当前内置 preset 包括：`deepseek-flash`、`deepseek-pro`、`parasail-deepseek`、`longcat`、`moonshot-kimi`、`volcano-doubao`、`volcano-deepseek`、`dashscope-deepseek`、`mimo`、`openrouter-gemini`、`deepseek-pro-anthropic`、`moonshot-kimi-anthropic`、`qwen-3.7-max`。
-
 ### 自定义 Tier 和 Preset
 
-在 `~/.alphasolve/` 下创建 `tiers.yaml` 和 `presets.yaml`，可以覆盖内置配置或新增自己的 preset。格式参考内置的 `src/alphasolve/config/tiers.yaml` 和 `presets.yaml`。
-
-例如，想把 `balanced` 档位换成 Moonshot Kimi：
+用户配置位于 `~/.alphasolve/`，Windows 对应 `%USERPROFILE%\.alphasolve\`。例如，为订阅固定模型和推理强度：
 
 ```yaml
-# ~/.alphasolve/tiers.yaml
-cheap: deepseek-flash
-balanced: moonshot-kimi
-max: qwen-3.7-max
+# ~/.alphasolve/presets.yaml
+my-gpt:
+  provider: chatgpt
+  model: gpt-5.6-sol
+  reasoning_effort: max
 ```
 
-用户文件与内置配置合并，用户文件优先。
+再在 `~/.alphasolve/tiers.yaml` 中选择它：
 
-### API 密钥
+```yaml
+cheap: my-gpt
+balanced: my-gpt
+max: my-gpt
+```
 
-根据使用的 provider 设置环境变量：
+同一次运行也可以混用订阅和普通 API，例如：
 
-| 环境变量 | Provider |
-|----------|----------|
-| `DEEPSEEK_API_KEY` | DeepSeek |
-| `ARK_API_KEY` | 火山引擎（字节跳动） |
-| `MOONSHOT_API_KEY` | Moonshot / Kimi |
-| `DASHSCOPE_API_KEY` | 阿里云 DashScope |
-| `LONGCAT_API_KEY` | LongCat |
-| `PARASAIL_API_KEY` | Parasail |
-| `OPENROUTER_API_KEY` | OpenRouter |
-| `MIMO_API_KEY` | 小米 MIMO |
+```yaml
+cheap: deepseek-flash
+balanced: gpt-5.6-luna
+max: gpt-5.6-sol
+```
 
-密钥可以通过三种方式提供（优先级从高到低）：
+用户文件优先于内置配置；同名 preset 按整条配置覆盖。`ALPHASOLVE_CONFIG_DIR` 可以改变模型配置目录。`--config` 选择的是角色与求解参数目录，不是 preset 目录。
 
-1. `--env KEY=VAL` 命令行参数
-2. 系统环境变量（即上面表格中的方式）
-3. `.env` 文件（项目目录下的 `.env` 或 `~/.alphasolve/.env`）
+### 普通 Responses API（可选）
 
-也可以通过 `ALPHASOLVE_CONFIG_DIR` 环境变量改变配置目录的位置（默认 `~/.alphasolve/`）。
+所有后端都通过 Codex 运行；AlphaSolve 不再维护 Chat Completions 或 Anthropic Messages 客户端。自定义 provider 必须支持 Codex 使用的 Responses 协议：
+
+```yaml
+my-deepseek:
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY
+  model: deepseek-v4-pro
+  reasoning_effort: high
+```
+
+`base_url` 填服务根地址，不包含 `/responses`。只有 tier 实际选择相应 preset 时，才会使用该 API 及其计费方式；它们不是订阅失败后的备用模型。
+
+| 环境变量 | 内置 API preset |
+|----------|-----------------|
+| `DEEPSEEK_API_KEY` | `deepseek-flash`、`deepseek-pro` |
+| `DASHSCOPE_API_KEY` | `qwen-3.7-max` |
+| `MOONSHOT_API_KEY` | `moonshot-kimi`（`kimi-k3`） |
+
+密钥可由 `--env KEY=VAL`、系统环境变量或项目/用户目录的 `.env` 提供。使用其他厂商套餐前，需要确认其允许自动化脚本；普通 API 与 coding 套餐不是同一个接入产品。
+
+### 旧配置迁移
+
+- 保留角色的 `tier`、工具列表、参数约束和工具描述。
+- 重新编写用户 `presets.yaml`：旧 `wire_format`、`params`、`timeout` 字段已移除；改用 `provider`、`model`、`reasoning_effort`，普通 API 另填 `base_url` 和 `api_key_env`。
+- 删除角色配置里的 `max_turns`。Codex 原生管理上下文与压缩，第一版没有每次模型请求前的 Python `context_policy` 回调。
+- `max_verify_rounds`、worker 并发上限、委派深度和工具超时仍然有效；这些是研究流程及工具执行的限制。
 
 ### Wolfram Engine（可选）
 
@@ -399,7 +459,7 @@ export WOLFRAM_KERNEL=/path/to/WolframKernel
 
 ### Agent 配置文件
 
-每个 agent 的 system prompt、工具列表、max_turns 等参数在独立 YAML 文件中配置：
+每个 agent 的 system prompt、tier、工具列表、工具描述和参数约束在独立 YAML 文件中配置：
 
 ```
 src/alphasolve/solver/config/
@@ -442,11 +502,25 @@ src/alphasolve/solver/config/
 
 ## 系统架构
 
+AlphaSolve 保留数学研究编排和工具权限，以官方 Codex SDK 替换原有统一 provider 和 minimal agent loop。`agent/` 中的 `Agent` 是会话与事件适配器，不再自行执行逐轮模型调用或历史裁剪。
+
+```text
+角色 YAML → tier / preset → Codex 会话
+                           ├── ChatGPT 订阅认证
+                           ├── 或自定义 Responses provider
+                           ├── 原生上下文管理与模型循环
+                           └── AlphaSolve 工具调用 → Python 工具处理函数
+```
+
+每个 AlphaSolve 子代理运行独立 Codex 会话，继续由 `SubagentService` 选择角色、模型和权限。Codex 原生子代理入口关闭；文件与研究工具共用 AlphaSolve 的描述、参数约束和访问检查。只提供角色实际允许的工具，不继承个人 Codex 插件或工具配置。
+
+普通子代理结束后，其可见 trace 进入 Curator 队列，队列可以把短时间内的多个 digest 合批。Curator 不依赖完整内部思维链。所有已完成的工具结果、成果和可见消息仍按 AlphaSolve 原有日志与研究状态流程保存。
+
 ```
 CLI (alphasolve)
     └── AlphaSolve.run()                        [solver/app.py]
             ├── Wolfram 内核探测
-            ├── ExecutionGateway (Python / Wolfram 进程池)
+            ├── ExecutionGateway (独立 Python 会话 / Wolfram 会话)
             ├── CuratorQueue (后台知识管理 agent)
             └── Orchestrator.run()              [solver/orchestrator.py]
                     └── WorkerManager
@@ -458,6 +532,12 @@ CLI (alphasolve)
 ```
 
 ### 核心组件
+
+`RunPython` 的每个会话按需启动独立解释器，变量在该会话内保留。同一会话串行执行，不同会话共享 `tool_executor_size` 个执行额度。子代理结束时关闭所属会话并清理临时目录；独立入口与正式求解使用同一个执行网关。
+
+每次请求的 300 秒预算包含排队、解释器启动、执行和结果返回。父进程监督截止时间、停止信号和解释器存活状态，能够终止 Python 死循环及原生库阻塞。派发前超时或取消不会执行代码，并保留已有变量；执行开始后的超时、取消或进程崩溃会重置该会话，工具结果明确提示变量丢失，下一次请求会重建解释器，不自动重试原代码。普通异常以及代码主动抛出的 `SystemExit`、`KeyboardInterrupt` 只返回工具错误，解释器仍可继续使用。
+
+计算不安装逐行 tracing。标准输出和标准错误合并捕获，过量输出带截断提示；详细工具日志记录带时区的开始与结束时间，耗时使用单调时钟，便于区分工具等待和工具调用之间的模型耗时。
 
 | 组件 | Tier | 作用 |
 |------|------|------|
@@ -478,6 +558,8 @@ CLI (alphasolve)
 
 ## 从源码安装
 
+先按[快速开始第 1 步](#1-安装-codex-cli)安装 Codex CLI，并准备 Python 3.10 或更高版本。克隆仓库后，推荐从下面两种隔离安装方式中任选一种：
+
 ```bash
 git clone https://github.com/tanzcoding/AlphaSolve.git
 cd AlphaSolve
@@ -485,18 +567,31 @@ cd AlphaSolve
 # uv（推荐）
 uv tool install -e .
 
-# pipx
+# 或 pipx
 pipx install -e .
+```
 
-# pip（开发模式）
-pip install -e .
+需要在源码环境里开发时，请先创建并激活虚拟环境，再用 pip 安装。Windows PowerShell：
+
+```powershell
+py -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e .
+```
+
+macOS 或 Linux：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
 ```
 
 ---
 
 ## 调试日志与研究状态
 
-使用 `--debug` 运行时，`logs/` 下会记录每个 agent 的详细行为 trace；运行时研究状态和可复现证据写入问题目录的 `workspace/`：
+使用 `--debug` 运行时，`logs/` 下会记录每个 agent 的可见行为 trace，包括工具参数、返回值、文本消息与服务提供的推理摘要，不包含 GPT 的完整内部 CoT。`alphasolve_run.log` 中的 `AGENT TURN` 和用量统计的 `calls` 对应一次 Codex 交互，包含其内部模型与工具循环。运行时研究状态和可复现证据写入问题目录的 `workspace/`：
 
 ```
 logs/{run_id}/

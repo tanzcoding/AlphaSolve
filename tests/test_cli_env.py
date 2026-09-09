@@ -136,3 +136,16 @@ def test_missing_env_files_is_ok(tmp_path):
         user_env_path=tmp_path / "also_missing.env",
         env_overrides=[],
     )
+
+
+def test_list_presets_shows_reasoning_effort(tmp_path, monkeypatch, capsys):
+    from alphasolve import cli
+
+    monkeypatch.setenv("ALPHASOLVE_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr("sys.argv", ["alphasolve", "--list-presets"])
+    cli.main()
+    output = capsys.readouterr().out
+    sol_line = next(line for line in output.splitlines() if "gpt-5.6-sol" in line)
+    luna_line = next(line for line in output.splitlines() if "gpt-5.6-luna" in line)
+    assert "reasoning=max" in sol_line
+    assert "reasoning=(Codex default)" in luna_line

@@ -217,13 +217,15 @@ class ProgressAuditQueue:
                 decisions = [self._read_checkpoint_decision(checkpoint_id) for checkpoint_id in requested]
                 if all(decision is not None for decision in decisions):
                     return [_compact_decision(decision) for decision in decisions if decision is not None]
+                if self.stop_event is not None and self.stop_event.is_set():
+                    return []
                 if deadline is not None:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         return []
-                    self._decision_ready.wait(timeout=remaining)
+                    self._decision_ready.wait(timeout=min(0.1, remaining))
                 else:
-                    self._decision_ready.wait()
+                    self._decision_ready.wait(timeout=0.1)
 
     def _record_outcome(self, payload: dict[str, Any]) -> tuple[bool, str | None]:
         worker_id = str(payload.get("worker_id") or "").strip()
@@ -354,7 +356,10 @@ class ProgressAuditQueue:
         audit_path.write_text(audit_text.strip() + "\n", encoding="utf-8")
         decision = self._finish_task(task, decision)
         try:
-            write_research_frontier_state(self.layout.workspace_dir)
+            # 投影会读取刚写入的状态文件；与下一次状态替换共用锁，避免 Windows
+            # 在读取句柄仍打开时拒绝原子替换。
+            with self._lock:
+                write_research_frontier_state(self.layout.workspace_dir)
         except OSError:
             pass
         curator_brief_path = _write_curator_brief(
@@ -429,7 +434,10 @@ class ProgressAuditQueue:
             tool_registry=build_solver_tool_registry(access),
             stop_event=self.stop_event,
         )
-        return agent.run(prompt, description="Periodic strategic progress audit").final_answer
+        try:
+            return agent.run(prompt, description="Periodic strategic progress audit").final_answer
+        finally:
+            agent.close()
 
     def _create_checkpoint_locked(
         self,

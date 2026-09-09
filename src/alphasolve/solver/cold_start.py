@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -26,6 +27,8 @@ COLD_START_RUBRIC = (
     "- The Statement is self-contained: every hypothesis it needs is stated in it\n"
     "- If the attempt stalled, a precise obstacle was recorded rather than a weakened restatement"
 )
+
+ColdStartProgressCallback = Callable[[str, int, int], None]
 
 
 def cold_start_verified_proposition_threshold(settings: dict[str, Any] | None) -> int:
@@ -64,7 +67,12 @@ class ColdStartRuntime:
     def is_cold_start(self) -> bool:
         return self.verified_count < self.threshold
 
-    def prepare(self, manager: WorkerManager) -> list[dict[str, Any]]:
+    def prepare(
+        self,
+        manager: WorkerManager,
+        *,
+        progress_callback: ColdStartProgressCallback | None = None,
+    ) -> list[dict[str, Any]]:
         """Collect initial direct-worker evidence before the orchestrator agent starts."""
         if self._prepared:
             return list(self._completed)
@@ -102,7 +110,17 @@ class ColdStartRuntime:
             verified_proposition_count=verified_count,
             verified_proposition_threshold=self.threshold,
         )
-        self._collect_initial_evidence(manager)
+        if progress_callback is not None:
+            progress_callback("waiting", 0, len(self._initial_worker_ids))
+        self._collect_initial_evidence(manager, progress_callback=progress_callback)
+        if progress_callback is not None:
+            if self.stop_event is not None and self.stop_event.is_set():
+                stage = "interrupted"
+            elif len(self._completed) == len(self._initial_worker_ids):
+                stage = "completed"
+            else:
+                stage = "incomplete"
+            progress_callback(stage, len(self._completed), len(self._initial_worker_ids))
         append_curation_event(
             self.layout,
             "cold_start_direct_batch_completed",
@@ -136,7 +154,12 @@ class ColdStartRuntime:
             + json.dumps(evidence, ensure_ascii=False)
         )
 
-    def _collect_initial_evidence(self, manager: WorkerManager) -> None:
+    def _collect_initial_evidence(
+        self,
+        manager: WorkerManager,
+        *,
+        progress_callback: ColdStartProgressCallback | None = None,
+    ) -> None:
         pending = set(self._initial_worker_ids)
         while pending and not (self.stop_event is not None and self.stop_event.is_set()):
             payload = manager.wait()
@@ -147,5 +170,7 @@ class ColdStartRuntime:
             ]
             self._completed.extend(completed)
             pending.difference_update(str(item.get("worker_id") or "") for item in completed)
+            if completed and pending and progress_callback is not None:
+                progress_callback("waiting", len(self._completed), len(self._initial_worker_ids))
             if not completed and not manager.active:
                 break

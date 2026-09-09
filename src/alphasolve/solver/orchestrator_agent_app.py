@@ -14,8 +14,8 @@ from typing import Callable
 from rich.console import Console
 
 from alphasolve.agent import (
+    Agent,
     AgentConfig,
-    AgentContextPolicy,
     AgentEventSink,
     AgentRunError,
     AgentRunResult,
@@ -24,7 +24,7 @@ from alphasolve.agent import (
 )
 from alphasolve.agent.ui._render_shared import RICH_CONSOLE
 from alphasolve.agent.ui.cli_app import make_repl_event_sink
-from alphasolve.llm.types import ChatClient, Message
+from alphasolve.llm import CodexClient
 
 from .cold_start import ColdStartRuntime
 from .orchestrator import Orchestrator, WorkerManager
@@ -44,14 +44,13 @@ class OrchestratorAgentApp:
         *,
         project_dir: str | Path,
         suite: AgentSuite,
-        client_factory: Callable[[AgentConfig], ChatClient],
+        client_factory: Callable[[AgentConfig], CodexClient],
         console: Console = RICH_CONSOLE,
         policy: SolverPolicy | None = None,
         max_workers: int | None = None,
         max_verify_rounds: int | None = None,
         verifier_scaling_factor: int | None = None,
         subagent_max_depth: int | None = None,
-        context_policy: AgentContextPolicy | None = None,
     ) -> None:
         self.project_dir = Path(project_dir).resolve()
         self.suite = suite
@@ -68,7 +67,6 @@ class OrchestratorAgentApp:
         self.max_verify_rounds = self.policy.max_verify_rounds
         self.verifier_scaling_factor = self.policy.verifier_scaling_factor
         self.subagent_max_depth = self.policy.subagent_max_depth
-        self.context_policy = context_policy
         self.stop_event = threading.Event()
         self.worker_stop_event = threading.Event()
         self._event_sink = make_repl_event_sink(console)
@@ -76,12 +74,16 @@ class OrchestratorAgentApp:
         self._manager: WorkerManager | None = None
         self._cold_start_runtime: ColdStartRuntime | None = None
         self._orchestrator: Orchestrator | None = None
+        self._agent: Agent | None = None
 
     def cancel(self) -> None:
         self.stop_event.set()
         self.worker_stop_event.set()
 
     def close(self) -> None:
+        if self._agent is not None:
+            self._agent.close()
+            self._agent = None
         if self._manager is not None:
             graceful = self.stop_event.is_set() and self._manager.solved_result is None
             self._manager.close(graceful=graceful)
@@ -94,7 +96,6 @@ class OrchestratorAgentApp:
         self.console.print("[bold cyan]AlphaSolve Orchestrator Agent[/bold cyan]")
         self.console.print(f"[dim]workspace snapshot:[/dim] {self.project_dir}")
         self.console.print("[dim]commands:[/dim] /exit, /quit, Ctrl+C")
-        history = []
         while not self.stop_event.is_set():
             try:
                 prompt = input("\norchestrator> ").strip()
@@ -105,25 +106,43 @@ class OrchestratorAgentApp:
             if prompt in {"/exit", "/quit"}:
                 break
             try:
-                result = self.run_once(prompt, extra_messages=history)
+                self.run_once(prompt)
             except AgentRunError as exc:
-                self.console.print(f"[red]{exc}[/red]")
+                if exc.fatal:
+                    raise
+                self.console.print(str(exc), style="red", markup=False)
                 continue
-            history = [m for m in result.messages if m.role != "system"]
 
     def run_once(
         self,
         prompt: str,
         *,
-        extra_messages=None,
         event_sink: AgentEventSink | None = _sentinel,
     ) -> AgentRunResult:
         """用真实 orchestrator 配置执行一次；不会主动创建 snapshot 缺失目录。"""
         if event_sink is _sentinel:
             event_sink = self._event_sink
+        agent = self.build_agent()
+        agent.event_sink = event_sink
+        try:
+            return agent.run(prompt)
+        except AgentRunError as exc:
+            if exc.fatal:
+                self.cancel()
+            raise
+
+    def tool_defs(self):
+        """展示真实 orchestrator 工具；不启动冷启动任务或模型请求。"""
+        agent = self.build_agent()
+        return agent.tool_registry.tool_defs(
+            agent.config.tools, agent.config.tool_parameters, agent.config.tool_descriptions,
+        )
+
+    def build_agent(self) -> Agent:
+        """同一个交互入口复用同一个 Codex 会话。"""
+        if self._agent is not None:
+            return self._agent
         manager = self._manager_or_create()
-        cold_start_runtime = self._cold_start_runtime_or_create()
-        cold_start_runtime.prepare(manager)
         orchestrator = self._orchestrator_or_create()
         subagents = SubagentService(
             suite=self.suite,
@@ -138,13 +157,12 @@ class OrchestratorAgentApp:
             stop_event=self.stop_event,
         )
         subagents.reviewer_state_provider = orchestrator._reviewer_frontier_projection
-        agent = orchestrator.build_agent(
+        self._agent = orchestrator.build_agent(
             manager,
             subagents=subagents,
-            event_sink=event_sink,
-            context_policy=self.context_policy,
+            event_sink=None,
         )
-        return agent.run(prompt, extra_messages=list(extra_messages or []))
+        return self._agent
 
     def _orchestrator_or_create(self) -> Orchestrator:
         if self._orchestrator is None:
@@ -185,6 +203,7 @@ class OrchestratorAgentApp:
                 curator_queue=None,
                 log_session=None,
                 stop_event=self.worker_stop_event,
+                run_stop_event=self.stop_event,
             )
         return self._manager
 

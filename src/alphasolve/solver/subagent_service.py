@@ -5,28 +5,24 @@ import json
 import threading
 import time
 import uuid
+from contextlib import ExitStack
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 from alphasolve.agent import (
     AgentRunResult,
     AgentConfig,
     Agent,
-    AgentContextPolicy,
     ToolRegistry,
     ToolResult,
 )
 from alphasolve.agent.tools import register_agent_tool
-from alphasolve.solver.execution.runners import run_python, run_wolfram
+from alphasolve.solver.execution import ExecutionGateway
 
 from .client_factory import ClientFactory
-from .context_policies import context_policy_for_subagent
 from .logging.event_log import compose_event_sinks
 from .tool_runtime import build_solver_tool_registry, clone_agent_config_with_tools, register_execution_tools
 from .workspace_access import RoleWorkspaceAccess
-
-if TYPE_CHECKING:
-    from alphasolve.solver.execution import ExecutionGateway
 
 
 def _last_plain_assistant_content(result: AgentRunResult) -> str:
@@ -77,11 +73,11 @@ class SubagentService:
         curator_context_provider: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
         log_session: "Any | None" = None,
         stop_event: threading.Event | None = None,
-        context_policy_factory: Callable[[str], AgentContextPolicy | None] | None = None,
         reviewer_history_path: "Path | None" = None,
         reviewer_state_provider: Callable[[], dict[str, Any] | None] | None = None,
         call_guard: Callable[[str, int], None] | None = None,
         allow_research_reviewer: bool = False,
+        event_sink: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.suite = suite
         self.client_factory = client_factory
@@ -94,12 +90,7 @@ class SubagentService:
         self.curator_context_provider = curator_context_provider
         self.log_session = log_session
         self.stop_event = stop_event
-        # 按 agent_type 返回 context_policy；默认用 context_policy_for_subagent。
-        # 调用方可传 None 完全禁用压缩，或传自定义 factory 覆盖默认行为。
-        self.context_policy_factory = (
-            context_policy_factory if context_policy_factory is not None
-            else context_policy_for_subagent
-        )
+        self.event_sink = event_sink
         # research_reviewer 跨调用记忆：每次 reviewer 返回后，把 final_answer 追加到此文件。
         # 下次 reviewer 启动时读这个文件，知道前几次 reviewer 推荐了什么、发现了什么。
         self.reviewer_history_path = reviewer_history_path
@@ -119,7 +110,7 @@ class SubagentService:
         return types
 
     def describe_type(self, agent_type: str) -> str:
-        """供第二层 register_agent_tool 用：返回 subagent 的 when_to_use 描述。
+        """供 register_agent_tool 用：返回 subagent 的 when_to_use 描述。
 
         与原 register_agent_tool 内部硬编码的查询逻辑一致：从 suite.subagents 拿
         config，返回 when_to_use（缺失时返回 agent_type 本身）。
@@ -366,6 +357,36 @@ class SubagentService:
             allowed = ", ".join(self.available_types())
             raise ValueError(f"unknown subagent type: {agent_type}. Allowed types: {allowed}")
         session_id = self._make_session_id(agent_type=agent_type, depth=depth)
+        with ExitStack() as cleanup:
+            gateway = self.execution_gateway
+            if gateway is None:
+                # 独立入口也必须通过执行网关；资源只归本次调用所有，不挂在工具注册表上。
+                gateway = ExecutionGateway()
+                cleanup.callback(gateway.close)
+            else:
+                cleanup.callback(gateway.close_session, session_id)
+            result = self._run_agent(
+                agent_type=agent_type,
+                description=description,
+                prompt=prompt,
+                depth=depth,
+                config=config,
+                session_id=session_id,
+                execution_gateway=gateway,
+            )
+        return session_id, result
+
+    def _run_agent(
+        self,
+        *,
+        agent_type: str,
+        description: str,
+        prompt: str,
+        depth: int,
+        config: AgentConfig,
+        session_id: str,
+        execution_gateway: ExecutionGateway,
+    ) -> AgentRunResult:
         effective_max_depth = self._effective_max_depth(agent_type, depth)
         registry = self._build_subagent_registry(
             depth=depth,
@@ -374,16 +395,14 @@ class SubagentService:
             max_depth=effective_max_depth,
             delegated_description=description,
             delegated_task=prompt,
+            execution_gateway=execution_gateway,
         )
         enabled_tools = list(config.tools)
         # research reviewer 的 reasoning delegate 没有 worker-local difficulty 目标，
         # 只返回对抗性证据，不写入 worker 的 difficulty_declaration。
         if self._is_reviewer_policy_delegate(agent_type):
             enabled_tools = [name for name in enabled_tools if name != "RecordDifficulty"]
-        # TODO(B-phase): 这段在 Python 里硬过滤 subagent 能用的文件/Agent 工具，
-        # 是 A 阶段 Task 8 之后第三层仅剩的运行时工具白名单逻辑。B 阶段会让
-        # extension API 用更通用的方式表达"按 file_access_factory / 递归 depth
-        # 决定的运行时工具开关"。参见 plan §8。
+        # 按文件访问模式和当前委派深度收紧工具列表，再交给 Codex 会话注册。
         if self.file_access_factory is not None:
             for name in ("Read", "ListDir", "Glob", "Grep"):
                 if name not in enabled_tools:
@@ -406,34 +425,39 @@ class SubagentService:
             config = clone_agent_config_with_tools(config, enabled_tools)
         subagent_sink = self.log_session.create_subagent_sink(agent_type) if self.log_session is not None else None
         # R2：把该 subagent 的 token 用量计入共享聚合器，按“父角色-subagent/类型”归组。
-        event_sink = subagent_sink
+        def relay_event(event: dict[str, Any]) -> None:
+            # 子调用保留独立身份，避免覆盖父 agent 正在等待的 Agent 工具状态。
+            if self.event_sink is not None:
+                self.event_sink({
+                    "type": "subagent_event",
+                    "session_id": session_id,
+                    "agent_type": agent_type,
+                    "event": event,
+                })
+
+        event_sink = compose_event_sinks(subagent_sink, relay_event)
         if self.log_session is not None:
             parent = "orchestrator" if self.session_prefix.startswith("orchestrator") else "worker"
             token_sink = self.log_session.token_usage_sink(f"{parent}-subagent/{agent_type}")
-            # 统一运行日志：逐次调用明细（token + CoT + 输出），同样按父角色-subagent/类型归组。
+            # 统一运行日志：逐次调用明细（token + 可见推理摘要 + 输出），同样按父角色-subagent/类型归组。
             run_sink = self.log_session.run_log_sink(f"{parent}-subagent/{agent_type}")
-            event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink)
+            event_sink = compose_event_sinks(subagent_sink, token_sink, run_sink, relay_event)
         previous_reviewer_budget = getattr(self._reviewer_delegate_budget, "value", None)
         if agent_type == "research_reviewer":
             self._reviewer_delegate_budget.value = dict(self.REVIEWER_LIMITED_DELEGATE_LIMITS)
+        agent = None
         try:
-            # 按 agent_type 决定是否注入上下文压缩策略
-            context_policy = None
-            if self.context_policy_factory is not None:
-                try:
-                    context_policy = self.context_policy_factory(agent_type)
-                except Exception:
-                    context_policy = None
             agent = Agent(
                 config=config,
                 client=self.client_factory(config),
                 tool_registry=registry,
                 event_sink=event_sink,
                 stop_event=self.stop_event,
-                context_policy=context_policy,
             )
             result = agent.run(prompt, description=description)
         finally:
+            if agent is not None:
+                agent.close()
             if agent_type == "research_reviewer":
                 if previous_reviewer_budget is None:
                     delattr(self._reviewer_delegate_budget, "value")
@@ -441,9 +465,7 @@ class SubagentService:
                     self._reviewer_delegate_budget.value = previous_reviewer_budget
             if subagent_sink is not None:
                 subagent_sink.close()
-            if self.execution_gateway is not None:
-                self.execution_gateway.close_session(session_id)
-        return session_id, result
+        return result
 
     def _build_subagent_registry(
         self,
@@ -454,6 +476,7 @@ class SubagentService:
         max_depth: int,
         delegated_description: str,
         delegated_task: str,
+        execution_gateway: ExecutionGateway | None = None,
     ) -> ToolRegistry:
         """子 agent 的工具集：第三层基础工具 + RunPython/RunWolfram。
 
@@ -463,6 +486,7 @@ class SubagentService:
 
         ``max_depth`` 由调用方（``_run``）用 ``_effective_max_depth`` 算好传入，一般等于
         ``self.max_depth``，但对 research_reviewer 会额外放宽一层，见该方法的说明。
+        执行网关由调用方管理；仅构建注册表不分配进程或临时目录。
         """
         if self.file_access_factory is not None:
             access = self.file_access_factory()
@@ -477,21 +501,19 @@ class SubagentService:
             )
         else:
             registry = ToolRegistry()
-        python_env: dict[str, Any] = {}
-        wolfram_session = {"session": None}
+        gateway = execution_gateway if execution_gateway is not None else self.execution_gateway
 
         register_execution_tools(
             registry,
             run_python_handler=lambda args: _python_tool(
                 args,
-                python_env,
-                execution_gateway=self.execution_gateway,
+                execution_gateway=gateway,
                 session_id=session_id,
+                stop_event=self.stop_event,
             ),
             run_wolfram_handler=lambda args: _wolfram_tool(
                 args,
-                wolfram_session,
-                execution_gateway=self.execution_gateway,
+                execution_gateway=gateway,
                 session_id=session_id,
             ),
         )
@@ -511,46 +533,29 @@ class SubagentService:
 
 def _python_tool(
     args: dict[str, Any],
-    env: dict[str, Any],
     *,
-    execution_gateway: "ExecutionGateway | None",
+    execution_gateway: ExecutionGateway | None,
     session_id: str,
+    stop_event: threading.Event | None = None,
 ) -> ToolResult:
-    code = str(args.get("code") or "")
-    if execution_gateway is not None:
-        result = execution_gateway.run_python(session_id=session_id, code=code, allow_filesystem=False)
-        return ToolResult(result.tool_content, is_error="[error]" in result.tool_content)
-    stdout, error = run_python(code, env=env, allow_filesystem=False)
-    payload = {}
-    if stdout:
-        payload["stdout"] = stdout
-    if error:
-        payload["error"] = error
-    return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=bool(error))
+    if execution_gateway is None:
+        return ToolResult("[error]\nRunPython requires an active execution session", is_error=True)
+    result = execution_gateway.run_python(
+        session_id=session_id,
+        code=str(args.get("code") or ""),
+        allow_filesystem=False,
+        stop_event=stop_event,
+    )
+    return ToolResult(result.tool_content, is_error=result.is_error)
 
 
 def _wolfram_tool(
     args: dict[str, Any],
-    session_ref: dict[str, Any],
     *,
-    execution_gateway: "ExecutionGateway | None",
+    execution_gateway: ExecutionGateway | None,
     session_id: str,
 ) -> ToolResult:
-    code = str(args.get("code") or "")
-    if execution_gateway is not None:
-        result = execution_gateway.run_wolfram(session_id=session_id, code=code)
-        return ToolResult(result.tool_content, is_error="[error]" in result.tool_content)
-    try:
-        if session_ref.get("session") is None:
-            from wolframclient.evaluation import WolframLanguageSession
-
-            session_ref["session"] = WolframLanguageSession()
-        output, error = run_wolfram(code, session=session_ref["session"])
-    except Exception as exc:
-        return ToolResult(json.dumps({"error": str(exc)}, ensure_ascii=False), is_error=True)
-    payload = {}
-    if output:
-        payload["output"] = output
-    if error:
-        payload["error"] = error
-    return ToolResult(json.dumps(payload, ensure_ascii=False), is_error=bool(error))
+    if execution_gateway is None:
+        return ToolResult("[error]\nRunWolfram requires an active execution session", is_error=True)
+    result = execution_gateway.run_wolfram(session_id=session_id, code=str(args.get("code") or ""))
+    return ToolResult(result.tool_content, is_error=result.is_error)

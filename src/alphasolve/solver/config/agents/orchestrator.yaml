@@ -3,7 +3,6 @@ agent:
   name: orchestrator
   system_prompt_path: ../../prompts/orchestrator.md
   tier: max
-  max_turns: 80
   tools:
     - ResearchProgressReview
     - InspectMarkdown

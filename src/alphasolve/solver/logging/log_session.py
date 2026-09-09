@@ -17,8 +17,8 @@ class LogSession:
 
     两档日志：
 
-    - **统一运行日志**（``alphasolve_run.log``，写在项目根）：逐次 LLM 调用明细
-      （token 区分输入/输出 + CoT + 输出）+ 定期汇总。**始终启用**，与 ``detail``
+    - **统一运行日志**（``alphasolve_run.log``，写在项目根）：逐次 Codex 交互明细
+      （token 区分输入/输出 + 可见推理摘要 + 输出）+ 定期汇总。**始终启用**，与 ``detail``
       无关，满足"默认就能看到 token 消耗"的诉求。
     - **详细 trace 日志**（``{base_dir}/{run_id}/`` 下的 orchestrator.log / worker /
       curator / subagent / search_tree，以及 token_usage.log/jsonl）：仅在

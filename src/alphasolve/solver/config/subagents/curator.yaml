@@ -3,7 +3,6 @@ agent:
   name: curator
   prompt_path: ../../prompts/curator.md
   tier: cheap
-  max_turns: 80
   when_to_use: Incrementally update the knowledge wiki from local traces and synthesize portfolio checkpoints by comparing worker outcomes and process audits.
   tools:
     - Read

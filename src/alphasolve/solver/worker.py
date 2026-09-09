@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from alphasolve.agent import AgentConfig, Agent, AgentEventSink, Workspace
 from alphasolve.solver.wolfram_state import AlphaSolveConfig
-from alphasolve.llm.types import Message
 from alphasolve.solver.logging.event_log import compose_event_sinks
 from alphasolve.solver.ui.dashboard import make_worker_event_sink
 from .project import ProjectLayout
@@ -211,32 +210,33 @@ class GeneratorCuratorContext:
     def __init__(self, *, worker_id: str, worker_rel: str) -> None:
         self.worker_id = worker_id
         self.worker_rel = worker_rel
-        self._reasoning_since_last_subagent: list[dict[str, Any]] = []
+        self._visible_context_since_last_subagent: list[dict[str, Any]] = []
 
     def record_event(self, event: dict[str, Any]) -> None:
-        if event.get("type") != "thinking":
+        if event.get("type") not in {"codex_message", "visible_reasoning"}:
             return
         content = str(event.get("content") or "")
         if not content.strip():
             return
-        self._reasoning_since_last_subagent.append(
+        self._visible_context_since_last_subagent.append(
             {
+                "type": event["type"],
                 "turn": event.get("turn"),
                 "content": content,
             }
         )
 
     def consume(self, subagent_call: dict[str, Any]) -> dict[str, Any]:
-        reasoning = self._reasoning_since_last_subagent
-        self._reasoning_since_last_subagent = []
+        visible_context = self._visible_context_since_last_subagent
+        self._visible_context_since_last_subagent = []
         return {
             "caller_role": "generator",
             "worker_id": self.worker_id,
             "worker_dir": self.worker_rel,
             "subagent_type": subagent_call.get("agent_type"),
             "subagent_session_id": subagent_call.get("session_id"),
-            "subagent_task": subagent_call.get("task"),
-            "reasoning_since_previous_subagent": reasoning,
+            "subagent_task": subagent_call.get("prompt"),
+            "visible_context_since_previous_subagent": visible_context,
         }
 
 
@@ -603,7 +603,6 @@ class Worker:
             name="review_verdict_judge",
             system_prompt=_REVIEW_VERDICT_PROMPT,
             tools=(),
-            max_turns=base_config.max_turns,
             tier=base_config.tier,
         )
         self._set_phase(role, status="thinking", model=self._model_name(config))
@@ -616,7 +615,10 @@ class Worker:
             event_sink=self._event_sink(role),
             stop_event=self.stop_event,
         )
-        result = agent.run(self._review_verdict_task(review_text, workflow_index=workflow_index, attempt_index=attempt_index))
+        try:
+            result = agent.run(self._review_verdict_task(review_text, workflow_index=workflow_index, attempt_index=attempt_index))
+        finally:
+            agent.close()
         verdict = _parse_review_verdict(result.final_answer)
         self.trace.append({
             "role": "review_verdict_judge",
@@ -690,12 +692,21 @@ class Worker:
             + content
         )
         try:
-            client = self.client_factory(config)
-            response = client.complete(
-                messages=[Message(role="user", content=prompt)],
-                tools=[],
+            naming_config = AgentConfig(
+                name="proposition_namer",
+                system_prompt="Return only a concise descriptive kebab-case filename for the supplied mathematical proposition.",
+                tools=(),
+                tier=config.tier,
             )
-            raw = (response.message.content or "").strip().lower()
+            with Agent(
+                config=naming_config,
+                client=self.client_factory(naming_config),
+                tool_registry=build_solver_tool_registry(
+                    RoleWorkspaceAccess.worker_read_only(self.workspace, self.worker_rel),
+                ),
+                stop_event=self.stop_event,
+            ) as agent:
+                raw = agent.run(prompt).final_answer.strip().lower()
             name = re.sub(r"[^a-z0-9-]", "-", raw).strip("-")
             name = re.sub(r"-{2,}", "-", name)
             if name and len(name) <= 140:
@@ -1314,7 +1325,7 @@ class Worker:
             self._worker_log_sink,
             self.log_session.token_usage_sink("worker") if self.log_session is not None else None,
             # 统一运行日志按具体角色细分（generator / verifier / reviser 等），
-            # 便于逐 agent 观察 token 与 CoT。
+            # 便于逐 agent 观察 token 与可见推理摘要。
             self.log_session.run_log_sink(f"worker/{role}") if self.log_session is not None else None,
         )
 

@@ -3,7 +3,6 @@ agent:
   name: verifier_failure_modes
   system_prompt_path: ../../prompts/verifier_failure_modes.md
   tier: balanced
-  max_turns: 80
   tools:
     - Read
     - ListDir

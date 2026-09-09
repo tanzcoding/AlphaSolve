@@ -9,11 +9,9 @@ from contextlib import contextmanager
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src")))
 
-import alphasolve.agent.agent as general_agent_module  # noqa: E402
 from alphasolve.agent import (  # noqa: E402
     AgentConfig,
     Agent,
-    AgentContextPolicyInput,
     ToolRegistry,
     ToolResult,
     Workspace,
@@ -21,7 +19,8 @@ from alphasolve.agent import (  # noqa: E402
     load_agent_config,
 )
 from alphasolve.agent.workspace import READ_PAGE_DEFAULT_LINES, READ_PAGE_MAX_LINES  # noqa: E402
-from alphasolve.llm.types import CompletionResponse, Message, StreamDelta, ToolCall  # noqa: E402
+from tests.response_fakes import CompletionResponse, StreamDelta
+from alphasolve.llm.types import Message, ToolCall  # noqa: E402
 
 
 def _resp(content: str = "", tool_calls: tuple[ToolCall, ...] = (), finish_reason: str = None, reasoning_content: str = "") -> CompletionResponse:
@@ -82,37 +81,6 @@ def test_general_agent_can_write_and_read_workspace_file():
         _assert_agent_can_write_and_read_workspace_file(tmp_path)
 
 
-def test_agent_context_policy_controls_model_request_without_mutating_history():
-    seen_messages: list[list[Message]] = []
-
-    class CapturingClient:
-        def complete(self, *, messages, tools, delta_sink=None):
-            seen_messages.append(list(messages))
-            return _resp("done")
-
-    def policy(payload: AgentContextPolicyInput) -> list[Message]:
-        assert payload.turn == 1
-        assert payload.messages[-1].content == "full user task"
-        return [
-            payload.messages[0],
-            Message(role="user", content="compressed user task"),
-        ]
-
-    agent = Agent(
-        config=AgentConfig(name="policy-test", system_prompt="system", max_turns=1),
-        client=CapturingClient(),
-        tool_registry=ToolRegistry(),
-        context_policy=policy,
-    )
-
-    result = agent.run("full user task")
-
-    assert result.final_answer == "done"
-    assert seen_messages[0][-1].content == "compressed user task"
-    assert result.messages[-2].content == "full user task"
-    assert any(event["type"] == "context_policy" for event in result.trace)
-
-
 def test_default_read_tool_defaults_to_250_lines_reports_total_and_supports_read_all():
     with local_test_dir("read_pages") as tmp_path:
         (tmp_path / "long.md").write_text(
@@ -165,7 +133,7 @@ def test_general_agent_emits_streaming_delta_events():
             name="streaming",
             system_prompt="You stream.",
             tools=(),
-            max_turns=1,
+
         ),
         client=client,
         tool_registry=ToolRegistry(),
@@ -180,78 +148,6 @@ def test_general_agent_emits_streaming_delta_events():
     assert [event["delta"] for event in assistant_deltas] == ["done"]
     assistant_final = [event for event in result.trace if event["type"] == "assistant_message"][0]
     assert assistant_final["streamed_content"] is True
-
-
-def test_general_agent_resets_stream_state_on_retry_delta():
-    class RetryStreamingClient:
-        def complete(self, *, messages, tools, delta_sink=None):
-            del messages, tools
-            assert delta_sink is not None
-            delta_sink(StreamDelta(type="text", text="fresh answer"))
-            return _resp("fresh answer", reasoning_content="fresh reasoning")
-
-    events = []
-    agent = Agent(
-        config=AgentConfig(
-            name="retry-stream",
-            system_prompt="You stream.",
-            tools=(),
-            max_turns=1,
-        ),
-        client=RetryStreamingClient(),
-        tool_registry=ToolRegistry(),
-        event_sink=events.append,
-    )
-
-    result = agent.run("Retry a stream.")
-
-    assert result.final_answer == "fresh answer"
-    assistant_deltas = [event["content"] for event in events if event["type"] == "assistant_delta"]
-    assert assistant_deltas == ["fresh answer"]
-
-
-def test_general_agent_normalizes_reasoning_alias_before_tool_followup():
-    class AliasReasoningClient:
-        def __init__(self):
-            self.calls = 0
-            self.second_request_messages = None
-
-        def complete(self, *, messages, tools):
-            del tools
-            self.calls += 1
-            if self.calls == 1:
-                return _resp(
-                    reasoning_content="use the edit tool",
-                    tool_calls=(
-                        ToolCall(id="call_side_effect", name="side_effect", args={}),
-                    ),
-                )
-            self.second_request_messages = list(messages)
-            return _resp("done")
-
-    registry = ToolRegistry()
-    registry.register(
-        name="side_effect",
-        description="Record a side effect.",
-        parameters={"type": "object", "properties": {}, "required": []},
-        handler=lambda _args: ToolResult("ok"),
-    )
-    client = AliasReasoningClient()
-    agent = Agent(
-        config=AgentConfig(
-            name="alias-reasoning",
-            system_prompt="Use a tool.",
-            tools=("side_effect",),
-            max_turns=2,
-        ),
-        client=client,
-        tool_registry=registry,
-    )
-
-    result = agent.run("Call the tool.")
-
-    assert result.final_answer == "done"
-    assert client.second_request_messages[2].reasoning_content == "use the edit tool"
 
 
 def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_model_response():
@@ -280,7 +176,7 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
             name="interruptible",
             system_prompt="Use a tool.",
             tools=("side_effect",),
-            max_turns=1,
+
         ),
         client=InterruptingClient(),
         tool_registry=registry,
@@ -292,7 +188,7 @@ def test_general_agent_stops_before_tool_execution_when_interrupt_arrives_after_
     assert tool_calls == []
     assert result.final_answer == ""
     assert result.trace[-1]["type"] == "run_stopped"
-    assert result.trace[-1]["reason"] == "stop_event set after model response"
+    assert result.trace[-1]["reason"] == "stop_event set"
 
 
 def _assert_agent_can_write_and_read_workspace_file(tmp_path):
@@ -302,7 +198,7 @@ def _assert_agent_can_write_and_read_workspace_file(tmp_path):
         name="demo",
         system_prompt="You are a demo agent.",
         tools=["Write", "Read"],
-        max_turns=5,
+
     )
     agent = Agent(config=config, client=FakeChatClient(), tool_registry=registry)
 
@@ -310,7 +206,7 @@ def _assert_agent_can_write_and_read_workspace_file(tmp_path):
 
     assert result.final_answer == "demo complete"
     assert (tmp_path / "propositions" / "prop-0.md").read_text(encoding="utf-8").startswith("# Proposition 0")
-    assert result.turns == 3
+    assert result.turns == 1
     assert result.trace[0]["type"] == "run_start"
     assert result.trace[-1]["type"] == "run_finish"
     assert result.trace[-1]["final_answer"] == "demo complete"
@@ -382,7 +278,6 @@ def _assert_load_agent_config(tmp_path):
                 "system_prompt": "Demo prompt",
                 "tools": ["Read"],
                 "skills": ["math_review"],
-                "max_turns": 7,
             }
         ),
         encoding="utf-8",
@@ -393,7 +288,6 @@ def _assert_load_agent_config(tmp_path):
     assert config.name == "demo"
     assert config.tools == ("Read",)
     assert config.skills == ("math_review",)
-    assert config.max_turns == 7
 
 
 def test_load_agent_config_supports_extend_and_exclude_tools():
@@ -411,7 +305,6 @@ def test_load_agent_config_supports_extend_and_exclude_tools():
                     "  system_prompt_args:",
                     "    ROLE: agent",
                     "  tier: base_role",
-                    "  max_turns: 9",
                     "  tools:",
                     "    - Read",
                     "    - Write",
@@ -453,7 +346,6 @@ def test_load_agent_config_supports_extend_and_exclude_tools():
         assert config.name == "child"
         assert config.system_prompt == "Base child"
         assert config.tier == "base_role"
-        assert config.max_turns == 9
         assert config.tools == ("Read", "Agent")
         assert config.tool_parameters["Agent"]["type"]["enum"] == ["reasoning_subagent"]
 
@@ -495,7 +387,7 @@ def test_general_agent_enforces_enabled_tools_and_parameter_constraints():
             system_prompt="You are a guarded agent.",
             tools=("Read",),
             tool_parameters={"Read": {"path": {"enum": ["allowed.md"]}}},
-            max_turns=5,
+
         )
         agent = Agent(config=config, client=InvalidToolClient(), tool_registry=registry)
 
@@ -534,125 +426,3 @@ def test_tool_parameter_constraints_apply_runtime_defaults():
     assert not ok.is_error
     assert blocked.is_error
     assert "must be 'knowledge'" in blocked.content
-
-
-def _run_as_script():
-    root = pathlib.Path(__file__).resolve().parents[1]
-    tmp_root = root / "_tmp_general_agent_test"
-    if tmp_root.exists():
-        shutil.rmtree(tmp_root)
-    (tmp_root / "a").mkdir(parents=True)
-    (tmp_root / "b").mkdir(parents=True)
-    (tmp_root / "c").mkdir(parents=True)
-    try:
-        _assert_agent_can_write_and_read_workspace_file(tmp_root / "a")
-        _assert_workspace_blocks_path_escape(tmp_root / "b")
-        _assert_load_agent_config(tmp_root / "c")
-        print("general agent demo ok")
-    finally:
-        if tmp_root.exists():
-            shutil.rmtree(tmp_root)
-
-
-if __name__ == "__main__":
-    _run_as_script()
-
-
-def test_agent_handles_tool_call_parse_error_gracefully():
-    """When a ToolCall has parse_error set, the agent loop should return an
-    error message to the LLM instead of crashing."""
-    with local_test_dir("parse_error") as tmp_path:
-        workspace = Workspace(tmp_path)
-
-        class FakeClientWithParseError:
-            def __init__(self):
-                self.calls = 0
-
-            def complete(self, *, messages, tools):
-                self.calls += 1
-                if self.calls == 1:
-                    # First turn: return a tool call with parse_error
-                    return _resp(
-                        tool_calls=(
-                            ToolCall(
-                                id="call_bad_json",
-                                name="Read",
-                                args={},
-                                raw_args='{"description": "Verify divergence", "prompt": "I need you to verify the compu',
-                                parse_error=(
-                                    "JSON arguments parse error: Unterminated string starting at position 60\n"
-                                    "The error appears to be in the value for key \"prompt\".\n"
-                                    "A string value was not closed with a quote mark."
-                                ),
-                            ),
-                        ),
-                    )
-                # Second turn: LLM retries with valid response
-                return _resp("retry succeeded")
-
-        registry = build_default_tool_registry(workspace)
-
-        config = AgentConfig(
-            name="test_agent",
-            system_prompt="You are a test agent.",
-            tools=("Read",),
-            max_turns=5,
-        )
-
-        agent = Agent(config=config, client=FakeClientWithParseError(), tool_registry=registry)
-        result = agent.run("test task")
-
-        # Agent should not crash — it should complete normally
-        assert result.final_answer == "retry succeeded"
-        # The trace should record the parse_error tool call and its error result
-        tc_events = [e for e in result.trace if e.get("type") == "tool_call"]
-        assert len(tc_events) == 1
-        assert tc_events[0]["parse_error"] is not None
-        tr_events = [e for e in result.trace if e.get("type") == "tool_result"]
-        assert len(tr_events) == 1
-        assert tr_events[0]["is_error"] is True
-        assert "could not be parsed" in tr_events[0]["content"]
-
-
-def test_agent_resets_context_at_safe_model_request_boundary():
-    seen_messages = []
-    reset_requests = iter([None, "fresh context from process audit"])
-
-    class ResetClient:
-        def __init__(self):
-            self.calls = 0
-
-        def complete(self, *, messages, tools, delta_sink=None):
-            del tools, delta_sink
-            self.calls += 1
-            seen_messages.append(list(messages))
-            if self.calls == 1:
-                return _resp(tool_calls=(ToolCall(id="continue", name="Continue", args={}),))
-            return _resp("reoriented")
-
-    registry = ToolRegistry()
-    registry.register(
-        name="Continue",
-        description="Continue to the next model turn.",
-        parameters={"type": "object", "properties": {}},
-        handler=lambda _args: ToolResult("continued"),
-    )
-    agent = Agent(
-        config=AgentConfig(
-            name="reset-test",
-            system_prompt="system prompt",
-            tools=("Continue",),
-            max_turns=2,
-        ),
-        client=ResetClient(),
-        tool_registry=registry,
-        context_reset_provider=lambda: next(reset_requests),
-    )
-
-    result = agent.run("original orchestration context")
-
-    assert result.final_answer == "reoriented"
-    assert seen_messages[0][-1].content == "original orchestration context"
-    assert [message.role for message in seen_messages[1]] == ["system", "user"]
-    assert seen_messages[1][-1].content == "fresh context from process audit"
-    assert any(event["type"] == "context_reset" for event in result.trace)

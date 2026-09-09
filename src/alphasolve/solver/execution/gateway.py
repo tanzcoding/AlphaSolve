@@ -1,15 +1,11 @@
 from __future__ import annotations
 
-import multiprocessing as mp
 import os
-import queue
-import shutil
-import tempfile
 import threading
-import uuid
 from dataclasses import dataclass
 
-from alphasolve.solver.execution.runners import run_python, run_wolfram
+from alphasolve.solver.execution.runners import run_wolfram
+from alphasolve.solver.execution.python_sessions import PythonSessionExecutor
 from alphasolve.solver.logging.logger import Logger
 from wolframclient.evaluation import WolframLanguageSession
 
@@ -18,19 +14,13 @@ from wolframclient.evaluation import WolframLanguageSession
 class ExecutionOutput:
     tool_content: str
     log_parts: list[str]
+    is_error: bool = False
+    queue_seconds: float = 0.0
+    execution_seconds: float = 0.0
 
 
 class ExecutionGateway:
-    """Small routing layer for code execution tools.
-
-    Python code runs in a small pool of worker processes. Each tool conversation
-    gets a stable session_id, and all requests for that session go to the same
-    worker, whose in-process env dictionary persists between calls.
-
-    Wolfram sessions are kept per session_id as well. The Wolfram kernel itself
-    is already a separate process, so keeping the lightweight session handles in
-    the main process is enough for now.
-    """
+    """计算工具的资源所有者；Python 会话独立运行，宿主监督截止时间与取消。"""
 
     def __init__(
         self,
@@ -42,9 +32,8 @@ class ExecutionGateway:
         self.python_workers = max(1, int(python_workers))
         self.wolfram_enabled = wolfram_enabled
         self.logger = logger
-        self._sandbox_root = tempfile.mkdtemp(prefix="alphasolve-exec-")
-
-        self._python_pool: _PythonWorkerPool | None = None
+        self._closed = threading.Event()
+        self._python = PythonSessionExecutor(self.python_workers)
         self._wolfram = _WolframSessionRegistry(logger=logger)
 
     def run_python(
@@ -52,16 +41,19 @@ class ExecutionGateway:
         *,
         session_id: str,
         code: str,
-        timeout_seconds: int = 300,
+        timeout_seconds: float = 300,
         allow_filesystem: bool = False,
+        stop_event: threading.Event | None = None,
     ) -> ExecutionOutput:
-        if self._python_pool is None:
-            self._python_pool = _PythonWorkerPool(
-                self.python_workers,
-                sandbox_root=self._sandbox_root,
-                logger=self.logger,
-            )
-        return self._python_pool.execute(session_id, code, timeout_seconds, allow_filesystem=allow_filesystem)
+        result = self._python.execute(
+            session_id, code, timeout_seconds,
+            allow_filesystem=allow_filesystem, stop_event=stop_event,
+        )
+        content, parts = _format_output(output=result.output, error=result.error, output_label="output")
+        return ExecutionOutput(
+            content, parts, is_error=result.error is not None,
+            queue_seconds=result.queue_seconds, execution_seconds=result.execution_seconds,
+        )
 
     def run_wolfram(
         self,
@@ -70,152 +62,20 @@ class ExecutionGateway:
         code: str,
         timeout_seconds: int = 300,
     ) -> ExecutionOutput:
+        if self._closed.is_set():
+            return ExecutionOutput("[error]\nExecution gateway is closed", [], is_error=True)
         if not self.wolfram_enabled:
-            return ExecutionOutput("[error]\nWolfram kernel is not available in this run", [])
+            return ExecutionOutput("[error]\nWolfram kernel is not available in this run", [], is_error=True)
         return self._wolfram.execute(session_id, code, timeout_seconds)
 
     def close_session(self, session_id: str) -> None:
-        if self._python_pool is not None:
-            self._python_pool.close_session(session_id)
+        self._python.close_session(session_id)
         self._wolfram.close_session(session_id)
 
     def close(self) -> None:
-        if self._python_pool is not None:
-            self._python_pool.close()
-            self._python_pool = None
+        self._closed.set()
+        self._python.close()
         self._wolfram.close()
-        shutil.rmtree(self._sandbox_root, ignore_errors=True)
-
-
-class _PythonWorkerPool:
-    def __init__(self, workers: int, *, sandbox_root: str, logger: Logger | None = None) -> None:
-        self._logger = logger
-        self._sandbox_root = sandbox_root
-        self._ctx = mp.get_context("spawn")
-        self._out_queue = self._ctx.Queue()
-        self._in_queues = [self._ctx.Queue() for _ in range(workers)]
-        self._processes = [
-            self._ctx.Process(
-                target=_python_worker_loop,
-                args=(idx, self._in_queues[idx], self._out_queue, self._sandbox_root),
-                daemon=True,
-            )
-            for idx in range(workers)
-        ]
-        for process in self._processes:
-            process.start()
-
-        self._lock = threading.Lock()
-        self._pending: dict[str, "queue.Queue[dict]"] = {}
-        self._session_worker: dict[str, int] = {}
-        self._next_worker = 0
-        self._closed = False
-        self._dispatcher = threading.Thread(target=self._dispatch_results, daemon=True)
-        self._dispatcher.start()
-
-    def execute(
-        self,
-        session_id: str,
-        code: str,
-        timeout_seconds: int,
-        *,
-        allow_filesystem: bool,
-    ) -> ExecutionOutput:
-        request_id = uuid.uuid4().hex
-        result_box: "queue.Queue[dict]" = queue.Queue(maxsize=1)
-        worker_idx = self._worker_for_session(session_id)
-
-        with self._lock:
-            if self._closed:
-                return ExecutionOutput("[error]\nPython execution pool is closed", [])
-            self._pending[request_id] = result_box
-
-        self._in_queues[worker_idx].put(
-            {
-                "id": request_id,
-                "session_id": session_id,
-                "code": code,
-                "timeout_seconds": timeout_seconds,
-                "allow_filesystem": allow_filesystem,
-            }
-        )
-
-        try:
-            data = result_box.get(timeout=timeout_seconds + 10)
-        except queue.Empty:
-            with self._lock:
-                self._pending.pop(request_id, None)
-            return ExecutionOutput("[error]\ntimeout", ["[error]\ntimeout"])
-
-        return ExecutionOutput(
-            data.get("tool_content", ""),
-            data.get("log_parts", []),
-        )
-
-    def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            for pending in self._pending.values():
-                pending.put({"tool_content": "[error]\nPython execution pool closed", "log_parts": []})
-            self._pending.clear()
-
-        for in_queue in self._in_queues:
-            in_queue.put(None)
-        for process in self._processes:
-            process.join(timeout=2)
-            if process.is_alive():
-                process.terminate()
-
-        self._out_queue.put(None)
-        self._dispatcher.join(timeout=2)
-
-    def close_session(self, session_id: str, *, timeout_seconds: float = 10.0) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            worker_idx = self._session_worker.pop(session_id, None)
-            if worker_idx is None:
-                return
-            request_id = uuid.uuid4().hex
-            result_box: "queue.Queue[dict]" = queue.Queue(maxsize=1)
-            self._pending[request_id] = result_box
-
-        self._in_queues[worker_idx].put(
-            {
-                "id": request_id,
-                "action": "close_session",
-                "session_id": session_id,
-            }
-        )
-        try:
-            result_box.get(timeout=max(0.1, float(timeout_seconds)))
-        except queue.Empty:
-            with self._lock:
-                self._pending.pop(request_id, None)
-
-    def _worker_for_session(self, session_id: str) -> int:
-        with self._lock:
-            if session_id not in self._session_worker:
-                self._session_worker[session_id] = self._next_worker
-                self._next_worker = (self._next_worker + 1) % len(self._in_queues)
-            return self._session_worker[session_id]
-
-    def _dispatch_results(self) -> None:
-        while True:
-            try:
-                data = self._out_queue.get(timeout=0.5)
-            except Exception:
-                with self._lock:
-                    if self._closed:
-                        return
-                continue
-            if data is None:
-                return
-            request_id = data.get("id")
-            with self._lock:
-                pending = self._pending.pop(request_id, None)
-            if pending is not None:
-                pending.put(data)
 
 
 class _WolframSessionRegistry:
@@ -228,7 +88,7 @@ class _WolframSessionRegistry:
     def execute(self, session_id: str, code: str, timeout_seconds: int) -> ExecutionOutput:
         session = self._get_session(session_id)
         if session is None:
-            return ExecutionOutput("[error]\nWolfram session not available", ["[error]\nWolfram session not available"])
+            return ExecutionOutput("[error]\nWolfram session not available", ["[error]\nWolfram session not available"], is_error=True)
 
         lock = self._get_session_lock(session_id)
         with lock:
@@ -237,7 +97,7 @@ class _WolframSessionRegistry:
                 self._restart_session(session_id)
 
         tool_content, log_parts = _format_output(output=output, error=error, output_label="output")
-        return ExecutionOutput(tool_content, log_parts)
+        return ExecutionOutput(tool_content, log_parts, is_error=error is not None)
 
     def close(self) -> None:
         with self._lock:
@@ -288,64 +148,6 @@ class _WolframSessionRegistry:
                 old.terminate()
             except Exception:
                 pass
-
-
-def _python_worker_loop(worker_idx: int, in_queue, out_queue, sandbox_root: str) -> None:
-    envs: dict[str, dict] = {}
-    session_dirs: dict[str, str] = {}
-    while True:
-        request = in_queue.get()
-        if request is None:
-            return
-
-        request_id = request["id"]
-        action = request.get("action", "execute")
-        if action == "close_session":
-            session_id = request["session_id"]
-            envs.pop(session_id, None)
-            session_dir = session_dirs.pop(session_id, None)
-            if session_dir is not None:
-                shutil.rmtree(session_dir, ignore_errors=True)
-            out_queue.put(
-                {
-                    "id": request_id,
-                    "worker_idx": worker_idx,
-                    "tool_content": "",
-                    "log_parts": [],
-                }
-            )
-            continue
-
-        session_id = request["session_id"]
-        code = request.get("code", "")
-        timeout_seconds = int(request.get("timeout_seconds", 300))
-        allow_filesystem = bool(request.get("allow_filesystem", False))
-        env = envs.setdefault(session_id, {})
-        session_dir = session_dirs.get(session_id)
-        if session_dir is None:
-            session_dir = tempfile.mkdtemp(prefix=f"py-{worker_idx}-", dir=sandbox_root)
-            session_dirs[session_id] = session_dir
-
-        old_cwd = os.getcwd()
-        try:
-            os.chdir(session_dir)
-            stdout, error = run_python(
-                code,
-                env,
-                timeout_seconds=timeout_seconds,
-                allow_filesystem=allow_filesystem,
-            )
-        finally:
-            os.chdir(old_cwd)
-        tool_content, log_parts = _format_output(output=stdout, error=error, output_label="stdout")
-        out_queue.put(
-            {
-                "id": request_id,
-                "worker_idx": worker_idx,
-                "tool_content": tool_content,
-                "log_parts": log_parts,
-            }
-        )
 
 
 def _format_output(*, output: str, error: str | None, output_label: str) -> tuple[str, list[str]]:

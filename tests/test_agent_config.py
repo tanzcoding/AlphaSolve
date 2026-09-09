@@ -61,12 +61,11 @@ def test_loading_yaml_with_role_works(tmp_path):
         "agent:\n"
         "  name: verifier_adversarial\n"
         "  system_prompt: stand in for verifier\n"
-        "  tier: verifier\n"
-        "  max_turns: 60\n",
+        "  tier: verifier\n",
         encoding="utf-8",
     )
     cfg = load_agent_config(yaml_path)
     assert cfg.name == "verifier_adversarial"
     assert cfg.tier == "verifier"
     assert cfg.effective_tier() == "verifier"
-    assert cfg.max_turns == 60
+    assert not hasattr(cfg, "max_turns")
